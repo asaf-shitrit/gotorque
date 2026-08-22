@@ -49,10 +49,14 @@ func (m *WorktreeManager) Prepare(ctx context.Context, revision, patchPath, hypo
 	}
 	prepared := &Prepared{Candidate: domain.Candidate{ID: id, BaseRevision: revision, Hypothesis: hypothesis, PatchPath: patchPath, CreatedAt: time.Now().UTC()}, Worktree: path, manager: m}
 	if _, err := m.Toolchain.ApplyPatchCheck(ctx, path, patchPath); err != nil {
-		_ = prepared.Close(context.Background())
-		return nil, fmt.Errorf("git apply check: %w", err)
-	}
-	if _, err := m.Toolchain.ApplyPatch(ctx, path, patchPath); err != nil {
+		// Model-generated diffs often carry approximate context. Fall back
+		// to GNU patch fuzz matching; the applied tree still faces the full
+		// test-suite behavior gate before any measurement.
+		if _, fuzzyErr := m.Toolchain.ApplyPatchFuzzy(ctx, path, patchPath); fuzzyErr != nil {
+			_ = prepared.Close(context.Background())
+			return nil, fmt.Errorf("git apply check: %w", err)
+		}
+	} else if _, err := m.Toolchain.ApplyPatch(ctx, path, patchPath); err != nil {
 		_ = prepared.Close(context.Background())
 		return nil, fmt.Errorf("apply candidate: %w", err)
 	}

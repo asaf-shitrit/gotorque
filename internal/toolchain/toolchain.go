@@ -1,11 +1,13 @@
 package toolchain
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -190,6 +192,31 @@ func (t *Toolchain) ApplyPatch(ctx context.Context, repository, patchPath string
 		return Result{}, errors.New("patch path must be absolute")
 	}
 	return t.run(ctx, t.gitPath, []string{"apply", "--whitespace=error-all", patchPath}, repository, nil, nil)
+}
+
+// ApplyPatchFuzzy applies a patch with GNU patch's fuzz matching for models
+// that cannot reproduce exact context lines from memory. It is only used as
+// a fallback after strict git apply fails; the applied tree still faces the
+// full test-suite behavior gate.
+func (t *Toolchain) ApplyPatchFuzzy(ctx context.Context, repository, patchPath string) (Result, error) {
+	if err := requireDirectory(repository); err != nil {
+		return Result{}, err
+	}
+	if !filepath.IsAbs(patchPath) {
+		return Result{}, errors.New("patch path must be absolute")
+	}
+	data, err := os.ReadFile(patchPath)
+	if err != nil {
+		return Result{}, err
+	}
+	return t.run(ctx, patchBinary(), []string{"-p1", "--fuzz=5", "--no-backup-if-mismatch", "--silent"}, repository, nil, bytes.NewReader(data))
+}
+
+func patchBinary() string {
+	if resolved, err := exec.LookPath("patch"); err == nil {
+		return resolved
+	}
+	return "/usr/bin/patch"
 }
 
 // RemoveWorktree removes one explicitly identified disposable worktree and
