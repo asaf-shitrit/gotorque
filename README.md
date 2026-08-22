@@ -18,6 +18,17 @@ from the OpenAI-compatible endpoint configured by environment variables.
 Deterministic candidate worktree validation and statistical acceptance remain
 guardrails around the model loop.
 
+The candidate loop is fully wired: model-proposed patches are validated,
+normalized, applied in isolated worktrees (strict `git apply` first, GNU patch
+fuzz matching as fallback), gated on the upstream test suite, and measured with
+interleaved A/B runs against the baseline binary. Policy accepts a candidate
+only on statistically supported improvement without guardrail regressions;
+per-attempt verdicts, reasons, and metric comparisons appear in campaign
+reports. Resume supports re-attaching model agents with `--resume --adk`.
+Model routing is tiered via environment variables: judgment-heavy roles
+(coordinator, optimizer, reviewer) can use a stronger model while high-volume
+evidence roles (explorer, analyst) use cheaper ones.
+
 ## Design boundaries
 
 - One CLI command or subcommand per optimization campaign.
@@ -61,10 +72,25 @@ GOCACHE=/private/tmp/go-agent-optimizer-cache go build -o /tmp/goharness ./cmd/g
 ```
 
 Run `goharness optimize --repo PATH --manifest PATH`, resume with
-`goharness optimize --resume CAMPAIGN_DIR`, and render stored evidence with
+`goharness optimize --resume CAMPAIGN_DIR` (add `--adk` or `--adk-stub` to
+re-attach model agents), and render stored evidence with
 `goharness report CAMPAIGN_DIR [--json]`. Add `--adk` to run the ADK graph.
 `internal/mcpserver` provides the
 typed MCP surface used by `goharness mcp serve --state-root PATH`.
+
+Endpoint configuration (any OpenAI-compatible provider, e.g. OpenRouter):
+
+```sh
+OPENAI_API_KEY=...        # provider key
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+GOHARNESS_MODEL_COORDINATOR=stealth/ox-alpha
+GOHARNESS_MODEL_EXPLORER=openai/gpt-oss-120b
+GOHARNESS_MODEL_ANALYST=openai/gpt-oss-120b
+GOHARNESS_MODEL_OPTIMIZER=stealth/ox-alpha
+GOHARNESS_MODEL_REVIEWER=stealth/ox-alpha
+```
+
+Keep credentials in a gitignored `.env`; source it before running.
 
 ## Package map
 
