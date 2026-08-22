@@ -1,0 +1,116 @@
+{
+  "$schema": "https://example.com/go-agent-optimizer/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "scc CLI",
+  "target": {
+    "repository": "https://github.com/boyter/scc",
+    "build": {
+      "package": ".",
+      "binary": "scc"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "small-tree",
+        "name": "Scan a small Go tree",
+        "tier": "representative",
+        "args": ["--no-config", "--by-file", "."],
+        "files": [
+          {"path": "cmd/main.go", "content": "package main\n\nfunc main() {}\n"},
+          {"path": "internal/parser/parser.go", "content": "package parser\n\nfunc Parse(input []byte) int { return len(input) }\n"},
+          {"path": "README.md", "content": "# fixture\n\nA small deterministic source tree.\n"}
+        ],
+        "provenance": "manifest",
+        "description": "Deterministic repository-like tree for the common scan workflow."
+      },
+      {
+        "id": "language-filter",
+        "name": "Scan Go files with a language filter",
+        "tier": "representative",
+        "args": ["--no-config", "--include-ext=go", "--by-file", "."],
+        "files": [
+          {"path": "main.go", "content": "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"hello\") }\n"},
+          {"path": "script.py", "content": "print('fixture')\n"},
+          {"path": "notes.txt", "content": "not source code\n"}
+        ],
+        "provenance": "manifest",
+        "description": "Checks filtering and extension classification without network or external files."
+      },
+      {
+        "id": "mixed-tree",
+        "name": "Scan a mixed-language tree",
+        "tier": "plausible",
+        "args": ["--no-config", "--by-file", "."],
+        "files": [
+          {"path": "pkg/service/service.go", "content": "package service\n\n// Service handles requests.\ntype Service struct{}\n"},
+          {"path": "web/app.js", "content": "export function app() { return true }\n"},
+          {"path": "web/index.html", "content": "<!doctype html><html><body>fixture</body></html>\n"},
+          {"path": "vendor/ignored.go", "content": "package ignored\n"}
+        ],
+        "provenance": "inferred-from-filesystem-and-language-discovery",
+        "description": "Generated-style tree for classification, filtering, and directory traversal paths."
+      },
+      {
+        "id": "deep-tree",
+        "name": "Deep generated tree",
+        "tier": "stress",
+        "args": ["--no-config", "--by-file", "."],
+        "files": [
+          {"path": "level00/file.go", "content": "package level00\n\nfunc F() {}\n"},
+          {"path": "level01/level02/level03/file.go", "content": "package level03\n\nfunc F() {}\n"},
+          {"path": "level04/level05/level06/level07/file.go", "content": "package level07\n\nfunc F() {}\n"}
+        ],
+        "provenance": "adversarial-depth-and-file-count-sweep-seed",
+        "description": "Seed for expansion to many files and deep directories; stress evidence cannot accept a patch alone."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": ["help", "documentation", "examples", "tests", "benchmarks", "fixture_mutation"],
+      "strategies": ["file_tree_generation", "language_mix_sweep", "input_size_sweep", "directory_depth_sweep", "coverage_guided"],
+      "seed": 20260821,
+      "max_cases": 160,
+      "max_depth": 8
+    },
+    "tiers": {
+      "representative": {"weight": 1.0, "acceptance_eligible": true},
+      "plausible": {"weight": 0.5, "acceptance_eligible": false},
+      "stress": {"weight": 0.0, "acceptance_eligible": false}
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {"read": "repo_and_assets", "write": "temp_only"},
+    "environment": {"allow": ["LANG", "LC_ALL"], "passthrough": []},
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {"mode": "exact"},
+    "stderr": {"mode": "exact"},
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {"name": "peak_memory_bytes", "maximum_regression_percent": 2.0, "required": true},
+      {"name": "cpu_time_ns", "maximum_regression_percent": 2.0, "required": true},
+      {"name": "binary_size_bytes", "maximum_regression_percent": 2.0, "required": true}
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}

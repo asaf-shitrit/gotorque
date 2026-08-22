@@ -1,0 +1,31 @@
+package orchestrator
+
+import (
+	"context"
+
+	"example.com/go-agent-optimizer/internal/domain"
+)
+
+// RunnerService owns reproducible repository inspection, workload execution,
+// isolated candidates, measurement, and temporary baseline promotion.
+type RunnerService interface {
+	Inspect(context.Context, CampaignRequest) (Inspection, error)
+	Discover(context.Context, DiscoveryRequest) (DiscoveryEvidence, error)
+	EvaluateCandidate(context.Context, CandidateRequest) (CandidateEvidence, error)
+	PromoteCandidate(context.Context, domain.Candidate) error
+}
+
+// PolicyService is deterministic. Implementations compute accepted, rejected,
+// or inconclusive from measurements and behavior gates; an agent cannot
+// override the result.
+type PolicyService interface {
+	Evaluate(context.Context, PolicyInput) (domain.Evaluation, error)
+}
+
+// JobService persists the asynchronous campaign lifecycle for an MCP or CLI
+// control plane. The workflow itself remains independent of storage.
+type JobService interface {
+	StartCampaign(context.Context, CampaignRequest) (domain.Job, error)
+	RecordProgress(context.Context, domain.Job, CampaignProgress) error
+	CompleteCampaign(context.Context, domain.Job, CampaignResult) (domain.Job, error)
+}
