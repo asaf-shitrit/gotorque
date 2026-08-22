@@ -57,12 +57,29 @@ type Inventory struct {
 	Commands []string `json:"commands"`
 }
 
+// CandidateRecord persists one evaluated model proposal with the policy
+// verdict and measurement evidence, so reports can explain every decision.
+type CandidateRecord struct {
+	Attempt        int                      `json:"attempt"`
+	CandidateID    string                   `json:"candidate_id"`
+	Hypothesis     string                   `json:"hypothesis"`
+	PatchPath      string                   `json:"patch_path,omitempty"`
+	Summary        string                   `json:"summary,omitempty"`
+	Decision       domain.Decision          `json:"decision"`
+	Reasons        []string                 `json:"reasons,omitempty"`
+	Comparisons    []domain.MetricComparison `json:"comparisons,omitempty"`
+	Accepted       bool                     `json:"accepted,omitempty"`
+}
+
 type State struct {
 	Version             int                `json:"version"`
 	ID                  string             `json:"id"`
 	Directory           string             `json:"directory"`
 	Repository          string             `json:"repository"`
 	ManifestPath        string             `json:"manifest_path"`
+	ADKMode             string             `json:"adk_mode,omitempty"`
+
+	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
 	Manifest            manifest.Manifest  `json:"manifest"`
 	Status              Status             `json:"status"`
 	StartedAt           time.Time          `json:"started_at"`
@@ -191,6 +208,9 @@ func Create(ctx context.Context, opts Options) (*Engine, error) {
 	e.adkAgents = opts.ADKAgents
 	if opts.ADKConfig != nil {
 		e.adkConfig = *opts.ADKConfig
+	}
+	if opts.ADKAgents != nil {
+		e.state.ADKMode = "live"
 	}
 	if err := e.saveEvent("campaign_created", "campaign initialized", nil); err != nil {
 		_ = store.Close()
@@ -493,4 +513,14 @@ func ciEnvironment() map[string]string {
 		}
 	}
 	return result
+}
+
+// SetADK attaches model agents to a resumed campaign. Mid-workflow stops
+// lose the in-memory agent clients, so resume flows must re-supply them
+// before Run re-enters the ADK graph.
+func (e *Engine) SetADK(roleSet *agents.Set, cfg *orchestrator.Config) {
+	e.adkAgents = roleSet
+	if cfg != nil {
+		e.adkConfig = *cfg
+	}
 }

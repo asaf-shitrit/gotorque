@@ -162,3 +162,21 @@ func TestEscapeEmbeddedQuotes(t *testing.T) {
 		}
 	})
 }
+
+func TestStringFixturesTolerance(t *testing.T) {
+	cases := []string{
+		`{"name":"p","arguments":["."],"stdin":"{\"a\":1}","fixtures":"some string","tier":"representative","provenance":"manifest","expected_valid":true}`,
+		`{"name":"p","arguments":["."],"fixtures":["file.json"],"tier":"representative","provenance":"manifest","expected_valid":true}`,
+	}
+	for i, p := range cases {
+		var w WorkloadProposal
+		if err := json.Unmarshal([]byte(p), &w); err != nil {
+			t.Fatalf("case %d: %v", i, err)
+		}
+	}
+	full := `{"entry_points":["./cmd/gojq"],"proposals":[{"name":"identity_small","arguments":["."],"stdin":"{\\\"a\\\":1}","fixtures":"some string","tier":"representative","provenance":"manifest","expected_valid":true}],"rationale":"r"}`
+	var er ExplorerResult
+	if err := json.Unmarshal([]byte(full), &er); err != nil {
+		t.Fatalf("full: %v", err)
+	}
+}

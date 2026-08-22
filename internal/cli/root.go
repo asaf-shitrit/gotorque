@@ -57,11 +57,9 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 				return errors.New("--adk and --adk-stub are mutually exclusive")
 			}
 			if runADK {
-				configured, config, err := configureADK(cmd.Context(), manifestPath)
-				if err != nil {
-					return err
+				if resume == "" && manifestPath == "" {
+					return errors.New("--manifest is required with --adk")
 				}
-				roleSet, adkConfig = configured, config
 			} else if runADKStub {
 				configured, err := agents.NewDeterministicSet()
 				if err != nil {
@@ -71,7 +69,7 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 				adkConfig = &orchestrator.Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: 20 * time.Minute, AgentTimeout: 2 * time.Minute, MaxConcurrency: 1}
 			}
 			if resume != "" {
-				if repo != "" || manifestPath != "" || campaignDir != "" || runADK || runADKStub {
+				if repo != "" || manifestPath != "" || campaignDir != "" {
 					return fmt.Errorf("--resume cannot be combined with --repo, --manifest, or --campaign-dir")
 				}
 				engine, err := campaign.Resume(resume, out)
@@ -79,6 +77,18 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 					return err
 				}
 				defer engine.Close()
+				if engine.State().ADKMode != "" && !runADK && !runADKStub {
+					return fmt.Errorf("campaign %s was started with model agents; pass --adk or --adk-stub to resume model-driven work", resume)
+				}
+				if runADK {
+					configured, config, err := configureADK(cmd.Context(), engine.State().ManifestPath)
+					if err != nil {
+						return err
+					}
+					engine.SetADK(configured, config)
+				} else if runADKStub {
+					engine.SetADK(roleSet, adkConfig)
+				}
 				if err := engine.Run(cmd.Context()); err != nil {
 					return err
 				}

@@ -8,7 +8,6 @@ package agents
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strconv"
 	"strings"
 
@@ -150,11 +149,13 @@ func (r *CoordinatorResult) UnmarshalJSON(data []byte) error {
 	type alias CoordinatorResult
 	aux := struct {
 		*alias
-		Rationale flexStrings `json:"rationale,omitempty"`
+		NextExperiment flexText   `json:"next_experiment"`
+		Rationale      flexStrings `json:"rationale,omitempty"`
 	}{alias: (*alias)(r)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
+	r.NextExperiment = string(aux.NextExperiment)
 	r.Rationale = aux.Rationale
 	return nil
 }
@@ -286,6 +287,12 @@ func (f *flexText) UnmarshalJSON(data []byte) error {
 				}
 			}
 		}
+		// Structured values without a conventional text key collapse to
+		// their identifying scalar when one exists.
+		if extracted := identifyingString(object); extracted != "" {
+			*f = flexText(extracted)
+			return nil
+		}
 	}
 	// Unknown shape: keep the literal JSON so downstream validation can
 	// judge it instead of failing the whole agent turn here.
@@ -304,11 +311,15 @@ func (f *flexFixtures) UnmarshalJSON(data []byte) error {
 	}
 	switch trimmed[0] {
 	case '[':
-		var list []ProposedFixture
+		var list []json.RawMessage
 		if err := json.Unmarshal(trimmed, &list); err != nil {
 			return err
 		}
-		*f = list
+		for _, element := range list {
+			if hp, ok := decodeFixture(element); ok {
+				*f = append(*f, hp)
+			}
+		}
 		return nil
 	case '{':
 		var single ProposedFixture
@@ -334,8 +345,55 @@ func (f *flexFixtures) UnmarshalJSON(data []byte) error {
 		*f = fixtures
 		return nil
 	default:
-		return errors.New("fixtures must be an array or object")
+		// Unusable shapes (bare strings, numbers) are dropped: fixtures are
+		// optional and deterministic validation re-checks every materialized
+		// workload.
+		return nil
 	}
+}
+
+// decodeFixture accepts a {path, content} object, a bare path string, or
+// any object carrying an identifying path/name key.
+func decodeFixture(raw json.RawMessage) (ProposedFixture, bool) {
+	var fixture ProposedFixture
+	if err := json.Unmarshal(raw, &fixture); err == nil && fixture.Path != "" {
+		return fixture, true
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil && text != "" {
+		return ProposedFixture{Path: text}, true
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err == nil {
+		for _, key := range []string{"path", "name", "file", "filename", "id"} {
+			if value, ok := object[key].(string); ok && value != "" {
+				fixture := ProposedFixture{Path: value}
+				if content, ok := object["content"].(string); ok {
+					fixture.Content = content
+				}
+				return fixture, true
+			}
+		}
+	}
+	return ProposedFixture{}, false
+}
+
+func decodeHotPath(raw json.RawMessage) (HotPath, bool) {
+	var hp HotPath
+	if err := json.Unmarshal(raw, &hp); err == nil && hp.Location != "" {
+		return hp, true
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil && text != "" {
+		return HotPath{Location: text}, true
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err == nil {
+		if extracted := identifyingString(object); extracted != "" {
+			return HotPath{Location: extracted}, true
+		}
+	}
+	return HotPath{}, false
 }
 
 func (a *AnalystResult) UnmarshalJSON(data []byte) error {
@@ -441,20 +499,4 @@ func (f *flexHotPaths) UnmarshalJSON(data []byte) error {
 	}
 }
 
-func decodeHotPath(raw json.RawMessage) (HotPath, bool) {
-	var hp HotPath
-	if err := json.Unmarshal(raw, &hp); err == nil && hp.Location != "" {
-		return hp, true
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil && text != "" {
-		return HotPath{Location: text}, true
-	}
-	var object map[string]any
-	if err := json.Unmarshal(raw, &object); err == nil {
-		if extracted := identifyingString(object); extracted != "" {
-			return HotPath{Location: extracted}, true
-		}
-	}
-	return HotPath{}, false
-}
+

@@ -15,7 +15,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
 
       - name: Install benchstat and bubblewrap
         run: |
@@ -42,4 +42,5 @@ jobs:
           /tmp/goharness optimize \
             --repo /tmp/gojq \
             --manifest $GITHUB_WORKSPACE/targets/gojq/manifest.json \
-            --adk-stub
+            --adk-stub 2>&1 | tee /tmp/smoke.log
+          grep -q "campaign .* complete" /tmp/smoke.log

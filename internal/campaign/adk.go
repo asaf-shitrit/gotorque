@@ -112,6 +112,11 @@ func (s adkServices) PromoteCandidate(_ context.Context, candidate domain.Candid
 			return err
 		}
 	}
+	for i := range s.engine.state.CandidateRecords {
+		if s.engine.state.CandidateRecords[i].CandidateID == candidate.ID {
+			s.engine.state.CandidateRecords[i].Accepted = true
+		}
+	}
 	return s.engine.saveEvent("candidate_accepted", "policy accepted candidate "+candidate.ID, candidate)
 }
 
@@ -130,5 +135,17 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	for _, c := range result.Comparisons {
 		converted = append(converted, domain.MetricComparison{Name: c.Name, Unit: c.Unit, Baseline: c.Baseline, Candidate: c.Candidate, DeltaPercent: c.DeltaPercent, StatisticallyFit: c.StatisticallySupported})
 	}
+	// Persist the full verdict so reports can explain every decision.
+	record := CandidateRecord{
+		Attempt:     len(s.engine.state.CandidateRecords) + 1,
+		CandidateID: input.Evidence.Candidate.ID,
+		Hypothesis:  input.Evidence.Candidate.Hypothesis,
+		PatchPath:   input.Evidence.Candidate.PatchPath,
+		Summary:     input.Evidence.Summary,
+		Decision:    result.Decision,
+		Reasons:     result.Reasons,
+		Comparisons: converted,
+	}
+	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: converted, Reasons: result.Reasons}, nil
 }
