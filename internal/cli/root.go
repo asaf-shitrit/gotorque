@@ -57,9 +57,14 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 				return errors.New("--adk and --adk-stub are mutually exclusive")
 			}
 			if runADK {
-				if resume == "" && manifestPath == "" {
+				if manifestPath == "" {
 					return errors.New("--manifest is required with --adk")
 				}
+				configured, config, err := configureADK(cmd.Context(), manifestPath)
+				if err != nil {
+					return err
+				}
+				roleSet, adkConfig = configured, config
 			} else if runADKStub {
 				configured, err := agents.NewDeterministicSet()
 				if err != nil {
