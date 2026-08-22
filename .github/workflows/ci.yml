@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test (linux/amd64, authoritative)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install benchstat and bubblewrap
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@latest
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Build operator CLI
+        run: go build -o /tmp/goharness ./cmd/goharness
+
+      - name: Validate target manifests
+        run: |
+          /tmp/goharness manifest validate targets/gojq/manifest.json
+          /tmp/goharness manifest validate targets/scc/manifest.json
+
+      - name: Deterministic campaign smoke test (no network, no model)
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git clone --depth 1 https://github.com/itchyny/gojq /tmp/gojq
+          cd /tmp/gojq && git checkout -b pinned && git commit --allow-empty -m "pin" || true
+          /tmp/goharness optimize \
+            --repo /tmp/gojq \
+            --manifest $GITHUB_WORKSPACE/targets/gojq/manifest.json \
+            --adk-stub
