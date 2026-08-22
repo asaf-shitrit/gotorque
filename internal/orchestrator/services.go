@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 
+	"example.com/go-agent-optimizer/internal/agents"
 	"example.com/go-agent-optimizer/internal/domain"
 )
 
@@ -13,6 +14,13 @@ type RunnerService interface {
 	Discover(context.Context, DiscoveryRequest) (DiscoveryEvidence, error)
 	EvaluateCandidate(context.Context, CandidateRequest) (CandidateEvidence, error)
 	PromoteCandidate(context.Context, domain.Candidate) error
+}
+
+// ExcerptCollector is an optional RunnerService capability: attaching real
+// source excerpts around analyst hot paths so optimizer patches carry valid
+// context lines. Kept separate from RunnerService so existing fakes compile.
+type ExcerptCollector interface {
+	CollectExcerpts(ctx context.Context, analysis agents.AnalystResult) ([]SourceExcerpt, error)
 }
 
 // PolicyService is deterministic. Implementations compute accepted, rejected,

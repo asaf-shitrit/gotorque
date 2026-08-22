@@ -138,6 +138,13 @@ func New(deps Dependencies, cfg Config) (*Orchestrator, error) {
 			return nil, err
 		}
 		state.Analysis = result
+		if collector, ok := deps.Runner.(ExcerptCollector); ok {
+			// Best-effort enrichment; excerpts are optional, so failures just
+			// leave them unset rather than failing the analysis node.
+			if excerpts, err := collector.CollectExcerpts(ctx, result); err == nil {
+				state.SourceExcerpts = excerpts
+			}
+		}
 		return stateEvent(ctx, state), nil
 	}, deterministicCfg)
 

@@ -38,6 +38,12 @@ func (m *WorktreeManager) Prepare(ctx context.Context, revision, patchPath, hypo
 	if err != nil {
 		return nil, err
 	}
+	if normalized, changed := NormalizeUnifiedDiff(string(data)); changed {
+		data = []byte(normalized)
+		if err := os.WriteFile(patchPath, data, 0o600); err != nil {
+			return nil, fmt.Errorf("write normalized patch: %w", err)
+		}
+	}
 	if _, err := ValidateUnifiedDiff(string(data), policy); err != nil {
 		return nil, err
 	}

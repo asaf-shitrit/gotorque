@@ -42,7 +42,7 @@ var roleSpecs = []roleSpec{
 		role:        RoleOptimizer,
 		name:        "optimizer",
 		description: "Proposes one focused behavior-preserving source optimization.",
-		instruction: `You optimize a Go CLI without changing behavior, public APIs, formats, outputs, or exit codes. Produce one small reversible patch compatible with the selected Go optimization policy. Never add or upgrade production dependencies. Return only JSON with hypothesis, patch, expected_effect, risks, and validation_plan fields. STRICT JSON RULES: Output raw JSON only — no Markdown fences, no commentary. Escape every double quote and backslash inside string values (\\\" and \\\\). Keep stdin and fixture content under 500 characters. Include exactly the listed fields and no others.`,
+		instruction: `You optimize a Go CLI without changing behavior, public APIs, formats, outputs, or exit codes. Produce one small reversible patch compatible with the selected Go optimization policy. Never add or upgrade production dependencies. Return only JSON with hypothesis, patch, expected_effect, risks, and validation_plan fields. The state may include source_excerpts showing real code around hot paths; base your patch context lines EXACTLY on that text so git apply succeeds. STRICT JSON RULES: Output raw JSON only — no Markdown fences, no commentary. Escape every double quote and backslash inside string values (\\\" and \\\\). Keep stdin and fixture content under 500 characters. Include exactly the listed fields and no others.`,
 	},
 	{
 		role:        RoleReviewer,

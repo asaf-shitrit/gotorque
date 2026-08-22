@@ -67,6 +67,12 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 
 type adkServices struct{ engine *Engine }
 
+// CollectExcerpts implements the optional orchestrator.ExcerptCollector
+// capability, attaching real source windows around analyst hot paths.
+func (s adkServices) CollectExcerpts(ctx context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
+	return extractExcerpts(s.engine.state.Repository, analysis.HotPaths, defaultMaxExcerpts)
+}
+
 func (s adkServices) StartCampaign(ctx context.Context, req orchestrator.CampaignRequest) (domain.Job, error) {
 	now := time.Now().UTC()
 	job := domain.Job{ID: "job-" + req.CampaignID, Kind: "optimization_campaign", Status: domain.JobRunning, CreatedAt: now, UpdatedAt: now}

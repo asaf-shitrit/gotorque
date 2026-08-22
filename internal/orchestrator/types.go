@@ -106,6 +106,18 @@ type CampaignState struct {
 	AcceptedCandidates  []string                 `json:"accepted_candidates,omitempty"`
 	StartedAt           time.Time                `json:"started_at"`
 	StopReason          string                   `json:"stop_reason,omitempty"`
+
+	// SourceExcerpts is best-effort enrichment: real code around hot paths
+	// so the optimizer can write patch context lines that git apply accepts.
+	SourceExcerpts []SourceExcerpt `json:"source_excerpts,omitempty"`
+}
+
+// SourceExcerpt carries a slice of real repository source near a hot path.
+type SourceExcerpt struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	Content   string `json:"content"`
+	HotPath   string `json:"hot_path"`
 }
 
 // CampaignProgress is persisted after each deterministic policy decision.
