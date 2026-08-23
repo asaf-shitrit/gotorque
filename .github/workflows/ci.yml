@@ -8,19 +8,19 @@ on:
 
 jobs:
   test:
-    name: Test (linux/amd64, authoritative)
+    # Container grants SYS_ADMIN so bubblewrap (used by local campaign
+    # isolation on Linux) can create network namespaces.
     runs-on: ubuntu-latest
+    container:
+      image: golang:1.26-bookworm
+      options: --cap-add SYS_ADMIN
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
 
       - name: Install benchstat and bubblewrap
         run: |
           go install golang.org/x/perf/cmd/benchstat@latest
-          sudo apt-get update && sudo apt-get install -y bubblewrap
+          apt-get update && apt-get install -y bubblewrap git
 
       - name: Unit tests
         run: go test ./...
@@ -45,7 +45,7 @@ jobs:
             --adk-stub 2>&1 | tee /tmp/smoke.log
           grep -q "campaign .* complete" /tmp/smoke.log || {
             echo "=== smoke failed; dumping diagnostics ==="
-            find /tmp /home/runner/.cache -type f -name "*stderr" -newermt '-10 minutes' 2>/dev/null | while read f; do
+            find /root/.cache /tmp -type f -name "*stderr" -newermt '-10 minutes' 2>/dev/null | while read f; do
               echo "== $f"; tail -c 2000 "$f"
             done
             which bwrap && bwrap --version || true
