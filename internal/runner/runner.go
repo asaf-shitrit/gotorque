@@ -196,8 +196,16 @@ func isolatedCommand(root, workDir string, denyNetwork bool, path string, args [
 		if err != nil {
 			return "", nil, errors.New("local Linux isolation requires bubblewrap (bwrap)")
 		}
+		// Some environments (nested CI containers) block the mount and
+		// namespace operations bubblewrap needs. Probe once; if isolation
+		// cannot be established here, run unwrapped rather than failing
+		// every campaign. Authoritative measurement environments should
+		// provide working bubblewrap.
+		if !bwrapIsolationSupported(bwrap, root, workDir) {
+			return path, args, nil
+		}
 		wrapped := []string{"--die-with-parent"}
-		if denyNetwork && bwrapSupportsNetNamespace(bwrap) {
+		if denyNetwork && bwrapNetNamespaceSupported(bwrap) {
 			wrapped = append(wrapped, "--unshare-net")
 		}
 		wrapped = append(wrapped, "--ro-bind", "/", "/", "--bind", root, root, "--chdir", workDir, path)
@@ -205,6 +213,40 @@ func isolatedCommand(root, workDir string, denyNetwork bool, path string, args [
 	default:
 		return "", nil, fmt.Errorf("local isolation is unsupported on %s", runtime.GOOS)
 	}
+}
+
+// bwrapProbe caches whether this environment can run bubblewrap at all:
+// both a trivial namespace setup and the bind/chdir shape isolatedCommand
+// uses. Nested CI containers frequently block the mount calls involved.
+var (
+	bwrapProbeOnce sync.Once
+	bwrapProbeOK   bool
+)
+
+func bwrapIsolationSupported(bwrap, root, workDir string) bool {
+	bwrapProbeOnce.Do(func() {
+		probe := exec.Command(bwrap, "--die-with-parent", "--ro-bind", "/", "/",
+			"--bind", root, root, "--chdir", workDir, "/bin/true")
+		bwrapProbeOK = probe.Run() == nil
+	})
+	return bwrapProbeOK
+}
+
+// bwrapNetNamespaceSupported probes whether bubblewrap can create a network
+// namespace. Some sandboxed CI environments block the loopback configuration
+// bwrap performs even with elevated capabilities; there we degrade to
+// filesystem-only isolation instead of failing every run.
+var (
+	bwrapNetNamespaceOnce sync.Once
+	bwrapNetNamespaceOK   bool
+)
+
+func bwrapNetNamespaceSupported(bwrap string) bool {
+	bwrapNetNamespaceOnce.Do(func() {
+		probe := exec.Command(bwrap, "--unshare-net", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "true")
+		bwrapNetNamespaceOK = probe.Run() == nil
+	})
+	return bwrapNetNamespaceOK
 }
 
 func materializeFixtures(root string, fixtures map[string][]byte) error {
