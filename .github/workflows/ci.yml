@@ -43,4 +43,11 @@ jobs:
             --repo /tmp/gojq \
             --manifest $GITHUB_WORKSPACE/targets/gojq/manifest.json \
             --adk-stub 2>&1 | tee /tmp/smoke.log
-          grep -q "campaign .* complete" /tmp/smoke.log
+          grep -q "campaign .* complete" /tmp/smoke.log || {
+            echo "=== smoke failed; dumping diagnostics ==="
+            find /tmp /home/runner/.cache -type f -name "*stderr" -newermt '-10 minutes' 2>/dev/null | while read f; do
+              echo "== $f"; tail -c 2000 "$f"
+            done
+            which bwrap && bwrap --version || true
+            exit 1
+          }
