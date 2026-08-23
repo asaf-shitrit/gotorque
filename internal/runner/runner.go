@@ -134,6 +134,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 		ID: runID(req.Build.ID, req.Workload.ID, started), BuildID: req.Build.ID, WorkloadID: req.Workload.ID,
 		Mode: req.Mode, StartedAt: started, Duration: commandResult.Duration, ExitCode: commandResult.ExitCode,
 		StdoutDigest: Digest(commandResult.Stdout), StderrDigest: Digest(commandResult.Stderr),
+		// Order-insensitive digest: identical multiset of output lines
+		// yields identical values even when tie ordering varies between
+		// runs. Used only when the baseline proves itself nondeterministic.
+		SortedLinesDigest: Digest(sortedLines(commandResult.Stdout)),
 		Metrics: []domain.Metric{
 			{Name: "wall_time_ns", Unit: "ns", Value: float64(commandResult.Duration)},
 			{Name: "cpu_time_ns", Unit: "ns", Value: float64(commandResult.UserCPU + commandResult.SystemCPU)},
@@ -321,4 +325,10 @@ func (r *Runner) RunInterleaved(ctx context.Context, req ABRequest) (ABResult, e
 		}
 	}
 	return result, nil
+}
+
+func sortedLines(stdout []byte) []byte {
+	lines := strings.Split(string(stdout), "\n")
+	sort.Strings(lines)
+	return []byte(strings.Join(lines, "\n"))
 }

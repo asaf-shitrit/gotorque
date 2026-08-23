@@ -107,6 +107,19 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 		candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
 		candReq.Workload.Command.Path = candidateBinary
 
+		// Self-consistency probe: CLIs with nondeterministic tie ordering
+		// (map iteration plus unstable sort) produce byte-different output
+		// for identical inputs. Only when the baseline itself proves
+		// deterministic do we hold the candidate to byte-exact equality;
+		// otherwise the order-insensitive digest decides, so cosmetic row
+		// order cannot reject a behavior-preserving patch.
+		deterministicOutput := true
+		if probeA, err := e.runner.Run(ctx, baseReq); err == nil {
+			if probeB, err := e.runner.Run(ctx, baseReq); err == nil && probeA.StdoutDigest != probeB.StdoutDigest {
+				deterministicOutput = false
+			}
+		}
+
 		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
 		if err != nil {
 			evidence.Summary = fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err)
@@ -114,9 +127,18 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 			return evidence, nil
 		}
 		for i := range ab.Baseline {
-			if ab.Baseline[i].StdoutDigest != ab.Candidate[i].StdoutDigest || ab.Baseline[i].ExitCode != ab.Candidate[i].ExitCode {
+			exitOK := ab.Baseline[i].ExitCode == ab.Candidate[i].ExitCode
+			stdoutOK := ab.Baseline[i].StdoutDigest == ab.Candidate[i].StdoutDigest
+			if !deterministicOutput {
+				stdoutOK = ab.Baseline[i].SortedLinesDigest == ab.Candidate[i].SortedLinesDigest && ab.Baseline[i].SortedLinesDigest != ""
+			}
+			if !stdoutOK || !exitOK {
 				behaviorMatches = false
-				evidence.Summary = fmt.Sprintf("behavior mismatch on workload %q at repetition %d", seed.ID, i+1)
+				basis := "byte-exact"
+				if !deterministicOutput {
+					basis = "order-insensitive"
+				}
+				evidence.Summary = fmt.Sprintf("behavior mismatch (%s comparison) on workload %q at repetition %d", basis, seed.ID, i+1)
 				evidence.Comparisons = comparisons
 				evidence.SafetyChecksPassed = testsPassed
 				return evidence, nil
