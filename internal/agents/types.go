@@ -149,7 +149,7 @@ func (r *CoordinatorResult) UnmarshalJSON(data []byte) error {
 	type alias CoordinatorResult
 	aux := struct {
 		*alias
-		NextExperiment flexText   `json:"next_experiment"`
+		NextExperiment flexText    `json:"next_experiment"`
 		Rationale      flexStrings `json:"rationale,omitempty"`
 	}{alias: (*alias)(r)}
 	if err := json.Unmarshal(data, &aux); err != nil {
@@ -498,5 +498,3 @@ func (f *flexHotPaths) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 }
-
-

@@ -39,7 +39,7 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	}
 
 	evidence := orchestrator.CandidateEvidence{
-		Candidate: domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, PatchPath: patchPath},
+		Candidate:    domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, PatchPath: patchPath},
 		ArtifactURIs: []string{patchPath},
 	}
 

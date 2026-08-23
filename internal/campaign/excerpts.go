@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	maxExcerptLines    = 120
+	maxExcerptLines      = 120
 	excerptContextBefore = 40
-	maxExcerptBytes    = 8 * 1024
-	defaultMaxExcerpts = 32 * 1024
+	maxExcerptBytes      = 8 * 1024
+	defaultMaxExcerpts   = 32 * 1024
 )
 
 // extractExcerpts reads real source around analyst-identified hot paths so

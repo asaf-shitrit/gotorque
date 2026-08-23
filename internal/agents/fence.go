@@ -3,8 +3,8 @@ package agents
 import (
 	"context"
 	"iter"
-	"time"
 	"strings"
+	"time"
 
 	"google.golang.org/adk/v2/model"
 )

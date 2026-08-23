@@ -12,10 +12,10 @@ import (
 
 func TestMean(t *testing.T) {
 	tests := []struct {
-		name    string
-		values  []float64
-		want    float64
-		wantOK  bool
+		name   string
+		values []float64
+		want   float64
+		wantOK bool
 	}{
 		{"empty", nil, 0, false},
 		{"empty slice", []float64{}, 0, false},
@@ -125,9 +125,9 @@ func TestStatisticallySupported(t *testing.T) {
 
 func TestPercentDelta(t *testing.T) {
 	tests := []struct {
-		name               string
+		name                string
 		baseline, candidate float64
-		want               float64
+		want                float64
 	}{
 		{"zero baseline", 0, 100, 0},
 		{"zero baseline zero candidate", 0, 0, 0},

@@ -71,19 +71,19 @@ type Metric struct {
 }
 
 type RunResult struct {
-	ID           string            `json:"id"`
-	BuildID      string            `json:"build_id"`
-	WorkloadID   string            `json:"workload_id"`
-	Mode         RunMode           `json:"mode"`
-	StartedAt    time.Time         `json:"started_at"`
-	Duration     time.Duration     `json:"duration"`
-	ExitCode     int               `json:"exit_code"`
-	StdoutDigest string            `json:"stdout_digest"`
-	SortedLinesDigest string       `json:"sorted_lines_digest,omitempty"`
-	StderrDigest string            `json:"stderr_digest"`
-	Metrics      []Metric          `json:"metrics,omitempty"`
-	Artifacts    map[string]string `json:"artifacts,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	ID                string            `json:"id"`
+	BuildID           string            `json:"build_id"`
+	WorkloadID        string            `json:"workload_id"`
+	Mode              RunMode           `json:"mode"`
+	StartedAt         time.Time         `json:"started_at"`
+	Duration          time.Duration     `json:"duration"`
+	ExitCode          int               `json:"exit_code"`
+	StdoutDigest      string            `json:"stdout_digest"`
+	SortedLinesDigest string            `json:"sorted_lines_digest,omitempty"`
+	StderrDigest      string            `json:"stderr_digest"`
+	Metrics           []Metric          `json:"metrics,omitempty"`
+	Artifacts         map[string]string `json:"artifacts,omitempty"`
+	Error             string            `json:"error,omitempty"`
 }
 
 type Candidate struct {
