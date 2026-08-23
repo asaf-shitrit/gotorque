@@ -48,7 +48,7 @@ Requirements: Go 1.26+, Git, GNU patch, and optionally
 [benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat).
 
 ```sh
-git clone https://github.com/YOUR_USERNAME/gotorque
+git clone https://github.com/asaf-shitrit/gotorque
 cd gotorque
 go build -o /tmp/gotorque ./cmd/gotorque
 
