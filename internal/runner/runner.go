@@ -376,20 +376,3 @@ func sortedLines(stdout []byte) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
-// bwrapSupportsNetNamespace probes whether this environment permits bubblewrap
-// to create a network namespace. Some sandboxed CI environments block the
-// loopback configuration bwrap performs even with elevated capabilities; there
-// we degrade to filesystem-only isolation instead of failing every run. The
-// probe result is cached for the process lifetime.
-var (
-	bwrapNetNamespaceOnce sync.Once
-	bwrapNetNamespaceOK   bool
-)
-
-func bwrapSupportsNetNamespace(bwrap string) bool {
-	bwrapNetNamespaceOnce.Do(func() {
-		probe := exec.Command(bwrap, "--unshare-net", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "true")
-		bwrapNetNamespaceOK = probe.Run() == nil
-	})
-	return bwrapNetNamespaceOK
-}
