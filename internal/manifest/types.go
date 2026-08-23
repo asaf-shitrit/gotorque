@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"example.com/go-agent-optimizer/internal/domain"
+	"example.com/gotorque/internal/domain"
 )
 
 const (

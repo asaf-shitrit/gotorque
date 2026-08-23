@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"example.com/go-agent-optimizer/internal/agents"
-	"example.com/go-agent-optimizer/internal/domain"
-	"example.com/go-agent-optimizer/internal/orchestrator"
-	"example.com/go-agent-optimizer/internal/policy"
+	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/orchestrator"
+	"example.com/gotorque/internal/policy"
 	adkagent "google.golang.org/adk/v2/agent"
 	adkrunner "google.golang.org/adk/v2/runner"
 	"google.golang.org/genai"
@@ -32,7 +32,7 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	if err != nil {
 		return orchestrator.CampaignResult{}, err
 	}
-	adk, err := adkrunner.NewInMemory("goharness", orch.Agent)
+	adk, err := adkrunner.NewInMemory("gotorque", orch.Agent)
 	if err != nil {
 		return orchestrator.CampaignResult{}, err
 	}
@@ -43,7 +43,7 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	}
 	message := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}
 	var result orchestrator.CampaignResult
-	for event, runErr := range adk.Run(ctx, "goharness", e.state.ID, message, adkagent.RunConfig{}) {
+	for event, runErr := range adk.Run(ctx, "gotorque", e.state.ID, message, adkagent.RunConfig{}) {
 		if runErr != nil {
 			return orchestrator.CampaignResult{}, runErr
 		}

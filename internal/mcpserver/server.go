@@ -11,13 +11,13 @@ import (
 	"net/url"
 	"strings"
 
-	"example.com/go-agent-optimizer/internal/domain"
-	"example.com/go-agent-optimizer/internal/jobs"
+	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
-	serverName    = "go-agent-optimizer"
+	serverName    = "gotorque"
 	serverVersion = "0.1.0"
 )
 

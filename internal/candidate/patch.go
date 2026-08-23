@@ -60,7 +60,7 @@ func ValidateUnifiedDiff(patch string, policy Policy) (Result, error) {
 		if prohibitedFiles[base] || strings.HasPrefix(name, "vendor/") {
 			return Result{}, fmt.Errorf("dependency or PGO file %q may not be changed", name)
 		}
-		if strings.Contains(name, "goharness_pprof") || strings.Contains(name, "goharness_trace") {
+		if strings.Contains(name, "gotorque_pprof") || strings.Contains(name, "gotorque_trace") {
 			return Result{}, fmt.Errorf("diagnostic code %q may not enter candidate diff", name)
 		}
 		seen[name] = true

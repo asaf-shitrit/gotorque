@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/go-agent-optimizer/internal/domain"
+	"example.com/gotorque/internal/domain"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 )

@@ -17,7 +17,7 @@ cannot silently weaken a campaign's safety or acceptance settings.
 
 ```json
 {
-  "$schema": "https://example.com/go-agent-optimizer/target-manifest-v1.schema.json",
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
   "version": "v1",
   "name": "example CLI",
   "target": {

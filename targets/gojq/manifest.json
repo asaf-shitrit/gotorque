@@ -1,5 +1,5 @@
 {
-  "$schema": "https://example.com/go-agent-optimizer/target-manifest-v1.schema.json",
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
   "version": "v1",
   "name": "gojq CLI",
   "target": {

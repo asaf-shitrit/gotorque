@@ -8,8 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"example.com/go-agent-optimizer/internal/agents"
-	"example.com/go-agent-optimizer/internal/domain"
+	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/domain"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/workflow"

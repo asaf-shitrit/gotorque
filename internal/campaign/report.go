@@ -77,7 +77,7 @@ func RenderMarkdown(state State) string {
 		}
 	}
 	b.WriteString("## Reproduction\n\n```sh\n")
-	fmt.Fprintf(&b, "goharness optimize --repo %q --manifest %q\n", state.Repository, state.ManifestPath)
+	fmt.Fprintf(&b, "gotorque optimize --repo %q --manifest %q\n", state.Repository, state.ManifestPath)
 	b.WriteString("```\n")
 	return b.String()
 }

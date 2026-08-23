@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"example.com/go-agent-optimizer/internal/candidate"
-	"example.com/go-agent-optimizer/internal/domain"
-	"example.com/go-agent-optimizer/internal/orchestrator"
-	"example.com/go-agent-optimizer/internal/runner"
-	"example.com/go-agent-optimizer/internal/toolchain"
+	"example.com/gotorque/internal/candidate"
+	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/orchestrator"
+	"example.com/gotorque/internal/runner"
+	"example.com/gotorque/internal/toolchain"
 )
 
 // measurementRepetitions is the interleaved A/B sample count per workload.

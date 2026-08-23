@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"example.com/go-agent-optimizer/internal/agents"
-	"example.com/go-agent-optimizer/internal/campaign"
-	"example.com/go-agent-optimizer/internal/jobs"
-	"example.com/go-agent-optimizer/internal/manifest"
-	"example.com/go-agent-optimizer/internal/mcpserver"
-	"example.com/go-agent-optimizer/internal/orchestrator"
-	"example.com/go-agent-optimizer/internal/version"
+	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/campaign"
+	"example.com/gotorque/internal/jobs"
+	"example.com/gotorque/internal/manifest"
+	"example.com/gotorque/internal/mcpserver"
+	"example.com/gotorque/internal/orchestrator"
+	"example.com/gotorque/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 )
@@ -28,7 +28,7 @@ type Dependencies struct {
 
 func New(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "goharness",
+		Use:           "gotorque",
 		Short:         "Find and validate behavior-preserving Go CLI optimizations",
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -227,7 +227,7 @@ func newVersionCommand(out io.Writer) *cobra.Command {
 			if asJSON {
 				return json.NewEncoder(out).Encode(info)
 			}
-			_, err := fmt.Fprintf(out, "goharness %s (commit %s, built %s)\n", info.Version, info.Commit, info.Date)
+			_, err := fmt.Fprintf(out, "gotorque %s (commit %s, built %s)\n", info.Version, info.Commit, info.Date)
 			return err
 		},
 	}

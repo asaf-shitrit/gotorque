@@ -5,8 +5,8 @@ package orchestrator
 import (
 	"time"
 
-	"example.com/go-agent-optimizer/internal/agents"
-	"example.com/go-agent-optimizer/internal/domain"
+	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/domain"
 )
 
 // CampaignRequest identifies one CLI command or subcommand to optimize.

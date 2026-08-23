@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/go-agent-optimizer/internal/agents"
-	"example.com/go-agent-optimizer/internal/orchestrator"
+	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/orchestrator"
 )
 
 const (

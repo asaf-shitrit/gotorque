@@ -1,106 +1,130 @@
-# Go Agent Optimizer
+# gotorque
 
-An AI-driven, behavior-preserving optimization harness for source-available Go
-CLI repositories.
+**Behavior-preserving performance optimization for Go binaries — driven by AI agents, decided by deterministic evidence.**
 
-The harness uses Google ADK Go 2.x for agent and workflow orchestration. It
-delegates judgment-heavy work to specialist agents while deterministic tools
-build, execute, profile, compare, and validate candidate patches. The initial
-validation targets are `itchyny/gojq` and `boyter/scc`.
+`gotorque` takes a Go CLI you already have, hunts for hot paths, and lets AI agents propose small source patches that could make it faster. Nothing is taken on faith: every candidate must survive the same gauntlet —
 
-## Status
+```
+propose → normalize → apply in isolated worktree → build
+        → upstream test suite → interleaved A/B measurement
+        → statistical acceptance → accept or reject
+```
 
-The CLI now includes an in-process campaign engine with bbolt persistence,
-resume, clean-repository enforcement, read-only local builds, isolated seed
-workload execution, content-addressed evidence, Markdown/JSON reports, and a
-bounded ADK graph. Pass `--adk` to `optimize` to construct the five role agents
-from the OpenAI-compatible endpoint configured by environment variables.
-Deterministic candidate worktree validation and statistical acceptance remain
-guardrails around the model loop.
+A candidate is accepted only when the improvement is statistically supported
+and no guardrail (CPU time, peak memory, binary size) regresses. The ratchet
+only moves forward.
 
-The candidate loop is fully wired: model-proposed patches are validated,
-normalized, applied in isolated worktrees (strict `git apply` first, GNU patch
-fuzz matching as fallback), gated on the upstream test suite, and measured with
-interleaved A/B runs against the baseline binary. Policy accepts a candidate
-only on statistically supported improvement without guardrail regressions;
-per-attempt verdicts, reasons, and metric comparisons appear in campaign
-reports. Resume supports re-attaching model agents with `--resume --adk`.
-Model routing is tiered via environment variables: judgment-heavy roles
-(coordinator, optimizer, reviewer) can use a stronger model while high-volume
-evidence roles (explorer, analyst) use cheaper ones.
+## Why
 
-## Design boundaries
+Optimizers are easy to write and dangerous to trust. `gotorque` exists to make
+the dangerous part mechanical: models are good at *guessing* optimizations;
+this harness makes them prove each guess on real measurements before it counts.
+Completing a campaign with no accepted candidate is a successful result — the
+harness's job is honest verdicts, not volume.
 
-- One CLI command or subcommand per optimization campaign.
-- Strict behavior preservation.
-- Network disabled and writes restricted to campaign-owned temporary
-  directories by default.
-- Local worktrees and temporary commits only; no merge, push, or PR creation.
-- macOS evidence is labeled provisional; Linux evidence is labeled
-  authoritative.
-- Default acceptance: at least 3% end-to-end runtime improvement with
-  statistical support and no guarded metric regression above 2%.
-- Existing production dependencies cannot be added or upgraded.
+## Features
 
-## Architecture
+- **Bounded ADK campaign graph** — coordinator, explorer, analyst, optimizer,
+  and reviewer roles over any OpenAI-compatible endpoint (OpenRouter works out
+  of the box), with tiered routing: strong models for judgment, cheap ones for
+  high-volume evidence work.
+- **Real candidate loop** — patches are normalized (model diffs are repaired),
+  fuzz-applied in isolated Git worktrees, built release-equivalently, and
+  gated on the project's own test suite.
+- **Honest measurement** — interleaved A/B runs against the baseline binary,
+  order-insensitive output comparison for CLIs with nondeterministic tie
+  ordering, Welch-style statistical support, guardrail regression checks.
+- **Deterministic policy** — agents advise; code decides. Every verdict is
+  persisted with its reasons and metric comparisons.
+- **Campaign persistence** — bbolt-backed state, resumable mid-run
+  (`optimize --resume DIR --adk`), content-addressed artifacts, Markdown/JSON
+  reports that explain every decision.
+- **Sandboxed by default** — network disabled, writes restricted to
+  campaign-owned directories, local isolation via `sandbox-exec`/bwrap.
 
-See [docs/architecture.md](docs/architecture.md) and the living design plan at
-[`../go-agent-optimization-harness-plan.md`](../go-agent-optimization-harness-plan.md).
+## Quick start
+
+Requirements: Go 1.26+, Git, GNU patch, and optionally
+[benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat).
+
+```sh
+git clone https://github.com/YOUR_USERNAME/gotorque
+cd gotorque
+go build -o /tmp/gotorque ./cmd/gotorque
+
+# validate an example target manifest
+/tmp/gotorque manifest validate targets/gojq/manifest.json
+
+# run a full model-driven campaign (needs an OpenAI-compatible endpoint)
+export OPENAI_API_KEY=sk-or-v1-...
+export OPENAI_BASE_URL=https://openrouter.ai/api/v1
+export GOTORQUE_MODEL_COORDINATOR=stealth/ox-alpha
+export GOTORQUE_MODEL_EXPLORER=openai/gpt-oss-120b
+export GOTORQUE_MODEL_ANALYST=openai/gpt-oss-120b
+export GOTORQUE_MODEL_OPTIMIZER=stealth/ox-alpha
+export GOTORQUE_MODEL_REVIEWER=stealth/ox-alpha
+
+gocache=/private/tmp/gotorque-cache /tmp/gotorque optimize \
+  --repo /path/to/target-repo \
+  --manifest targets/gojq/manifest.json \
+  --adk
+
+# inspect the verdicts
+/tmp/gotorque report <campaign-dir>
+```
+
+No endpoint handy? `--adk-stub` runs the whole pipeline with deterministic
+stub agents — useful for CI and smoke tests.
+
+## How a campaign works
+
+1. **Baseline** — clean-repository enforcement, release-equivalent build,
+   seed workloads executed in isolated sandboxes with coverage.
+2. **Discovery profiling** — benchmark CPU profiles (when available) surface
+   real hot functions to the analyst.
+3. **Agent cycle** — the coordinator picks one bounded experiment; the
+   explorer proposes replayable workloads; the analyst interprets profiles;
+   the optimizer produces one focused diff; the reviewer challenges it.
+4. **The gauntlet** — deterministic code normalizes and applies the patch in
+   a worktree, builds it, runs the target's tests, then measures baseline vs
+   candidate in interleaved A/B pairs.
+5. **Verdict** — policy accepts only statistically supported improvement
+   without guardrail regressions. Reports record every attempt, decision,
+   reason, and comparison.
+
+Design boundaries: one CLI per campaign, strict behavior preservation, no
+merges/pushes/PRs from the harness, macOS evidence labeled provisional and
+Linux authoritative.
+
+## Targets
+
+Example manifests live in [`targets/gojq`](targets/gojq) and
+[`targets/scc`](targets/scc). A target manifest describes the repository,
+build target, command shape, and seed workloads; everything else the agents
+discover themselves.
+
+## MCP server
+
+`gotorque mcp serve --state-root PATH` exposes a typed MCP surface for
+reading campaigns and driving asynchronous work from other tools.
 
 ## Development
 
-Requirements:
-
-- Go 1.26 or newer for this repository (`ADK Go v2` itself requires Go 1.25+).
-- Git.
-- `benchstat` from `golang.org/x/perf/cmd/benchstat` for authoritative
-  benchmark comparisons.
-
-On a sandboxed macOS environment, keep the Go build cache in a writable
-location:
-
-```bash
-GOCACHE=/private/tmp/go-agent-optimizer-cache go test ./...
-```
-
-Build the operator CLI and validate either example target:
-
-```bash
-GOCACHE=/private/tmp/go-agent-optimizer-cache go build -o /tmp/goharness ./cmd/goharness
-/tmp/goharness manifest validate targets/gojq/manifest.json
-/tmp/goharness manifest validate targets/scc/manifest.json
-```
-
-Run `goharness optimize --repo PATH --manifest PATH`, resume with
-`goharness optimize --resume CAMPAIGN_DIR` (add `--adk` or `--adk-stub` to
-re-attach model agents), and render stored evidence with
-`goharness report CAMPAIGN_DIR [--json]`. Add `--adk` to run the ADK graph.
-`internal/mcpserver` provides the
-typed MCP surface used by `goharness mcp serve --state-root PATH`.
-
-Endpoint configuration (any OpenAI-compatible provider, e.g. OpenRouter):
-
 ```sh
-OPENAI_API_KEY=...        # provider key
-OPENAI_BASE_URL=https://openrouter.ai/api/v1
-GOHARNESS_MODEL_COORDINATOR=stealth/ox-alpha
-GOHARNESS_MODEL_EXPLORER=openai/gpt-oss-120b
-GOHARNESS_MODEL_ANALYST=openai/gpt-oss-120b
-GOHARNESS_MODEL_OPTIMIZER=stealth/ox-alpha
-GOHARNESS_MODEL_REVIEWER=stealth/ox-alpha
+GOCACHE=/private/tmp/gotorque-cache go test ./...
 ```
 
-Keep credentials in a gitignored `.env`; source it before running.
+See [docs/architecture.md](docs/architecture.md) and the package map below
+for how the pieces fit together.
 
-## Package map
+| Package | Role |
+|---|---|
+| `internal/agents`, `internal/orchestrator` | ADK roles and bounded campaign workflow |
+| `internal/campaign`, `internal/candidate` | Persistent engine, candidate evaluation loop |
+| `internal/runner`, `internal/toolchain`, `internal/profile` | Sandboxing, builds, A/B measurement, pprof |
+| `internal/manifest`, `internal/policy` | Target configuration, acceptance decisions |
+| `internal/jobs`, `internal/mcpserver` | Async jobs, typed MCP surface |
 
-- `internal/agents`, `internal/orchestrator`: Google ADK v2 roles and bounded
-  campaign workflow.
-- `internal/runner`, `internal/toolchain`, `internal/profile`: subprocess,
-  sandbox, A/B scheduling, artifact, pprof, and trace infrastructure.
-- `internal/manifest`, `internal/policy`: schema-validated target configuration
-  and deterministic acceptance decisions.
-- `internal/jobs`, `internal/mcpserver`: cancellable asynchronous work and a
-  narrow typed MCP surface with read-only evidence resources.
-- `internal/campaign`: persistent in-process campaign engine and reports.
-- `targets/gojq`, `targets/scc`: generic-harness validation assets.
+## License
+
+MIT — see [LICENSE](LICENSE).

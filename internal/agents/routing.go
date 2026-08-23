@@ -6,11 +6,11 @@ import (
 )
 
 const (
-	EnvCoordinatorModel = "GOHARNESS_MODEL_COORDINATOR"
-	EnvExplorerModel    = "GOHARNESS_MODEL_EXPLORER"
-	EnvAnalystModel     = "GOHARNESS_MODEL_ANALYST"
-	EnvOptimizerModel   = "GOHARNESS_MODEL_OPTIMIZER"
-	EnvReviewerModel    = "GOHARNESS_MODEL_REVIEWER"
+	EnvCoordinatorModel = "GOTORQUE_MODEL_COORDINATOR"
+	EnvExplorerModel    = "GOTORQUE_MODEL_EXPLORER"
+	EnvAnalystModel     = "GOTORQUE_MODEL_ANALYST"
+	EnvOptimizerModel   = "GOTORQUE_MODEL_OPTIMIZER"
+	EnvReviewerModel    = "GOTORQUE_MODEL_REVIEWER"
 )
 
 type Routing map[Role]string

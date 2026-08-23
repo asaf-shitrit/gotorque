@@ -26,12 +26,12 @@ jobs:
         run: go test ./...
 
       - name: Build operator CLI
-        run: go build -o /tmp/goharness ./cmd/goharness
+        run: go build -o /tmp/gotorque ./cmd/gotorque
 
       - name: Validate target manifests
         run: |
-          /tmp/goharness manifest validate targets/gojq/manifest.json
-          /tmp/goharness manifest validate targets/scc/manifest.json
+          /tmp/gotorque manifest validate targets/gojq/manifest.json
+          /tmp/gotorque manifest validate targets/scc/manifest.json
 
       - name: Deterministic campaign smoke test (no network, no model)
         run: |
@@ -39,7 +39,7 @@ jobs:
           git config --global user.name "CI"
           git clone --depth 1 https://github.com/itchyny/gojq /tmp/gojq
           cd /tmp/gojq && git checkout -b pinned && git commit --allow-empty -m "pin" || true
-          /tmp/goharness optimize \
+          /tmp/gotorque optimize \
             --repo /tmp/gojq \
             --manifest $GITHUB_WORKSPACE/targets/gojq/manifest.json \
             --adk-stub 2>&1 | tee /tmp/smoke.log

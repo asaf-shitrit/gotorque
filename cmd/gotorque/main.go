@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"example.com/go-agent-optimizer/internal/cli"
+	"example.com/gotorque/internal/cli"
 )
 
 func main() {

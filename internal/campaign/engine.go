@@ -20,13 +20,13 @@ import (
 	"strings"
 	"time"
 
-	"example.com/go-agent-optimizer/internal/agents"
-	"example.com/go-agent-optimizer/internal/domain"
-	"example.com/go-agent-optimizer/internal/manifest"
-	"example.com/go-agent-optimizer/internal/orchestrator"
-	"example.com/go-agent-optimizer/internal/profile"
-	"example.com/go-agent-optimizer/internal/runner"
-	"example.com/go-agent-optimizer/internal/toolchain"
+	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/manifest"
+	"example.com/gotorque/internal/orchestrator"
+	"example.com/gotorque/internal/profile"
+	"example.com/gotorque/internal/runner"
+	"example.com/gotorque/internal/toolchain"
 )
 
 const DatabaseName = "campaign.db"
@@ -177,7 +177,7 @@ func Create(ctx context.Context, opts Options) (*Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolve user cache: %w", err)
 		}
-		dir = filepath.Join(cache, "goharness", "campaigns", id)
+		dir = filepath.Join(cache, "gotorque", "campaigns", id)
 	} else if dir, err = filepath.Abs(dir); err != nil {
 		return nil, err
 	}

@@ -11,7 +11,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-const SchemaURL = "https://example.com/go-agent-optimizer/target-manifest-v1.schema.json"
+const SchemaURL = "https://example.com/gotorque/target-manifest-v1.schema.json"
 
 var (
 	schemaOnce     sync.Once

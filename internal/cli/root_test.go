@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/go-agent-optimizer/internal/version"
+	"example.com/gotorque/internal/version"
 	"github.com/stretchr/testify/require"
 )
 

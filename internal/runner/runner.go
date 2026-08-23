@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"example.com/go-agent-optimizer/internal/domain"
-	"example.com/go-agent-optimizer/internal/toolchain"
+	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/toolchain"
 )
 
 // Runner only launches a configured build artifact. It never accepts a shell

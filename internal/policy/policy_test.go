@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"example.com/go-agent-optimizer/internal/domain"
+	"example.com/gotorque/internal/domain"
 )
 
 func TestEvaluateAccepted(t *testing.T) {

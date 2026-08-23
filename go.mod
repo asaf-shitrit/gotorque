@@ -1,4 +1,4 @@
-module example.com/go-agent-optimizer
+module example.com/gotorque
 
 go 1.26.5
 

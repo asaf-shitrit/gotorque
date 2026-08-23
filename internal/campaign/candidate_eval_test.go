@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/go-agent-optimizer/internal/domain"
+	"example.com/gotorque/internal/domain"
 )
 
 func TestMean(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/go-agent-optimizer/internal/runner"
-	"example.com/go-agent-optimizer/internal/toolchain"
+	"example.com/gotorque/internal/runner"
+	"example.com/gotorque/internal/toolchain"
 )
 
 type Function struct {

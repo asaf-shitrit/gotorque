@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"example.com/go-agent-optimizer/internal/campaign"
-	"example.com/go-agent-optimizer/internal/mcpserver"
+	"example.com/gotorque/internal/campaign"
+	"example.com/gotorque/internal/mcpserver"
 )
 
 type engineBackend struct {

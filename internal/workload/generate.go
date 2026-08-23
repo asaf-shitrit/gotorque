@@ -13,9 +13,9 @@ import (
 	"sort"
 	"strings"
 
-	"example.com/go-agent-optimizer/internal/agents"
-	"example.com/go-agent-optimizer/internal/domain"
-	"example.com/go-agent-optimizer/internal/manifest"
+	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/manifest"
 )
 
 type Namespace string

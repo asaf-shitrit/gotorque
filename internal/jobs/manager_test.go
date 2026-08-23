@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"example.com/go-agent-optimizer/internal/domain"
+	"example.com/gotorque/internal/domain"
 	"github.com/stretchr/testify/require"
 )
 

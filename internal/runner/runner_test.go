@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"example.com/go-agent-optimizer/internal/domain"
-	"example.com/go-agent-optimizer/internal/toolchain"
+	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/toolchain"
 )
 
 type fakeExecutor struct{ calls []toolchain.Invocation }

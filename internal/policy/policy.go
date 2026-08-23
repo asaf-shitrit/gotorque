@@ -8,7 +8,7 @@ import (
 	"math"
 	"sort"
 
-	"example.com/go-agent-optimizer/internal/domain"
+	"example.com/gotorque/internal/domain"
 )
 
 const (

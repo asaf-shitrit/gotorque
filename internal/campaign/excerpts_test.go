@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/go-agent-optimizer/internal/agents"
+	"example.com/gotorque/internal/agents"
 )
 
 func lines(n int) string {
