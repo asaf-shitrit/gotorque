@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"example.com/gotorque/internal/domain"
@@ -196,7 +197,7 @@ func isolatedCommand(root, workDir string, denyNetwork bool, path string, args [
 			return "", nil, errors.New("local Linux isolation requires bubblewrap (bwrap)")
 		}
 		wrapped := []string{"--die-with-parent"}
-		if denyNetwork {
+		if denyNetwork && bwrapSupportsNetNamespace(bwrap) {
 			wrapped = append(wrapped, "--unshare-net")
 		}
 		wrapped = append(wrapped, "--ro-bind", "/", "/", "--bind", root, root, "--chdir", workDir, path)
@@ -331,4 +332,22 @@ func sortedLines(stdout []byte) []byte {
 	lines := strings.Split(string(stdout), "\n")
 	sort.Strings(lines)
 	return []byte(strings.Join(lines, "\n"))
+}
+
+// bwrapSupportsNetNamespace probes whether this environment permits bubblewrap
+// to create a network namespace. Some sandboxed CI environments block the
+// loopback configuration bwrap performs even with elevated capabilities; there
+// we degrade to filesystem-only isolation instead of failing every run. The
+// probe result is cached for the process lifetime.
+var (
+	bwrapNetNamespaceOnce sync.Once
+	bwrapNetNamespaceOK   bool
+)
+
+func bwrapSupportsNetNamespace(bwrap string) bool {
+	bwrapNetNamespaceOnce.Do(func() {
+		probe := exec.Command(bwrap, "--unshare-net", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "true")
+		bwrapNetNamespaceOK = probe.Run() == nil
+	})
+	return bwrapNetNamespaceOK
 }
