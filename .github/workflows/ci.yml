@@ -20,7 +20,7 @@ jobs:
       - name: Install benchstat and bubblewrap
         run: |
           go install golang.org/x/perf/cmd/benchstat@latest
-          apt-get update && apt-get install -y bubblewrap git
+          apt-get update && apt-get install -y bubblewrap git patch
 
       - name: Unit tests
         run: go test ./...
