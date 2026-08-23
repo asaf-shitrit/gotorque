@@ -96,6 +96,11 @@ Design boundaries: one CLI per campaign, strict behavior preservation, no
 merges/pushes/PRs from the harness, macOS evidence labeled provisional and
 Linux authoritative.
 
+Isolation note: on Linux, campaigns isolate workloads through bubblewrap.
+If the environment cannot support it (some nested CI containers), gotorque
+detects this once and runs commands unwrapped rather than failing — use an
+environment with working bubblewrap when evidence must be fully isolated.
+
 ## Targets
 
 Example manifests live in [`targets/gojq`](targets/gojq) and
