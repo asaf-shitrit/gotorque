@@ -90,6 +90,7 @@ type TestRequest struct {
 	Count      int
 	CoverDir   string
 	TraceFile  string
+	Cpuprofile string
 	Env        []string
 }
 
@@ -109,6 +110,12 @@ func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
 	}
 	if req.TraceFile != "" {
 		args = append(args, "-trace", req.TraceFile)
+	}
+	if req.Cpuprofile != "" {
+		if !filepath.IsAbs(req.Cpuprofile) {
+			return Result{}, errors.New("cpuprofile path must be absolute")
+		}
+		args = append(args, "-cpuprofile", req.Cpuprofile)
 	}
 	env := append([]string(nil), req.Env...)
 	if req.CoverDir != "" {

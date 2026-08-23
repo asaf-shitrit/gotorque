@@ -157,8 +157,7 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	}
 
 	if sizeErr == nil {
-		delta := percentDelta(float64(baselineSize), float64(candSize))
-		comparisons = append(comparisons, domain.MetricComparison{Name: "binary_size_bytes", Unit: "bytes", Baseline: float64(baselineSize), Candidate: float64(candSize), DeltaPercent: delta})
+		comparisons = append(comparisons, domain.MetricComparison{Name: "binary_size_bytes", Unit: "bytes", Baseline: float64(baselineSize), Candidate: float64(candSize), DeltaPercent: percentDelta(float64(baselineSize), float64(candSize)), StatisticallyFit: true})
 	}
 
 	evidence.BehaviorMatches = behaviorMatches
@@ -250,11 +249,11 @@ func statisticallySupported(a, b []float64) bool {
 	if len(a) < 4 || len(b) < 4 {
 		return false
 	}
-	ma, ok1 := mean(a)
-	mb, _ := mean(b)
-	if !ok1 || len(b) < 4 {
+	ma, ok := mean(a)
+	if !ok {
 		return false
 	}
+	mb, _ := mean(b)
 	va, vb := variance(a), variance(b)
 	se2 := va/float64(len(a)) + vb/float64(len(b))
 	if se2 <= 0 {

@@ -3,6 +3,7 @@ package campaign
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,7 +66,11 @@ func RenderMarkdown(state State) string {
 					if c.StatisticallyFit {
 						supported = "yes"
 					}
-					fmt.Fprintf(&b, "| `%s` | %.4g | %.4g | %+.2f%% | %s |\n", c.Name, c.Baseline, c.Candidate, c.DeltaPercent, supported)
+					delta := "n/a"
+					if !math.IsNaN(c.DeltaPercent) {
+						delta = fmt.Sprintf("%+.2f%%", c.DeltaPercent)
+					}
+					fmt.Fprintf(&b, "| `%s` | %.4g | %.4g | %s | %s |\n", c.Name, c.Baseline, c.Candidate, delta, supported)
 				}
 				b.WriteString("\n")
 			}

@@ -40,12 +40,14 @@ type DiscoveryRequest struct {
 // DiscoveryEvidence is normalized measured evidence, with raw data referenced
 // by artifact ID rather than embedded in model context.
 type DiscoveryEvidence struct {
-	RunIDs       []string          `json:"run_ids,omitempty"`
-	ArtifactURIs []string          `json:"artifact_uris,omitempty"`
-	CoveredPaths []string          `json:"covered_paths,omitempty"`
-	Measurements []domain.Metric   `json:"measurements,omitempty"`
-	Summary      string            `json:"summary"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
+	RunIDs             []string          `json:"run_ids,omitempty"`
+	ArtifactURIs       []string          `json:"artifact_uris,omitempty"`
+	CoveredPaths       []string          `json:"covered_paths,omitempty"`
+	HotFunctions       []string          `json:"hot_functions,omitempty"`
+	ProfileSummaryPath string            `json:"profile_summary_path,omitempty"`
+	Measurements       []domain.Metric   `json:"measurements,omitempty"`
+	Summary            string            `json:"summary"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
 }
 
 // CandidateRequest asks the deterministic runner to create an isolated
@@ -80,10 +82,10 @@ type PolicyInput struct {
 // PriorCandidate records one already-evaluated proposal so later cycles
 // propose different work instead of repeating rejected patches.
 type PriorCandidate struct {
-	Attempt   int      `json:"attempt"`
+	Attempt    int      `json:"attempt"`
 	Hypothesis string   `json:"hypothesis"`
-	Decision  string   `json:"decision"`
-	Reasons   []string `json:"reasons,omitempty"`
+	Decision   string   `json:"decision"`
+	Reasons    []string `json:"reasons,omitempty"`
 }
 
 // CampaignState is passed between graph nodes and mirrored into ADK session

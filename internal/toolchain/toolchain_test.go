@@ -55,3 +55,23 @@ func TestMergeEnvironmentOverridesOnce(t *testing.T) {
 	}
 	_ = os.Getenv("PATH")
 }
+
+func TestTestPassesAbsoluteCpuprofile(t *testing.T) {
+	repo := t.TempDir()
+	fake := &fakeExecutor{}
+	chain := New(Options{Executor: fake})
+	profile := filepath.Join(t.TempDir(), "cpu.pb.gz")
+	if _, err := chain.Test(context.Background(), TestRequest{Repository: repo, Bench: ".", Cpuprofile: profile}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chain.Test(context.Background(), TestRequest{Repository: repo, Bench: ".", Cpuprofile: "relative/cpu.out"}); err == nil {
+		t.Fatal("expected relative cpuprofile path rejection")
+	}
+	args := fake.invocations[0].Args
+	for i, arg := range args {
+		if arg == "-cpuprofile" && args[i+1] == profile {
+			return
+		}
+	}
+	t.Fatalf("-cpuprofile flag missing: %#v", args)
+}

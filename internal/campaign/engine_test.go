@@ -14,6 +14,7 @@ import (
 	"example.com/go-agent-optimizer/internal/agents"
 	"example.com/go-agent-optimizer/internal/domain"
 	"example.com/go-agent-optimizer/internal/orchestrator"
+	"example.com/go-agent-optimizer/internal/profile"
 	"github.com/stretchr/testify/require"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
@@ -144,4 +145,19 @@ func git(t *testing.T, dir string, args ...string) string {
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 	return string(output)
+}
+
+func TestHotFunctionNamesSkipsRuntimeAndDeduplicates(t *testing.T) {
+	functions := []profile.Function{
+		{Name: "runtime.schedule"},
+		{Name: " main.handle "},
+		{Name: "main.handle"},
+		{Name: ""},
+		{Name: "main.parse"},
+	}
+	got := hotFunctionNames(functions, 15)
+	require.Equal(t, []string{"main.handle", "main.parse"}, got)
+	require.Empty(t, hotFunctionNames(nil, 15))
+	capped := hotFunctionNames([]profile.Function{{Name: "a"}, {Name: "b"}}, 1)
+	require.Equal(t, []string{"a"}, capped)
 }

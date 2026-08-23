@@ -92,12 +92,16 @@ func (s adkServices) Inspect(_ context.Context, _ orchestrator.CampaignRequest) 
 	return orchestrator.Inspection{Packages: append([]string(nil), s.engine.state.Inventory.Packages...), Commands: append([]string(nil), s.engine.state.Inventory.Commands...), Metadata: map[string]string{"authority": s.engine.state.Environment.Authority}}, nil
 }
 func (s adkServices) Discover(_ context.Context, req orchestrator.DiscoveryRequest) (orchestrator.DiscoveryEvidence, error) {
-	paths := []string{}
 	runs := []string{}
 	for _, run := range s.engine.state.Runs {
 		runs = append(runs, run.ID)
 	}
-	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: paths, Summary: "baseline discovery evidence", Metadata: map[string]string{"entry_points": fmt.Sprint(len(req.Explorer.EntryPoints))}}, nil
+	hotFunctions := append([]string(nil), s.engine.state.DiscoveryHotFunctions...)
+	metadata := map[string]string{"entry_points": fmt.Sprint(len(req.Explorer.EntryPoints))}
+	if s.engine.state.DiscoveryProfileSummaryPath != "" {
+		metadata["profile_summary"] = s.engine.state.DiscoveryProfileSummaryPath
+	}
+	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: "baseline discovery evidence", Metadata: metadata}, nil
 }
 func (s adkServices) EvaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
 	return s.engine.evaluateCandidate(ctx, req)
@@ -153,5 +157,8 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		Comparisons: converted,
 	}
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
+	// Persist immediately: an ADK failure later in the run must not lose
+	// already-evaluated verdicts from bbolt.
+	_ = s.engine.saveEvent("candidate_evaluated", fmt.Sprintf("attempt %d: %s", record.Attempt, result.Decision), record)
 	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: converted, Reasons: result.Reasons}, nil
 }

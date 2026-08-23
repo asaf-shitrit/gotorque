@@ -24,6 +24,7 @@ import (
 	"example.com/go-agent-optimizer/internal/domain"
 	"example.com/go-agent-optimizer/internal/manifest"
 	"example.com/go-agent-optimizer/internal/orchestrator"
+	"example.com/go-agent-optimizer/internal/profile"
 	"example.com/go-agent-optimizer/internal/runner"
 	"example.com/go-agent-optimizer/internal/toolchain"
 )
@@ -60,43 +61,45 @@ type Inventory struct {
 // CandidateRecord persists one evaluated model proposal with the policy
 // verdict and measurement evidence, so reports can explain every decision.
 type CandidateRecord struct {
-	Attempt        int                      `json:"attempt"`
-	CandidateID    string                   `json:"candidate_id"`
-	Hypothesis     string                   `json:"hypothesis"`
-	PatchPath      string                   `json:"patch_path,omitempty"`
-	Summary        string                   `json:"summary,omitempty"`
-	Decision       domain.Decision          `json:"decision"`
-	Reasons        []string                 `json:"reasons,omitempty"`
-	Comparisons    []domain.MetricComparison `json:"comparisons,omitempty"`
-	Accepted       bool                     `json:"accepted,omitempty"`
+	Attempt     int                       `json:"attempt"`
+	CandidateID string                    `json:"candidate_id"`
+	Hypothesis  string                    `json:"hypothesis"`
+	PatchPath   string                    `json:"patch_path,omitempty"`
+	Summary     string                    `json:"summary,omitempty"`
+	Decision    domain.Decision           `json:"decision"`
+	Reasons     []string                  `json:"reasons,omitempty"`
+	Comparisons []domain.MetricComparison `json:"comparisons,omitempty"`
+	Accepted    bool                      `json:"accepted,omitempty"`
 }
 
 type State struct {
-	Version             int                `json:"version"`
-	ID                  string             `json:"id"`
-	Directory           string             `json:"directory"`
-	Repository          string             `json:"repository"`
-	ManifestPath        string             `json:"manifest_path"`
-	ADKMode             string             `json:"adk_mode,omitempty"`
+	Version      int    `json:"version"`
+	ID           string `json:"id"`
+	Directory    string `json:"directory"`
+	Repository   string `json:"repository"`
+	ManifestPath string `json:"manifest_path"`
+	ADKMode      string `json:"adk_mode,omitempty"`
 
-	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
-	Manifest            manifest.Manifest  `json:"manifest"`
-	Status              Status             `json:"status"`
-	StartedAt           time.Time          `json:"started_at"`
-	UpdatedAt           time.Time          `json:"updated_at"`
-	CompletedAt         *time.Time         `json:"completed_at,omitempty"`
-	Environment         Environment        `json:"environment"`
-	Inventory           Inventory          `json:"inventory"`
-	BuildID             string             `json:"build_id,omitempty"`
-	BinaryPath          string             `json:"binary_path,omitempty"`
-	DiscoveryBuildID    string             `json:"discovery_build_id,omitempty"`
-	DiscoveryBinaryPath string             `json:"discovery_binary_path,omitempty"`
-	Runs                []domain.RunResult `json:"runs,omitempty"`
-	CompletedSteps      map[string]bool    `json:"completed_steps"`
-	StopReason          string             `json:"stop_reason,omitempty"`
-	Error               string             `json:"error,omitempty"`
-	LocalIsolation      bool               `json:"local_isolation"`
-	DependencyDigests   map[string]string  `json:"dependency_digests,omitempty"`
+	CandidateRecords            []CandidateRecord  `json:"candidate_records,omitempty"`
+	Manifest                    manifest.Manifest  `json:"manifest"`
+	Status                      Status             `json:"status"`
+	StartedAt                   time.Time          `json:"started_at"`
+	UpdatedAt                   time.Time          `json:"updated_at"`
+	CompletedAt                 *time.Time         `json:"completed_at,omitempty"`
+	Environment                 Environment        `json:"environment"`
+	Inventory                   Inventory          `json:"inventory"`
+	BuildID                     string             `json:"build_id,omitempty"`
+	BinaryPath                  string             `json:"binary_path,omitempty"`
+	DiscoveryBuildID            string             `json:"discovery_build_id,omitempty"`
+	DiscoveryBinaryPath         string             `json:"discovery_binary_path,omitempty"`
+	DiscoveryHotFunctions       []string           `json:"discovery_hot_functions,omitempty"`
+	DiscoveryProfileSummaryPath string             `json:"discovery_profile_summary_path,omitempty"`
+	Runs                        []domain.RunResult `json:"runs,omitempty"`
+	CompletedSteps              map[string]bool    `json:"completed_steps"`
+	StopReason                  string             `json:"stop_reason,omitempty"`
+	Error                       string             `json:"error,omitempty"`
+	LocalIsolation              bool               `json:"local_isolation"`
+	DependencyDigests           map[string]string  `json:"dependency_digests,omitempty"`
 }
 
 type Event struct {
@@ -311,6 +314,15 @@ func (e *Engine) Run(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	if !e.state.CompletedSteps["discovery_profile"] {
+		if err = e.collectDiscoveryProfile(ctx); err != nil {
+			return err
+		}
+		e.state.CompletedSteps["discovery_profile"] = true
+		if err = e.saveEvent("discovery_profile_completed", fmt.Sprintf("measured %d hot functions", len(e.state.DiscoveryHotFunctions)), nil); err != nil {
+			return err
+		}
+	}
 	if err = e.verifyClean(ctx); err != nil {
 		return err
 	}
@@ -396,6 +408,62 @@ func (e *Engine) runSeed(ctx context.Context, seed manifest.SeedWorkload) error 
 		return fmt.Errorf("baseline workload %q was invalid: %w", seed.ID, runErr)
 	}
 	return nil
+}
+
+// collectDiscoveryProfile is best-effort: any failure records an event and
+// leaves discovery evidence empty rather than failing the campaign.
+func (e *Engine) collectDiscoveryProfile(ctx context.Context) error {
+	if err := e.profileHotFunctions(ctx); err != nil {
+		_ = e.saveEvent("discovery_profile_skipped", "CPU profile unavailable: "+err.Error(), nil)
+	}
+	return nil
+}
+
+// profileHotFunctions runs the target package's benchmarks under a CPU
+// profile, then summarizes the top functions via go tool pprof.
+func (e *Engine) profileHotFunctions(ctx context.Context) error {
+	dir := filepath.Join(e.dir, "profiles")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
+	result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{e.state.Manifest.Target.Build.Package}, Bench: ".", Cpuprofile: cpuProfile, Env: []string{"GOTOOLCHAIN=local"}})
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(string(result.Stdout), "Benchmark") {
+		return errors.New("target package has no benchmark functions")
+	}
+	artifacts, err := runner.NewArtifactStore(filepath.Join(e.dir, "artifacts"))
+	if err != nil {
+		return err
+	}
+	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprof(ctx, cpuProfile, 15)
+	if err != nil {
+		return fmt.Errorf("summarize benchmark CPU profile: %w", err)
+	}
+	e.state.DiscoveryHotFunctions = hotFunctionNames(summary.Functions, 15)
+	e.state.DiscoveryProfileSummaryPath = summary.RawReport
+	return nil
+}
+
+// hotFunctionNames extracts deduplicated function names from a parsed pprof
+// top summary, skipping runtime frames that never belong to the target.
+func hotFunctionNames(functions []profile.Function, max int) []string {
+	names := make([]string, 0, max)
+	seen := map[string]bool{}
+	for _, fn := range functions {
+		name := strings.TrimSpace(fn.Name)
+		if name == "" || strings.HasPrefix(name, "runtime.") || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+		if len(names) == max {
+			break
+		}
+	}
+	return names
 }
 
 func (e *Engine) verifyClean(ctx context.Context) error {
