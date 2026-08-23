@@ -47,7 +47,8 @@ jobs:
             --adk-stub 2>&1 | tee /tmp/smoke.log
           grep -q "campaign .* complete" /tmp/smoke.log || {
             echo "=== smoke failed; dumping diagnostics ==="
-            find /root/.cache /tmp -type f -name "*stderr" -newermt '-10 minutes' 2>/dev/null | while read f; do
+            cache_dir="$(go env GOCACHE 2>/dev/null || true)"; homedir="${HOME:-/root}"
+            find "$homedir/.cache" /tmp -type f \( -name "*stderr" -o -name "*stdout" \) -mmin -15 2>/dev/null | while read f; do
               echo "== $f"; tail -c 2000 "$f"
             done
             which bwrap && bwrap --version || true
