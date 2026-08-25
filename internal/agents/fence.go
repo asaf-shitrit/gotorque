@@ -4,26 +4,89 @@ import (
 	"context"
 	"iter"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/genai"
 )
+
+// RoleUsage aggregates token usage across every model call made for one role.
+type RoleUsage struct {
+	Requests         int64
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+}
+
+// UsageCollector accumulates per-role token usage from decorated models.
+// It is safe for concurrent use; the zero value is ready for Record.
+type UsageCollector struct {
+	mu     sync.Mutex
+	ByRole map[string]*RoleUsage
+}
+
+// NewUsageCollector returns an empty collector keyed by role name.
+func NewUsageCollector() *UsageCollector {
+	return &UsageCollector{ByRole: map[string]*RoleUsage{}}
+}
+
+// Record folds one response's usage metadata into the running totals for
+// role. Nil collectors and nil metadata are ignored so decoration stays
+// transparent when an endpoint omits usage data.
+func (c *UsageCollector) Record(role string, u *genai.GenerateContentResponseUsageMetadata) {
+	if c == nil || u == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ByRole == nil {
+		c.ByRole = map[string]*RoleUsage{}
+	}
+	usage := c.ByRole[role]
+	if usage == nil {
+		usage = &RoleUsage{}
+		c.ByRole[role] = usage
+	}
+	usage.Requests++
+	usage.PromptTokens += int64(u.PromptTokenCount)
+	usage.CompletionTokens += int64(u.CandidatesTokenCount)
+	usage.TotalTokens += int64(u.TotalTokenCount)
+}
+
+// Snapshot returns a copy of the per-role totals keyed by role name.
+func (c *UsageCollector) Snapshot() map[string]RoleUsage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snapshot := make(map[string]RoleUsage, len(c.ByRole))
+	for role, usage := range c.ByRole {
+		if usage == nil {
+			continue
+		}
+		snapshot[role] = *usage
+	}
+	return snapshot
+}
 
 // fenceStrippingModel wraps an LLM and removes Markdown code fences that
 // models frequently wrap around JSON payloads. Typed workflow nodes parse
 // model text as raw JSON, so an otherwise valid response like
-// "```json\n{...}\n```" would fail output validation.
+// "```json\n{...}\n```" would fail output validation. It also records token
+// usage metadata into a shared collector when one is supplied.
 type fenceStrippingModel struct {
 	inner model.LLM
+	role  string
+	usage *UsageCollector
 }
 
 // NewFenceStrippingModel decorates an LLM so fenced JSON responses are
-// normalized before any downstream validation runs.
-func NewFenceStrippingModel(inner model.LLM) model.LLM {
+// normalized before any downstream validation runs. The role labels the
+// collector's per-role totals; the collector may be nil to skip tracking.
+func NewFenceStrippingModel(inner model.LLM, role string, usage *UsageCollector) model.LLM {
 	if inner == nil {
 		return nil
 	}
-	return fenceStrippingModel{inner: inner}
+	return &fenceStrippingModel{inner: inner, role: role, usage: usage}
 }
 
 func (m fenceStrippingModel) Name() string { return m.inner.Name() }
@@ -59,6 +122,7 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 				}
 				producedAny = true
 				rewriteResponse(resp)
+				m.usage.Record(m.role, resp.UsageMetadata)
 				if !yield(resp, nil) {
 					return
 				}

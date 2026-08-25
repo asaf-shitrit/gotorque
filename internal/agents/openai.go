@@ -19,10 +19,14 @@ type OpenAIProvider struct {
 	BaseURL string
 	Routing Routing
 	Client  *http.Client
+
+	// Usage accumulates per-role token usage across every model this provider
+	// decorates. It is shared by pointer when the value struct is copied.
+	Usage *UsageCollector
 }
 
 func NewOpenAIProviderFromEnvironment() OpenAIProvider {
-	return OpenAIProvider{APIKey: os.Getenv("OPENAI_API_KEY"), BaseURL: os.Getenv("OPENAI_BASE_URL"), Routing: RoutingFromEnvironment()}
+	return OpenAIProvider{APIKey: os.Getenv("OPENAI_API_KEY"), BaseURL: os.Getenv("OPENAI_BASE_URL"), Routing: RoutingFromEnvironment(), Usage: NewUsageCollector()}
 }
 
 func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, error) {
@@ -34,8 +38,12 @@ func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, err
 	if err != nil {
 		return nil, err
 	}
-	return NewFenceStrippingModel(inner), nil
+	return NewFenceStrippingModel(inner, string(role), p.Usage), nil
 }
+
+// UsageReporter exposes the shared token-usage collector so the campaign
+// layer can read per-role totals after a run.
+func (p OpenAIProvider) UsageReporter() *UsageCollector { return p.Usage }
 
 // ValidateConnectivity checks credentials, endpoint reachability, and model
 // IDs before a campaign starts expensive repository work. It never records the

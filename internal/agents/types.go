@@ -42,6 +42,12 @@ type ModelProvider interface {
 	ModelFor(context.Context, Role) (model.LLM, error)
 }
 
+// UsageReporter is an optional ModelProvider capability exposing the shared
+// token-usage collector used by decorated models.
+type UsageReporter interface {
+	UsageReporter() *UsageCollector
+}
+
 // ModelProviderFunc adapts a function to ModelProvider.
 type ModelProviderFunc func(context.Context, Role) (model.LLM, error)
 
@@ -57,6 +63,10 @@ type Set struct {
 	Analyst     adkagent.Agent
 	Optimizer   adkagent.Agent
 	Reviewer    adkagent.Agent
+
+	// Usage reports cumulative per-role token usage collected by decorated
+	// models during a run; nil when the provider does not track usage.
+	Usage *UsageCollector
 }
 
 // All returns the role agents in a stable order.

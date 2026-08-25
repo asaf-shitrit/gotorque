@@ -66,7 +66,7 @@ Return only JSON with hot_paths, likely_causes, candidate_hypotheses, and additi
 
 MECHANISM PLAYBOOK (pick one per patch): preallocate slices and maps whose final size is knowable; replace string += accumulation in loops with strings.Builder; hoist loop-invariant computations and lookups out of loops; reuse buffers only when object lifetime is provably contained within one call chain (sync.Pool otherwise forbidden under the idiomatic policy); avoid []byte<->string conversions in hot loops; batch writes through bufio when output order is preserved; swap O(n) scans for maps or sorted structures when correctness allows. Match the target's optimization policy: idiomatic accepts only cleanups a Go reviewer would praise; specialized and native allow bolder mechanisms.
 
-PATCH FORMAT: Base hunks on the supplied source_excerpts ONLY. Copy context lines and deleted lines character-for-character from the excerpt text, keep a few context lines around each change, use correct unified-diff @@ headers, and never reformat, rename, or clean up unrelated code — one mechanism, one site, minimal diff. If no excerpt covers your intended site, restrict the patch to a site excerpts DO cover rather than guessing context; git apply failures waste the entire attempt. If the excerpt shows line numbers, trust them for headers.
+PATCH FORMAT: Base hunks on the supplied source_excerpts ONLY. Copy context lines and deleted lines character-for-character from the excerpt text, keep a few context lines around each change, use correct unified-diff @@ headers, and never reformat, rename, or clean up unrelated code — one mechanism, one site, minimal diff. If no excerpt covers your intended site, restrict the patch to a site excerpts DO cover rather than guessing context; git apply failures waste the entire attempt. If the excerpt shows line numbers, trust them for headers. prior_candidates entries may carry failure_detail — the compiler or patch error caused by that attempt's diff; your patch must not repeat a previously failed approach and must fix whatever the recorded error indicates.
 
 VALIDATION: validation_plan must reference the target's own tests plus the exact workload behaviors at risk. List honest risks — every optimization that touches shared state, caching, or laziness carries one.
 
@@ -96,6 +96,10 @@ func NewSet(ctx context.Context, provider ModelProvider) (Set, error) {
 	}
 
 	created := make(map[Role]adkagent.Agent, len(roleSpecs))
+	var usage *UsageCollector
+	if reporter, ok := provider.(UsageReporter); ok {
+		usage = reporter.UsageReporter()
+	}
 	for _, spec := range roleSpecs {
 		m, err := provider.ModelFor(ctx, spec.role)
 		if err != nil {
@@ -130,6 +134,7 @@ func NewSet(ctx context.Context, provider ModelProvider) (Set, error) {
 		Analyst:     created[RoleAnalyst],
 		Optimizer:   created[RoleOptimizer],
 		Reviewer:    created[RoleReviewer],
+		Usage:       usage,
 	}, nil
 }
 

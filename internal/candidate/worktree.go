@@ -54,19 +54,33 @@ func (m *WorktreeManager) Prepare(ctx context.Context, revision, patchPath, hypo
 		return nil, fmt.Errorf("create candidate worktree: %w", err)
 	}
 	prepared := &Prepared{Candidate: domain.Candidate{ID: id, BaseRevision: revision, Hypothesis: hypothesis, PatchPath: patchPath, CreatedAt: time.Now().UTC()}, Worktree: path, manager: m}
-	if _, err := m.Toolchain.ApplyPatchCheck(ctx, path, patchPath); err != nil {
+	checkResult, checkErr := m.Toolchain.ApplyPatchCheck(ctx, path, patchPath)
+	if checkErr != nil {
 		// Model-generated diffs often carry approximate context. Fall back
 		// to GNU patch fuzz matching; the applied tree still faces the full
 		// test-suite behavior gate before any measurement.
 		if _, fuzzyErr := m.Toolchain.ApplyPatchFuzzy(ctx, path, patchPath); fuzzyErr != nil {
 			_ = prepared.Close(context.Background())
-			return nil, fmt.Errorf("git apply check: %w", err)
+			return nil, fmt.Errorf("git apply check: %w%s", checkErr, stderrSuffix(checkResult.Stderr))
 		}
-	} else if _, err := m.Toolchain.ApplyPatch(ctx, path, patchPath); err != nil {
+	} else if applyResult, applyErr := m.Toolchain.ApplyPatch(ctx, path, patchPath); applyErr != nil {
 		_ = prepared.Close(context.Background())
-		return nil, fmt.Errorf("apply candidate: %w", err)
+		return nil, fmt.Errorf("apply candidate: %w%s", applyErr, stderrSuffix(applyResult.Stderr))
 	}
 	return prepared, nil
+}
+
+// stderrSuffix renders captured command stderr as an error suffix so the
+// model that produced a rejected diff can see why git apply or patch failed.
+func stderrSuffix(stderr []byte) string {
+	text := strings.TrimSpace(string(stderr))
+	if text == "" {
+		return ""
+	}
+	if len(text) > 400 {
+		text = text[len(text)-400:]
+	}
+	return ": " + text
 }
 
 func (p *Prepared) Close(ctx context.Context) error {

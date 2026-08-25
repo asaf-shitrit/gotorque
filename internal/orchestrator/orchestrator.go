@@ -213,10 +213,11 @@ func New(deps Dependencies, cfg Config) (*Orchestrator, error) {
 		state.Evaluation = evaluation
 		state.CandidatesTried++
 		state.PriorCandidates = append(state.PriorCandidates, PriorCandidate{
-			Attempt:    state.CandidatesTried,
-			Hypothesis: state.Proposal.Hypothesis,
-			Decision:   string(evaluation.Decision),
-			Reasons:    evaluation.Reasons,
+			Attempt:       state.CandidatesTried,
+			Hypothesis:    state.Proposal.Hypothesis,
+			Decision:      string(evaluation.Decision),
+			Reasons:       evaluation.Reasons,
+			FailureDetail: state.Candidate.FailureDetail,
 		})
 		if evaluation.Decision == domain.DecisionAccepted {
 			if err := deps.Runner.PromoteCandidate(ctx, state.Candidate.Candidate); err != nil {

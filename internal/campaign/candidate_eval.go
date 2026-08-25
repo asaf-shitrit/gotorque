@@ -48,6 +48,7 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	prepared, err := manager.Prepare(ctx, req.Campaign.BaseRevision, patchPath, req.Proposal.Hypothesis, candidate.Policy{ProhibitedTechniques: prohibited})
 	if err != nil {
 		evidence.Summary = fmt.Sprintf("candidate rejected before build: %v", err)
+		evidence.FailureDetail = tail(err.Error(), 400)
 		return evidence, nil
 	}
 	defer func() { _ = prepared.Close(context.Background()) }()
@@ -55,8 +56,13 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 
 	binDir := filepath.Join(e.dir, "builds")
 	candidateBinary := filepath.Join(binDir, id+"-"+filepath.Base(e.state.Manifest.Target.Build.Binary))
-	if _, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: prepared.Worktree, Target: e.state.Manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}}); err != nil {
-		evidence.Summary = fmt.Sprintf("candidate build failed: %v", err)
+	buildResult, buildErr := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: prepared.Worktree, Target: e.state.Manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}})
+	if buildErr != nil {
+		evidence.Summary = fmt.Sprintf("candidate build failed: %v", buildErr)
+		evidence.FailureDetail = tail(string(buildResult.Stderr), 600)
+		if evidence.FailureDetail == "" {
+			evidence.FailureDetail = tail(buildErr.Error(), 600)
+		}
 		return evidence, nil
 	}
 	evidence.ArtifactURIs = append(evidence.ArtifactURIs, candidateBinary)
@@ -73,6 +79,7 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 		}
 		evidence.SafetyChecksPassed = false
 		evidence.Summary = fmt.Sprintf("upstream test suite failed: %s", reason)
+		evidence.FailureDetail = reason
 		return evidence, nil
 	}
 

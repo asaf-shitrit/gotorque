@@ -266,3 +266,26 @@ func TestReportOmitsEmptyBenchstatBlock(t *testing.T) {
 		t.Fatalf("benchstat section rendered without output:\n%s", rendered)
 	}
 }
+
+func TestReportRendersModelUsageTable(t *testing.T) {
+	state := State{ID: "c1", TokenUsage: map[string]RoleUsageSnapshot{
+		"optimizer": {Requests: 3, PromptTokens: 900, CompletionTokens: 450, TotalTokens: 1350},
+		"reviewer":  {Requests: 2, PromptTokens: 500, CompletionTokens: 100, TotalTokens: 600},
+	}}
+	rendered := RenderMarkdown(state)
+	for _, want := range []string{"## Model usage", "| `optimizer` | 3 | 900 | 450 | 1350 |", "| `reviewer` | 2 | 500 | 100 | 600 |"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("report missing %q:\n%s", want, rendered)
+		}
+	}
+	// Roles render in sorted order for stable reports.
+	if strings.Index(rendered, "`optimizer`") > strings.Index(rendered, "`reviewer`") {
+		t.Fatalf("usage rows are not sorted by role:\n%s", rendered)
+	}
+}
+
+func TestReportOmitsEmptyModelUsageTable(t *testing.T) {
+	if rendered := RenderMarkdown(State{ID: "c1"}); strings.Contains(rendered, "## Model usage") {
+		t.Fatal("model usage section rendered without usage data")
+	}
+}

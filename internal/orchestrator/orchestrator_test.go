@@ -21,6 +21,9 @@ type fakeRunnerService struct {
 	discoverCalls int
 	evaluateCalls int
 	promoted      []string
+	// failureDetail is returned as CandidateEvidence.FailureDetail so tests
+	// can verify rejection detail propagates into prior_candidates.
+	failureDetail string
 }
 
 func (f *fakeRunnerService) Inspect(context.Context, CampaignRequest) (Inspection, error) {
@@ -47,6 +50,7 @@ func (f *fakeRunnerService) EvaluateCandidate(_ context.Context, req CandidateRe
 		},
 		BehaviorMatches: true,
 		Summary:         "candidate measured",
+		FailureDetail:   f.failureDetail,
 	}, nil
 }
 
@@ -219,6 +223,73 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 	}
 	if len(jobs.progress) != 3 || jobs.complete != 1 {
 		t.Errorf("job progress/complete = %d/%d, want 3/1", len(jobs.progress), jobs.complete)
+	}
+}
+
+func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
+	var calls int
+	roleSet := agents.Set{
+		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "cut allocations", NextExperiment: "patch parser"}, &calls),
+		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, &calls),
+		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}, &calls),
+		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &calls),
+		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: false, BehaviorArgument: "suspect"}, &calls),
+	}
+	runnerService := &fakeRunnerService{failureDetail: ".go:9:2: undefined: fasterParse"}
+	policy := &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}}
+	orch, err := New(Dependencies{
+		Runner: runnerService,
+		Policy: policy,
+		Jobs:   &fakeJobService{},
+		Agents: roleSet,
+	}, Config{
+		MaxCandidates:          1,
+		MaxConsecutiveFailures: 1,
+		DeterministicTimeout:   time.Second,
+		AgentTimeout:           time.Second,
+		MaxConcurrency:         1,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	r, err := adkrunner.NewInMemory("optimizer-test", orch.Agent)
+	if err != nil {
+		t.Fatalf("NewInMemory() error = %v", err)
+	}
+	payload, err := json.Marshal(CampaignRequest{CampaignID: "campaign-fd", Repository: "/repo", BaseRevision: "abc123", BuildTarget: "./cmd/tool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}
+
+	var prior []PriorCandidate
+	for event, runErr := range r.Run(context.Background(), "user-1", "session-fd", msg, adkagent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatalf("workflow run error = %v", runErr)
+		}
+		if event == nil || event.Output == nil || event.NodeInfo == nil || !strings.Contains(event.NodeInfo.Path, "apply_policy") {
+			continue
+		}
+		encoded, err := json.Marshal(event.Output)
+		if err != nil {
+			t.Fatalf("marshal state: %v", err)
+		}
+		var state CampaignState
+		if err := json.Unmarshal(encoded, &state); err != nil {
+			continue
+		}
+		if len(state.PriorCandidates) > 0 {
+			prior = state.PriorCandidates
+		}
+	}
+	if len(prior) != 1 {
+		t.Fatalf("prior candidates = %d, want 1", len(prior))
+	}
+	if prior[0].FailureDetail != runnerService.failureDetail {
+		t.Fatalf("prior candidate failure detail = %q, want %q", prior[0].FailureDetail, runnerService.failureDetail)
+	}
+	if prior[0].Decision != string(domain.DecisionRejected) {
+		t.Fatalf("decision = %q, want %q", prior[0].Decision, domain.DecisionRejected)
 	}
 }
 

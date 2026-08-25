@@ -71,6 +71,10 @@ type CandidateEvidence struct {
 	ArtifactURIs           []string                  `json:"artifact_uris,omitempty"`
 	BenchstatOutput        string                    `json:"benchstat_output,omitempty"`
 	Summary                string                    `json:"summary"`
+	// FailureDetail carries the structured failure output (patch or compiler
+	// stderr tail) behind a rejection so later cycles can avoid repeating
+	// the same failed approach.
+	FailureDetail string `json:"failure_detail,omitempty"`
 }
 
 // PolicyInput contains all evidence needed for a deterministic decision.
@@ -83,10 +87,11 @@ type PolicyInput struct {
 // PriorCandidate records one already-evaluated proposal so later cycles
 // propose different work instead of repeating rejected patches.
 type PriorCandidate struct {
-	Attempt    int      `json:"attempt"`
-	Hypothesis string   `json:"hypothesis"`
-	Decision   string   `json:"decision"`
-	Reasons    []string `json:"reasons,omitempty"`
+	Attempt       int      `json:"attempt"`
+	Hypothesis    string   `json:"hypothesis"`
+	Decision      string   `json:"decision"`
+	Reasons       []string `json:"reasons,omitempty"`
+	FailureDetail string   `json:"failure_detail,omitempty"`
 }
 
 // CampaignState is passed between graph nodes and mirrored into ADK session

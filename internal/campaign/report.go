@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -78,6 +79,19 @@ func RenderMarkdown(state State) string {
 				fmt.Fprintf(&b, "\nBenchstat comparison:\n\n```text\n%s\n```\n", record.BenchstatOutput)
 			}
 		}
+	}
+	if len(state.TokenUsage) > 0 {
+		b.WriteString("## Model usage\n\n| Role | Requests | Prompt tokens | Completion tokens | Total tokens |\n|---|---:|---:|---:|---:|\n")
+		roles := make([]string, 0, len(state.TokenUsage))
+		for role := range state.TokenUsage {
+			roles = append(roles, role)
+		}
+		sort.Strings(roles)
+		for _, role := range roles {
+			usage := state.TokenUsage[role]
+			fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d |\n", role, usage.Requests, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+		}
+		b.WriteString("\n")
 	}
 	b.WriteString("## Reproduction\n\n```sh\n")
 	fmt.Fprintf(&b, "gotorque optimize --repo %q --manifest %q\n", state.Repository, state.ManifestPath)

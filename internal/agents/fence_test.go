@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"iter"
+	"sync"
 	"testing"
 
 	"google.golang.org/adk/v2/model"
@@ -47,7 +48,7 @@ func (f *fakeLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool
 
 func TestFenceStrippingModelRewritesCompleteResponses(t *testing.T) {
 	inner := &fakeLLM{resp: &model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: "```json\n{\"objective\":\"x\"}\n```"}}}}}
-	decorated := NewFenceStrippingModel(inner)
+	decorated := NewFenceStrippingModel(inner, "test", nil)
 	if decorated == nil {
 		t.Fatal("NewFenceStrippingModel returned nil")
 	}
@@ -64,7 +65,7 @@ func TestFenceStrippingModelRewritesCompleteResponses(t *testing.T) {
 
 func TestFenceStrippingModelLeavesPartialsUntouched(t *testing.T) {
 	inner := &fakeLLM{resp: &model.LLMResponse{Partial: true, Content: &genai.Content{Parts: []*genai.Part{{Text: "```json\n{\"obj"}}}}}
-	decorated := NewFenceStrippingModel(inner).(fenceStrippingModel)
+	decorated := NewFenceStrippingModel(inner, "test", nil)
 	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, true) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -76,7 +77,7 @@ func TestFenceStrippingModelLeavesPartialsUntouched(t *testing.T) {
 }
 
 func TestNewFenceStrippingModelNil(t *testing.T) {
-	if NewFenceStrippingModel(nil) != nil {
+	if NewFenceStrippingModel(nil, "test", nil) != nil {
 		t.Fatal("expected nil for nil inner model")
 	}
 }
@@ -123,7 +124,7 @@ func (f *flakyLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ boo
 
 func TestFenceStrippingModelRetriesFirstFailure(t *testing.T) {
 	inner := &flakyLLM{fail: true, resp: &model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"ok":1}`}}}}}
-	decorated := NewFenceStrippingModel(inner)
+	decorated := NewFenceStrippingModel(inner, "test", nil)
 	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {
 			t.Fatalf("expected retry to succeed, got %v", err)
@@ -134,5 +135,65 @@ func TestFenceStrippingModelRetriesFirstFailure(t *testing.T) {
 	}
 	if inner.calls != 2 {
 		t.Fatalf("calls = %d, want 2 (one failure + one retry)", inner.calls)
+	}
+}
+
+func TestFenceStrippingModelRecordsUsage(t *testing.T) {
+	inner := &fakeLLM{resp: &model.LLMResponse{
+		Content:       &genai.Content{Parts: []*genai.Part{{Text: `{"a":1}`}}},
+		UsageMetadata: &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 120, CandidatesTokenCount: 34, TotalTokenCount: 154},
+	}}
+	collector := NewUsageCollector()
+	decorated := NewFenceStrippingModel(inner, "optimizer", collector)
+	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	snapshot := collector.Snapshot()
+	usage, ok := snapshot["optimizer"]
+	if !ok {
+		t.Fatalf("no usage recorded for optimizer: %v", snapshot)
+	}
+	if usage.Requests != 1 || usage.PromptTokens != 120 || usage.CompletionTokens != 34 || usage.TotalTokens != 154 {
+		t.Fatalf("usage = %+v, want 1 request with 120/34/154 tokens", usage)
+	}
+}
+
+func TestUsageCollectorIgnoresNilCollectorAndNilMetadata(t *testing.T) {
+	var nilCollector *UsageCollector
+	nilCollector.Record("optimizer", &genai.GenerateContentResponseUsageMetadata{TotalTokenCount: 5})
+	collector := NewUsageCollector()
+	collector.Record("optimizer", nil)
+	if len(collector.Snapshot()) != 0 {
+		t.Fatal("nil metadata must not be recorded")
+	}
+}
+
+func TestUsageCollectorSnapshotIsConcurrentSafe(t *testing.T) {
+	t.Parallel()
+	collector := NewUsageCollector()
+	const writers, iterations = 8, 200
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				collector.Record("optimizer", &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 2, CandidatesTokenCount: 3, TotalTokenCount: 5})
+				_ = collector.Snapshot()["optimizer"]
+			}
+		}()
+	}
+	wg.Wait()
+	usage, ok := collector.Snapshot()["optimizer"]
+	if !ok {
+		t.Fatal("no usage recorded")
+	}
+	if usage.Requests != writers*iterations {
+		t.Fatalf("requests = %d, want %d", usage.Requests, writers*iterations)
+	}
+	if usage.PromptTokens != 2*writers*iterations || usage.CompletionTokens != 3*writers*iterations || usage.TotalTokens != 5*writers*iterations {
+		t.Fatalf("token totals wrong: %+v", usage)
 	}
 }

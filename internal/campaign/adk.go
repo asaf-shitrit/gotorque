@@ -62,8 +62,21 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	if result.CampaignID == "" {
 		return orchestrator.CampaignResult{}, errors.New("ADK completed without a campaign result")
 	}
+	if roleSet.Usage != nil {
+		e.state.TokenUsage = snapshotTokenUsage(roleSet.Usage.Snapshot())
+	}
 	_ = e.saveEvent("adk_completed", result.StopReason, result)
 	return result, nil
+}
+
+// snapshotTokenUsage converts the agents collector's per-role totals into the
+// persisted campaign-state shape.
+func snapshotTokenUsage(usage map[string]agents.RoleUsage) map[string]RoleUsageSnapshot {
+	snapshots := make(map[string]RoleUsageSnapshot, len(usage))
+	for role, u := range usage {
+		snapshots[role] = RoleUsageSnapshot{Requests: u.Requests, PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens}
+	}
+	return snapshots
 }
 
 type adkServices struct{ engine *Engine }

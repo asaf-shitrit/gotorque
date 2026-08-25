@@ -75,6 +75,14 @@ type CandidateRecord struct {
 	BenchstatOutput string `json:"benchstat_output,omitempty"`
 }
 
+// RoleUsageSnapshot is persisted per-role model token usage for one ADK run.
+type RoleUsageSnapshot struct {
+	Requests         int64 `json:"requests"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+}
+
 type State struct {
 	Version      int    `json:"version"`
 	ID           string `json:"id"`
@@ -103,6 +111,8 @@ type State struct {
 	Error                       string             `json:"error,omitempty"`
 	LocalIsolation              bool               `json:"local_isolation"`
 	DependencyDigests           map[string]string  `json:"dependency_digests,omitempty"`
+	// TokenUsage holds per-role model token totals collected during ADK runs.
+	TokenUsage map[string]RoleUsageSnapshot `json:"token_usage,omitempty"`
 }
 
 type Event struct {
