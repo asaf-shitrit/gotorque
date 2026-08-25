@@ -472,11 +472,22 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	for _, f := range seed.Files {
 		fixtures[f.Path] = []byte(f.Content)
 	}
+	// The sampler needs the target to stay alive for the whole window.
+	// Tiny seed inputs finish in milliseconds, so amplify stdin by
+	// repetition (capped at 32 MiB) until the workload is long-lived.
+	stdin := []byte(seed.Stdin)
+	if len(stdin) > 0 && len(stdin) < 32<<20 {
+		amplified := make([]byte, 0, 32<<20)
+		for len(amplified) < 16<<20 {
+			amplified = append(amplified, stdin...)
+		}
+		stdin = amplified
+	}
 	outDir := filepath.Join(e.dir, "profile-sample")
 	result, err := profile.SampleTargetProfile(ctx, profile.SampleTarget{
 		BinaryPath: e.state.BinaryPath,
 		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),
-		Stdin:      []byte(seed.Stdin),
+		Stdin:      stdin,
 		Fixtures:   fixtures,
 		Duration:   4 * time.Second,
 		OutputPath: filepath.Join(outDir, "sample-report.txt"),

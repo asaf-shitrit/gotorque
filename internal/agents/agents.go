@@ -70,7 +70,7 @@ PATCH FORMAT: Base hunks on the supplied source_excerpts ONLY. Copy context line
 
 VALIDATION: validation_plan must reference the target's own tests plus the exact workload behaviors at risk. List honest risks — every optimization that touches shared state, caching, or laziness carries one.
 
-Return only JSON with hypothesis, patch, expected_effect, risks, and validation_plan fields. STRICT JSON RULES: Output raw JSON only: no Markdown fences, no commentary. Escape every double quote and backslash inside string values (\\\" and \\\\). Keep stdin and fixture content under 500 characters. Include exactly the listed fields and no others.`,
+An empty patch wastes the campaign attempt and is never acceptable: even without profile data or excerpts you must propose one small idiomatic patch on a plausible site from the repository inventory. Return only JSON with hypothesis, patch, expected_effect, risks, and validation_plan fields. STRICT JSON RULES: Output raw JSON only: no Markdown fences, no commentary. Escape every double quote and backslash inside string values (\\\" and \\\\). Keep stdin and fixture content under 500 characters. Include exactly the listed fields and no others.`,
 	},
 	{
 		role:        RoleReviewer,
