@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -59,6 +60,13 @@ func RenderMarkdown(state State) string {
 			}
 			for _, reason := range record.Reasons {
 				fmt.Fprintf(&b, "- Policy: %s\n", reason)
+			}
+			if len(record.Samples) > 0 {
+				b.WriteString("\nPer-repetition wall times (ns):\n\n")
+				for _, s := range record.Samples {
+					fmt.Fprintf(&b, "- `%s` baseline %v / candidate %v\n", s.WorkloadID, fmtFloats(s.BaselineNs), fmtFloats(s.CandidateNs))
+				}
+				b.WriteString("\n")
 			}
 			if len(record.Comparisons) > 0 {
 				b.WriteString("\n| Comparison | Baseline | Candidate | Δ | Supported |\n|---|---:|---:|---:|---|\n")
@@ -141,4 +149,12 @@ func LoadReport(dir string) (State, error) {
 	}
 	defer store.Close()
 	return store.Load()
+}
+
+func fmtFloats(values []float64) string {
+	parts := make([]string, 0, len(values))
+	for _, v := range values {
+		parts = append(parts, strconv.FormatInt(int64(v), 10))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }

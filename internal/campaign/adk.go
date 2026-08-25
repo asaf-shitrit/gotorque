@@ -188,6 +188,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		Reasons:         result.Reasons,
 		Comparisons:     converted,
 		BenchstatOutput: input.Evidence.BenchstatOutput,
+		Samples:         input.Evidence.RepSamples,
 		PgoComparisons:  input.Evidence.PgoComparisons,
 		PgoNote:         input.Evidence.PgoNote,
 	}

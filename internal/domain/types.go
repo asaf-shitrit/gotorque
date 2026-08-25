@@ -95,6 +95,15 @@ type Candidate struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// WorkloadSamples records raw per-repetition wall times from one A/B
+// series so regressions can be diagnosed from distributions instead of
+// aggregate means alone.
+type WorkloadSamples struct {
+	WorkloadID  string    `json:"workload_id"`
+	BaselineNs  []float64 `json:"baseline_ns"`
+	CandidateNs []float64 `json:"candidate_ns"`
+}
+
 type MetricComparison struct {
 	Name             string  `json:"name"`
 	Unit             string  `json:"unit"`

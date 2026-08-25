@@ -73,6 +73,7 @@ type CandidateRecord struct {
 	// BenchstatOutput holds trimmed raw benchstat output for workloads where
 	// benchstat refined the wall-time comparison; empty when unavailable.
 	BenchstatOutput string `json:"benchstat_output,omitempty"`
+	Samples         []domain.WorkloadSamples `json:"samples,omitempty"`
 	// PgoComparisons and PgoNote carry the informational PGO lane results
 	// (both sides built with the same pprof CPU profile). They never change
 	// the recorded decision; see runPgoLane.

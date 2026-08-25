@@ -137,6 +137,18 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 		}
 		wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, wid, ab.Baseline, ab.Candidate)
 		comparisons = append(comparisons, wallComparisons...)
+		var baseSamples, candSamples []float64
+		for _, r := range ab.Baseline {
+			if v, ok := wallTime(r); ok {
+				baseSamples = append(baseSamples, v)
+			}
+		}
+		for _, r := range ab.Candidate {
+			if v, ok := wallTime(r); ok {
+				candSamples = append(candSamples, v)
+			}
+		}
+		evidence.RepSamples = append(evidence.RepSamples, domain.WorkloadSamples{WorkloadID: wid, BaselineNs: baseSamples, CandidateNs: candSamples})
 		if wallBenchstat != "" {
 			if evidence.BenchstatOutput != "" {
 				evidence.BenchstatOutput += "\n\n"

@@ -67,6 +67,7 @@ type CandidateEvidence struct {
 	SafetyChecksPassed     bool                      `json:"safety_checks_passed"`
 	RepresentativeEvidence bool                      `json:"representative_evidence"`
 	Comparisons            []domain.MetricComparison `json:"comparisons,omitempty"`
+	RepSamples             []domain.WorkloadSamples  `json:"rep_samples,omitempty"`
 	ValidationJobs         []string                  `json:"validation_jobs,omitempty"`
 	ArtifactURIs           []string                  `json:"artifact_uris,omitempty"`
 	BenchstatOutput        string                    `json:"benchstat_output,omitempty"`
