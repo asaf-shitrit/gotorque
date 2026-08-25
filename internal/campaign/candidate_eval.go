@@ -144,8 +144,15 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 				return evidence, nil
 			}
 		}
-		comparisons = append(comparisons, compareMetric(wid, "wall_time_ns", "ns", ab.Baseline, ab.Candidate, wallTime)...)
-		comparisons = append(comparisons, compareMetric(wid, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...)
+		wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, wid, ab.Baseline, ab.Candidate)
+		comparisons = append(comparisons, wallComparisons...)
+		if wallBenchstat != "" {
+			if evidence.BenchstatOutput != "" {
+				evidence.BenchstatOutput += "\n\n"
+			}
+			evidence.BenchstatOutput += fmt.Sprintf("workload %s:\n%s", seed.ID, wallBenchstat)
+		}
+		comparisons = append(comparisons, compareMetric(wid, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...) 
 		comparisons = append(comparisons, compareMetric(wid, "peak_memory_bytes", "bytes", ab.Baseline, ab.Candidate, peakMemory)...)
 		measuredWorkloads++
 	}

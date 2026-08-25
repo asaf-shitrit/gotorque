@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Toolchain exposes only the Go, Git, benchstat, pprof, and trace commands the
@@ -19,6 +20,8 @@ type Toolchain struct {
 	goPath        string
 	gitPath       string
 	benchstatPath string
+	benchstatOnce sync.Once
+	benchstatErr  error
 }
 
 type Options struct {
@@ -236,6 +239,17 @@ func (t *Toolchain) RemoveWorktree(ctx context.Context, repository, path string)
 		return Result{}, errors.New("worktree path must be absolute")
 	}
 	return t.run(ctx, t.gitPath, []string{"worktree", "remove", "--force", path}, repository, nil, nil)
+}
+
+// HasBenchstat reports whether the configured benchstat binary is resolvable.
+// The LookPath result is cached after the first probe so a missing binary does
+// not get re-looked-up on every workload; callers must still treat every
+// Benchstat invocation as fallible.
+func (t *Toolchain) HasBenchstat() bool {
+	t.benchstatOnce.Do(func() {
+		_, t.benchstatErr = exec.LookPath(t.benchstatPath)
+	})
+	return t.benchstatErr == nil
 }
 
 func (t *Toolchain) Benchstat(ctx context.Context, baseline, candidate string) (Result, error) {

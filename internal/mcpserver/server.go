@@ -183,12 +183,12 @@ func (s *Server) registerTools() {
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "campaign_cancel", Description: "Request cooperative cancellation of a campaign."}, s.cancelCampaign)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "job_status", Description: "Get a deterministic snapshot of an asynchronous job."}, s.jobStatus)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "job_cancel", Description: "Cancel a queued or running asynchronous job."}, s.cancelJob)
-	mcp.AddTool(s.MCP, &mcp.Tool{Name: "repository_inspect", Description: "Inspect a Go repository asynchronously; returns a job ID."}, s.inspectRepository)
-	mcp.AddTool(s.MCP, &mcp.Tool{Name: "workload_register", Description: "Register a replayable workload in a campaign."}, s.registerWorkload)
-	mcp.AddTool(s.MCP, &mcp.Tool{Name: "workload_run", Description: "Run a registered workload asynchronously; returns a job ID."}, s.runWorkload)
+	mcp.AddTool(s.MCP, &mcp.Tool{Name: "repository_inspect", Description: "NOT IMPLEMENTED by the current backend: always fails with an error; repository inspection requires campaign_start."}, s.inspectRepository)
+	mcp.AddTool(s.MCP, &mcp.Tool{Name: "workload_register", Description: "NOT IMPLEMENTED by the current engine backend: always fails with an error; workload registration requires an active campaign."}, s.registerWorkload)
+	mcp.AddTool(s.MCP, &mcp.Tool{Name: "workload_run", Description: "NOT IMPLEMENTED by the current engine backend: standalone workload execution always fails with an error."}, s.runWorkload)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "findings_get", Description: "Read compact measured hotspot findings for a campaign."}, s.getFindings)
-	mcp.AddTool(s.MCP, &mcp.Tool{Name: "candidate_create", Description: "Create an isolated candidate from a validated patch asynchronously."}, s.createCandidate)
-	mcp.AddTool(s.MCP, &mcp.Tool{Name: "candidate_evaluate", Description: "Run deterministic validation and policy evaluation asynchronously."}, s.evaluateCandidate)
+	mcp.AddTool(s.MCP, &mcp.Tool{Name: "candidate_create", Description: "NOT IMPLEMENTED by the current engine backend: the candidate stage always fails with an error."}, s.createCandidate)
+	mcp.AddTool(s.MCP, &mcp.Tool{Name: "candidate_evaluate", Description: "NOT IMPLEMENTED by the current engine backend: the candidate stage always fails with an error."}, s.evaluateCandidate)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "report_get", Description: "Read the compact campaign report."}, s.getReport)
 }
 

@@ -14,6 +14,7 @@ import (
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/policy"
+	"example.com/gotorque/internal/workload"
 	adkagent "google.golang.org/adk/v2/agent"
 	adkrunner "google.golang.org/adk/v2/runner"
 	"google.golang.org/genai"
@@ -101,7 +102,25 @@ func (s adkServices) Discover(_ context.Context, req orchestrator.DiscoveryReque
 	if s.engine.state.DiscoveryProfileSummaryPath != "" {
 		metadata["profile_summary"] = s.engine.state.DiscoveryProfileSummaryPath
 	}
-	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: "baseline discovery evidence", Metadata: metadata}, nil
+	// Explorer proposals are model output: validate each one deterministically
+	// and drop invalid proposals instead of failing the whole turn, mirroring
+	// the fixture-shape tolerance used elsewhere.
+	accepted := 0
+	var rejections []string
+	for _, proposal := range req.Explorer.Proposals {
+		if err := workload.ValidateProposal(proposal, s.engine.state.Manifest); err != nil {
+			rejections = append(rejections, fmt.Sprintf("%s: %v", proposal.Name, err))
+			continue
+		}
+		accepted++
+	}
+	metadata["proposals_accepted"] = fmt.Sprint(accepted)
+	metadata["proposals_rejected"] = fmt.Sprint(len(rejections))
+	if len(rejections) > 0 {
+		metadata["proposal_rejections"] = strings.Join(rejections, "; ")
+	}
+	summary := fmt.Sprintf("baseline discovery evidence (%d/%d explorer proposals valid)", accepted, len(req.Explorer.Proposals))
+	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: summary, Metadata: metadata}, nil
 }
 func (s adkServices) EvaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
 	return s.engine.evaluateCandidate(ctx, req)
@@ -155,6 +174,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		Decision:    result.Decision,
 		Reasons:     result.Reasons,
 		Comparisons: converted,
+		BenchstatOutput: input.Evidence.BenchstatOutput,
 	}
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	// Persist immediately: an ADK failure later in the run must not lose

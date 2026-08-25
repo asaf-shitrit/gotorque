@@ -69,6 +69,7 @@ type CandidateEvidence struct {
 	Comparisons            []domain.MetricComparison `json:"comparisons,omitempty"`
 	ValidationJobs         []string                  `json:"validation_jobs,omitempty"`
 	ArtifactURIs           []string                  `json:"artifact_uris,omitempty"`
+	BenchstatOutput        string                    `json:"benchstat_output,omitempty"`
 	Summary                string                    `json:"summary"`
 }
 

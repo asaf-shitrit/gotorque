@@ -70,6 +70,9 @@ type CandidateRecord struct {
 	Reasons     []string                  `json:"reasons,omitempty"`
 	Comparisons []domain.MetricComparison `json:"comparisons,omitempty"`
 	Accepted    bool                      `json:"accepted,omitempty"`
+	// BenchstatOutput holds trimmed raw benchstat output for workloads where
+	// benchstat refined the wall-time comparison; empty when unavailable.
+	BenchstatOutput string `json:"benchstat_output,omitempty"`
 }
 
 type State struct {

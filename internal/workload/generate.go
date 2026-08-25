@@ -76,8 +76,6 @@ func SizeSweep(base uint64, namespace Namespace, sizes []int) []int {
 	return values
 }
 
-func BoundaryIntegers() []int64 { return []int64{-1, 0, 1, 127, 128, 255, 256, 1023, 1024} }
-
 // JSONShapeProposals creates bounded gojq-style input shapes.
 func JSONShapeProposals(base uint64, namespace Namespace, maxCases int) []agents.WorkloadProposal {
 	shapes := []string{"null\n", "[]\n", "{}\n", "[0,1,-1,128]\n", "{\"items\":[{\"value\":0},{\"value\":1}]}\n"}

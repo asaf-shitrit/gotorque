@@ -74,6 +74,9 @@ func RenderMarkdown(state State) string {
 				}
 				b.WriteString("\n")
 			}
+			if record.BenchstatOutput != "" {
+				fmt.Fprintf(&b, "\nBenchstat comparison:\n\n```text\n%s\n```\n", record.BenchstatOutput)
+			}
 		}
 	}
 	b.WriteString("## Reproduction\n\n```sh\n")

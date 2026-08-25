@@ -1,8 +1,9 @@
 name: nightly-campaign
 
+# Manual trigger only for now: model-driven campaigns consume OpenRouter
+# tokens and ox-alpha availability is not guaranteed. Re-add a schedule
+# (e.g. cron: "3 3 * * *") when unattended spend is acceptable.
 on:
-  schedule:
-    - cron: "3 3 * * *" # 03:00 UTC daily
   workflow_dispatch:
 
 jobs:
