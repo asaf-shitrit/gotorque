@@ -98,6 +98,12 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 		candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
 		candReq.Workload.Command.Path = candidateBinary
 
+		// First-execution warm-up: a freshly built binary pays a one-time OS
+		// cost on its first exec (Gatekeeper scan, page-in) that otherwise
+		// poisons repetition 0 of the candidate leg — observed as ~470ms vs
+		// ~9ms steady state. Discarded, errors ignored.
+		_, _ = e.runner.Run(ctx, candReq)
+
 		// Self-consistency probe: CLIs with nondeterministic tie ordering
 		// (map iteration plus unstable sort) produce byte-different output
 		// for identical inputs. Only when the baseline itself proves
