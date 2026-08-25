@@ -3,6 +3,7 @@ package agents
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"fmt"
 
 	"google.golang.org/genai"
@@ -48,6 +49,12 @@ func decodeText[T any](text string) (T, error) {
 		// string values without escaping the quotes, which no strict parser
 		// accepts.
 		if repaired, changed := EscapeEmbeddedQuotes(cleaned); changed {
+			repaired = RepairCommonMalformations(repaired)
+			if err2 := json.Unmarshal([]byte(repaired), &out); err2 == nil {
+				return out, nil
+			}
+		}
+		for _, repaired := range RepairCandidates(cleaned) {
 			repaired = RepairCommonMalformations(repaired)
 			if err2 := json.Unmarshal([]byte(repaired), &out); err2 == nil {
 				return out, nil
@@ -319,4 +326,77 @@ func trimSpaceBytes(data []byte) []byte {
 		end--
 	}
 	return data[start:end]
+}
+
+// RepairCandidates returns plausible repaired forms of a malformed JSON
+// payload: the standard closer completion plus, when the payload ends in
+// an unterminated string, a variant that drops that stray opening quote
+// before completing closers. Callers try each until one parses.
+func RepairCandidates(text string) []string {
+	var candidates []string
+	first, _ := RepairMissingClosers(text)
+	candidates = append(candidates, first)
+	// A quote that opens a string running to end of input is usually a
+	// stray character the model appended after a bare value; dropping it
+	// lets the structural closers apply.
+	last := strings.LastIndex(text, "\"")
+	if last >= 0 {
+		withoutQuote := text[:last] + text[last+1:]
+		again, _ := RepairMissingClosers(withoutQuote)
+		candidates = append(candidates, again)
+	}
+	return candidates
+}
+
+// RepairMissingClosers inserts structurally required closing braces and
+// brackets that the model omitted, e.g. {"a":[{"b":"c"]} missing the
+// object closer before the array closer. Only applied after a plain
+// parse fails; string contents are preserved verbatim.
+func RepairMissingClosers(text string) (string, bool) {
+	var out []byte
+	var stack []byte
+	inString := false
+	escaped := false
+	changed := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if inString {
+			out = append(out, c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			for len(stack) > 0 && stack[len(stack)-1] != c {
+				// Close the inner structure that was left open.
+				out = append(out, stack[len(stack)-1])
+				stack = stack[:len(stack)-1]
+				changed = true
+			}
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+		out = append(out, c)
+	}
+	if !inString {
+		for i := len(stack) - 1; i >= 0; i-- {
+			out = append(out, stack[i])
+			changed = true
+		}
+	}
+	return string(out), changed
 }

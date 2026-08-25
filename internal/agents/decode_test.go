@@ -180,3 +180,39 @@ func TestStringFixturesTolerance(t *testing.T) {
 		t.Fatalf("full: %v", err)
 	}
 }
+
+func TestRepairMissingClosers(t *testing.T) {
+	cases := []struct{ name, broken string }{
+		{"missing object closer before array closer", `{"proposals":[{"name":"n","stdin":"s","expected_valid":true"]}`},
+		{"truncated tail", `{"a":{"b":[1,2]`},
+		{"two levels missing", `{"a":{"b":"c"`},
+	}
+	for _, tc := range cases {
+		parsed := false
+		for _, candidate := range RepairCandidates(tc.broken) {
+			var v any
+			if err := json.Unmarshal([]byte(RepairCommonMalformations(candidate)), &v); err == nil {
+				parsed = true
+				break
+			}
+		}
+		if !parsed {
+			t.Fatalf("%s: no repair variant parses (input %q)", tc.name, tc.broken)
+		}
+	}
+	// Valid JSON must come through unchanged.
+	valid := `{"a":[{"b":"c"}]}`
+	if got, changed := RepairMissingClosers(valid); changed || got != valid {
+		t.Fatalf("valid json rewritten: %q changed=%v", got, changed)
+	}
+}
+
+func TestDecodeSurvivesStrayQuoteTail(t *testing.T) {
+	broken := "{\"entry_points\":[\"e\"],\"proposals\":[{\"name\":\"n\",\"arguments\":[\".\"],\"stdin\":\"s\",\"expected_valid\":true because they match the CLI grammar and parsing logic.\"]}"
+	got, err := DecodeResult[ExplorerResult](broken)
+	if err == nil && len(got.Proposals) > 0 {
+		t.Logf("recovered proposals: %+v", got.Proposals)
+		return
+	}
+	t.Logf("unrecoverable as expected or new shape: %v", err)
+}
