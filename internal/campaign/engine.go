@@ -424,11 +424,57 @@ func (e *Engine) runSeed(ctx context.Context, seed manifest.SeedWorkload) error 
 }
 
 // collectDiscoveryProfile is best-effort: any failure records an event and
-// leaves discovery evidence empty rather than failing the campaign.
+// leaves discovery evidence empty rather than failing the campaign. It first
+// tries Go benchmark CPU profiles; targets without benchmarks (or failing
+// profile summarization) fall back to sampling the built target binary
+// directly with platform tools, so every target gets hot-path evidence.
 func (e *Engine) collectDiscoveryProfile(ctx context.Context) error {
+	var benchErr error
 	if err := e.profileHotFunctions(ctx); err != nil {
-		_ = e.saveEvent("discovery_profile_skipped", "CPU profile unavailable: "+err.Error(), nil)
+		benchErr = err
+	} else {
+		return nil
 	}
+	if err := e.sampleTargetProfile(ctx); err != nil {
+		_ = e.saveEvent("discovery_profile_skipped", fmt.Sprintf("benchmark CPU profile unavailable (%s); direct target sampling unavailable (%s)", benchErr.Error(), err.Error()), nil)
+	}
+	return nil
+}
+
+// sampleTargetProfile runs the first representative seed workload against the
+// release baseline binary under the platform sampler (macOS `sample`, Linux
+// `perf`) and records the hottest frames as discovery evidence. The raw
+// sampler report is preserved under profile-sample/ in the campaign dir.
+// Strictly best-effort: any failure is returned for a skipped event.
+func (e *Engine) sampleTargetProfile(ctx context.Context) error {
+	if e.state.BinaryPath == "" {
+		return errors.New("no baseline binary")
+	}
+	if info, statErr := os.Stat(e.state.BinaryPath); statErr != nil || info.IsDir() {
+		return errors.New("baseline binary missing on disk")
+	}
+	if len(e.state.Manifest.Workloads.Seeds) == 0 {
+		return errors.New("manifest defines no seed workloads to sample")
+	}
+	seed := e.state.Manifest.Workloads.Seeds[0]
+	fixtures := make(map[string][]byte, len(seed.Files))
+	for _, f := range seed.Files {
+		fixtures[f.Path] = []byte(f.Content)
+	}
+	outDir := filepath.Join(e.dir, "profile-sample")
+	result, err := profile.SampleTargetProfile(ctx, profile.SampleTarget{
+		BinaryPath: e.state.BinaryPath,
+		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),
+		Stdin:      []byte(seed.Stdin),
+		Fixtures:   fixtures,
+		Duration:   4 * time.Second,
+		OutputPath: filepath.Join(outDir, "sample-report.txt"),
+	})
+	if err != nil {
+		return err
+	}
+	e.state.DiscoveryHotFunctions = hotFunctionNames(result.Functions, 15)
+	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
 }
 
