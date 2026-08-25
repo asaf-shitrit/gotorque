@@ -84,7 +84,7 @@ func RenderMarkdown(state State) string {
 
 func acceptedMarker(accepted bool) string {
 	if accepted {
-		return " ✅ accepted"
+		return " (accepted)"
 	}
 	return ""
 }
