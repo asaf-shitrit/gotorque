@@ -1,0 +1,65 @@
+name: nightly-campaign
+
+on:
+  schedule:
+    - cron: "3 3 * * *" # 03:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  campaign:
+    # SYS_ADMIN so bubblewrap can set up namespaces where the host allows it.
+    runs-on: ubuntu-latest
+    container:
+      image: golang:1.26-bookworm
+      options: --cap-add SYS_ADMIN
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install benchstat and bubblewrap
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@latest
+          apt-get update && apt-get install -y bubblewrap git patch
+
+      - name: Build operator CLI
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          go build -o /tmp/gotorque ./cmd/gotorque
+
+      # NOTE: GitHub's nested virtualization blocks bubblewrap network
+      # namespaces; gotorque detects this and degrades to filesystem-only
+      # isolation. Evidence produced here is labeled authoritative (Linux)
+      # but full network isolation requires a bare-metal or VM runner.
+      - name: Run model-driven campaign against gojq
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_BASE_URL: https://openrouter.ai/api/v1
+          GOTORQUE_MODEL_COORDINATOR: stealth/ox-alpha
+          GOTORQUE_MODEL_EXPLORER: openai/gpt-oss-120b
+          GOTORQUE_MODEL_ANALYST: openai/gpt-oss-120b
+          GOTORQUE_MODEL_OPTIMIZER: stealth/ox-alpha
+          GOTORQUE_MODEL_REVIEWER: stealth/ox-alpha
+        run: |
+          git config --global user.email "nightly@gotorque.local"
+          git config --global user.name "gotorque nightly"
+          git clone --depth 1 https://github.com/itchyny/gojq /tmp/gojq
+          cd /tmp/gojq && git checkout -b pinned && git commit --allow-empty -m "pin" || true
+          /tmp/gotorque optimize \
+            --repo /tmp/gojq \
+            --manifest $GITHUB_WORKSPACE/targets/gojq/manifest.json \
+            --adk \
+            --campaign-dir /tmp/campaign 2>&1 | tee /tmp/campaign.log || true
+          grep -q "campaign .* complete" /tmp/campaign.log && echo "completed=true" >> "$GITHUB_OUTPUT" || echo "completed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Upload campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: campaign-evidence-${{ github.run_id }}
+          path: |
+            /tmp/campaign/report.md
+            /tmp/campaign/report.json
+            /tmp/campaign/patches/
+            /tmp/campaign/accepted/
+            /tmp/campaign.log
+          if-no-files-found: warn
