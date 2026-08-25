@@ -11,6 +11,7 @@ import (
 
 	"example.com/gotorque/internal/candidate"
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/runner"
 	"example.com/gotorque/internal/toolchain"
@@ -92,24 +93,7 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 		if seed.Tier != domain.TierRepresentative {
 			continue
 		}
-		fixtures := make(map[string][]byte, len(seed.Files))
-		for _, f := range seed.Files {
-			fixtures[f.Path] = []byte(f.Content)
-		}
-		args := append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...)
-		timeout := seed.Timeout.Duration()
-		if timeout == 0 {
-			timeout = e.state.Manifest.Campaign.MinimumCommandTimeout.Duration()
-		}
-		wid := stableID("workload", e.state.ID, seed.ID)
-		baseReq := runner.RunRequest{
-			Build:         runner.Build{ID: e.state.BuildID, BinaryPath: e.state.BinaryPath},
-			Workload:      domain.Workload{ID: wid, Name: seed.Name, Tier: seed.Tier, Command: domain.Command{Path: e.state.BinaryPath, Args: args}, Timeout: timeout},
-			Mode:          domain.RunModeMeasurement,
-			Stdin:         []byte(seed.Stdin),
-			Fixtures:      fixtures,
-			AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"},
-		}
+		baseReq, wid := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
 		candReq := baseReq
 		candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
 		candReq.Workload.Command.Path = candidateBinary
@@ -159,7 +143,7 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 			}
 			evidence.BenchstatOutput += fmt.Sprintf("workload %s:\n%s", seed.ID, wallBenchstat)
 		}
-		comparisons = append(comparisons, compareMetric(wid, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...) 
+		comparisons = append(comparisons, compareMetric(wid, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...)
 		comparisons = append(comparisons, compareMetric(wid, "peak_memory_bytes", "bytes", ab.Baseline, ab.Candidate, peakMemory)...)
 		measuredWorkloads++
 	}
@@ -180,7 +164,127 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	evidence.Comparisons = comparisons
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
 	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d representative workload(s) measured over %d A/B pairs each", measuredWorkloads, measurementRepetitions)
+
+	// Informational PGO lane: only candidates that passed the test suite and
+	// produced a full ordinary verdict reach it, so the extra builds and A/B
+	// series are never spent on rejected work.
+	e.runPgoLane(ctx, &evidence, prepared.Worktree, id)
 	return evidence, nil
+}
+
+// seedMeasurementRequest builds the measurement runner request for one seed
+// workload against a specific binary. The workload ID is deterministic per
+// campaign and seed so baseline and variant runs share it.
+func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, binaryPath string) (runner.RunRequest, string) {
+	fixtures := make(map[string][]byte, len(seed.Files))
+	for _, f := range seed.Files {
+		fixtures[f.Path] = []byte(f.Content)
+	}
+	args := append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...)
+	timeout := seed.Timeout.Duration()
+	if timeout == 0 {
+		timeout = e.state.Manifest.Campaign.MinimumCommandTimeout.Duration()
+	}
+	wid := stableID("workload", e.state.ID, seed.ID)
+	req := runner.RunRequest{
+		Build:         runner.Build{ID: buildID, BinaryPath: binaryPath},
+		Workload:      domain.Workload{ID: wid, Name: seed.Name, Tier: seed.Tier, Command: domain.Command{Path: binaryPath, Args: args}, Timeout: timeout},
+		Mode:          domain.RunModeMeasurement,
+		Stdin:         []byte(seed.Stdin),
+		Fixtures:      fixtures,
+		AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"},
+	}
+	return req, wid
+}
+
+// runPgoLane is the informational profile-guided-optimization lane. It never
+// changes accept/reject decisions: policy judges only evidence.Comparisons;
+// PgoComparisons/PgoNote exist purely to attribute how much of an accepted
+// patch's effect comes from the compiler's -pgo feedback versus the source
+// change itself.
+//
+// Trigger conditions: the candidate passed the upstream test suite and the
+// ordinary interleaved A/B series completed, AND discovery produced a raw
+// pprof-format CPU profile (benchmark-based collection). Sampler reports are
+// not pprof and cannot seed -pgo, so their presence skips this lane with a
+// recorded reason. The same discovery profile is reused; nothing is
+// re-collected, keeping total runtime bounded at one extra build pair plus
+// one 7-repetition interleaved series per representative workload.
+func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.CandidateEvidence, candidateWorktree, candidateID string) {
+	skip := func(reason string) {
+		evidence.PgoNote = "PGO lane skipped: " + reason
+		_ = e.saveEvent("pgo_lane_skipped", evidence.PgoNote, nil)
+	}
+	if e.state.PGOProfilePath == "" {
+		skip("no pprof-format CPU profile was collected during discovery (sampler reports are not pprof and cannot seed -pgo)")
+		return
+	}
+	if info, err := os.Stat(e.state.PGOProfilePath); err != nil || info.IsDir() || info.Size() == 0 {
+		skip(fmt.Sprintf("discovery CPU profile %q missing or empty on disk", e.state.PGOProfilePath))
+		return
+	}
+
+	binDir := filepath.Join(e.dir, "builds")
+	binarySuffix := filepath.Base(e.state.Manifest.Target.Build.Binary)
+	baselinePgoBinary := filepath.Join(binDir, candidateID+"-baseline-pgo-"+binarySuffix)
+	candidatePgoBinary := filepath.Join(binDir, candidateID+"-candidate-pgo-"+binarySuffix)
+	for _, target := range []struct {
+		label, repository, output string
+	}{
+		{"baseline-pgo", e.state.Repository, baselinePgoBinary},
+		{"candidate-pgo", candidateWorktree, candidatePgoBinary},
+	} {
+		result, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: target.repository, Target: e.state.Manifest.Target.Build.Package, Output: target.output, PGOProfile: e.state.PGOProfilePath, Env: []string{"GOTOOLCHAIN=local"}})
+		if err != nil {
+			detail := tail(string(result.Stderr), 200)
+			if detail == "" {
+				detail = err.Error()
+			}
+			skip(fmt.Sprintf("%s build failed: %s", target.label, detail))
+			return
+		}
+		evidence.ArtifactURIs = append(evidence.ArtifactURIs, target.output)
+	}
+
+	comparisons := make([]domain.MetricComparison, 0, 3)
+	measured := 0
+	for _, seed := range e.state.Manifest.Workloads.Seeds {
+		if seed.Tier != domain.TierRepresentative {
+			continue
+		}
+		baseReq, wid := e.seedMeasurementRequest(seed, candidateID+"-baseline-pgo", baselinePgoBinary)
+		candReq := baseReq
+		candReq.Build = runner.Build{ID: candidateID + "-candidate-pgo", BinaryPath: candidatePgoBinary}
+		candReq.Workload.Command.Path = candidatePgoBinary
+		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
+		if err != nil {
+			skip(fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err))
+			return
+		}
+		// Informational behavior sanity check: tolerate output-order noise
+		// without paying for the determinism probe, since a divergence here
+		// only invalidates the comparison, never the candidate verdict.
+		for i := range ab.Baseline {
+			exitOK := ab.Baseline[i].ExitCode == ab.Candidate[i].ExitCode
+			stdoutOK := ab.Baseline[i].StdoutDigest == ab.Candidate[i].StdoutDigest ||
+				(ab.Baseline[i].SortedLinesDigest != "" && ab.Baseline[i].SortedLinesDigest == ab.Candidate[i].SortedLinesDigest)
+			if !exitOK || !stdoutOK {
+				skip(fmt.Sprintf("PGO-built binaries diverged on workload %q at repetition %d", seed.ID, i+1))
+				return
+			}
+		}
+		comparisons = append(comparisons, compareMetric(wid, "wall_time_ns", "ns", ab.Baseline, ab.Candidate, wallTime)...)
+		comparisons = append(comparisons, compareMetric(wid, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...)
+		comparisons = append(comparisons, compareMetric(wid, "peak_memory_bytes", "bytes", ab.Baseline, ab.Candidate, peakMemory)...)
+		measured++
+	}
+	if measured == 0 {
+		skip("no representative seed workloads available for measurement")
+		return
+	}
+	evidence.PgoComparisons = comparisons
+	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, measurementRepetitions, filepath.Base(e.state.PGOProfilePath))
+	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
 }
 
 type metricSelector func(domain.RunResult) (float64, bool)

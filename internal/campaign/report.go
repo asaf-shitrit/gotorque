@@ -78,6 +78,30 @@ func RenderMarkdown(state State) string {
 			if record.BenchstatOutput != "" {
 				fmt.Fprintf(&b, "\nBenchstat comparison:\n\n```text\n%s\n```\n", record.BenchstatOutput)
 			}
+			// PGO lane is informational by design: it attributes the compiler's
+			// profile-guided effect on top of the ordinary verdict and never
+			// changes accept/reject decisions.
+			if len(record.PgoComparisons) > 0 || record.PgoNote != "" {
+				fmt.Fprintf(&b, "\n#### PGO lane (informational; never changes accept/reject decisions)\n\n")
+				if record.PgoNote != "" {
+					fmt.Fprintf(&b, "%s\n\n", record.PgoNote)
+				}
+				if len(record.PgoComparisons) > 0 {
+					b.WriteString("| PGO comparison | Baseline-pgo | Candidate-pgo | Δ | Supported |\n|---|---:|---:|---:|---|\n")
+					for _, c := range record.PgoComparisons {
+						supported := "no"
+						if c.StatisticallyFit {
+							supported = "yes"
+						}
+						delta := "n/a"
+						if !math.IsNaN(c.DeltaPercent) {
+							delta = fmt.Sprintf("%+.2f%%", c.DeltaPercent)
+						}
+						fmt.Fprintf(&b, "| `%s` | %.4g | %.4g | %s | %s |\n", c.Name, c.Baseline, c.Candidate, delta, supported)
+					}
+					b.WriteString("\n")
+				}
+			}
 		}
 	}
 	if len(state.TokenUsage) > 0 {

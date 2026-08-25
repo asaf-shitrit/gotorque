@@ -179,15 +179,17 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	}
 	// Persist the full verdict so reports can explain every decision.
 	record := CandidateRecord{
-		Attempt:     len(s.engine.state.CandidateRecords) + 1,
-		CandidateID: input.Evidence.Candidate.ID,
-		Hypothesis:  input.Evidence.Candidate.Hypothesis,
-		PatchPath:   input.Evidence.Candidate.PatchPath,
-		Summary:     input.Evidence.Summary,
-		Decision:    result.Decision,
-		Reasons:     result.Reasons,
-		Comparisons: converted,
+		Attempt:         len(s.engine.state.CandidateRecords) + 1,
+		CandidateID:     input.Evidence.Candidate.ID,
+		Hypothesis:      input.Evidence.Candidate.Hypothesis,
+		PatchPath:       input.Evidence.Candidate.PatchPath,
+		Summary:         input.Evidence.Summary,
+		Decision:        result.Decision,
+		Reasons:         result.Reasons,
+		Comparisons:     converted,
 		BenchstatOutput: input.Evidence.BenchstatOutput,
+		PgoComparisons:  input.Evidence.PgoComparisons,
+		PgoNote:         input.Evidence.PgoNote,
 	}
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	// Persist immediately: an ADK failure later in the run must not lose

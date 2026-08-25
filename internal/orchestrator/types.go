@@ -75,6 +75,13 @@ type CandidateEvidence struct {
 	// stderr tail) behind a rejection so later cycles can avoid repeating
 	// the same failed approach.
 	FailureDetail string `json:"failure_detail,omitempty"`
+	// PgoComparisons and PgoNote record the informational PGO lane: one extra
+	// interleaved A/B series in which baseline and candidate were both built
+	// with the same discovery-derived pprof CPU profile. The lane attributes
+	// the compiler's profile-guided effect on top of an accepted source patch;
+	// it never changes accept/reject decisions.
+	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
+	PgoNote        string                    `json:"pgo_note,omitempty"`
 }
 
 // PolicyInput contains all evidence needed for a deterministic decision.

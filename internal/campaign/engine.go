@@ -73,6 +73,11 @@ type CandidateRecord struct {
 	// BenchstatOutput holds trimmed raw benchstat output for workloads where
 	// benchstat refined the wall-time comparison; empty when unavailable.
 	BenchstatOutput string `json:"benchstat_output,omitempty"`
+	// PgoComparisons and PgoNote carry the informational PGO lane results
+	// (both sides built with the same pprof CPU profile). They never change
+	// the recorded decision; see runPgoLane.
+	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
+	PgoNote        string                    `json:"pgo_note,omitempty"`
 }
 
 // RoleUsageSnapshot is persisted per-role model token usage for one ADK run.
@@ -91,26 +96,31 @@ type State struct {
 	ManifestPath string `json:"manifest_path"`
 	ADKMode      string `json:"adk_mode,omitempty"`
 
-	CandidateRecords            []CandidateRecord  `json:"candidate_records,omitempty"`
-	Manifest                    manifest.Manifest  `json:"manifest"`
-	Status                      Status             `json:"status"`
-	StartedAt                   time.Time          `json:"started_at"`
-	UpdatedAt                   time.Time          `json:"updated_at"`
-	CompletedAt                 *time.Time         `json:"completed_at,omitempty"`
-	Environment                 Environment        `json:"environment"`
-	Inventory                   Inventory          `json:"inventory"`
-	BuildID                     string             `json:"build_id,omitempty"`
-	BinaryPath                  string             `json:"binary_path,omitempty"`
-	DiscoveryBuildID            string             `json:"discovery_build_id,omitempty"`
-	DiscoveryBinaryPath         string             `json:"discovery_binary_path,omitempty"`
-	DiscoveryHotFunctions       []string           `json:"discovery_hot_functions,omitempty"`
-	DiscoveryProfileSummaryPath string             `json:"discovery_profile_summary_path,omitempty"`
-	Runs                        []domain.RunResult `json:"runs,omitempty"`
-	CompletedSteps              map[string]bool    `json:"completed_steps"`
-	StopReason                  string             `json:"stop_reason,omitempty"`
-	Error                       string             `json:"error,omitempty"`
-	LocalIsolation              bool               `json:"local_isolation"`
-	DependencyDigests           map[string]string  `json:"dependency_digests,omitempty"`
+	CandidateRecords            []CandidateRecord `json:"candidate_records,omitempty"`
+	Manifest                    manifest.Manifest `json:"manifest"`
+	Status                      Status            `json:"status"`
+	StartedAt                   time.Time         `json:"started_at"`
+	UpdatedAt                   time.Time         `json:"updated_at"`
+	CompletedAt                 *time.Time        `json:"completed_at,omitempty"`
+	Environment                 Environment       `json:"environment"`
+	Inventory                   Inventory         `json:"inventory"`
+	BuildID                     string            `json:"build_id,omitempty"`
+	BinaryPath                  string            `json:"binary_path,omitempty"`
+	DiscoveryBuildID            string            `json:"discovery_build_id,omitempty"`
+	DiscoveryBinaryPath         string            `json:"discovery_binary_path,omitempty"`
+	DiscoveryHotFunctions       []string          `json:"discovery_hot_functions,omitempty"`
+	DiscoveryProfileSummaryPath string            `json:"discovery_profile_summary_path,omitempty"`
+	// PGOProfilePath points at the raw pprof-format CPU profile produced by
+	// benchmark-based discovery (profiles/bench-cpu.pb.gz), or is empty when
+	// only a non-pprof sampler report exists. Only this file may seed the
+	// informational PGO lane, because -pgo requires pprof input.
+	PGOProfilePath    string             `json:"pgo_profile_path,omitempty"`
+	Runs              []domain.RunResult `json:"runs,omitempty"`
+	CompletedSteps    map[string]bool    `json:"completed_steps"`
+	StopReason        string             `json:"stop_reason,omitempty"`
+	Error             string             `json:"error,omitempty"`
+	LocalIsolation    bool               `json:"local_isolation"`
+	DependencyDigests map[string]string  `json:"dependency_digests,omitempty"`
 	// TokenUsage holds per-role model token totals collected during ADK runs.
 	TokenUsage map[string]RoleUsageSnapshot `json:"token_usage,omitempty"`
 }
@@ -503,6 +513,7 @@ func (e *Engine) profileHotFunctions(ctx context.Context) error {
 	}
 	e.state.DiscoveryHotFunctions = hotFunctionNames(summary.Functions, 15)
 	e.state.DiscoveryProfileSummaryPath = summary.RawReport
+	e.state.PGOProfilePath = cpuProfile
 	return nil
 }
 
