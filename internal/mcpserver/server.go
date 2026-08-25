@@ -183,7 +183,7 @@ func (s *Server) registerTools() {
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "campaign_cancel", Description: "Request cooperative cancellation of a campaign."}, s.cancelCampaign)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "job_status", Description: "Get a deterministic snapshot of an asynchronous job."}, s.jobStatus)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "job_cancel", Description: "Cancel a queued or running asynchronous job."}, s.cancelJob)
-	mcp.AddTool(s.MCP, &mcp.Tool{Name: "repository_inspect", Description: "NOT IMPLEMENTED by the current backend: always fails with an error; repository inspection requires campaign_start."}, s.inspectRepository)
+	mcp.AddTool(s.MCP, &mcp.Tool{Name: "repository_inspect", Description: "Inventory a repository's Go packages and command entry points without starting a campaign. Inputs: repository (absolute directory path, required), build_target (optional). Runs asynchronously as a short job; the result URI addresses a repo://{inspection_id}/inventory JSON document listing packages and main-package commands."}, s.inspectRepository)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "workload_register", Description: "NOT IMPLEMENTED by the current engine backend: always fails with an error; workload registration requires an active campaign."}, s.registerWorkload)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "workload_run", Description: "NOT IMPLEMENTED by the current engine backend: standalone workload execution always fails with an error."}, s.runWorkload)
 	mcp.AddTool(s.MCP, &mcp.Tool{Name: "findings_get", Description: "Read compact measured hotspot findings for a campaign."}, s.getFindings)
