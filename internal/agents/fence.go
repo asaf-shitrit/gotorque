@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 	"strings"
 	"sync"
@@ -93,11 +94,12 @@ func (m fenceStrippingModel) Name() string { return m.inner.Name() }
 
 func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
-		// Transparent retries while a call fails before producing any
-		// content: shared-pool rate limits (HTTP 429) and transient
-		// endpoint errors otherwise abort a whole multi-hour campaign.
+		// Transparent retries: shared-pool rate limits (HTTP 429),
+		// transport errors, and complete-but-unparseable JSON payloads all
+		// otherwise abort a multi-hour campaign on a single bad roll.
 		const attempts = 4
 		var backoff time.Duration
+		yieldedAny := false
 		for attempt := 0; attempt < attempts; attempt++ {
 			if backoff > 0 {
 				select {
@@ -107,11 +109,10 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 				case <-time.After(backoff):
 				}
 			}
-			producedAny := false
 			retrying := false
 			for resp, err := range m.inner.GenerateContent(ctx, req, stream) {
 				if err != nil {
-					if !producedAny && attempt < attempts-1 {
+					if !yieldedAny && attempt < attempts-1 {
 						retrying = true
 						break
 					}
@@ -120,9 +121,13 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 					}
 					continue
 				}
-				producedAny = true
 				rewriteResponse(resp)
 				m.usage.Record(m.role, resp.UsageMetadata)
+				if !resp.Partial && !responseTextIsJSON(resp) && !yieldedAny && attempt < attempts-1 {
+					retrying = true
+					break
+				}
+				yieldedAny = true
 				if !yield(resp, nil) {
 					return
 				}
@@ -133,6 +138,22 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 			backoff = time.Duration(1<<uint(attempt)) * 15 * time.Second // 15s, 30s, 60s
 		}
 	}
+}
+
+// responseTextIsJSON reports whether the complete response's visible text
+// parses as JSON after fence/prose unwrapping.
+func responseTextIsJSON(resp *model.LLMResponse) bool {
+	if resp == nil || resp.Content == nil {
+		return false
+	}
+	var b strings.Builder
+	for _, part := range resp.Content.Parts {
+		if part != nil && !part.Thought {
+			b.WriteString(part.Text)
+		}
+	}
+	var payload any
+	return json.Unmarshal([]byte(UnwrapJSONFence(b.String())), &payload) == nil
 }
 
 func rewriteResponse(resp *model.LLMResponse) {

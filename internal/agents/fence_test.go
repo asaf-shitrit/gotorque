@@ -197,3 +197,45 @@ func TestUsageCollectorSnapshotIsConcurrentSafe(t *testing.T) {
 		t.Fatalf("token totals wrong: %+v", usage)
 	}
 }
+
+type sequenceLLM struct {
+	responses []*model.LLMResponse
+	calls     int
+}
+
+func (s *sequenceLLM) Name() string { return "sequence" }
+
+func (s *sequenceLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		if s.calls < len(s.responses) {
+			r := s.responses[s.calls]
+			s.calls++
+			yield(r, nil)
+			return
+		}
+		s.calls++
+	}
+}
+
+func TestFenceStrippingModelRetriesUnparseableJSON(t *testing.T) {
+	badContent := &genai.Content{Parts: []*genai.Part{{Text: "not json at all"}}}
+	goodContent := &genai.Content{Parts: []*genai.Part{{Text: `{"a":1}`}}}
+	seq := &sequenceLLM{responses: []*model.LLMResponse{
+		{Content: badContent},
+		{Content: goodContent},
+	}}
+	decorated := NewFenceStrippingModel(seq, "explorer", NewUsageCollector())
+	count := 0
+	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		count++
+		if got := resp.Content.Parts[0].Text; got != `{"a":1}` {
+			t.Fatalf("yielded text = %q", got)
+		}
+	}
+	if count != 1 || seq.calls != 2 {
+		t.Fatalf("yielded=%d calls=%d, want 1/2", count, seq.calls)
+	}
+}
