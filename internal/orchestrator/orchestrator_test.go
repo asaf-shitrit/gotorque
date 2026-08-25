@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"example.com/gotorque/internal/agents"
+	policy "example.com/gotorque/internal/policy"
+
 	"example.com/gotorque/internal/domain"
 	adkagent "google.golang.org/adk/v2/agent"
 	adkrunner "google.golang.org/adk/v2/runner"
@@ -297,5 +299,130 @@ func TestNewRejectsMissingDeterministicDependency(t *testing.T) {
 	_, err := New(Dependencies{}, DefaultConfig())
 	if err == nil || !strings.Contains(err.Error(), "runner service is required") {
 		t.Fatalf("New() error = %v, want missing runner", err)
+	}
+}
+
+// policyFromDefaultConfig mirrors the production adapter: it runs the real
+// deterministic policy over the evidence the runner service produced, so the
+// accept path is exercised without any model or build involvement.
+type defaultConfigPolicy struct{}
+
+func (defaultConfigPolicy) Evaluate(_ context.Context, input PolicyInput) (domain.Evaluation, error) {
+	comparisons := make([]policy.Comparison, 0, len(input.Evidence.Comparisons))
+	for _, c := range input.Evidence.Comparisons {
+		comparisons = append(comparisons, policy.Comparison{Name: c.Name, Unit: c.Unit, Baseline: c.Baseline, Candidate: c.Candidate, StatisticallySupported: c.StatisticallyFit})
+	}
+	result := policy.Evaluate(policy.DefaultConfig(), policy.Evidence{
+		BehaviorMatches:        input.Evidence.BehaviorMatches,
+		SafetyChecksPassed:     input.Evidence.SafetyChecksPassed,
+		RepresentativeEvidence: input.Evidence.RepresentativeEvidence,
+		Comparisons:            comparisons,
+	})
+	return domain.Evaluation{
+		CandidateID:     input.Evidence.Candidate.ID,
+		Decision:        result.Decision,
+		BehaviorMatches: input.Evidence.BehaviorMatches,
+		Comparisons:     input.Evidence.Comparisons,
+		Reasons:         result.Reasons,
+	}, nil
+}
+
+// acceptingRunnerService returns fully passing evidence whose primary metric
+// improved by 5% with statistically supported samples and clean guardrails:
+// exactly what policy.DefaultConfig requires for acceptance.
+type acceptingRunnerService struct {
+	fakeRunnerService
+}
+
+func (a *acceptingRunnerService) EvaluateCandidate(_ context.Context, req CandidateRequest) (CandidateEvidence, error) {
+	ev, err := a.fakeRunnerService.EvaluateCandidate(context.Background(), req)
+	if err != nil {
+		return ev, err
+	}
+	ev.SafetyChecksPassed = true
+	ev.RepresentativeEvidence = true
+	ev.Comparisons = []domain.MetricComparison{
+		{Name: "wall_time_ns", Unit: "ns", Baseline: 1000000, Candidate: 950000, DeltaPercent: -5, StatisticallyFit: true},
+		{Name: "cpu_time_ns", Unit: "ns", Baseline: 800000, Candidate: 800000, DeltaPercent: 0, StatisticallyFit: true},
+		{Name: "peak_memory_bytes", Unit: "bytes", Baseline: 1024, Candidate: 1024, DeltaPercent: 0, StatisticallyFit: true},
+		{Name: "binary_size_bytes", Unit: "bytes", Baseline: 4096, Candidate: 4100, DeltaPercent: 0.09765625, StatisticallyFit: true},
+	}
+	return ev, nil
+}
+
+func TestCampaignGraphAcceptsStatisticallySupportedCandidate(t *testing.T) {
+	var calls int
+	roleSet := agents.Set{
+		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "cut runtime", NextExperiment: "patch allocation"}, &calls),
+		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, &calls),
+		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"preallocate"}}, &calls),
+		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "preallocate slice", Patch: "diff --git a/a.go b/a.go"}, &calls),
+		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}, &calls),
+	}
+	runnerService := &acceptingRunnerService{fakeRunnerService{failureDetail: ""}}
+	jobs := &fakeJobService{}
+
+	orch, err := New(Dependencies{
+		Runner: runnerService,
+		Policy: defaultConfigPolicy{},
+		Jobs:   jobs,
+		Agents: roleSet,
+	}, Config{
+		MaxCandidates:          1,
+		MaxConsecutiveFailures: 2,
+		DeterministicTimeout:   time.Second,
+		AgentTimeout:           time.Second,
+		MaxConcurrency:         1,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	r, err := adkrunner.NewInMemory("gotorque-accept-test", orch.Agent)
+	if err != nil {
+		t.Fatalf("NewInMemory() error = %v", err)
+	}
+	req := CampaignRequest{
+		CampaignID:       "campaign-accept",
+		Repository:       "/repo",
+		BaseRevision:     "abc123",
+		BuildTarget:      "./cmd/tool",
+		CommandArgs:      []string{"scan"},
+		OptimizationMode: domain.PolicyIdiomatic,
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}
+
+	var result CampaignResult
+	for event, runErr := range r.Run(context.Background(), "user-1", "session-1", msg, adkagent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatalf("workflow run error = %v", runErr)
+		}
+		if event == nil || event.Output == nil || event.NodeInfo == nil || !strings.Contains(event.NodeInfo.Path, "finalize_campaign") {
+			continue
+		}
+		encoded, err := json.Marshal(event.Output)
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		if err := json.Unmarshal(encoded, &result); err != nil {
+			t.Fatalf("decode result: %v", err)
+		}
+	}
+
+	if len(result.AcceptedCandidates) != 1 || result.AcceptedCandidates[0] != "candidate-1" {
+		t.Fatalf("accepted candidates = %v, want [candidate-1]", result.AcceptedCandidates)
+	}
+	if got := runnerService.promoted; len(got) != 1 || got[0] != "candidate-1" {
+		t.Fatalf("promoted = %v, want [candidate-1]", got)
+	}
+	if len(jobs.progress) == 0 || jobs.progress[0].LastDecision != domain.DecisionAccepted {
+		t.Fatalf("progress decisions = %+v", jobs.progress)
+	}
+	if result.StopReason != "maximum candidate count reached" {
+		t.Fatalf("stop reason = %q", result.StopReason)
 	}
 }
