@@ -24,7 +24,7 @@ func WriteReports(dir string, state State) error {
 func RenderMarkdown(state State) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Go optimization campaign `%s`\n\n", state.ID)
-	fmt.Fprintf(&b, "**%s evidence** — %s/%s\n\n", strings.ToUpper(state.Environment.Authority), state.Environment.OS, state.Environment.Architecture)
+	fmt.Fprintf(&b, "**%s evidence** (%s/%s)\n\n", strings.ToUpper(state.Environment.Authority), state.Environment.OS, state.Environment.Architecture)
 	fmt.Fprintf(&b, "- Status: `%s`\n- Stop reason: %s\n- Repository: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n\n", state.Status, state.StopReason, state.Repository, state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
 	fmt.Fprintf(&b, "## Repository inventory\n\nDiscovered %d packages and %d command entry points.\n\n", len(state.Inventory.Packages), len(state.Inventory.Commands))
 	for _, command := range state.Inventory.Commands {
@@ -46,7 +46,7 @@ func RenderMarkdown(state State) string {
 		}
 		fmt.Fprintf(&b, "%d candidate(s) evaluated, %d accepted by policy.\n\n", len(state.CandidateRecords), accepted)
 		for _, record := range state.CandidateRecords {
-			fmt.Fprintf(&b, "### Attempt %d — `%s` — **%s**\n\n", record.Attempt, record.CandidateID, strings.ToUpper(string(record.Decision)))
+			fmt.Fprintf(&b, "### Attempt %d: `%s` **%s**\n\n", record.Attempt, record.CandidateID, strings.ToUpper(string(record.Decision)))
 			if record.Hypothesis != "" {
 				fmt.Fprintf(&b, "- Hypothesis: %s\n", record.Hypothesis)
 			}

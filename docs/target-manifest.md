@@ -72,7 +72,7 @@ Each seed has an `args` array, optional deterministic `stdin`, optional fixture
 inside the temporary sandbox. `target.command` is a fixed prefix or
 subcommand; it is empty for a root CLI.
 
-The three tiers have deliberately different roles:
+The three tiers serve different roles:
 
 - `representative`: manifest-defined or known common usage. These are the only
   workloads eligible to establish a performance acceptance.

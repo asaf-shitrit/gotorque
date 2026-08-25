@@ -1,6 +1,6 @@
 // Package agents defines the judgment-heavy roles used by the optimizer.
 //
-// The package deliberately does not construct a concrete hosted model. Model
+// The package does not construct a concrete hosted model. Model
 // selection and credentials belong to the composition root and are injected
 // through ModelProvider.
 package agents
@@ -140,10 +140,9 @@ type ReviewerResult struct {
 	RequiredChecks   []string `json:"required_checks,omitempty"`
 }
 
-// Tolerant decoding: hosted models frequently collapse declared string
-// arrays into a single string (and booleans into quoted strings). These
-// unmarshalers accept both shapes so deterministic downstream policy —
-// not JSON shape pedantry — decides whether a recommendation is usable.
+// These unmarshalers accept the shapes models actually emit (scalar
+// where an array was declared, quoted booleans) so that downstream
+// deterministic policy, not JSON shape checking, decides usability.
 
 func (r *CoordinatorResult) UnmarshalJSON(data []byte) error {
 	type alias CoordinatorResult

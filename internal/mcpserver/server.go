@@ -40,7 +40,7 @@ type Backend interface {
 	ReadResource(context.Context, string) (ResourceDocument, error)
 }
 
-// OperationResult is deliberately small. Detailed results belong in the
+// OperationResult is small on purpose; detailed results belong in the
 // immutable resource addressed by ResultURI.
 type OperationResult struct {
 	ResultURI   string   `json:"result_uri"`

@@ -13,7 +13,7 @@ import (
 )
 
 // Toolchain exposes only the Go, Git, benchstat, pprof, and trace commands the
-// harness needs. It deliberately has no Run(string) or shell equivalent.
+// harness needs. It exposes no Run(string) or shell equivalent.
 type Toolchain struct {
 	executor      Executor
 	goPath        string
@@ -256,7 +256,7 @@ func (t *Toolchain) PprofTop(ctx context.Context, profilePath string, nodeCount 
 }
 
 // TracePprof asks the authoritative Go trace tool to convert a trace into a
-// pprof-compatible aggregate. Valid kinds are deliberately enumerated.
+// pprof-compatible aggregate. Valid kinds are enumerated.
 func (t *Toolchain) TracePprof(ctx context.Context, tracePath, kind string) (Result, error) {
 	if !filepath.IsAbs(tracePath) {
 		return Result{}, errors.New("trace path must be absolute")

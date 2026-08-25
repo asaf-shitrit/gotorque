@@ -1,5 +1,5 @@
 // Package jobs provides a small, deterministic in-memory job manager for
-// asynchronous harness operations. It deliberately knows nothing about the
+// asynchronous harness operations. It knows nothing about the
 // command runner, storage, or ADK workflow.
 package jobs
 

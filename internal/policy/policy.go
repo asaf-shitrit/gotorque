@@ -1,5 +1,5 @@
 // Package policy contains the non-LLM acceptance decision for optimization
-// candidates. It deliberately accepts measurements as data and has no
+// candidates. It treats measurements as data and has no
 // filesystem, process, or network behavior.
 package policy
 

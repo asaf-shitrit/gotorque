@@ -8,7 +8,7 @@ import (
 )
 
 // NetworkGuard is supplied by a container, VM, or CI integration. The local
-// runner deliberately does not pretend it can disable networking by setting an
+// runner does not pretend it can disable networking by setting an
 // environment variable.
 type NetworkGuard interface {
 	Prepare(root string) (cleanup func() error, err error)
