@@ -72,7 +72,7 @@ type CandidateRecord struct {
 	Accepted    bool                      `json:"accepted,omitempty"`
 	// BenchstatOutput holds trimmed raw benchstat output for workloads where
 	// benchstat refined the wall-time comparison; empty when unavailable.
-	BenchstatOutput string `json:"benchstat_output,omitempty"`
+	BenchstatOutput string                   `json:"benchstat_output,omitempty"`
 	Samples         []domain.WorkloadSamples `json:"samples,omitempty"`
 	// PgoComparisons and PgoNote carry the informational PGO lane results
 	// (both sides built with the same pprof CPU profile). They never change
@@ -495,7 +495,7 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	e.state.DiscoveryHotFunctions = hotFunctionNames(result.Functions, 15)
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", hotFunctionNames(result.Functions, 15))
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
 }
@@ -539,9 +539,11 @@ func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, nam
 	locations := make([]string, 0, len(names))
 	for _, name := range names {
 		entry := name
-		if result, err := e.toolchain.PprofList(ctx, name, cpuProfile); err == nil {
-			if path, line, ok := profile.ParsePprofList(string(result.Stdout)); ok {
-				entry = profile.HotLocation{Function: name, Path: path, Line: line}.Location()
+		if cpuProfile != "" {
+			if result, err := e.toolchain.PprofList(ctx, name, cpuProfile); err == nil {
+				if path, line, ok := profile.ParsePprofList(string(result.Stdout)); ok {
+					entry = profile.HotLocation{Function: name, Path: path, Line: line}.Location()
+				}
 			}
 		}
 		if entry == name && !strings.Contains(name, ":") {
