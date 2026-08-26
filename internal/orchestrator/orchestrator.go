@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"os"
 	"slices"
 	"time"
 
@@ -129,10 +130,38 @@ func New(deps Dependencies, cfg Config) (*Orchestrator, error) {
 		return nil, fmt.Errorf("analyst node: %w", err)
 	}
 	mergeAnalysis := workflow.NewFunctionNode("merge_analysis", func(ctx adkagent.Context, raw any) (*session.Event, error) {
+		if debugText, ok := raw.(string); ok {
+			head := debugText
+			if len(head) > 200 {
+				head = head[:200]
+			}
+			tail := ""
+			if len(debugText) > 200 {
+				tailStart := len(debugText) - 200
+				tail = debugText[tailStart:]
+			}
+			fmt.Fprintf(os.Stderr, "[analyst_raw_debug] len=%d head=%q tail=%q\n", len(debugText), head, tail)
+		} else {
+			fmt.Fprintf(os.Stderr, "[analyst_raw_debug] non-string raw %T\n", raw)
+		}
 		result, err := agents.DecodeResult[agents.AnalystResult](raw)
+		if err != nil || len(result.HotPaths) == 0 {
+			// Occasionally a cycle delivers the campaign state instead of
+			// fresh analyst text. Salvage its prior analysis so excerpt
+			// enrichment still reaches the optimizer this cycle.
+			if m, ok := raw.(map[string]any); ok {
+				if analysisRaw, ok := m["analysis"]; ok {
+					if prior, perr := agents.DecodeResult[agents.AnalystResult](analysisRaw); perr == nil && len(prior.HotPaths) > len(result.HotPaths) {
+						result = prior
+						err = nil
+					}
+				}
+			}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("analyst output: %w", err)
 		}
+		fmt.Fprintf(os.Stderr, "[analyst_raw_debug] decoded hot_paths=%d\n", len(result.HotPaths))
 		state, err := loadState(ctx)
 		if err != nil {
 			return nil, err

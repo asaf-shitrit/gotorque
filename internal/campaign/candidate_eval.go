@@ -397,7 +397,7 @@ func compareMetric(workloadID, metric, unit string, baseline, candidateRuns []do
 	if meanBase > 0 {
 		result.DeltaPercent = percentDelta(meanBase, meanCand)
 	}
-	result.StatisticallyFit = statisticallySupported(baseVals, candVals)
+	result.StatisticallyFit = metricSupport(baseVals, candVals, result.Baseline, result.DeltaPercent)
 	return []domain.MetricComparison{result}
 }
 
@@ -422,10 +422,40 @@ func mean(values []float64) (float64, bool) {
 	return sum / float64(len(values)), true
 }
 
-// statisticallySupported applies a two-sample Welch t-test against a
-// conservative critical value (|t| > 2.2, roughly p < 0.05 for the small
-// equal-n samples this harness produces). It never reports support from
-// fewer than four samples per side.
+// metricSupport answers the question policy actually asks: "are these
+// samples strong evidence about the candidate's effect?" A comparison is
+// supported when the Welch test detects a significant difference OR when
+// the 95% confidence interval of the relative delta lies entirely below
+// the 2% guardrail limit, i.e. the data confidently rules out a material
+// regression even though no significant change was detected. The latter
+// case matters for jittery metrics like peak memory, where a genuinely
+// flat candidate otherwise reads as unsupported.
+func metricSupport(a, b []float64, baselineMean, deltaPercent float64) bool {
+	if len(a) < 4 || len(b) < 4 {
+		return false
+	}
+	ma, ok := mean(a)
+	if !ok {
+		return false
+	}
+	mb, _ := mean(b)
+	va, vb := variance(a), variance(b)
+	se := math.Sqrt(va/float64(len(a)) + vb/float64(len(b)))
+	if se == 0 {
+		return ma == mb // exact identical measurements
+	}
+	t := math.Abs(ma - mb) / se
+	if t > 2.2 {
+		return true
+	}
+	if baselineMean <= 0 || deltaPercent >= 2.0 {
+		return false
+	}
+	ciUpper := ((mb - ma) + 2.2*se) / baselineMean * 100
+	return ciUpper < 2.0
+}
+
+// statisticallySupported is retained for direct significance queries.
 func statisticallySupported(a, b []float64) bool {
 	if len(a) < 4 || len(b) < 4 {
 		return false

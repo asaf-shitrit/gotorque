@@ -84,7 +84,14 @@ type adkServices struct{ engine *Engine }
 // CollectExcerpts implements the optional orchestrator.ExcerptCollector
 // capability, attaching real source windows around analyst hot paths.
 func (s adkServices) CollectExcerpts(ctx context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
-	return extractExcerpts(s.engine.state.Repository, analysis.HotPaths, defaultMaxExcerpts)
+	excerpts, err := extractExcerpts(s.engine.state.Repository, analysis.HotPaths, defaultMaxExcerpts)
+	locs := make([]string, 0, len(analysis.HotPaths))
+	for _, hp := range analysis.HotPaths {
+		locs = append(locs, hp.Location)
+	}
+	detail := fmt.Sprintf("hot_paths=%d locations=%v excerpts=%d err=%v", len(analysis.HotPaths), locs, len(excerpts), err)
+	_ = s.engine.saveEvent("excerpts_debug", detail, nil)
+	return excerpts, err
 }
 
 func (s adkServices) StartCampaign(ctx context.Context, req orchestrator.CampaignRequest) (domain.Job, error) {

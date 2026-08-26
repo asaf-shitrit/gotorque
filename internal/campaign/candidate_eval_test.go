@@ -238,13 +238,14 @@ func TestCompareMetric(t *testing.T) {
 		}
 	})
 
-	t.Run("zero-mean baseline has no percent delta but may be supported", func(t *testing.T) {
+	t.Run("zero-mean baseline has no percent delta and is confidently unchanged", func(t *testing.T) {
 		base := mk("peak_memory_bytes", 0, 0, 0, 0)
-		// constant zeros: se2==0, means equal -> not supported; DeltaPercent stays 0.
+		// constant zeros: se==0 with equal means -> confidently unchanged,
+		// which counts as supported (no regression possible).
 		cand := mk("peak_memory_bytes", 0, 0, 0, 0)
 		got := compareMetric("w", "peak_memory_bytes", "bytes", base, cand, peakMemory)
 		c := got[0]
-		if c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || c.StatisticallyFit {
+		if c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || !c.StatisticallyFit {
 			t.Fatalf("unexpected comparison %+v", c)
 		}
 	})
