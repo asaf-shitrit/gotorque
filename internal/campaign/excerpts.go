@@ -115,8 +115,3 @@ func readWindow(path string, line int) (string, int, int) {
 	}
 	return b.String(), start + 1, b.Len()
 }
-
-// DebugExtractExcerpts exposes extractExcerpts for diagnostics.
-func DebugExtractExcerpts(repoRoot string, hotPaths []agents.HotPath, maxTotal int) ([]orchestrator.SourceExcerpt, error) {
-	return extractExcerpts(repoRoot, hotPaths, maxTotal)
-}
