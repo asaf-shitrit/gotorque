@@ -547,8 +547,17 @@ func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, nam
 			}
 		}
 		if entry == name && !strings.Contains(name, ":") {
-			if path, line, ok := profile.FindFunctionInRepo(e.state.Repository, name); ok {
-				entry = profile.HotLocation{Function: name, Path: path, Line: line}.Location()
+			// Sampler output uses runtime-style names (main.main,
+			// pkg.(*T).method) whose last segment is the source symbol.
+			candidates := []string{name}
+			if idx := strings.LastIndex(name, "."); idx >= 0 && idx < len(name)-1 {
+				candidates = append(candidates, name[idx+1:])
+			}
+			for _, candidate := range candidates {
+				if path, line, ok := profile.FindFunctionInRepo(e.state.Repository, candidate); ok {
+					entry = profile.HotLocation{Function: name, Path: path, Line: line}.Location()
+					break
+				}
 			}
 		}
 		locations = append(locations, entry)
