@@ -44,6 +44,13 @@ func (m *WorktreeManager) Prepare(ctx context.Context, revision, patchPath, hypo
 			return nil, fmt.Errorf("write normalized patch: %w", err)
 		}
 	}
+	// Models drop leading directories from diff paths (dedupe/main.go for
+	// cmd/dedupe/main.go); when the suffix identifies exactly one file the
+	// headers are rewritten so the patch can apply.
+	if remapped, changed := RemapDiffPaths(m.Repository, data); changed {
+		data = remapped
+		_ = os.WriteFile(patchPath, data, 0o600)
+	}
 	if _, err := ValidateUnifiedDiff(string(data), policy); err != nil {
 		return nil, err
 	}
