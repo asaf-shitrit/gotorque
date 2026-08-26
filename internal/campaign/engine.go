@@ -523,10 +523,35 @@ func (e *Engine) profileHotFunctions(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("summarize benchmark CPU profile: %w", err)
 	}
-	e.state.DiscoveryHotFunctions = hotFunctionNames(summary.Functions, 15)
+	names := hotFunctionNames(summary.Functions, 15)
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, cpuProfile, names)
 	e.state.DiscoveryProfileSummaryPath = summary.RawReport
 	e.state.PGOProfilePath = cpuProfile
 	return nil
+}
+
+// resolveHotLocations annotates hot function names with repository-relative
+// source positions. Preferred source is `go tool pprof -list` over the
+// benchmark profile (exact file and sampled line); the fallback searches the
+// repository for the declaration. Unresolvable functions keep their bare
+// names so downstream consumers never lose entries.
+func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, names []string) []string {
+	locations := make([]string, 0, len(names))
+	for _, name := range names {
+		entry := name
+		if result, err := e.toolchain.PprofList(ctx, name, cpuProfile); err == nil {
+			if path, line, ok := profile.ParsePprofList(string(result.Stdout)); ok {
+				entry = profile.HotLocation{Function: name, Path: path, Line: line}.Location()
+			}
+		}
+		if entry == name && !strings.Contains(name, ":") {
+			if path, line, ok := profile.FindFunctionInRepo(e.state.Repository, name); ok {
+				entry = profile.HotLocation{Function: name, Path: path, Line: line}.Location()
+			}
+		}
+		locations = append(locations, entry)
+	}
+	return locations
 }
 
 // hotFunctionNames extracts deduplicated function names from a parsed pprof

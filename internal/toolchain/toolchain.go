@@ -269,6 +269,16 @@ func (t *Toolchain) PprofTop(ctx context.Context, profilePath string, nodeCount 
 	return t.run(ctx, t.goPath, []string{"tool", "pprof", "-top", "-cum", fmt.Sprintf("-nodecount=%d", nodeCount), profilePath}, "", nil, nil)
 }
 
+// PprofList returns the source-annotated listing for one function from a
+// pprof profile: go tool pprof -list prints the routine's file, start line,
+// and per-line samples when the profile carries symbolization.
+func (t *Toolchain) PprofList(ctx context.Context, functionName, profilePath string) (Result, error) {
+	if !filepath.IsAbs(profilePath) {
+		return Result{}, errors.New("profile path must be absolute")
+	}
+	return t.run(ctx, t.goPath, []string{"tool", "pprof", "-list", functionName, profilePath}, "", nil, nil)
+}
+
 // TracePprof asks the authoritative Go trace tool to convert a trace into a
 // pprof-compatible aggregate. Valid kinds are enumerated.
 func (t *Toolchain) TracePprof(ctx context.Context, tracePath, kind string) (Result, error) {
