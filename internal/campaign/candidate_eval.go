@@ -382,7 +382,11 @@ func peakMemory(r domain.RunResult) (float64, bool) {
 func compareMetric(workloadID, metric, unit string, baseline, candidateRuns []domain.RunResult, select_ metricSelector) []domain.MetricComparison {
 	baseVals := collectMetric(baseline, select_)
 	candVals := collectMetric(candidateRuns, select_)
-	result := domain.MetricComparison{Name: workloadID + "/" + metric, Unit: unit}
+	name := metric
+	if workloadID != "" {
+		name = workloadID + "/" + metric
+	}
+	result := domain.MetricComparison{Name: name, Unit: unit}
 	meanBase, okBase := mean(baseVals)
 	meanCand, okCand := mean(candVals)
 	if !okBase || !okCand {
