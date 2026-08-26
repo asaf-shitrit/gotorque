@@ -170,7 +170,18 @@ func New(deps Dependencies, cfg Config) (*Orchestrator, error) {
 		if collector, ok := deps.Runner.(ExcerptCollector); ok {
 			// Best-effort enrichment; excerpts are optional, so failures just
 			// leave them unset rather than failing the analysis node.
-			if excerpts, err := collector.CollectExcerpts(ctx, result); err == nil {
+			targets := result.HotPaths
+			if len(targets) == 0 {
+				// The analyst sometimes returns no usable hot paths. Discovery
+				// already resolved profiled functions to path:line entries, so
+				// fall back to those rather than letting the optimizer guess.
+				for _, fn := range state.Discovery.HotFunctions {
+					if strings.Contains(fn, ":") && !strings.HasPrefix(fn, "runtime") {
+						targets = append(targets, agents.HotPath{Location: fn})
+					}
+				}
+			}
+			if excerpts, err := collector.CollectExcerpts(ctx, targets); err == nil {
 				state.SourceExcerpts = excerpts
 			}
 		}
