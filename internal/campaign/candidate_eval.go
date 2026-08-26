@@ -88,6 +88,7 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	comparisons := make([]domain.MetricComparison, 0, 4)
 	behaviorMatches := true
 	measuredWorkloads := 0
+	var pooledWallBase, pooledWallCand, pooledCPUBase, pooledCUTCand, pooledMemBase, pooledMemCand []float64
 
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
 		if seed.Tier != domain.TierRepresentative {
@@ -161,8 +162,24 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 			}
 			evidence.BenchstatOutput += fmt.Sprintf("workload %s:\n%s", seed.ID, wallBenchstat)
 		}
-		comparisons = append(comparisons, compareMetric(wid, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...)
-		comparisons = append(comparisons, compareMetric(wid, "peak_memory_bytes", "bytes", ab.Baseline, ab.Candidate, peakMemory)...)
+		for _, r := range ab.Baseline {
+			if v, ok := cpuTime(r); ok {
+				pooledCPUBase = append(pooledCPUBase, v)
+			}
+			if v, ok := peakMemory(r); ok {
+				pooledMemBase = append(pooledMemBase, v)
+			}
+		}
+		for _, r := range ab.Candidate {
+			if v, ok := cpuTime(r); ok {
+				pooledCUTCand = append(pooledCUTCand, v)
+			}
+			if v, ok := peakMemory(r); ok {
+				pooledMemCand = append(pooledMemCand, v)
+			}
+		}
+		pooledWallBase = append(pooledWallBase, baseSamples...)
+		pooledWallCand = append(pooledWallCand, candSamples...)
 		measuredWorkloads++
 	}
 
@@ -171,6 +188,20 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 		evidence.Comparisons = comparisons
 		return evidence, nil
 	}
+
+	// Policy looks up canonical metric names ("wall_time_ns" primary plus
+	// required guardrails), so samples from all representative workloads
+	// are pooled into one comparison per metric. Per-workload raw data
+	// remains available in RepSamples for diagnosis.
+	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, "", pooledAsRuns(pooledWallBase, "wall_time_ns"), pooledAsRuns(pooledWallCand, "wall_time_ns"))
+	comparisons = append(comparisons, wallComparisons...)
+	if wallBenchstat != "" {
+		evidence.BenchstatOutput += fmt.Sprintf("pooled representative workloads:\n%s", wallBenchstat)
+	}
+	comparisons = append(comparisons, compareMetric("", "cpu_time_ns", "ns",
+		pooledAsRuns(pooledCPUBase, "cpu_time_ns"), pooledAsRuns(pooledCUTCand, "cpu_time_ns"), cpuTime)...)
+	comparisons = append(comparisons, compareMetric("", "peak_memory_bytes", "bytes",
+		pooledAsRuns(pooledMemBase, "peak_memory_bytes"), pooledAsRuns(pooledMemCand, "peak_memory_bytes"), peakMemory)...)
 
 	if sizeErr == nil {
 		comparisons = append(comparisons, domain.MetricComparison{Name: "binary_size_bytes", Unit: "bytes", Baseline: float64(baselineSize), Candidate: float64(candSize), DeltaPercent: percentDelta(float64(baselineSize), float64(candSize)), StatisticallyFit: true})
@@ -303,6 +334,16 @@ func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.Candidat
 	evidence.PgoComparisons = comparisons
 	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, measurementRepetitions, filepath.Base(e.state.PGOProfilePath))
 	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
+}
+
+// pooledAsRuns adapts raw sample values into single-metric RunResults so
+// compareMetric can consume pooled cross-workload samples.
+func pooledAsRuns(values []float64, metric string) []domain.RunResult {
+	runs := make([]domain.RunResult, 0, len(values))
+	for _, v := range values {
+		runs = append(runs, domain.RunResult{Metrics: []domain.Metric{{Name: metric, Value: v}}})
+	}
+	return runs
 }
 
 type metricSelector func(domain.RunResult) (float64, bool)
