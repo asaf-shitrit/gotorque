@@ -3,8 +3,8 @@ package agents
 import (
 	"encoding/json"
 	"errors"
-	"strings"
 	"fmt"
+	"strings"
 
 	"google.golang.org/genai"
 )
@@ -65,6 +65,89 @@ func decodeText[T any](text string) (T, error) {
 	return out, nil
 }
 
+func isJSONSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+func skipJSONSpace(s string, i int) int {
+	for i < len(s) && isJSONSpace(s[i]) {
+		i++
+	}
+	return i
+}
+
+func emptyOrNull(trimmed []byte) bool {
+	return len(trimmed) == 0 || string(trimmed) == "null"
+}
+
+// scanJSONString updates escape state while inside a JSON string and reports
+// whether the string is still open after consuming c.
+func scanJSONString(c byte, escaped *bool) bool {
+	if *escaped {
+		*escaped = false
+		return true
+	}
+	if c == '\\' {
+		*escaped = true
+		return true
+	}
+	return c != '"'
+}
+
+func openJSONString(c, prev byte) (inString, valueString bool, nextPrev byte) {
+	if c == '"' {
+		inString = true
+		valueString = prev == ':'
+	}
+	nextPrev = prev
+	if !isJSONSpace(c) {
+		nextPrev = c
+	}
+	return inString, valueString, nextPrev
+}
+
+func quoteTerminatesValue(s string, i, embeddedDepth int) bool {
+	j := skipJSONSpace(s, i+1)
+	if j >= len(s) {
+		return true
+	}
+	if embeddedDepth > 0 {
+		return false
+	}
+	switch s[j] {
+	case ',', '}', ']':
+		return true
+	}
+	return false
+}
+
+func bumpEmbeddedDepth(c byte, depth int) int {
+	switch c {
+	case '{', '[':
+		return depth + 1
+	case '}', ']':
+		if depth > 0 {
+			return depth - 1
+		}
+	}
+	return depth
+}
+
+func escapeQuote(c byte, text string, i, depth int, valueString bool, out []byte) ([]byte, bool, bool) {
+	if !valueString {
+		return append(out, c), false, false
+	}
+	if quoteTerminatesValue(text, i, depth) {
+		return append(out, '"'), false, false
+	}
+	return append(out, '\\', '"'), true, true
+}
+
+func trailingComma(text string, i int) bool {
+	j := skipJSONSpace(text, i+1)
+	return j < len(text) && (text[j] == '}' || text[j] == ']')
+}
+
 // EscapeEmbeddedQuotes rewrites unescaped double quotes that appear inside
 // JSON string values. A quote ending a value string terminates it only when
 // no embedded brace or bracket is still open and the next non-whitespace
@@ -81,53 +164,27 @@ func EscapeEmbeddedQuotes(text string) (string, bool) {
 	for i := 0; i < len(text); i++ {
 		c := text[i]
 		if !inString {
-			if c == '"' {
-				inString = true
-				valueString = prevSignificant == ':'
-			}
-			if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-				prevSignificant = c
-			}
+			inString, valueString, prevSignificant = openJSONString(c, prevSignificant)
 			out = append(out, c)
 			continue
 		}
-		switch {
-		case escaped:
+		if escaped {
 			escaped = false
-		case c == '\\':
-			escaped = true
-		case c == '"':
-			if !valueString {
-				inString = false
-				out = append(out, c)
-				continue
-			}
-			j := i + 1
-			for j < len(text) && (text[j] == ' ' || text[j] == '\t' || text[j] == '\n' || text[j] == '\r') {
-				j++
-			}
-			terminator := j >= len(text)
-			if !terminator && embeddedDepth <= 0 {
-				switch text[j] {
-				case ',', '}', ']':
-					terminator = true
-				}
-			}
-			if terminator {
-				inString = false
-			} else {
-				changed = true
-				out = append(out, '\\')
-			}
-			out = append(out, '"')
+			out = append(out, c)
 			continue
-		case c == '{' || c == '[':
-			embeddedDepth++
-		case c == '}' || c == ']':
-			if embeddedDepth > 0 {
-				embeddedDepth--
-			}
 		}
+		if c == '\\' {
+			escaped = true
+			out = append(out, c)
+			continue
+		}
+		if c == '"' {
+			var extra bool
+			out, inString, extra = escapeQuote(c, text, i, embeddedDepth, valueString, out)
+			changed = changed || extra
+			continue
+		}
+		embeddedDepth = bumpEmbeddedDepth(c, embeddedDepth)
 		out = append(out, c)
 	}
 	return string(out), changed
@@ -144,27 +201,13 @@ func RepairCommonMalformations(text string) string {
 		c := text[i]
 		if inString {
 			out = append(out, c)
-			switch {
-			case escaped:
-				escaped = false
-			case c == '\\':
-				escaped = true
-			case c == '"':
-				inString = false
-			}
+			inString = scanJSONString(c, &escaped)
 			continue
 		}
-		switch c {
-		case '"':
+		if c == '"' {
 			inString = true
-		case ',':
-			j := i + 1
-			for j < len(text) && (text[j] == ' ' || text[j] == '\t' || text[j] == '\n' || text[j] == '\r') {
-				j++
-			}
-			if j < len(text) && (text[j] == '}' || text[j] == ']') {
-				continue // drop the trailing comma
-			}
+		} else if c == ',' && trailingComma(text, i) {
+			continue // drop the trailing comma
 		}
 		out = append(out, c)
 	}
@@ -215,33 +258,11 @@ type flexStrings []string
 
 func (f *flexStrings) UnmarshalJSON(data []byte) error {
 	trimmed := trimSpaceBytes(data)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	if trimmed[0] == '"' {
-		var single string
-		if err := json.Unmarshal(trimmed, &single); err != nil {
+	if values, done, err := flexStringsFromScalar(trimmed); done {
+		if err != nil {
 			return err
 		}
-		if single == "" {
-			*f = nil
-			return nil
-		}
-		*f = []string{single}
-		return nil
-	}
-	if trimmed[0] == '{' {
-		// A lone object collapses to its identifying string field, or its
-		// compact JSON when nothing recognizable exists.
-		var object map[string]any
-		if err := json.Unmarshal(trimmed, &object); err != nil {
-			return err
-		}
-		if extracted := identifyingString(object); extracted != "" {
-			*f = []string{extracted}
-			return nil
-		}
-		*f = []string{string(trimmed)}
+		*f = values
 		return nil
 	}
 	var list []json.RawMessage
@@ -250,28 +271,63 @@ func (f *flexStrings) UnmarshalJSON(data []byte) error {
 	}
 	values := make([]string, 0, len(list))
 	for _, element := range list {
-		var text string
-		if err := json.Unmarshal(element, &text); err == nil {
-			values = append(values, text)
-			continue
-		}
-		// Objects like {"symbol": ..., "role": ...} collapse to their
-		// most identifying string field.
-		var object map[string]any
-		if err := json.Unmarshal(element, &object); err == nil {
-			if extracted := identifyingString(object); extracted != "" {
-				values = append(values, extracted)
-				continue
-			}
-		}
-		compact, err := json.Marshal(element)
+		s, err := flexStringElement(element)
 		if err != nil {
 			return err
 		}
-		values = append(values, string(compact))
+		values = append(values, s)
 	}
 	*f = values
 	return nil
+}
+
+func flexStringsFromScalar(trimmed []byte) (flexStrings, bool, error) {
+	if len(trimmed) == 0 {
+		return nil, true, nil
+	}
+	switch trimmed[0] {
+	case '"':
+		var single string
+		if err := json.Unmarshal(trimmed, &single); err != nil {
+			return nil, true, err
+		}
+		if single == "" {
+			return nil, true, nil
+		}
+		return flexStrings{single}, true, nil
+	case '{':
+		// A lone object collapses to its identifying string field, or its
+		// compact JSON when nothing recognizable exists.
+		var object map[string]any
+		if err := json.Unmarshal(trimmed, &object); err != nil {
+			return nil, true, err
+		}
+		if extracted := identifyingString(object); extracted != "" {
+			return flexStrings{extracted}, true, nil
+		}
+		return flexStrings{string(trimmed)}, true, nil
+	}
+	return nil, false, nil
+}
+
+func flexStringElement(element json.RawMessage) (string, error) {
+	var text string
+	if err := json.Unmarshal(element, &text); err == nil {
+		return text, nil
+	}
+	// Objects like {"symbol": ..., "role": ...} collapse to their
+	// most identifying string field.
+	var object map[string]any
+	if err := json.Unmarshal(element, &object); err == nil {
+		if extracted := identifyingString(object); extracted != "" {
+			return extracted, nil
+		}
+	}
+	compact, err := json.Marshal(element)
+	if err != nil {
+		return "", err
+	}
+	return string(compact), nil
 }
 
 // identifyingString picks the most descriptive scalar from an object
@@ -318,11 +374,11 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 
 func trimSpaceBytes(data []byte) []byte {
 	start := 0
-	for start < len(data) && (data[start] == ' ' || data[start] == '\t' || data[start] == '\n' || data[start] == '\r') {
+	for start < len(data) && isJSONSpace(data[start]) {
 		start++
 	}
 	end := len(data)
-	for end > start && (data[end-1] == ' ' || data[end-1] == '\t' || data[end-1] == '\n' || data[end-1] == '\r') {
+	for end > start && isJSONSpace(data[end-1]) {
 		end--
 	}
 	return data[start:end]
@@ -362,14 +418,7 @@ func RepairMissingClosers(text string) (string, bool) {
 		c := text[i]
 		if inString {
 			out = append(out, c)
-			switch {
-			case escaped:
-				escaped = false
-			case c == '\\':
-				escaped = true
-			case c == '"':
-				inString = false
-			}
+			inString = scanJSONString(c, &escaped)
 			continue
 		}
 		switch c {
@@ -380,18 +429,27 @@ func RepairMissingClosers(text string) (string, bool) {
 		case '[':
 			stack = append(stack, ']')
 		case '}', ']':
-			for len(stack) > 0 && stack[len(stack)-1] != c {
-				// Close the inner structure that was left open.
-				out = append(out, stack[len(stack)-1])
-				stack = stack[:len(stack)-1]
-				changed = true
-			}
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
+			out, stack, changed = closeMismatched(out, stack, c, changed)
 		}
 		out = append(out, c)
 	}
+	return finishClosers(out, stack, inString, changed)
+}
+
+func closeMismatched(out, stack []byte, c byte, changed bool) ([]byte, []byte, bool) {
+	for len(stack) > 0 && stack[len(stack)-1] != c {
+		// Close the inner structure that was left open.
+		out = append(out, stack[len(stack)-1])
+		stack = stack[:len(stack)-1]
+		changed = true
+	}
+	if len(stack) > 0 {
+		stack = stack[:len(stack)-1]
+	}
+	return out, stack, changed
+}
+
+func finishClosers(out, stack []byte, inString, changed bool) (string, bool) {
 	if !inString {
 		for i := len(stack) - 1; i >= 0; i-- {
 			out = append(out, stack[i])

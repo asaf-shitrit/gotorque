@@ -16,26 +16,8 @@ func RemapDiffPaths(worktree string, patch []byte) ([]byte, bool) {
 	lines := strings.Split(text, "\n")
 	changed := false
 	for i, line := range lines {
-		var prefix, namespace, rawPath string
-		switch {
-		case strings.HasPrefix(line, "--- "):
-			prefix, namespace = "--- ", "a/"
-			rawPath = strings.TrimPrefix(strings.TrimPrefix(line, "--- "), "a/")
-		case strings.HasPrefix(line, "+++ "):
-			prefix, namespace = "+++ ", "b/"
-			rawPath = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
-		default:
-			continue
-		}
-		if rawPath == "/dev/null" {
-			continue
-		}
-		clean := strings.Fields(rawPath)
-		if len(clean) == 0 {
-			continue
-		}
-		target := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(clean[0], "b/")))
-		if target == "." || filepath.IsAbs(target) || strings.HasPrefix(target, "../") {
+		prefix, namespace, target, extra, ok := parseRemapHeader(line)
+		if !ok {
 			continue
 		}
 		full := filepath.Join(worktree, target)
@@ -46,13 +28,38 @@ func RemapDiffPaths(worktree string, patch []byte) ([]byte, bool) {
 		if !ok {
 			continue
 		}
-		lines[i] = prefix + namespace + match + restoreFields(clean)
+		lines[i] = prefix + namespace + match + extra
 		changed = true
 	}
 	if !changed {
 		return patch, false
 	}
 	return []byte(strings.Join(lines, "\n")), true
+}
+
+func parseRemapHeader(line string) (prefix, namespace, target, extra string, ok bool) {
+	var rawPath string
+	if strings.HasPrefix(line, "--- ") {
+		prefix, namespace = "--- ", "a/"
+		rawPath = strings.TrimPrefix(strings.TrimPrefix(line, "--- "), "a/")
+	} else if strings.HasPrefix(line, "+++ ") {
+		prefix, namespace = "+++ ", "b/"
+		rawPath = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
+	} else {
+		return "", "", "", "", false
+	}
+	if rawPath == "/dev/null" {
+		return "", "", "", "", false
+	}
+	clean := strings.Fields(rawPath)
+	if len(clean) == 0 {
+		return "", "", "", "", false
+	}
+	target = filepath.ToSlash(filepath.Clean(strings.TrimPrefix(clean[0], "b/")))
+	if target == "." || filepath.IsAbs(target) || strings.HasPrefix(target, "../") {
+		return "", "", "", "", false
+	}
+	return prefix, namespace, target, restoreFields(clean), true
 }
 
 func restoreFields(fields []string) string {
@@ -65,45 +72,62 @@ func restoreFields(fields []string) string {
 // uniqueSuffixMatch finds the single repository file whose slash path ends
 // with "/"+target (or equals target).
 func uniqueSuffixMatch(root, target string) (string, bool) {
-	suffix := "/" + target
 	var match string
 	count := 0
-	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || match != "" && count > 1 {
-			if count > 1 {
-				return filepath.SkipAll
-			}
-			return nil
-		}
-		if d != nil && d.IsDir() {
-			base := d.Name()
-			if base == ".git" || base == "vendor" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") && !strings.HasSuffix(target, ".go") &&
-			!strings.HasSuffix(path, target) {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if rel == target || strings.HasSuffix("/"+rel, suffix) {
-			count++
-			if count == 1 {
-				match = rel
-			}
-			if count > 1 {
-				return filepath.SkipAll
-			}
-		}
-		return nil
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		return matchSuffixFile(root, target, path, d, err, &match, &count)
 	})
 	if count == 1 {
 		return match, true
+	}
+	return "", false
+}
+
+func matchSuffixFile(root, target, path string, d os.DirEntry, err error, match *string, count *int) error {
+	if *count > 1 {
+		return filepath.SkipAll
+	}
+	if err != nil {
+		return nil
+	}
+	if skip, dirErr := skipWalkDir(d); skip {
+		return dirErr
+	}
+	rel, ok := relSuffixMatch(root, target, path)
+	if !ok {
+		return nil
+	}
+	*count++
+	if *count == 1 {
+		*match = rel
+	}
+	if *count > 1 {
+		return filepath.SkipAll
+	}
+	return nil
+}
+
+func skipWalkDir(d os.DirEntry) (bool, error) {
+	if d == nil || !d.IsDir() {
+		return false, nil
+	}
+	if d.Name() == ".git" || d.Name() == "vendor" {
+		return true, filepath.SkipDir
+	}
+	return true, nil
+}
+
+func relSuffixMatch(root, target, path string) (string, bool) {
+	if !strings.HasSuffix(path, ".go") && !strings.HasSuffix(target, ".go") && !strings.HasSuffix(path, target) {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == target || strings.HasSuffix("/"+rel, "/"+target) {
+		return rel, true
 	}
 	return "", false
 }

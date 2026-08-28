@@ -50,16 +50,10 @@ func (OSExecutor) Run(ctx context.Context, in Invocation) (Result, error) {
 	if in.Path == "" {
 		return Result{}, errors.New("command path is required")
 	}
-	stdin := in.Stdin
-	if file, ok := stdin.(*os.File); ok && file == nil {
-		// Treat a typed-nil file as no input so the child keeps a valid
-		// descriptor 0 instead of an invalid one.
-		stdin = nil
-	}
 	cmd := exec.Command(in.Path, in.Args...)
 	cmd.Dir = in.Dir
 	cmd.Env = in.Env
-	cmd.Stdin = stdin
+	cmd.Stdin = normalizeStdin(in.Stdin)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	limit := in.MaxOutput
@@ -75,52 +69,77 @@ func (OSExecutor) Run(ctx context.Context, in Invocation) (Result, error) {
 	if err := cmd.Start(); err != nil {
 		return Result{Started: started}, err
 	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	var err error
-	select {
-	case err = <-done:
-	case <-ctx.Done():
-		terminateProcessGroup(cmd.Process)
-		select {
-		case err = <-done:
-		case <-time.After(250 * time.Millisecond):
-			killProcessGroup(cmd.Process)
-			err = <-done
-		}
-		if err == nil {
-			err = ctx.Err()
-		}
-	}
-
+	err := waitOrCancel(ctx, cmd)
 	result := Result{
 		Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: exitCode(err),
 		Started: started, Duration: time.Since(started),
 	}
-	if state := cmd.ProcessState; state != nil {
-		result.UserCPU = state.UserTime()
-		result.SystemCPU = state.SystemTime()
-		if usage, ok := state.SysUsage().(*syscall.Rusage); ok {
-			// Darwin reports bytes while Linux reports KiB. A CI adapter can
-			// normalize platform metadata; preserve the operating-system value
-			// conservatively here rather than claim a false cross-platform unit.
-			result.MaxRSSBytes = usage.Maxrss
-			if runtime.GOOS == "linux" {
-				result.MaxRSSBytes *= 1024
-			}
-		}
+	fillResourceUsage(&result, cmd.ProcessState)
+	return result, commandError(ctx, err, stdout, stderr, limit)
+}
+
+func normalizeStdin(stdin io.Reader) io.Reader {
+	if file, ok := stdin.(*os.File); ok && file == nil {
+		// Treat a typed-nil file as no input so the child keeps a valid
+		// descriptor 0 instead of an invalid one.
+		return nil
 	}
+	return stdin
+}
+
+func waitOrCancel(ctx context.Context, cmd *exec.Cmd) error {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return finishCanceled(ctx, cmd, done)
+	}
+}
+
+func finishCanceled(ctx context.Context, cmd *exec.Cmd, done <-chan error) error {
+	terminateProcessGroup(cmd.Process)
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(250 * time.Millisecond):
+		killProcessGroup(cmd.Process)
+		err = <-done
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	return err
+}
+
+func fillResourceUsage(result *Result, state *os.ProcessState) {
+	if state == nil {
+		return
+	}
+	result.UserCPU = state.UserTime()
+	result.SystemCPU = state.SystemTime()
+	usage, ok := state.SysUsage().(*syscall.Rusage)
+	if !ok {
+		return
+	}
+	// Darwin reports bytes while Linux reports KiB. A CI adapter can
+	// normalize platform metadata; preserve the operating-system value
+	// conservatively here rather than claim a false cross-platform unit.
+	result.MaxRSSBytes = usage.Maxrss
+	if runtime.GOOS == "linux" {
+		result.MaxRSSBytes *= 1024
+	}
+}
+
+func commandError(ctx context.Context, err error, stdout, stderr *limitedBuffer, limit int64) error {
 	if stdout.exceeded || stderr.exceeded {
-		return result, fmt.Errorf("command output exceeded %d byte limit", limit)
+		return fmt.Errorf("command output exceeded %d byte limit", limit)
 	}
 	if ctx.Err() != nil {
-		return result, ctx.Err()
+		return ctx.Err()
 	}
-	if err != nil {
-		return result, err
-	}
-	return result, nil
+	return err
 }
 
 func terminateProcessGroup(p *os.Process) {

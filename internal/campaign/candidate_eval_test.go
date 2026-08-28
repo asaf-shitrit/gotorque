@@ -218,69 +218,74 @@ func TestMetricSelectors(t *testing.T) {
 	}
 }
 
-func TestCompareMetric(t *testing.T) {
-	mk := func(name string, vals ...float64) []domain.RunResult {
-		runs := make([]domain.RunResult, 0, len(vals))
-		for _, v := range vals {
-			runs = append(runs, runWithMetric(name, v))
-		}
-		return runs
+func metricRuns(name string, vals ...float64) []domain.RunResult {
+	runs := make([]domain.RunResult, 0, len(vals))
+	for _, v := range vals {
+		runs = append(runs, runWithMetric(name, v))
 	}
+	return runs
+}
 
-	t.Run("missing baseline metric yields bare comparison", func(t *testing.T) {
-		got := compareMetric("wl", "wall_time_ns", "ns", []domain.RunResult{{}}, mk("wall_time_ns", 1, 2), wallTime)
-		if len(got) != 1 {
-			t.Fatalf("len = %d, want 1", len(got))
-		}
-		c := got[0]
-		if c.Name != "wl/wall_time_ns" || c.Unit != "ns" || c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || c.StatisticallyFit {
-			t.Fatalf("unexpected comparison %+v", c)
-		}
-	})
+func TestCompareMetric(t *testing.T) {
+	t.Run("missing baseline metric yields bare comparison", testCompareMetricMissingBaseline)
+	t.Run("zero-mean baseline has no percent delta and is confidently unchanged", testCompareMetricZeroMean)
+	t.Run("clear improvement is statistically fit with correct delta", testCompareMetricImprovement)
+	t.Run("noise not marked fit", testCompareMetricNoise)
+}
 
-	t.Run("zero-mean baseline has no percent delta and is confidently unchanged", func(t *testing.T) {
-		base := mk("peak_memory_bytes", 0, 0, 0, 0)
-		// constant zeros: se==0 with equal means -> confidently unchanged,
-		// which counts as supported (no regression possible).
-		cand := mk("peak_memory_bytes", 0, 0, 0, 0)
-		got := compareMetric("w", "peak_memory_bytes", "bytes", base, cand, peakMemory)
-		c := got[0]
-		if c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || !c.StatisticallyFit {
-			t.Fatalf("unexpected comparison %+v", c)
-		}
-	})
+func testCompareMetricMissingBaseline(t *testing.T) {
+	got := compareMetric("wl", "wall_time_ns", "ns", []domain.RunResult{{}}, metricRuns("wall_time_ns", 1, 2), wallTime)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	c := got[0]
+	if c.Name != "wl/wall_time_ns" || c.Unit != "ns" || c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || c.StatisticallyFit {
+		t.Fatalf("unexpected comparison %+v", c)
+	}
+}
 
-	t.Run("clear improvement is statistically fit with correct delta", func(t *testing.T) {
-		base := mk("wall_time_ns", 100, 102, 99, 101, 100, 98, 101)
-		cand := mk("wall_time_ns", 50, 51, 49, 50, 52, 48, 51)
-		got := compareMetric("wid", "wall_time_ns", "ns", base, cand, wallTime)
-		if len(got) != 1 {
-			t.Fatalf("len = %d", len(got))
-		}
-		c := got[0]
-		if c.Name != "wid/wall_time_ns" || c.Unit != "ns" {
-			t.Fatalf("unexpected name/unit %+v", c)
-		}
-		if math.Abs(c.Baseline-701.0/7) > 1e-9 || math.Abs(c.Candidate-351.0/7) > 1e-9 {
-			t.Fatalf("means wrong: %+v", c)
-		}
-		wantDelta := percentDelta(701.0/7, 351.0/7)
-		if math.Abs(c.DeltaPercent-wantDelta) > 1e-9 {
-			t.Fatalf("delta = %v", c.DeltaPercent)
-		}
-		if !c.StatisticallyFit {
-			t.Fatal("expected statistical support")
-		}
-	})
+func testCompareMetricZeroMean(t *testing.T) {
+	base := metricRuns("peak_memory_bytes", 0, 0, 0, 0)
+	// constant zeros: se==0 with equal means -> confidently unchanged,
+	// which counts as supported (no regression possible).
+	cand := metricRuns("peak_memory_bytes", 0, 0, 0, 0)
+	got := compareMetric("w", "peak_memory_bytes", "bytes", base, cand, peakMemory)
+	c := got[0]
+	if c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || !c.StatisticallyFit {
+		t.Fatalf("unexpected comparison %+v", c)
+	}
+}
 
-	t.Run("noise not marked fit", func(t *testing.T) {
-		base := mk("cpu_time_ns", 100, 105, 95, 103, 97, 102, 98)
-		cand := mk("cpu_time_ns", 101, 96, 104, 99, 102, 97, 100)
-		got := compareMetric("w", "cpu_time_ns", "ns", base, cand, cpuTime)[0]
-		if got.StatisticallyFit {
-			t.Fatalf("noise should not be statistically fit: %+v", got)
-		}
-	})
+func testCompareMetricImprovement(t *testing.T) {
+	base := metricRuns("wall_time_ns", 100, 102, 99, 101, 100, 98, 101)
+	cand := metricRuns("wall_time_ns", 50, 51, 49, 50, 52, 48, 51)
+	got := compareMetric("wid", "wall_time_ns", "ns", base, cand, wallTime)
+	if len(got) != 1 {
+		t.Fatalf("len = %d", len(got))
+	}
+	c := got[0]
+	if c.Name != "wid/wall_time_ns" || c.Unit != "ns" {
+		t.Fatalf("unexpected name/unit %+v", c)
+	}
+	if math.Abs(c.Baseline-701.0/7) > 1e-9 || math.Abs(c.Candidate-351.0/7) > 1e-9 {
+		t.Fatalf("means wrong: %+v", c)
+	}
+	wantDelta := percentDelta(701.0/7, 351.0/7)
+	if math.Abs(c.DeltaPercent-wantDelta) > 1e-9 {
+		t.Fatalf("delta = %v", c.DeltaPercent)
+	}
+	if !c.StatisticallyFit {
+		t.Fatal("expected statistical support")
+	}
+}
+
+func testCompareMetricNoise(t *testing.T) {
+	base := metricRuns("cpu_time_ns", 100, 105, 95, 103, 97, 102, 98)
+	cand := metricRuns("cpu_time_ns", 101, 96, 104, 99, 102, 97, 100)
+	got := compareMetric("w", "cpu_time_ns", "ns", base, cand, cpuTime)[0]
+	if got.StatisticallyFit {
+		t.Fatalf("noise should not be statistically fit: %+v", got)
+	}
 }
 
 func TestBinarySizes(t *testing.T) {

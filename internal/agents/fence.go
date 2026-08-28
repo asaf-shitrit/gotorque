@@ -101,43 +101,61 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 		var backoff time.Duration
 		yieldedAny := false
 		for attempt := 0; attempt < attempts; attempt++ {
-			if backoff > 0 {
-				select {
-				case <-ctx.Done():
-					yield(nil, ctx.Err())
-					return
-				case <-time.After(backoff):
-				}
+			if err := waitBackoff(ctx, backoff); err != nil {
+				yield(nil, err)
+				return
 			}
-			retrying := false
-			for resp, err := range m.inner.GenerateContent(ctx, req, stream) {
-				if err != nil {
-					if !yieldedAny && attempt < attempts-1 {
-						retrying = true
-						break
-					}
-					if !yield(resp, err) {
-						return
-					}
-					continue
-				}
-				rewriteResponse(resp)
-				m.usage.Record(m.role, resp.UsageMetadata)
-				if !resp.Partial && !responseTextIsJSON(resp) && !yieldedAny && attempt < attempts-1 {
-					retrying = true
-					break
-				}
-				yieldedAny = true
-				if !yield(resp, nil) {
-					return
-				}
-			}
-			if !retrying {
+			retry, stop := m.streamAttempt(ctx, req, stream, yield, attempt, attempts-1, &yieldedAny)
+			if stop || !retry {
 				return
 			}
 			backoff = time.Duration(1<<uint(attempt)) * 15 * time.Second // 15s, 30s, 60s
 		}
 	}
+}
+
+func waitBackoff(ctx context.Context, backoff time.Duration) error {
+	if backoff <= 0 {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(backoff):
+		return nil
+	}
+}
+
+func canRetryGenerate(yieldedAny bool, attempt, lastAttempt int) bool {
+	return !yieldedAny && attempt < lastAttempt
+}
+
+func retryUnparseable(resp *model.LLMResponse, yieldedAny bool, attempt, lastAttempt int) bool {
+	return canRetryGenerate(yieldedAny, attempt, lastAttempt) && !resp.Partial && !responseTextIsJSON(resp)
+}
+
+func (m fenceStrippingModel) streamAttempt(ctx context.Context, req *model.LLMRequest, stream bool, yield func(*model.LLMResponse, error) bool, attempt, last int, yieldedAny *bool) (retry, stop bool) {
+	for resp, err := range m.inner.GenerateContent(ctx, req, stream) {
+		if err != nil {
+			if canRetryGenerate(*yieldedAny, attempt, last) {
+				return true, false
+			}
+			if !yield(resp, err) {
+				return false, true
+			}
+			continue
+		}
+		rewriteResponse(resp)
+		m.usage.Record(m.role, resp.UsageMetadata)
+		if retryUnparseable(resp, *yieldedAny, attempt, last) {
+			return true, false
+		}
+		*yieldedAny = true
+		if !yield(resp, nil) {
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // responseTextIsJSON reports whether the complete response's visible text
@@ -205,14 +223,7 @@ func balancedJSON(s string) (string, bool) {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if inString {
-			switch {
-			case escaped:
-				escaped = false
-			case c == '\\':
-				escaped = true
-			case c == '"':
-				inString = false
-			}
+			inString = scanJSONString(c, &escaped)
 			continue
 		}
 		switch c {
@@ -227,21 +238,28 @@ func balancedJSON(s string) (string, bool) {
 			}
 			depth++
 		case '}', ']':
-			if depth == 0 {
-				continue
-			}
-			depth--
-			if depth == 0 {
-				close := byte('}')
-				if open == '[' {
-					close = ']'
-				}
-				if c != close {
-					return "", false
-				}
-				return s[start : i+1], true
+			if payload, ok, cont := closeBalanced(s, start, i, open, c, &depth); !cont {
+				return payload, ok
 			}
 		}
 	}
 	return "", false
+}
+
+func closeBalanced(s string, start, i int, open, c byte, depth *int) (string, bool, bool) {
+	if *depth == 0 {
+		return "", false, true
+	}
+	*depth--
+	if *depth != 0 {
+		return "", false, true
+	}
+	want := byte('}')
+	if open == '[' {
+		want = ']'
+	}
+	if c != want {
+		return "", false, false
+	}
+	return s[start : i+1], true, false
 }

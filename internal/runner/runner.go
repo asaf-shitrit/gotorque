@@ -76,8 +76,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 		return domain.RunResult{}, err
 	}
 	networkDisabled := !req.NetworkAllowed
-	localIsolation := r.localIsolation && (networkDisabled || !req.FilesystemAllowed)
-	sandbox, err := NewSandbox(SandboxOptions{Root: r.sandboxRoot, NetworkDisabled: networkDisabled && !localIsolation, NetworkGuard: r.networkGuard, FilesystemRestricted: !req.FilesystemAllowed && !localIsolation, FilesystemGuard: r.filesystemGuard, KeepOnFailure: r.keepFailedRuns})
+	localIsolation := r.useLocalIsolation(req, networkDisabled)
+	sandbox, err := NewSandbox(r.sandboxOptions(req, networkDisabled, localIsolation))
 	if err != nil {
 		return domain.RunResult{}, err
 	}
@@ -86,51 +86,94 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 	if err := materializeFixtures(sandbox.WorkDir, req.Fixtures); err != nil {
 		return domain.RunResult{}, err
 	}
-
-	stdin, err := openInput(req.Workload.StdinPath)
+	stdinReader, closer, err := openStdin(req)
 	if err != nil {
 		return domain.RunResult{}, err
 	}
-	if stdin != nil {
-		defer stdin.Close()
+	if closer != nil {
+		defer closer.Close()
 	}
-	env := append(sandbox.Env(), mapEnvironment(req.AdditionalEnv)...)
-	if req.Mode == domain.RunModeDiscovery {
-		coverageDir := filepath.Join(sandbox.Root, "coverage")
-		if err := os.MkdirAll(coverageDir, 0o700); err != nil {
-			return domain.RunResult{}, err
-		}
-		env = append(env, "GOCOVERDIR="+coverageDir)
+	env, err := discoveryEnv(sandbox, req)
+	if err != nil {
+		return domain.RunResult{}, err
 	}
-
-	workloadCtx := ctx
-	var cancel context.CancelFunc
-	if req.Workload.Timeout > 0 {
-		workloadCtx, cancel = context.WithTimeout(ctx, req.Workload.Timeout)
-		defer cancel()
-	}
+	workloadCtx, cancel := withWorkloadTimeout(ctx, req.Workload.Timeout)
+	defer cancel()
 	started := r.now()
-	// A typed-nil *os.File must never reach exec.Cmd: os/exec would wire the
-	// child's descriptor 0 to an invalid file and Go runtimes abort on startup
-	// when standard descriptors are closed.
-	var stdinReader io.Reader
-	if len(req.Stdin) > 0 {
-		stdinReader = bytes.NewReader(req.Stdin)
-	} else if stdin != nil {
-		stdinReader = stdin
-	}
-	commandPath := req.Build.BinaryPath
-	commandArgs := append([]string(nil), req.Workload.Command.Args...)
-	if localIsolation {
-		commandPath, commandArgs, err = isolatedCommand(sandbox.Root, sandbox.WorkDir, networkDisabled, commandPath, commandArgs)
-		if err != nil {
-			return domain.RunResult{}, err
-		}
+	commandPath, commandArgs, err := maybeIsolate(localIsolation, sandbox, networkDisabled, req)
+	if err != nil {
+		return domain.RunResult{}, err
 	}
 	commandResult, runErr := r.executor.Run(workloadCtx, toolchain.Invocation{
 		Path: commandPath, Args: commandArgs,
 		Dir: sandbox.WorkDir, Env: env, Stdin: stdinReader,
 	})
+	result := buildRunResult(req, started, commandResult, runErr)
+	if err := r.collectRunArtifacts(&result, sandbox, commandResult, req.Mode); err != nil {
+		return result, err
+	}
+	success = runErr == nil
+	return result, runErr
+}
+
+func (r *Runner) useLocalIsolation(req RunRequest, networkDisabled bool) bool {
+	return r.localIsolation && (networkDisabled || !req.FilesystemAllowed)
+}
+
+func (r *Runner) sandboxOptions(req RunRequest, networkDisabled, localIsolation bool) SandboxOptions {
+	return SandboxOptions{
+		Root: r.sandboxRoot, NetworkDisabled: networkDisabled && !localIsolation, NetworkGuard: r.networkGuard,
+		FilesystemRestricted: !req.FilesystemAllowed && !localIsolation, FilesystemGuard: r.filesystemGuard,
+		KeepOnFailure: r.keepFailedRuns,
+	}
+}
+
+func openStdin(req RunRequest) (io.Reader, io.Closer, error) {
+	file, err := openInput(req.Workload.StdinPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	// A typed-nil *os.File must never reach exec.Cmd: os/exec would wire the
+	// child's descriptor 0 to an invalid file and Go runtimes abort on startup
+	// when standard descriptors are closed.
+	if len(req.Stdin) > 0 {
+		return bytes.NewReader(req.Stdin), file, nil
+	}
+	if file != nil {
+		return file, file, nil
+	}
+	return nil, nil, nil
+}
+
+func discoveryEnv(sandbox *Sandbox, req RunRequest) ([]string, error) {
+	env := append(sandbox.Env(), mapEnvironment(req.AdditionalEnv)...)
+	if req.Mode != domain.RunModeDiscovery {
+		return env, nil
+	}
+	coverageDir := filepath.Join(sandbox.Root, "coverage")
+	if err := os.MkdirAll(coverageDir, 0o700); err != nil {
+		return nil, err
+	}
+	return append(env, "GOCOVERDIR="+coverageDir), nil
+}
+
+func withWorkloadTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return ctx, func() {}
+}
+
+func maybeIsolate(localIsolation bool, sandbox *Sandbox, networkDisabled bool, req RunRequest) (string, []string, error) {
+	path := req.Build.BinaryPath
+	args := append([]string(nil), req.Workload.Command.Args...)
+	if !localIsolation {
+		return path, args, nil
+	}
+	return isolatedCommand(sandbox.Root, sandbox.WorkDir, networkDisabled, path, args)
+}
+
+func buildRunResult(req RunRequest, started time.Time, commandResult toolchain.Result, runErr error) domain.RunResult {
 	result := domain.RunResult{
 		ID: runID(req.Build.ID, req.Workload.ID, started), BuildID: req.Build.ID, WorkloadID: req.Workload.ID,
 		Mode: req.Mode, StartedAt: started, Duration: commandResult.Duration, ExitCode: commandResult.ExitCode,
@@ -150,37 +193,51 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 	if runErr != nil {
 		result.Error = runErr.Error()
 	}
-	if _, path, err := r.artifacts.Put("stdout", commandResult.Stdout); err != nil {
-		return result, err
-	} else {
-		result.Artifacts["stdout"] = path
-	}
-	if _, path, err := r.artifacts.Put("stderr", commandResult.Stderr); err != nil {
-		return result, err
-	} else {
-		result.Artifacts["stderr"] = path
+	return result
+}
+
+func (r *Runner) collectRunArtifacts(result *domain.RunResult, sandbox *Sandbox, commandResult toolchain.Result, mode domain.RunMode) error {
+	if err := r.putRunOutput(result, commandResult); err != nil {
+		return err
 	}
 	files, err := r.artifacts.SnapshotFiles(sandbox.WorkDir)
 	if err != nil {
-		return result, err
+		return err
 	}
 	for key, value := range files {
 		result.Artifacts[key] = value
 	}
-	if req.Mode == domain.RunModeDiscovery {
-		coverage, err := r.artifacts.SnapshotFiles(filepath.Join(sandbox.Root, "coverage"))
-		if err != nil {
-			return result, err
-		}
-		for key, value := range coverage {
-			result.Artifacts["coverage:"+key] = value
-		}
+	if mode != domain.RunModeDiscovery {
+		return nil
 	}
-	success = runErr == nil
-	if runErr != nil {
-		return result, runErr
+	return r.snapshotCoverage(result, sandbox.Root)
+}
+
+func (r *Runner) putRunOutput(result *domain.RunResult, commandResult toolchain.Result) error {
+	if err := r.putArtifact(result, "stdout", commandResult.Stdout); err != nil {
+		return err
 	}
-	return result, nil
+	return r.putArtifact(result, "stderr", commandResult.Stderr)
+}
+
+func (r *Runner) putArtifact(result *domain.RunResult, name string, data []byte) error {
+	_, path, err := r.artifacts.Put(name, data)
+	if err != nil {
+		return err
+	}
+	result.Artifacts[name] = path
+	return nil
+}
+
+func (r *Runner) snapshotCoverage(result *domain.RunResult, root string) error {
+	coverage, err := r.artifacts.SnapshotFiles(filepath.Join(root, "coverage"))
+	if err != nil {
+		return err
+	}
+	for key, value := range coverage {
+		result.Artifacts["coverage:"+key] = value
+	}
+	return nil
 }
 
 func isolatedCommand(root, workDir string, denyNetwork bool, path string, args []string) (string, []string, error) {
@@ -270,26 +327,43 @@ func materializeFixtures(root string, fixtures map[string][]byte) error {
 }
 
 func validateRunRequest(req RunRequest) error {
-	if req.Build.ID == "" || req.Build.BinaryPath == "" || !filepath.IsAbs(req.Build.BinaryPath) {
-		return errors.New("build ID and absolute binary path are required")
-	}
-	if _, err := os.Stat(req.Build.BinaryPath); err != nil {
+	if err := validateBuild(req.Build); err != nil {
 		return err
 	}
 	if req.Workload.ID == "" {
 		return errors.New("workload ID is required")
 	}
-	switch req.Mode {
-	case domain.RunModeDiscovery, domain.RunModeDiagnosis, domain.RunModeMeasurement, domain.RunModeValidation:
-	default:
-		return fmt.Errorf("unsupported run mode %q", req.Mode)
+	if err := validateRunMode(req.Mode); err != nil {
+		return err
 	}
-	if req.Workload.Command.Path != "" {
-		a, errA := filepath.EvalSymlinks(req.Build.BinaryPath)
-		b, errB := filepath.EvalSymlinks(req.Workload.Command.Path)
-		if errA != nil || errB != nil || a != b {
-			return errors.New("workload command path must be the configured build binary")
-		}
+	return validateWorkloadBinary(req)
+}
+
+func validateBuild(b Build) error {
+	if b.ID == "" || b.BinaryPath == "" || !filepath.IsAbs(b.BinaryPath) {
+		return errors.New("build ID and absolute binary path are required")
+	}
+	_, err := os.Stat(b.BinaryPath)
+	return err
+}
+
+func validateRunMode(mode domain.RunMode) error {
+	switch mode {
+	case domain.RunModeDiscovery, domain.RunModeDiagnosis, domain.RunModeMeasurement, domain.RunModeValidation:
+		return nil
+	default:
+		return fmt.Errorf("unsupported run mode %q", mode)
+	}
+}
+
+func validateWorkloadBinary(req RunRequest) error {
+	if req.Workload.Command.Path == "" {
+		return nil
+	}
+	a, errA := filepath.EvalSymlinks(req.Build.BinaryPath)
+	b, errB := filepath.EvalSymlinks(req.Workload.Command.Path)
+	if errA != nil || errB != nil || a != b {
+		return errors.New("workload command path must be the configured build binary")
 	}
 	return nil
 }
@@ -375,4 +449,3 @@ func sortedLines(stdout []byte) []byte {
 	sort.Strings(lines)
 	return []byte(strings.Join(lines, "\n"))
 }
-

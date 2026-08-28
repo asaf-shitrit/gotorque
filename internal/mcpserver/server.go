@@ -305,27 +305,35 @@ func (s *Server) readResource(ctx context.Context, request *mcp.ReadResourceRequ
 	}}}, nil
 }
 
+var approvedResources = map[string]map[string]struct{}{
+	"repo":      {"inventory": {}, "coverage": {}},
+	"campaign":  {"manifest": {}, "hot-paths": {}, "report": {}},
+	"run":       {"summary": {}},
+	"candidate": {"diff": {}, "comparison": {}},
+	"artifact":  {"metadata": {}},
+}
+
 func approvedResourceURI(raw string) bool {
+	uri, name, ok := parseResourceURI(raw)
+	if !ok {
+		return false
+	}
+	allowed, ok := approvedResources[uri.Scheme]
+	if !ok {
+		return false
+	}
+	_, ok = allowed[name]
+	return ok
+}
+
+func parseResourceURI(raw string) (*url.URL, string, bool) {
 	uri, err := url.Parse(raw)
 	if err != nil || uri.Host == "" || uri.RawQuery != "" || uri.Fragment != "" {
-		return false
+		return nil, "", false
 	}
 	segments := strings.Split(strings.Trim(uri.Path, "/"), "/")
 	if len(segments) != 1 || segments[0] == "" {
-		return false
+		return nil, "", false
 	}
-	switch uri.Scheme {
-	case "repo":
-		return segments[0] == "inventory" || segments[0] == "coverage"
-	case "campaign":
-		return segments[0] == "manifest" || segments[0] == "hot-paths" || segments[0] == "report"
-	case "run":
-		return segments[0] == "summary"
-	case "candidate":
-		return segments[0] == "diff" || segments[0] == "comparison"
-	case "artifact":
-		return segments[0] == "metadata"
-	default:
-		return false
-	}
+	return uri, segments[0], true
 }

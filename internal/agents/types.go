@@ -251,55 +251,31 @@ type flexText string
 
 func (f *flexText) UnmarshalJSON(data []byte) error {
 	trimmed := trimSpaceBytes(data)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+	if emptyOrNull(trimmed) {
 		return nil
 	}
-	if trimmed[0] == '"' {
+	switch trimmed[0] {
+	case '"':
 		var text string
 		if err := json.Unmarshal(trimmed, &text); err != nil {
 			return err
 		}
 		*f = flexText(text)
 		return nil
-	}
-	if trimmed[0] == '[' {
+	case '[':
 		var list []json.RawMessage
 		if err := json.Unmarshal(trimmed, &list); err != nil {
 			return err
 		}
-		for _, element := range list {
-			var text string
-			if err := json.Unmarshal(element, &text); err == nil && text != "" {
-				*f = flexText(text)
-				return nil
-			}
-		}
+		*f = flexText(firstStringInList(list))
 		return nil
-	}
-	if trimmed[0] == '{' {
+	case '{':
 		var object map[string]any
 		if err := json.Unmarshal(trimmed, &object); err != nil {
 			return err
 		}
-		for _, key := range []string{"content", "text", "data", "value", "body", "stdin", "input"} {
-			if raw, ok := object[key]; ok {
-				switch typed := raw.(type) {
-				case string:
-					*f = flexText(typed)
-					return nil
-				default:
-					encoded, err := json.Marshal(raw)
-					if err == nil {
-						*f = flexText(encoded)
-						return nil
-					}
-				}
-			}
-		}
-		// Structured values without a conventional text key collapse to
-		// their identifying scalar when one exists.
-		if extracted := identifyingString(object); extracted != "" {
-			*f = flexText(extracted)
+		if text, ok := flexTextFromObject(object); ok {
+			*f = text
 			return nil
 		}
 	}
@@ -309,56 +285,98 @@ func (f *flexText) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func firstStringInList(list []json.RawMessage) string {
+	for _, element := range list {
+		var text string
+		if err := json.Unmarshal(element, &text); err == nil && text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func flexTextFromObject(object map[string]any) (flexText, bool) {
+	for _, key := range []string{"content", "text", "data", "value", "body", "stdin", "input"} {
+		raw, ok := object[key]
+		if !ok {
+			continue
+		}
+		if text, ok := raw.(string); ok {
+			return flexText(text), true
+		}
+		encoded, err := json.Marshal(raw)
+		if err == nil {
+			return flexText(encoded), true
+		}
+	}
+	// Structured values without a conventional text key collapse to
+	// their identifying scalar when one exists.
+	if extracted := identifyingString(object); extracted != "" {
+		return flexText(extracted), true
+	}
+	return "", false
+}
+
 // flexFixtures decodes fixtures given as an array of {path, content}, a
 // single fixture object, or a path-to-content mapping.
 type flexFixtures []ProposedFixture
 
 func (f *flexFixtures) UnmarshalJSON(data []byte) error {
 	trimmed := trimSpaceBytes(data)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+	if emptyOrNull(trimmed) {
 		return nil
 	}
 	switch trimmed[0] {
 	case '[':
-		var list []json.RawMessage
-		if err := json.Unmarshal(trimmed, &list); err != nil {
-			return err
-		}
-		for _, element := range list {
-			if hp, ok := decodeFixture(element); ok {
-				*f = append(*f, hp)
-			}
-		}
-		return nil
+		return f.decodeFixtureList(trimmed)
 	case '{':
-		var single ProposedFixture
-		if err := json.Unmarshal(trimmed, &single); err == nil && single.Path != "" {
-			*f = []ProposedFixture{single}
-			return nil
-		}
-		var mapping map[string]json.RawMessage
-		if err := json.Unmarshal(trimmed, &mapping); err != nil {
-			return err
-		}
-		fixtures := make([]ProposedFixture, 0, len(mapping))
-		for path, rawContent := range mapping {
-			fixture := ProposedFixture{Path: path}
-			var text string
-			if err := json.Unmarshal(rawContent, &text); err == nil {
-				fixture.Content = text
-			} else {
-				fixture.Content = string(rawContent)
-			}
-			fixtures = append(fixtures, fixture)
-		}
-		*f = fixtures
-		return nil
+		return f.decodeFixtureObject(trimmed)
 	default:
 		// Unusable shapes (bare strings, numbers) are dropped: fixtures are
 		// optional and deterministic validation re-checks every materialized
 		// workload.
 		return nil
 	}
+}
+
+func (f *flexFixtures) decodeFixtureList(trimmed []byte) error {
+	var list []json.RawMessage
+	if err := json.Unmarshal(trimmed, &list); err != nil {
+		return err
+	}
+	for _, element := range list {
+		if fx, ok := decodeFixture(element); ok {
+			*f = append(*f, fx)
+		}
+	}
+	return nil
+}
+
+func (f *flexFixtures) decodeFixtureObject(trimmed []byte) error {
+	var single ProposedFixture
+	if err := json.Unmarshal(trimmed, &single); err == nil && single.Path != "" {
+		*f = []ProposedFixture{single}
+		return nil
+	}
+	var mapping map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &mapping); err != nil {
+		return err
+	}
+	*f = fixturesFromMapping(mapping)
+	return nil
+}
+
+func fixturesFromMapping(mapping map[string]json.RawMessage) []ProposedFixture {
+	fixtures := make([]ProposedFixture, 0, len(mapping))
+	for path, rawContent := range mapping {
+		fixture := ProposedFixture{Path: path, Content: string(rawContent)}
+		var text string
+		if err := json.Unmarshal(rawContent, &text); err == nil {
+			fixture.Content = text
+		}
+		fixtures = append(fixtures, fixture)
+	}
+	return fixtures
 }
 
 // decodeFixture accepts a {path, content} object, a bare path string, or
@@ -463,47 +481,55 @@ type flexHotPaths []HotPath
 
 func (f *flexHotPaths) UnmarshalJSON(data []byte) error {
 	trimmed := trimSpaceBytes(data)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+	if emptyOrNull(trimmed) {
 		return nil
 	}
 	switch trimmed[0] {
 	case '[':
-		var list []json.RawMessage
-		if err := json.Unmarshal(trimmed, &list); err != nil {
-			return err
-		}
-		for _, element := range list {
-			if hp, ok := decodeHotPath(element); ok {
-				*f = append(*f, hp)
-			}
-		}
-		return nil
+		return f.decodeHotPathList(trimmed)
 	case '{':
-		var grouped map[string]json.RawMessage
-		if err := json.Unmarshal(trimmed, &grouped); err != nil {
-			return err
-		}
-		if hp, ok := decodeHotPath(trimmed); ok {
-			*f = append(*f, hp)
-			return nil
-		}
-		for _, key := range []string{"measured", "suspected", "suspicions", "paths", "hot_paths", "entries", "items"} {
-			raw, ok := grouped[key]
-			if !ok {
-				continue
-			}
-			var list []json.RawMessage
-			if err := json.Unmarshal(raw, &list); err != nil {
-				continue
-			}
-			for _, element := range list {
-				if hp, ok := decodeHotPath(element); ok {
-					*f = append(*f, hp)
-				}
-			}
-		}
-		return nil
+		return f.decodeHotPathObject(trimmed)
 	default:
 		return nil
+	}
+}
+
+func (f *flexHotPaths) decodeHotPathList(trimmed []byte) error {
+	var list []json.RawMessage
+	if err := json.Unmarshal(trimmed, &list); err != nil {
+		return err
+	}
+	appendHotPaths(f, list)
+	return nil
+}
+
+func (f *flexHotPaths) decodeHotPathObject(trimmed []byte) error {
+	var grouped map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &grouped); err != nil {
+		return err
+	}
+	if hp, ok := decodeHotPath(trimmed); ok {
+		*f = append(*f, hp)
+		return nil
+	}
+	for _, key := range []string{"measured", "suspected", "suspicions", "paths", "hot_paths", "entries", "items"} {
+		raw, ok := grouped[key]
+		if !ok {
+			continue
+		}
+		var list []json.RawMessage
+		if err := json.Unmarshal(raw, &list); err != nil {
+			continue
+		}
+		appendHotPaths(f, list)
+	}
+	return nil
+}
+
+func appendHotPaths(dst *flexHotPaths, list []json.RawMessage) {
+	for _, element := range list {
+		if hp, ok := decodeHotPath(element); ok {
+			*dst = append(*dst, hp)
+		}
 	}
 }

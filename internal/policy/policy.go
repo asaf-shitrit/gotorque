@@ -79,53 +79,18 @@ func DefaultConfig() Config {
 // only a statistically supported representative improvement can be accepted.
 func Evaluate(config Config, evidence Evidence) Result {
 	config = withDefaults(config)
-	result := Result{Decision: domain.DecisionInconclusive}
-	result.Comparisons = comparisonResults(evidence.Comparisons)
-
-	if !evidence.BehaviorMatches {
-		return reject(result, "behavior does not match the baseline after normalization")
+	result := Result{Decision: domain.DecisionInconclusive, Comparisons: comparisonResults(evidence.Comparisons)}
+	if early, done := evidenceGates(result, evidence); done {
+		return early
 	}
-	if !evidence.SafetyChecksPassed {
-		return reject(result, "a required safety or validation check failed")
-	}
-	if !evidence.RepresentativeEvidence {
-		return inconclusive(result, "no representative workload evidence is available")
-	}
-
-	byName := make(map[string]ComparisonResult, len(result.Comparisons))
-	for _, comparison := range result.Comparisons {
-		byName[comparison.Name] = comparison
-	}
-	primary, ok := byName[config.PrimaryMetric]
+	byName := indexComparisons(result.Comparisons)
+	primary, result, ok := lookupPrimary(config, byName, result)
 	if !ok {
-		return inconclusive(result, fmt.Sprintf("primary metric %q is missing", config.PrimaryMetric))
+		return result
 	}
-	if config.StatisticalSupportRequired && !primary.StatisticallySupported {
-		return inconclusive(result, fmt.Sprintf("primary metric %q is not statistically supported", config.PrimaryMetric))
+	if early, done := checkGuardrails(config, byName, result); done {
+		return early
 	}
-	if !finitePositive(primary.Baseline) || !finite(primary.Candidate) {
-		return inconclusive(result, fmt.Sprintf("primary metric %q has invalid measurements", config.PrimaryMetric))
-	}
-
-	for _, guardrail := range config.Guardrails {
-		comparison, found := byName[guardrail.Name]
-		if !found {
-			if guardrail.Required {
-				return inconclusive(result, fmt.Sprintf("required guardrail %q is missing", guardrail.Name))
-			}
-			continue
-		}
-		if !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
-			return inconclusive(result, fmt.Sprintf("guardrail %q has invalid measurements", guardrail.Name))
-		}
-		if config.StatisticalSupportRequired && !comparison.StatisticallySupported {
-			return inconclusive(result, fmt.Sprintf("guardrail %q is not statistically supported", guardrail.Name))
-		}
-		if comparison.DeltaPercent > guardrailLimit(config, guardrail) {
-			return reject(result, fmt.Sprintf("guardrail %q regressed by %.2f%%, over the %.2f%% limit", guardrail.Name, comparison.DeltaPercent, guardrailLimit(config, guardrail)))
-		}
-	}
-
 	improvement := -primary.DeltaPercent
 	if improvement < config.MinimumImprovementPercent {
 		return inconclusive(result, fmt.Sprintf("primary metric improved by %.2f%%, below the %.2f%% threshold", improvement, config.MinimumImprovementPercent))
@@ -133,6 +98,70 @@ func Evaluate(config Config, evidence Evidence) Result {
 	result.Decision = domain.DecisionAccepted
 	result.Reasons = []string{fmt.Sprintf("primary metric improved by %.2f%% with required evidence and no guardrail regression", improvement)}
 	return result
+}
+
+func evidenceGates(result Result, evidence Evidence) (Result, bool) {
+	if !evidence.BehaviorMatches {
+		return reject(result, "behavior does not match the baseline after normalization"), true
+	}
+	if !evidence.SafetyChecksPassed {
+		return reject(result, "a required safety or validation check failed"), true
+	}
+	if !evidence.RepresentativeEvidence {
+		return inconclusive(result, "no representative workload evidence is available"), true
+	}
+	return result, false
+}
+
+func indexComparisons(comparisons []ComparisonResult) map[string]ComparisonResult {
+	byName := make(map[string]ComparisonResult, len(comparisons))
+	for _, comparison := range comparisons {
+		byName[comparison.Name] = comparison
+	}
+	return byName
+}
+
+func lookupPrimary(config Config, byName map[string]ComparisonResult, result Result) (ComparisonResult, Result, bool) {
+	primary, ok := byName[config.PrimaryMetric]
+	if !ok {
+		return primary, inconclusive(result, fmt.Sprintf("primary metric %q is missing", config.PrimaryMetric)), false
+	}
+	if config.StatisticalSupportRequired && !primary.StatisticallySupported {
+		return primary, inconclusive(result, fmt.Sprintf("primary metric %q is not statistically supported", config.PrimaryMetric)), false
+	}
+	if !finitePositive(primary.Baseline) || !finite(primary.Candidate) {
+		return primary, inconclusive(result, fmt.Sprintf("primary metric %q has invalid measurements", config.PrimaryMetric)), false
+	}
+	return primary, result, true
+}
+
+func checkGuardrails(config Config, byName map[string]ComparisonResult, result Result) (Result, bool) {
+	for _, guardrail := range config.Guardrails {
+		if early, done := checkOneGuardrail(config, guardrail, byName, result); done {
+			return early, true
+		}
+	}
+	return result, false
+}
+
+func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]ComparisonResult, result Result) (Result, bool) {
+	comparison, found := byName[guardrail.Name]
+	if !found {
+		if guardrail.Required {
+			return inconclusive(result, fmt.Sprintf("required guardrail %q is missing", guardrail.Name)), true
+		}
+		return result, false
+	}
+	if !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
+		return inconclusive(result, fmt.Sprintf("guardrail %q has invalid measurements", guardrail.Name)), true
+	}
+	if config.StatisticalSupportRequired && !comparison.StatisticallySupported {
+		return inconclusive(result, fmt.Sprintf("guardrail %q is not statistically supported", guardrail.Name)), true
+	}
+	if comparison.DeltaPercent > guardrailLimit(config, guardrail) {
+		return reject(result, fmt.Sprintf("guardrail %q regressed by %.2f%%, over the %.2f%% limit", guardrail.Name, comparison.DeltaPercent, guardrailLimit(config, guardrail))), true
+	}
+	return result, false
 }
 
 func withDefaults(config Config) Config {

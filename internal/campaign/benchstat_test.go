@@ -164,9 +164,13 @@ func TestCompareWallTimeMetricWithBenchstat(t *testing.T) {
 	if !strings.Contains(output, "p=0.001") {
 		t.Fatalf("raw output missing p-value: %q", output)
 	}
-	// Sample files land under <campaign>/benchstat/.
-	for _, name := range []string{"wid.base.txt", "wid.cand.txt"} {
-		data, err := os.ReadFile(filepath.Join(e.dir, "benchstat", name))
+	requireBenchstatSampleFiles(t, e.dir, "wid.base.txt", "wid.cand.txt")
+}
+
+func requireBenchstatSampleFiles(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(dir, "benchstat", name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}

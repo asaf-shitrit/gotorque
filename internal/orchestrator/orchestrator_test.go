@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,99 @@ func staticAgent[T any](t *testing.T, name string, output T, calls *int) adkagen
 	return a
 }
 
+func mustNew(t *testing.T, deps Dependencies, cfg Config) *Orchestrator {
+	t.Helper()
+	orch, err := New(deps, cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return orch
+}
+
+func mustRunner(t *testing.T, name string, orch *Orchestrator) *adkrunner.Runner {
+	t.Helper()
+	r, err := adkrunner.NewInMemory(name, orch.Agent)
+	if err != nil {
+		t.Fatalf("NewInMemory() error = %v", err)
+	}
+	return r
+}
+
+func mustMessage(t *testing.T, req any) *genai.Content {
+	t.Helper()
+	payload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}
+}
+
+func eventHasNode(event *session.Event, nodeName string) bool {
+	return event != nil && event.Output != nil && event.NodeInfo != nil && strings.Contains(event.NodeInfo.Path, nodeName)
+}
+
+func mustDecode[T any](t *testing.T, output any) T {
+	t.Helper()
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var out T
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	return out
+}
+
+func tryDecode[T any](output any) (T, bool) {
+	var out T
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		return out, false
+	}
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		return out, false
+	}
+	return out, true
+}
+
+func runUntilNode[T any](t *testing.T, orch *Orchestrator, runnerName, user, sessionID string, req any, nodeName string) T {
+	t.Helper()
+	r := mustRunner(t, runnerName, orch)
+	msg := mustMessage(t, req)
+	var out T
+	for event, runErr := range r.Run(context.Background(), user, sessionID, msg, adkagent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatalf("workflow run error = %v", runErr)
+		}
+		if !eventHasNode(event, nodeName) {
+			continue
+		}
+		out = mustDecode[T](t, event.Output)
+	}
+	return out
+}
+
+func assertAcceptedPromoted(t *testing.T, accepted, promoted []string) {
+	t.Helper()
+	want := []string{"candidate-1"}
+	if !slices.Equal(accepted, want) {
+		t.Errorf("accepted candidates = %v, want %v", accepted, want)
+	}
+	if !slices.Equal(promoted, want) {
+		t.Errorf("promoted = %v, want %v", promoted, want)
+	}
+}
+
+func assertRoleCalls(t *testing.T, want int, calls map[string]int) {
+	t.Helper()
+	for role, n := range calls {
+		if n != want {
+			t.Errorf("%s calls = %d, want %d", role, n, want)
+		}
+	}
+}
+
 func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 	var coordinatorCalls, explorerCalls, analystCalls, optimizerCalls, reviewerCalls int
 	roleSet := agents.Set{
@@ -139,16 +233,16 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true, BehaviorArgument: "outputs unchanged"}, &reviewerCalls),
 	}
 	runnerService := &fakeRunnerService{}
-	policy := &sequencePolicy{decisions: []domain.Decision{
+	seq := &sequencePolicy{decisions: []domain.Decision{
 		domain.DecisionAccepted,
 		domain.DecisionRejected,
 		domain.DecisionInconclusive,
 	}}
 	jobs := &fakeJobService{}
 
-	orch, err := New(Dependencies{
+	orch := mustNew(t, Dependencies{
 		Runner: runnerService,
-		Policy: policy,
+		Policy: seq,
 		Jobs:   jobs,
 		Agents: roleSet,
 	}, Config{
@@ -158,14 +252,6 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 		AgentTimeout:           time.Second,
 		MaxConcurrency:         1,
 	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	r, err := adkrunner.NewInMemory("optimizer-test", orch.Agent)
-	if err != nil {
-		t.Fatalf("NewInMemory() error = %v", err)
-	}
 	req := CampaignRequest{
 		CampaignID:       "campaign-1",
 		Repository:       "/repo",
@@ -174,28 +260,7 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 		CommandArgs:      []string{"scan"},
 		OptimizationMode: domain.PolicyIdiomatic,
 	}
-	payload, err := json.Marshal(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}
-
-	var result CampaignResult
-	for event, runErr := range r.Run(context.Background(), "user-1", "session-1", msg, adkagent.RunConfig{}) {
-		if runErr != nil {
-			t.Fatalf("workflow run error = %v", runErr)
-		}
-		if event == nil || event.Output == nil || event.NodeInfo == nil || !strings.Contains(event.NodeInfo.Path, "finalize_campaign") {
-			continue
-		}
-		encoded, err := json.Marshal(event.Output)
-		if err != nil {
-			t.Fatalf("marshal result: %v", err)
-		}
-		if err := json.Unmarshal(encoded, &result); err != nil {
-			t.Fatalf("decode result: %v", err)
-		}
-	}
+	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-1", req, "finalize_campaign")
 
 	if result.CampaignID != req.CampaignID {
 		t.Fatalf("campaign ID = %q, want %q", result.CampaignID, req.CampaignID)
@@ -206,26 +271,40 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 	if result.StopReason != "consecutive rejection/inconclusive limit reached" {
 		t.Errorf("stop reason = %q", result.StopReason)
 	}
-	if len(result.AcceptedCandidates) != 1 || result.AcceptedCandidates[0] != "candidate-1" {
-		t.Errorf("accepted candidates = %v, want [candidate-1]", result.AcceptedCandidates)
-	}
-	if got := runnerService.promoted; len(got) != 1 || got[0] != "candidate-1" {
-		t.Errorf("promoted = %v, want [candidate-1]", got)
-	}
-	for role, calls := range map[string]int{
+	assertAcceptedPromoted(t, result.AcceptedCandidates, runnerService.promoted)
+	assertRoleCalls(t, 3, map[string]int{
 		"coordinator": coordinatorCalls,
 		"explorer":    explorerCalls,
 		"analyst":     analystCalls,
 		"optimizer":   optimizerCalls,
 		"reviewer":    reviewerCalls,
-	} {
-		if calls != 3 {
-			t.Errorf("%s calls = %d, want 3", role, calls)
-		}
-	}
+	})
 	if len(jobs.progress) != 3 || jobs.complete != 1 {
 		t.Errorf("job progress/complete = %d/%d, want 3/1", len(jobs.progress), jobs.complete)
 	}
+}
+
+func collectPriorCandidates(t *testing.T, orch *Orchestrator, req CampaignRequest) []PriorCandidate {
+	t.Helper()
+	r := mustRunner(t, "optimizer-test", orch)
+	msg := mustMessage(t, req)
+	var prior []PriorCandidate
+	for event, runErr := range r.Run(context.Background(), "user-1", "session-fd", msg, adkagent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatalf("workflow run error = %v", runErr)
+		}
+		if !eventHasNode(event, "apply_policy") {
+			continue
+		}
+		state, ok := tryDecode[CampaignState](event.Output)
+		if !ok {
+			continue
+		}
+		if len(state.PriorCandidates) > 0 {
+			prior = state.PriorCandidates
+		}
+	}
+	return prior
 }
 
 func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
@@ -238,10 +317,9 @@ func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
 		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: false, BehaviorArgument: "suspect"}, &calls),
 	}
 	runnerService := &fakeRunnerService{failureDetail: ".go:9:2: undefined: fasterParse"}
-	policy := &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}}
-	orch, err := New(Dependencies{
+	orch := mustNew(t, Dependencies{
 		Runner: runnerService,
-		Policy: policy,
+		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
 		Jobs:   &fakeJobService{},
 		Agents: roleSet,
 	}, Config{
@@ -251,39 +329,7 @@ func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
 		AgentTimeout:           time.Second,
 		MaxConcurrency:         1,
 	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	r, err := adkrunner.NewInMemory("optimizer-test", orch.Agent)
-	if err != nil {
-		t.Fatalf("NewInMemory() error = %v", err)
-	}
-	payload, err := json.Marshal(CampaignRequest{CampaignID: "campaign-fd", Repository: "/repo", BaseRevision: "abc123", BuildTarget: "./cmd/tool"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}
-
-	var prior []PriorCandidate
-	for event, runErr := range r.Run(context.Background(), "user-1", "session-fd", msg, adkagent.RunConfig{}) {
-		if runErr != nil {
-			t.Fatalf("workflow run error = %v", runErr)
-		}
-		if event == nil || event.Output == nil || event.NodeInfo == nil || !strings.Contains(event.NodeInfo.Path, "apply_policy") {
-			continue
-		}
-		encoded, err := json.Marshal(event.Output)
-		if err != nil {
-			t.Fatalf("marshal state: %v", err)
-		}
-		var state CampaignState
-		if err := json.Unmarshal(encoded, &state); err != nil {
-			continue
-		}
-		if len(state.PriorCandidates) > 0 {
-			prior = state.PriorCandidates
-		}
-	}
+	prior := collectPriorCandidates(t, orch, CampaignRequest{CampaignID: "campaign-fd", Repository: "/repo", BaseRevision: "abc123", BuildTarget: "./cmd/tool"})
 	if len(prior) != 1 {
 		t.Fatalf("prior candidates = %d, want 1", len(prior))
 	}
@@ -362,7 +408,7 @@ func TestCampaignGraphAcceptsStatisticallySupportedCandidate(t *testing.T) {
 	runnerService := &acceptingRunnerService{fakeRunnerService{failureDetail: ""}}
 	jobs := &fakeJobService{}
 
-	orch, err := New(Dependencies{
+	orch := mustNew(t, Dependencies{
 		Runner: runnerService,
 		Policy: defaultConfigPolicy{},
 		Jobs:   jobs,
@@ -374,14 +420,6 @@ func TestCampaignGraphAcceptsStatisticallySupportedCandidate(t *testing.T) {
 		AgentTimeout:           time.Second,
 		MaxConcurrency:         1,
 	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	r, err := adkrunner.NewInMemory("gotorque-accept-test", orch.Agent)
-	if err != nil {
-		t.Fatalf("NewInMemory() error = %v", err)
-	}
 	req := CampaignRequest{
 		CampaignID:       "campaign-accept",
 		Repository:       "/repo",
@@ -390,35 +428,9 @@ func TestCampaignGraphAcceptsStatisticallySupportedCandidate(t *testing.T) {
 		CommandArgs:      []string{"scan"},
 		OptimizationMode: domain.PolicyIdiomatic,
 	}
-	payload, err := json.Marshal(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}
+	result := runUntilNode[CampaignResult](t, orch, "gotorque-accept-test", "user-1", "session-1", req, "finalize_campaign")
 
-	var result CampaignResult
-	for event, runErr := range r.Run(context.Background(), "user-1", "session-1", msg, adkagent.RunConfig{}) {
-		if runErr != nil {
-			t.Fatalf("workflow run error = %v", runErr)
-		}
-		if event == nil || event.Output == nil || event.NodeInfo == nil || !strings.Contains(event.NodeInfo.Path, "finalize_campaign") {
-			continue
-		}
-		encoded, err := json.Marshal(event.Output)
-		if err != nil {
-			t.Fatalf("marshal result: %v", err)
-		}
-		if err := json.Unmarshal(encoded, &result); err != nil {
-			t.Fatalf("decode result: %v", err)
-		}
-	}
-
-	if len(result.AcceptedCandidates) != 1 || result.AcceptedCandidates[0] != "candidate-1" {
-		t.Fatalf("accepted candidates = %v, want [candidate-1]", result.AcceptedCandidates)
-	}
-	if got := runnerService.promoted; len(got) != 1 || got[0] != "candidate-1" {
-		t.Fatalf("promoted = %v, want [candidate-1]", got)
-	}
+	assertAcceptedPromoted(t, result.AcceptedCandidates, runnerService.promoted)
 	if len(jobs.progress) == 0 || jobs.progress[0].LastDecision != domain.DecisionAccepted {
 		t.Fatalf("progress decisions = %+v", jobs.progress)
 	}

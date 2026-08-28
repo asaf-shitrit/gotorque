@@ -179,6 +179,11 @@ func (m *Manifest) ApplyDefaults() {
 	if m.Version == "" {
 		m.Version = VersionV1
 	}
+	m.applyPerformanceDefaults()
+	m.applyCampaignDefaults()
+}
+
+func (m *Manifest) applyPerformanceDefaults() {
 	if m.Performance.PrimaryMetric == "" {
 		m.Performance.PrimaryMetric = DefaultPrimaryMetric
 	}
@@ -192,6 +197,21 @@ func (m *Manifest) ApplyDefaults() {
 		value := true
 		m.Performance.StatisticalSupportRequired = &value
 	}
+	if len(m.Performance.Guardrails) == 0 {
+		m.Performance.Guardrails = []Guardrail{
+			{Name: "peak_memory_bytes", MaximumRegressionPercent: DefaultGuardrailRegressionPercent, Required: true},
+			{Name: "cpu_time_ns", MaximumRegressionPercent: DefaultGuardrailRegressionPercent, Required: true},
+			{Name: "binary_size_bytes", MaximumRegressionPercent: DefaultGuardrailRegressionPercent, Required: true},
+		}
+	}
+	for i := range m.Performance.Guardrails {
+		if m.Performance.Guardrails[i].MaximumRegressionPercent == 0 {
+			m.Performance.Guardrails[i].MaximumRegressionPercent = m.Performance.MaximumGuardrailRegressionPercent
+		}
+	}
+}
+
+func (m *Manifest) applyCampaignDefaults() {
 	if m.Campaign.MaxDuration == 0 {
 		m.Campaign.MaxDuration = Duration(DefaultMaxCampaignDuration)
 	}
@@ -213,21 +233,31 @@ func (m *Manifest) ApplyDefaults() {
 	if m.Campaign.MinimumCommandTimeout == 0 {
 		m.Campaign.MinimumCommandTimeout = Duration(DefaultMinimumCommandTimeout)
 	}
-	if len(m.Performance.Guardrails) == 0 {
-		m.Performance.Guardrails = []Guardrail{
-			{Name: "peak_memory_bytes", MaximumRegressionPercent: DefaultGuardrailRegressionPercent, Required: true},
-			{Name: "cpu_time_ns", MaximumRegressionPercent: DefaultGuardrailRegressionPercent, Required: true},
-			{Name: "binary_size_bytes", MaximumRegressionPercent: DefaultGuardrailRegressionPercent, Required: true},
-		}
-	}
-	for i := range m.Performance.Guardrails {
-		if m.Performance.Guardrails[i].MaximumRegressionPercent == 0 {
-			m.Performance.Guardrails[i].MaximumRegressionPercent = m.Performance.MaximumGuardrailRegressionPercent
-		}
-	}
 }
 
 func (m Manifest) SemanticValidate() error {
+	problems := m.semanticProblems()
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return fmt.Errorf("manifest semantic validation failed: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func (m Manifest) semanticProblems() []string {
+	problems := m.validateIdentity()
+	problems = append(problems, m.validateSeeds()...)
+	problems = append(problems, m.validateDiscoveryAndTiers()...)
+	problems = append(problems, m.validateSandbox()...)
+	problems = append(problems, m.validatePerformanceAndPolicy()...)
+	problems = append(problems, m.validateCampaign()...)
+	if err := validateNormalization(m.Normalization); err != nil {
+		problems = append(problems, err.Error())
+	}
+	return problems
+}
+
+func (m Manifest) validateIdentity() []string {
 	var problems []string
 	if m.Version != VersionV1 {
 		problems = append(problems, fmt.Sprintf("version must be %q", VersionV1))
@@ -238,9 +268,11 @@ func (m Manifest) SemanticValidate() error {
 	if strings.TrimSpace(m.Target.Repository) == "" || strings.TrimSpace(m.Target.Build.Package) == "" || strings.TrimSpace(m.Target.Build.Binary) == "" {
 		problems = append(problems, "target repository, build.package, and build.binary are required")
 	}
-	if m.Workloads.Discovery.Enabled && (m.Workloads.Discovery.MaxCases <= 0 || m.Workloads.Discovery.MaxDepth <= 0) {
-		problems = append(problems, "enabled discovery requires positive max_cases and max_depth")
-	}
+	return problems
+}
+
+func (m Manifest) validateSeeds() []string {
+	var problems []string
 	if len(m.Workloads.Seeds) == 0 {
 		problems = append(problems, "at least one workload seed is required")
 	}
@@ -259,39 +291,60 @@ func (m Manifest) SemanticValidate() error {
 			}
 		}
 	}
+	return problems
+}
+
+func (m Manifest) validateDiscoveryAndTiers() []string {
+	var problems []string
+	if m.Workloads.Discovery.Enabled && (m.Workloads.Discovery.MaxCases <= 0 || m.Workloads.Discovery.MaxDepth <= 0) {
+		problems = append(problems, "enabled discovery requires positive max_cases and max_depth")
+	}
 	for _, tier := range []domain.WorkloadTier{domain.TierRepresentative, domain.TierPlausible, domain.TierStress} {
 		config, ok := m.Workloads.Tiers[tier]
 		if !ok || config.Weight < 0 {
 			problems = append(problems, fmt.Sprintf("tier %q must exist with a non-negative weight", tier))
 		}
 	}
+	return problems
+}
+
+func (m Manifest) validateSandbox() []string {
+	var problems []string
 	if m.Sandbox.Network != "deny" && m.Sandbox.Network != "allow" {
 		problems = append(problems, "sandbox.network must be deny or allow")
 	}
-	if m.Sandbox.Filesystem.Read != "repo_and_assets" && m.Sandbox.Filesystem.Read != "manifest_paths" && m.Sandbox.Filesystem.Read != "none" {
-		problems = append(problems, "sandbox.filesystem.read must be repo_and_assets, manifest_paths, or none")
-	}
-	if m.Sandbox.Filesystem.Write != "temp_only" && m.Sandbox.Filesystem.Write != "manifest_paths" && m.Sandbox.Filesystem.Write != "any" {
-		problems = append(problems, "sandbox.filesystem.write must be temp_only, manifest_paths, or any")
-	}
+	problems = append(problems, validateFilesystemSandbox(m.Sandbox.Filesystem)...)
 	if m.Sandbox.MaxProcesses <= 0 {
 		problems = append(problems, "sandbox.max_processes must be positive")
 	}
+	return problems
+}
+
+func validateFilesystemSandbox(fs FilesystemSandbox) []string {
+	var problems []string
+	if fs.Read != "repo_and_assets" && fs.Read != "manifest_paths" && fs.Read != "none" {
+		problems = append(problems, "sandbox.filesystem.read must be repo_and_assets, manifest_paths, or none")
+	}
+	if fs.Write != "temp_only" && fs.Write != "manifest_paths" && fs.Write != "any" {
+		problems = append(problems, "sandbox.filesystem.write must be temp_only, manifest_paths, or any")
+	}
+	return problems
+}
+
+func (m Manifest) validatePerformanceAndPolicy() []string {
+	var problems []string
 	if m.Performance.PrimaryMetric == "" || m.Performance.MinimumImprovementPercent < 0 || m.Performance.MaximumGuardrailRegressionPercent < 0 {
 		problems = append(problems, "performance metric and thresholds must be valid")
-	}
-	if m.Campaign.MaxDuration <= 0 || m.Campaign.MaxCandidatePatches <= 0 || m.Campaign.MaxConcurrentCandidates != 1 || m.Campaign.StopAfterFailures <= 0 || m.Campaign.PerCommandTimeoutMultiple <= 0 || m.Campaign.MinimumCommandTimeout <= 0 {
-		problems = append(problems, "campaign limits must be positive and max_concurrent_candidates must be 1")
 	}
 	if m.OptimizationPolicy != domain.PolicyIdiomatic && m.OptimizationPolicy != domain.PolicySpecialized && m.OptimizationPolicy != domain.PolicyNative {
 		problems = append(problems, "optimization_policy must be idiomatic, specialized, or native")
 	}
-	if err := validateNormalization(m.Normalization); err != nil {
-		problems = append(problems, err.Error())
-	}
-	if len(problems) > 0 {
-		sort.Strings(problems)
-		return fmt.Errorf("manifest semantic validation failed: %s", strings.Join(problems, "; "))
+	return problems
+}
+
+func (m Manifest) validateCampaign() []string {
+	if m.Campaign.MaxDuration <= 0 || m.Campaign.MaxCandidatePatches <= 0 || m.Campaign.MaxConcurrentCandidates != 1 || m.Campaign.StopAfterFailures <= 0 || m.Campaign.PerCommandTimeoutMultiple <= 0 || m.Campaign.MinimumCommandTimeout <= 0 {
+		return []string{"campaign limits must be positive and max_concurrent_candidates must be 1"}
 	}
 	return nil
 }

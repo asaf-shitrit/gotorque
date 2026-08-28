@@ -160,67 +160,103 @@ func Create(ctx context.Context, opts Options) (*Engine, error) {
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
-	repo, err := filepath.Abs(opts.Repository)
-	if err != nil {
-		return nil, fmt.Errorf("resolve repository: %w", err)
-	}
-	repo, err = filepath.EvalSymlinks(repo)
-	if err != nil {
-		return nil, fmt.Errorf("resolve repository: %w", err)
-	}
-	manifestPath, err := filepath.Abs(opts.ManifestPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve manifest: %w", err)
-	}
-	m, err := manifest.LoadFile(manifestPath)
+	repo, manifestPath, m, err := loadCampaignInputs(opts)
 	if err != nil {
 		return nil, err
 	}
-	tc := toolchain.New(toolchain.Options{})
-	status, err := tc.GitStatus(ctx, repo)
+	revision, goVersion, err := inspectRepoToolchain(ctx, toolchain.New(toolchain.Options{}), repo)
 	if err != nil {
-		return nil, fmt.Errorf("verify Git repository: %w", err)
-	}
-	if len(status.Stdout) != 0 {
-		return nil, fmt.Errorf("repository working tree must be clean (tracked and untracked files):\n%s", status.Stdout)
-	}
-	revisionResult, err := tc.GitRevision(ctx, repo)
-	if err != nil {
-		return nil, fmt.Errorf("read source revision: %w", err)
-	}
-	revision := strings.TrimSpace(string(revisionResult.Stdout))
-	goResult, err := tc.GoVersion(ctx, repo)
-	if err != nil {
-		return nil, fmt.Errorf("verify local Go toolchain: %w", err)
+		return nil, err
 	}
 	now := opts.Now()
 	id := stableID("campaign", revision, m.Name, now.Format(time.RFC3339Nano))
-	dir := opts.CampaignDir
+	dir, err := resolveCampaignDir(opts.CampaignDir, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	return openCampaignEngine(opts, dir, id, repo, manifestPath, m, revision, goVersion, now)
+}
+
+func loadCampaignInputs(opts Options) (repo, manifestPath string, m manifest.Manifest, err error) {
+	repo, err = filepath.Abs(opts.Repository)
+	if err != nil {
+		return "", "", manifest.Manifest{}, fmt.Errorf("resolve repository: %w", err)
+	}
+	repo, err = filepath.EvalSymlinks(repo)
+	if err != nil {
+		return "", "", manifest.Manifest{}, fmt.Errorf("resolve repository: %w", err)
+	}
+	manifestPath, err = filepath.Abs(opts.ManifestPath)
+	if err != nil {
+		return "", "", manifest.Manifest{}, fmt.Errorf("resolve manifest: %w", err)
+	}
+	m, err = manifest.LoadFile(manifestPath)
+	if err != nil {
+		return "", "", manifest.Manifest{}, err
+	}
+	return repo, manifestPath, m, nil
+}
+
+func inspectRepoToolchain(ctx context.Context, tc *toolchain.Toolchain, repo string) (revision, goVersion string, err error) {
+	status, err := tc.GitStatus(ctx, repo)
+	if err != nil {
+		return "", "", fmt.Errorf("verify Git repository: %w", err)
+	}
+	if len(status.Stdout) != 0 {
+		return "", "", fmt.Errorf("repository working tree must be clean (tracked and untracked files):\n%s", status.Stdout)
+	}
+	revisionResult, err := tc.GitRevision(ctx, repo)
+	if err != nil {
+		return "", "", fmt.Errorf("read source revision: %w", err)
+	}
+	goResult, err := tc.GoVersion(ctx, repo)
+	if err != nil {
+		return "", "", fmt.Errorf("verify local Go toolchain: %w", err)
+	}
+	return strings.TrimSpace(string(revisionResult.Stdout)), strings.TrimSpace(string(goResult.Stdout)), nil
+}
+
+func resolveCampaignDir(dir, repo, id string) (string, error) {
 	if dir == "" {
 		cache, err := os.UserCacheDir()
 		if err != nil {
-			return nil, fmt.Errorf("resolve user cache: %w", err)
+			return "", fmt.Errorf("resolve user cache: %w", err)
 		}
 		dir = filepath.Join(cache, "gotorque", "campaigns", id)
-	} else if dir, err = filepath.Abs(dir); err != nil {
-		return nil, err
+	} else {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return "", err
+		}
+		dir = abs
 	}
-	if inside, relErr := filepath.Rel(repo, dir); relErr == nil && inside != ".." && !strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
-		return nil, errors.New("campaign directory must be outside the canonical repository")
-	}
-	if entries, readErr := os.ReadDir(dir); readErr == nil && len(entries) != 0 {
-		return nil, fmt.Errorf("campaign directory %q is not empty; use --resume", dir)
+	if err := guardCampaignDir(dir, repo); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+		return "", err
 	}
+	return dir, nil
+}
+
+func guardCampaignDir(dir, repo string) error {
+	if inside, relErr := filepath.Rel(repo, dir); relErr == nil && inside != ".." && !strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return errors.New("campaign directory must be outside the canonical repository")
+	}
+	if entries, readErr := os.ReadDir(dir); readErr == nil && len(entries) != 0 {
+		return fmt.Errorf("campaign directory %q is not empty; use --resume", dir)
+	}
+	return nil
+}
+
+func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m manifest.Manifest, revision, goVersion string, now time.Time) (*Engine, error) {
 	store, err := OpenStore(filepath.Join(dir, DatabaseName))
 	if err != nil {
 		return nil, err
 	}
 	state := State{Version: 1, ID: id, Directory: dir, Repository: repo, ManifestPath: manifestPath, Manifest: m,
 		Status: StatusPending, StartedAt: now, UpdatedAt: now, CompletedSteps: map[string]bool{}, LocalIsolation: !opts.TestingUnsafeDisableIsolation,
-		Environment: Environment{Authority: authority(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPU: cpuName(), GoVersion: strings.TrimSpace(string(goResult.Stdout)), Revision: revision, BuildFlags: []string{"-mod=readonly", "-trimpath"}, CI: os.Getenv("CI") != "", CIEnvironment: ciEnvironment()},
+		Environment: Environment{Authority: authority(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPU: cpuName(), GoVersion: goVersion, Revision: revision, BuildFlags: []string{"-mod=readonly", "-trimpath"}, CI: os.Getenv("CI") != "", CIEnvironment: ciEnvironment()},
 	}
 	state.DependencyDigests, err = dependencyDigests(repo)
 	if err != nil {
@@ -232,6 +268,15 @@ func Create(ctx context.Context, opts Options) (*Engine, error) {
 		_ = store.Close()
 		return nil, err
 	}
+	attachADK(e, opts)
+	if err := e.saveEvent("campaign_created", "campaign initialized", nil); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return e, nil
+}
+
+func attachADK(e *Engine, opts Options) {
 	e.adkAgents = opts.ADKAgents
 	if opts.ADKConfig != nil {
 		e.adkConfig = *opts.ADKConfig
@@ -239,11 +284,6 @@ func Create(ctx context.Context, opts Options) (*Engine, error) {
 	if opts.ADKAgents != nil {
 		e.state.ADKMode = "live"
 	}
-	if err := e.saveEvent("campaign_created", "campaign initialized", nil); err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	return e, nil
 }
 
 func Resume(dir string, progress io.Writer) (*Engine, error) {
@@ -285,71 +325,110 @@ func (e *Engine) Run(ctx context.Context) (err error) {
 	if e.state.Status == StatusCompleted {
 		return nil
 	}
-	deadline := e.state.Manifest.Campaign.MaxDuration.Duration()
-	if deadline > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, deadline)
+	ctx, cancel := e.withCampaignDeadline(ctx)
+	if cancel != nil {
 		defer cancel()
 	}
 	e.state.Status, e.state.Error = StatusRunning, ""
 	if err = e.saveEvent("campaign_started", "campaign running", nil); err != nil {
 		return err
 	}
-	defer func() {
-		if err != nil {
-			e.state.UpdatedAt = e.now()
-			e.state.Error = err.Error()
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				e.state.Status = StatusInterrupted
-			} else {
-				e.state.Status = StatusFailed
-			}
-			_ = e.saveEvent("campaign_stopped", e.state.Error, nil)
-		}
-	}()
-	if !e.state.CompletedSteps["inspect"] {
-		if err = e.inspect(ctx); err != nil {
-			return err
-		}
-		e.state.CompletedSteps["inspect"] = true
-		if err = e.saveEvent("repository_inspected", fmt.Sprintf("discovered %d packages", len(e.state.Inventory.Packages)), e.state.Inventory); err != nil {
-			return err
-		}
+	defer e.captureRunFailure(&err)
+	if err = e.runBaselineSteps(ctx); err != nil {
+		return err
 	}
-	if !e.state.CompletedSteps["build"] {
-		if err = e.build(ctx); err != nil {
-			return err
-		}
-		e.state.CompletedSteps["build"] = true
-		if err = e.saveEvent("baseline_built", "release-equivalent baseline built", map[string]string{"build_id": e.state.BuildID}); err != nil {
-			return err
-		}
+	if err = e.verifyClean(ctx); err != nil {
+		return err
 	}
+	return e.finishCampaign(ctx)
+}
+
+func (e *Engine) withCampaignDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline := e.state.Manifest.Campaign.MaxDuration.Duration()
+	if deadline > 0 {
+		return context.WithTimeout(ctx, deadline)
+	}
+	return ctx, nil
+}
+
+func (e *Engine) captureRunFailure(err *error) {
+	if *err == nil {
+		return
+	}
+	e.state.UpdatedAt = e.now()
+	e.state.Error = (*err).Error()
+	if errors.Is(*err, context.Canceled) || errors.Is(*err, context.DeadlineExceeded) {
+		e.state.Status = StatusInterrupted
+	} else {
+		e.state.Status = StatusFailed
+	}
+	_ = e.saveEvent("campaign_stopped", e.state.Error, nil)
+}
+
+func (e *Engine) runBaselineSteps(ctx context.Context) error {
+	if err := e.runInspectStep(ctx); err != nil {
+		return err
+	}
+	if err := e.runBuildStep(ctx); err != nil {
+		return err
+	}
+	if err := e.runSeedSteps(ctx); err != nil {
+		return err
+	}
+	return e.runDiscoveryStep(ctx)
+}
+
+func (e *Engine) runInspectStep(ctx context.Context) error {
+	if e.state.CompletedSteps["inspect"] {
+		return nil
+	}
+	if err := e.inspect(ctx); err != nil {
+		return err
+	}
+	e.state.CompletedSteps["inspect"] = true
+	return e.saveEvent("repository_inspected", fmt.Sprintf("discovered %d packages", len(e.state.Inventory.Packages)), e.state.Inventory)
+}
+
+func (e *Engine) runBuildStep(ctx context.Context) error {
+	if e.state.CompletedSteps["build"] {
+		return nil
+	}
+	if err := e.build(ctx); err != nil {
+		return err
+	}
+	e.state.CompletedSteps["build"] = true
+	return e.saveEvent("baseline_built", "release-equivalent baseline built", map[string]string{"build_id": e.state.BuildID})
+}
+
+func (e *Engine) runSeedSteps(ctx context.Context) error {
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
 		step := "workload:" + seed.ID
 		if e.state.CompletedSteps[step] {
 			continue
 		}
-		if err = e.runSeed(ctx, seed); err != nil {
+		if err := e.runSeed(ctx, seed); err != nil {
 			return err
 		}
 		e.state.CompletedSteps[step] = true
-		if err = e.saveEvent("workload_completed", seed.Name, map[string]string{"workload_id": seed.ID}); err != nil {
+		if err := e.saveEvent("workload_completed", seed.Name, map[string]string{"workload_id": seed.ID}); err != nil {
 			return err
 		}
 	}
-	if !e.state.CompletedSteps["discovery_profile"] {
-		if err = e.collectDiscoveryProfile(ctx); err != nil {
-			return err
-		}
-		e.state.CompletedSteps["discovery_profile"] = true
-		if err = e.saveEvent("discovery_profile_completed", fmt.Sprintf("measured %d hot functions", len(e.state.DiscoveryHotFunctions)), nil); err != nil {
-			return err
-		}
+	return nil
+}
+
+func (e *Engine) runDiscoveryStep(ctx context.Context) error {
+	if e.state.CompletedSteps["discovery_profile"] {
+		return nil
 	}
-	if err = e.verifyClean(ctx); err != nil {
+	if err := e.collectDiscoveryProfile(ctx); err != nil {
 		return err
 	}
+	e.state.CompletedSteps["discovery_profile"] = true
+	return e.saveEvent("discovery_profile_completed", fmt.Sprintf("measured %d hot functions", len(e.state.DiscoveryHotFunctions)), nil)
+}
+
+func (e *Engine) finishCampaign(ctx context.Context) error {
 	stopReason := "baseline discovery complete; no model candidate requested"
 	if e.adkAgents != nil {
 		result, err := e.RunADK(ctx, *e.adkAgents, e.adkConfig)
@@ -363,7 +442,7 @@ func (e *Engine) Run(ctx context.Context) (err error) {
 	now := e.now()
 	e.state.Status, e.state.CompletedAt, e.state.StopReason = StatusCompleted, &now, stopReason
 	e.state.CompletedSteps["complete"] = true
-	if err = e.saveEvent("campaign_completed", e.state.StopReason, nil); err != nil {
+	if err := e.saveEvent("campaign_completed", e.state.StopReason, nil); err != nil {
 		return err
 	}
 	return WriteReports(e.dir, e.state)
@@ -472,22 +551,11 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	for _, f := range seed.Files {
 		fixtures[f.Path] = []byte(f.Content)
 	}
-	// The sampler needs the target to stay alive for the whole window.
-	// Tiny seed inputs finish in milliseconds, so amplify stdin by
-	// repetition (capped at 32 MiB) until the workload is long-lived.
-	stdin := []byte(seed.Stdin)
-	if len(stdin) > 0 && len(stdin) < 32<<20 {
-		amplified := make([]byte, 0, 32<<20)
-		for len(amplified) < 16<<20 {
-			amplified = append(amplified, stdin...)
-		}
-		stdin = amplified
-	}
 	outDir := filepath.Join(e.dir, "profile-sample")
 	result, err := profile.SampleTargetProfile(ctx, profile.SampleTarget{
 		BinaryPath: e.state.BinaryPath,
 		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),
-		Stdin:      stdin,
+		Stdin:      amplifyStdin([]byte(seed.Stdin)),
 		Fixtures:   fixtures,
 		Duration:   4 * time.Second,
 		OutputPath: filepath.Join(outDir, "sample-report.txt"),
@@ -498,6 +566,20 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", hotFunctionNames(result.Functions, 15))
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
+}
+
+// The sampler needs the target to stay alive for the whole window.
+// Tiny seed inputs finish in milliseconds, so amplify stdin by
+// repetition (capped at 32 MiB) until the workload is long-lived.
+func amplifyStdin(stdin []byte) []byte {
+	if len(stdin) == 0 || len(stdin) >= 32<<20 {
+		return stdin
+	}
+	amplified := make([]byte, 0, 32<<20)
+	for len(amplified) < 16<<20 {
+		amplified = append(amplified, stdin...)
+	}
+	return amplified
 }
 
 // profileHotFunctions runs the target package's benchmarks under a CPU
@@ -538,31 +620,54 @@ func (e *Engine) profileHotFunctions(ctx context.Context) error {
 func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, names []string) []string {
 	locations := make([]string, 0, len(names))
 	for _, name := range names {
-		entry := name
-		if cpuProfile != "" {
-			if result, err := e.toolchain.PprofList(ctx, name, cpuProfile); err == nil {
-				if path, line, ok := profile.ParsePprofList(string(result.Stdout)); ok {
-					entry = profile.HotLocation{Function: name, Path: path, Line: line}.Location()
-				}
-			}
+		if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
+			locations = append(locations, loc)
+			continue
 		}
-		if entry == name && !strings.Contains(name, ":") {
-			// Sampler output uses runtime-style names (main.main,
-			// pkg.(*T).method) whose last segment is the source symbol.
-			candidates := []string{name}
-			if idx := strings.LastIndex(name, "."); idx >= 0 && idx < len(name)-1 {
-				candidates = append(candidates, name[idx+1:])
-			}
-			for _, candidate := range candidates {
-				if path, line, ok := profile.FindFunctionInRepo(e.state.Repository, candidate); ok {
-					entry = profile.HotLocation{Function: name, Path: path, Line: line}.Location()
-					break
-				}
-			}
+		if loc, ok := e.hotLocationFromRepo(name); ok {
+			locations = append(locations, loc)
+			continue
 		}
-		locations = append(locations, entry)
+		locations = append(locations, name)
 	}
 	return locations
+}
+
+func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile string) (string, bool) {
+	if cpuProfile == "" {
+		return "", false
+	}
+	result, err := e.toolchain.PprofList(ctx, name, cpuProfile)
+	if err != nil {
+		return "", false
+	}
+	path, line, ok := profile.ParsePprofList(string(result.Stdout))
+	if !ok {
+		return "", false
+	}
+	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
+}
+
+func (e *Engine) hotLocationFromRepo(name string) (string, bool) {
+	if strings.Contains(name, ":") {
+		return "", false
+	}
+	// Sampler output uses runtime-style names (main.main,
+	// pkg.(*T).method) whose last segment is the source symbol.
+	for _, candidate := range functionNameCandidates(name) {
+		if path, line, ok := profile.FindFunctionInRepo(e.state.Repository, candidate); ok {
+			return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
+		}
+	}
+	return "", false
+}
+
+func functionNameCandidates(name string) []string {
+	candidates := []string{name}
+	if idx := strings.LastIndex(name, "."); idx >= 0 && idx < len(name)-1 {
+		candidates = append(candidates, name[idx+1:])
+	}
+	return candidates
 }
 
 // hotFunctionNames extracts deduplicated function names from a parsed pprof
@@ -612,29 +717,43 @@ func (e *Engine) verifyClean(ctx context.Context) error {
 func dependencyDigests(repository string) (map[string]string, error) {
 	paths := []string{"go.mod", "go.sum"}
 	vendor := filepath.Join(repository, "vendor")
-	if info, err := os.Stat(vendor); err == nil && info.IsDir() {
-		err = filepath.WalkDir(vendor, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if entry.Type().IsRegular() {
-				rel, err := filepath.Rel(repository, path)
-				if err != nil {
-					return err
-				}
-				paths = append(paths, rel)
-			}
-			return nil
-		})
+	info, err := os.Stat(vendor)
+	if err == nil && info.IsDir() {
+		paths, err = walkVendorFiles(repository, paths)
 		if err != nil {
 			return nil, err
 		}
 	}
 	sort.Strings(paths)
+	return digestFiles(repository, paths)
+}
+
+func walkVendorFiles(repository string, paths []string) ([]string, error) {
+	err := filepath.WalkDir(filepath.Join(repository, "vendor"), func(path string, entry os.DirEntry, walkErr error) error {
+		return appendVendorFile(repository, path, entry, walkErr, &paths)
+	})
+	return paths, err
+}
+
+func appendVendorFile(repository, path string, entry os.DirEntry, walkErr error, paths *[]string) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if !entry.Type().IsRegular() {
+		return nil
+	}
+	rel, err := filepath.Rel(repository, path)
+	if err != nil {
+		return err
+	}
+	*paths = append(*paths, rel)
+	return nil
+}
+
+func digestFiles(repository string, paths []string) (map[string]string, error) {
 	result := make(map[string]string, len(paths))
 	for _, rel := range paths {
-		path := filepath.Join(repository, rel)
-		digest, err := runner.DigestFile(path)
+		digest, err := runner.DigestFile(filepath.Join(repository, rel))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}

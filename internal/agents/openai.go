@@ -55,6 +55,23 @@ func (p OpenAIProvider) ValidateConnectivity(ctx context.Context) error {
 	if err := p.Routing.Validate(); err != nil {
 		return err
 	}
+	available, err := p.listEndpointModels(ctx)
+	if err != nil {
+		return err
+	}
+	for _, role := range AllRoles {
+		if !available[p.Routing[role]] {
+			return fmt.Errorf("configured model %q for %s is not advertised by endpoint", p.Routing[role], role)
+		}
+	}
+	return nil
+}
+
+func httpOK(code int) bool {
+	return code >= 200 && code < 300
+}
+
+func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]bool, error) {
 	base := strings.TrimRight(p.BaseURL, "/")
 	if base == "" {
 		base = "https://api.openai.com/v1"
@@ -65,16 +82,16 @@ func (p OpenAIProvider) ValidateConnectivity(ctx context.Context) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+p.APIKey)
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("OpenAI-compatible endpoint: %w", err)
+		return nil, fmt.Errorf("OpenAI-compatible endpoint: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("OpenAI-compatible endpoint returned HTTP %s", resp.Status)
+	if !httpOK(resp.StatusCode) {
+		return nil, fmt.Errorf("OpenAI-compatible endpoint returned HTTP %s", resp.Status)
 	}
 	var document struct {
 		Data []struct {
@@ -82,19 +99,14 @@ func (p OpenAIProvider) ValidateConnectivity(ctx context.Context) error {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&document); err != nil {
-		return fmt.Errorf("decode model list: %w", err)
+		return nil, fmt.Errorf("decode model list: %w", err)
 	}
 	available := map[string]bool{}
 	for _, item := range document.Data {
 		available[item.ID] = true
 	}
 	if len(available) == 0 {
-		return errors.New("OpenAI-compatible endpoint returned no models")
+		return nil, errors.New("OpenAI-compatible endpoint returned no models")
 	}
-	for _, role := range AllRoles {
-		if !available[p.Routing[role]] {
-			return fmt.Errorf("configured model %q for %s is not advertised by endpoint", p.Routing[role], role)
-		}
-	}
-	return nil
+	return available, nil
 }

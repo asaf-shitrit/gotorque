@@ -1,0 +1,10 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - gocyclo
+  settings:
+    gocyclo:
+      # Cyclomatic complexity; report functions with complexity >= 10.
+      min-complexity: 10

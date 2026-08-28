@@ -18,38 +18,14 @@ func NormalizeUnifiedDiff(patch string) (string, bool) {
 	var out []string
 	headersIdx := -1
 	for i := 0; i < len(lines); {
-		line := lines[i]
-		if !strings.HasPrefix(line, "@@ ") {
-			out = append(out, line)
-			// Keep "--- "/"+++ " header pairs verbatim.
-			if strings.HasPrefix(line, "--- ") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+++ ") {
-				headersIdx = len(out) - 1
-				i++
-				out = append(out, lines[i])
-			}
-			i++
+		if !strings.HasPrefix(lines[i], "@@ ") {
+			out, headersIdx, i = appendNonHunk(out, lines, i, headersIdx)
 			continue
 		}
-
-		var body []string
-		i++
-		for i < len(lines) {
-			l := lines[i]
-			if strings.HasPrefix(l, "@@ ") || strings.HasPrefix(l, "--- ") {
-				break
-			}
-			body = append(body, l)
-			i++
-		}
-
-		if norm := normalizeHunk(line, body); norm != nil {
-			out = append(out, norm...)
-			headersIdx = -1
-		} else if headersIdx >= 0 {
-			// Drop the file-section headers of an emptied hunk.
-			out = append(out[:headersIdx], nil...)
-			headersIdx = -1
-		}
+		header := lines[i]
+		body, next := collectHunkBody(lines, i+1)
+		i = next
+		out, headersIdx = applyNormalizedHunk(out, headersIdx, header, body)
 	}
 
 	// The canonical form always ends with exactly one trailing newline.
@@ -57,12 +33,59 @@ func NormalizeUnifiedDiff(patch string) (string, bool) {
 	return result, result != patch
 }
 
+func appendNonHunk(out, lines []string, i, headersIdx int) ([]string, int, int) {
+	line := lines[i]
+	out = append(out, line)
+	if strings.HasPrefix(line, "--- ") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+++ ") {
+		out = append(out, lines[i+1])
+		return out, len(out) - 2, i + 2
+	}
+	return out, headersIdx, i + 1
+}
+
+func collectHunkBody(lines []string, i int) ([]string, int) {
+	var body []string
+	for i < len(lines) {
+		l := lines[i]
+		if strings.HasPrefix(l, "@@ ") || strings.HasPrefix(l, "--- ") {
+			break
+		}
+		body = append(body, l)
+		i++
+	}
+	return body, i
+}
+
+func applyNormalizedHunk(out []string, headersIdx int, header string, body []string) ([]string, int) {
+	if norm := normalizeHunk(header, body); norm != nil {
+		return append(out, norm...), -1
+	}
+	if headersIdx >= 0 {
+		// Drop the file-section headers of an emptied hunk.
+		return append(out[:headersIdx], nil...), -1
+	}
+	return out, headersIdx
+}
+
 // normalizeHunk truncates a hunk at its first malformed body line and rewrites
 // its @@ header with corrected line counts. Returns nil if the hunk becomes
 // empty and should be dropped.
 func normalizeHunk(header string, body []string) []string {
+	kept := keepHunkLines(body)
+	oldCount, newCount := countHunkLines(kept)
+	if oldCount == 0 && newCount == 0 {
+		return nil
+	}
 	oldStart, newStart := parseStarts(header)
+	newHeader := fmt.Sprintf("@@ -%s,%d +%s,%d @@", oldStart, oldCount, newStart, newCount)
+	newHeader += hunkHeaderTrail(header)
+	out := make([]string, 0, len(kept)+1)
+	out = append(out, newHeader)
+	out = append(out, kept...)
+	return out
+}
 
+func keepHunkLines(body []string) []string {
 	kept := make([]string, 0, len(body))
 	for _, l := range body {
 		if len(l) == 0 {
@@ -74,8 +97,10 @@ func normalizeHunk(header string, body []string) []string {
 		}
 		kept = append(kept, l)
 	}
+	return kept
+}
 
-	oldCount, newCount := 0, 0
+func countHunkLines(kept []string) (oldCount, newCount int) {
 	for _, l := range kept {
 		switch l[0] {
 		case ' ':
@@ -87,21 +112,16 @@ func normalizeHunk(header string, body []string) []string {
 			newCount++
 		}
 	}
+	return oldCount, newCount
+}
 
-	if oldCount == 0 && newCount == 0 {
-		return nil
-	}
-
-	newHeader := fmt.Sprintf("@@ -%s,%d +%s,%d @@", oldStart, oldCount, newStart, newCount)
+func hunkHeaderTrail(header string) string {
 	if idx := strings.Index(strings.TrimPrefix(header, "@@ "), "@@"); idx >= 0 {
 		if trail := strings.TrimPrefix(header[3+idx+2:], ""); trail != "" {
-			newHeader += trail
+			return trail
 		}
 	}
-	out := make([]string, 0, len(kept)+1)
-	out = append(out, newHeader)
-	out = append(out, kept...)
-	return out
+	return ""
 }
 
 // parseStarts extracts the declared old/new start lines from a @@ header,

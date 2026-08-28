@@ -46,28 +46,12 @@ func parseBenchstatOutput(output string) (benchstatSummary, bool) {
 	sawDelta := false
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "goos:") || strings.HasPrefix(line, "goarch:") ||
-			strings.HasPrefix(line, "pkg:") || strings.HasPrefix(line, "cpu:") {
+		if skipBenchstatMetaLine(line) {
 			continue
 		}
-		for _, match := range benchstatPRe.FindAllStringSubmatch(line, -1) {
-			value, err := strconv.ParseFloat(match[1], 64)
-			if err != nil || value < 0 || value > 1 {
-				continue
-			}
-			if !summary.HasPValue || value > summary.PValue {
-				summary.PValue = value
-			}
-			summary.HasPValue = true
-		}
-		// Percentage tokens: skip ±-prefixed sample-noise markers so the
-		// "vs base" delta column is what gets recorded.
-		cleaned := benchstatStdErrRe.ReplaceAllString(line, "")
-		if matches := benchstatPctRe.FindAllString(cleaned, -1); len(matches) > 0 {
-			if value, err := strconv.ParseFloat(strings.TrimSuffix(matches[len(matches)-1], "%"), 64); err == nil {
-				summary.DeltaPercent = value
-				sawDelta = true
-			}
+		parseBenchstatPValues(line, &summary)
+		if parseBenchstatDelta(line, &summary) {
+			sawDelta = true
 		}
 	}
 	if !summary.HasPValue && !sawDelta {
@@ -75,6 +59,40 @@ func parseBenchstatOutput(output string) (benchstatSummary, bool) {
 	}
 	summary.InformativeOnly = !summary.HasPValue
 	return summary, true
+}
+
+func skipBenchstatMetaLine(line string) bool {
+	return line == "" || strings.HasPrefix(line, "goos:") || strings.HasPrefix(line, "goarch:") ||
+		strings.HasPrefix(line, "pkg:") || strings.HasPrefix(line, "cpu:")
+}
+
+func parseBenchstatPValues(line string, summary *benchstatSummary) {
+	for _, match := range benchstatPRe.FindAllStringSubmatch(line, -1) {
+		value, err := strconv.ParseFloat(match[1], 64)
+		if err != nil || value < 0 || value > 1 {
+			continue
+		}
+		if !summary.HasPValue || value > summary.PValue {
+			summary.PValue = value
+		}
+		summary.HasPValue = true
+	}
+}
+
+func parseBenchstatDelta(line string, summary *benchstatSummary) bool {
+	// Percentage tokens: skip ±-prefixed sample-noise markers so the
+	// "vs base" delta column is what gets recorded.
+	cleaned := benchstatStdErrRe.ReplaceAllString(line, "")
+	matches := benchstatPctRe.FindAllString(cleaned, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	value, err := strconv.ParseFloat(strings.TrimSuffix(matches[len(matches)-1], "%"), 64)
+	if err != nil {
+		return false
+	}
+	summary.DeltaPercent = value
+	return true
 }
 
 // supported reports whether this summary alone justifies statistical
@@ -117,22 +135,11 @@ func (e *Engine) compareWallTimeMetric(ctx context.Context, workloadID string, b
 // campaign directory, runs benchstat over them, and parses its output. It is
 // best-effort: any failure returns ok=false so callers keep the t-test path.
 func (e *Engine) runBenchstat(ctx context.Context, workloadID string, baseVals, candVals []float64) (string, benchstatSummary, bool) {
-	if e.toolchain == nil || !e.toolchain.HasBenchstat() {
+	if !e.benchstatReady(baseVals, candVals) {
 		return "", benchstatSummary{}, false
 	}
-	if len(baseVals) == 0 || len(candVals) == 0 {
-		return "", benchstatSummary{}, false
-	}
-	dir := filepath.Join(e.dir, "benchstat")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", benchstatSummary{}, false
-	}
-	basePath := filepath.Join(dir, workloadID+".base.txt")
-	candPath := filepath.Join(dir, workloadID+".cand.txt")
-	if err := writeSampleFile(basePath, baseVals); err != nil {
-		return "", benchstatSummary{}, false
-	}
-	if err := writeSampleFile(candPath, candVals); err != nil {
+	basePath, candPath, ok := writeBenchstatSamples(filepath.Join(e.dir, "benchstat"), workloadID, baseVals, candVals)
+	if !ok {
 		return "", benchstatSummary{}, false
 	}
 	result, err := e.toolchain.Benchstat(ctx, basePath, candPath)
@@ -145,6 +152,25 @@ func (e *Engine) runBenchstat(ctx context.Context, workloadID string, baseVals, 
 		return "", benchstatSummary{}, false
 	}
 	return output, summary, true
+}
+
+func (e *Engine) benchstatReady(baseVals, candVals []float64) bool {
+	return e.toolchain != nil && e.toolchain.HasBenchstat() && len(baseVals) > 0 && len(candVals) > 0
+}
+
+func writeBenchstatSamples(dir, workloadID string, baseVals, candVals []float64) (basePath, candPath string, ok bool) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", "", false
+	}
+	basePath = filepath.Join(dir, workloadID+".base.txt")
+	candPath = filepath.Join(dir, workloadID+".cand.txt")
+	if err := writeSampleFile(basePath, baseVals); err != nil {
+		return "", "", false
+	}
+	if err := writeSampleFile(candPath, candVals); err != nil {
+		return "", "", false
+	}
+	return basePath, candPath, true
 }
 
 // writeSampleFile stores one duration-per-line sample file ("1234ns"),

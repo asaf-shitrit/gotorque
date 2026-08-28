@@ -59,30 +59,11 @@ func ParsePprofList(output string) (path string, line int, ok bool) {
 		if !inRoutine || path == "" {
 			continue
 		}
-		trimmed := strings.TrimSpace(text)
-		if trimmed == "" || strings.HasPrefix(trimmed, "ROUTINE ") {
+		lineNumber, stop := pprofListLineNumber(text)
+		if stop {
 			break
 		}
-		lineNumber := 0
-		if m := pprofLineMarker.FindStringSubmatch(trimmed); m != nil {
-			lineNumber = atoi(m[1])
-		} else if colon := strings.Index(trimmed, ":"); colon > 0 {
-			digits := true
-			for _, ch := range trimmed[:colon] {
-				if ch < '0' || ch > '9' {
-					digits = false
-					break
-				}
-				lineNumber = lineNumber*10 + int(ch-'0')
-			}
-			if !digits {
-				lineNumber = 0
-			}
-		}
-		// The function starts at its lowest sampled source line.
-		if lineNumber > 0 && (line == 0 || lineNumber < line) {
-			line = lineNumber
-		}
+		line = minSampleLine(line, lineNumber)
 	}
 	if path == "" {
 		return "", 0, false
@@ -90,55 +71,102 @@ func ParsePprofList(output string) (path string, line int, ok bool) {
 	return path, line, true
 }
 
+func pprofListLineNumber(text string) (int, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || strings.HasPrefix(trimmed, "ROUTINE ") {
+		return 0, true
+	}
+	if m := pprofLineMarker.FindStringSubmatch(trimmed); m != nil {
+		return atoi(m[1]), false
+	}
+	return colonLineNumber(trimmed), false
+}
+
+func colonLineNumber(trimmed string) int {
+	colon := strings.Index(trimmed, ":")
+	if colon <= 0 {
+		return 0
+	}
+	lineNumber := 0
+	for _, ch := range trimmed[:colon] {
+		if ch < '0' || ch > '9' {
+			return 0
+		}
+		lineNumber = lineNumber*10 + int(ch-'0')
+	}
+	return lineNumber
+}
+
+func minSampleLine(current, n int) int {
+	if n > 0 && (current == 0 || n < current) {
+		return n
+	}
+	return current
+}
+
 // FindFunctionInRepo locates a function declaration by name under root,
 // searching .go files breadth-first with a bounded file count. It is the
 // fallback when no pprof-format profile exists for annotation.
+type functionSearch struct {
+	root  string
+	decl  *regexp.Regexp
+	found string
+	line  int
+	files int
+}
+
 func FindFunctionInRepo(root, functionName string) (string, int, bool) {
 	if functionName == "" {
 		return "", 0, false
 	}
-	decl := regexp.MustCompile(`(?m)^func (?:\([^)]*\) )?` + regexp.QuoteMeta(functionName) + `\(`)
-	found := ""
-	line := 0
-	files := 0
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found != "" {
-			if found != "" {
-				return filepath.SkipAll
-			}
-			return nil
-		}
-		if d.IsDir() {
-			base := d.Name()
-			if base == ".git" || base == "vendor" || base == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		files++
-		if files > 2000 {
+	s := functionSearch{root: root, decl: regexp.MustCompile(`(?m)^func (?:\([^)]*\) )?` + regexp.QuoteMeta(functionName) + `\(`)}
+	_ = filepath.WalkDir(root, s.visit)
+	return s.found, s.line, s.found != ""
+}
+
+func (s *functionSearch) visit(path string, d os.DirEntry, err error) error {
+	if err != nil || s.found != "" {
+		if s.found != "" {
 			return filepath.SkipAll
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		loc := decl.FindIndex(data)
-		if loc == nil {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			rel = path
-		}
-		found = filepath.ToSlash(rel)
-		line = 1 + strings.Count(string(data[:loc[0]]), "\n")
+		return nil
+	}
+	if d.IsDir() {
+		return skipIgnoredDir(d.Name())
+	}
+	return s.matchFile(path)
+}
+
+func skipIgnoredDir(base string) error {
+	if base == ".git" || base == "vendor" || base == "testdata" {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+func (s *functionSearch) matchFile(path string) error {
+	if !strings.HasSuffix(path, ".go") {
+		return nil
+	}
+	s.files++
+	if s.files > 2000 {
 		return filepath.SkipAll
-	})
-	return found, line, found != ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	loc := s.decl.FindIndex(data)
+	if loc == nil {
+		return nil
+	}
+	rel, err := filepath.Rel(s.root, path)
+	if err != nil {
+		rel = path
+	}
+	s.found = filepath.ToSlash(rel)
+	s.line = 1 + strings.Count(string(data[:loc[0]]), "\n")
+	return filepath.SkipAll
 }
 
 func atoi(s string) int {

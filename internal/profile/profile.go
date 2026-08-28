@@ -68,48 +68,78 @@ func (c Collector) SummarizePprof(ctx context.Context, profilePath string, nodeC
 // stores it, then asks go tool pprof for the same normalized top report used
 // by ordinary CPU/heap profiles.
 func (c Collector) SummarizeTrace(ctx context.Context, tracePath, kind string, nodeCount int) (TraceSummary, error) {
-	if c.Toolchain == nil || c.Artifacts == nil {
-		return TraceSummary{}, errors.New("toolchain and artifact store are required")
+	if err := c.requireReady(); err != nil {
+		return TraceSummary{}, err
 	}
 	if !filepath.IsAbs(tracePath) {
 		return TraceSummary{}, errors.New("trace path must be absolute")
 	}
-	root := c.TempRoot
-	if root == "" {
-		root = os.TempDir()
-	}
-	if !filepath.IsAbs(root) {
-		return TraceSummary{}, errors.New("temporary root must be absolute")
-	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return TraceSummary{}, err
-	}
-	converted, err := c.Toolchain.TracePprof(ctx, tracePath, kind)
+	tempPath, rawPath, err := c.writeTraceProfile(ctx, tracePath, kind)
 	if err != nil {
 		return TraceSummary{}, err
 	}
-	_, rawPath, err := c.Artifacts.Put("trace-"+kind+".pb.gz", converted.Stdout)
-	if err != nil {
-		return TraceSummary{}, err
-	}
-	temp, err := os.CreateTemp(root, "trace-profile-*.pb.gz")
-	if err != nil {
-		return TraceSummary{}, err
-	}
-	tempPath := temp.Name()
 	defer os.Remove(tempPath)
-	if _, err := temp.Write(converted.Stdout); err != nil {
-		_ = temp.Close()
-		return TraceSummary{}, err
-	}
-	if err := temp.Close(); err != nil {
-		return TraceSummary{}, err
-	}
 	summary, err := c.SummarizePprof(ctx, tempPath, nodeCount)
 	if err != nil {
 		return TraceSummary{}, fmt.Errorf("summarize %s trace: %w", kind, err)
 	}
 	return TraceSummary{Kind: kind, Profile: summary, RawProfile: rawPath}, nil
+}
+
+func (c Collector) requireReady() error {
+	if c.Toolchain == nil || c.Artifacts == nil {
+		return errors.New("toolchain and artifact store are required")
+	}
+	return nil
+}
+
+func (c Collector) writeTraceProfile(ctx context.Context, tracePath, kind string) (tempPath, rawPath string, err error) {
+	root, err := c.traceTempRoot()
+	if err != nil {
+		return "", "", err
+	}
+	converted, err := c.Toolchain.TracePprof(ctx, tracePath, kind)
+	if err != nil {
+		return "", "", err
+	}
+	_, rawPath, err = c.Artifacts.Put("trace-"+kind+".pb.gz", converted.Stdout)
+	if err != nil {
+		return "", "", err
+	}
+	tempPath, err = writeTempProfile(root, converted.Stdout)
+	return tempPath, rawPath, err
+}
+
+func (c Collector) traceTempRoot() (string, error) {
+	root := c.TempRoot
+	if root == "" {
+		root = os.TempDir()
+	}
+	if !filepath.IsAbs(root) {
+		return "", errors.New("temporary root must be absolute")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func writeTempProfile(root string, data []byte) (string, error) {
+	temp, err := os.CreateTemp(root, "trace-profile-*.pb.gz")
+	if err != nil {
+		return "", err
+	}
+	tempPath := temp.Name()
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	return tempPath, nil
 }
 
 var totalLine = regexp.MustCompile(`(?m)^Showing nodes accounting for .+? of (.+?)(?:,|$)`)

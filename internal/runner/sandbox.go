@@ -40,51 +40,68 @@ type Sandbox struct {
 }
 
 func NewSandbox(opts SandboxOptions) (*Sandbox, error) {
-	if opts.Root == "" {
-		return nil, errors.New("sandbox root is required")
-	}
-	if !filepath.IsAbs(opts.Root) {
-		return nil, errors.New("sandbox root must be absolute")
-	}
-	if err := os.MkdirAll(opts.Root, 0o700); err != nil {
-		return nil, err
-	}
-	root, err := os.MkdirTemp(opts.Root, "run-")
+	root, err := createSandboxRoot(opts.Root)
 	if err != nil {
 		return nil, err
 	}
 	s := &Sandbox{Root: root, WorkDir: filepath.Join(root, "work"), TempDir: filepath.Join(root, "tmp"), HomeDir: filepath.Join(root, "home"), keep: opts.KeepOnFailure}
-	for _, dir := range []string{s.WorkDir, s.TempDir, s.HomeDir} {
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			_ = os.RemoveAll(root)
-			return nil, err
-		}
+	if err := mkdirSandboxDirs(s); err != nil {
+		_ = os.RemoveAll(root)
+		return nil, err
 	}
-	if opts.NetworkDisabled {
-		if opts.NetworkGuard == nil {
-			_ = os.RemoveAll(root)
-			return nil, fmt.Errorf("network isolation requested but no network guard is configured")
-		}
-		cleanup, err := opts.NetworkGuard.Prepare(root)
-		if err != nil {
-			_ = os.RemoveAll(root)
-			return nil, err
-		}
-		s.cleanups = append(s.cleanups, cleanup)
-	}
-	if opts.FilesystemRestricted {
-		if opts.FilesystemGuard == nil {
-			_ = os.RemoveAll(root)
-			return nil, fmt.Errorf("filesystem isolation requested but no filesystem guard is configured")
-		}
-		cleanup, err := opts.FilesystemGuard.Prepare(root)
-		if err != nil {
-			_ = os.RemoveAll(root)
-			return nil, err
-		}
-		s.cleanups = append(s.cleanups, cleanup)
+	if err := attachSandboxGuards(s, opts); err != nil {
+		_ = os.RemoveAll(root)
+		return nil, err
 	}
 	return s, nil
+}
+
+func createSandboxRoot(root string) (string, error) {
+	if root == "" {
+		return "", errors.New("sandbox root is required")
+	}
+	if !filepath.IsAbs(root) {
+		return "", errors.New("sandbox root must be absolute")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(root, "run-")
+}
+
+func mkdirSandboxDirs(s *Sandbox) error {
+	for _, dir := range []string{s.WorkDir, s.TempDir, s.HomeDir} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func attachSandboxGuards(s *Sandbox, opts SandboxOptions) error {
+	if opts.NetworkDisabled {
+		if err := attachGuard(s, opts.NetworkGuard, "network isolation requested but no network guard is configured"); err != nil {
+			return err
+		}
+	}
+	if opts.FilesystemRestricted {
+		return attachGuard(s, opts.FilesystemGuard, "filesystem isolation requested but no filesystem guard is configured")
+	}
+	return nil
+}
+
+func attachGuard(s *Sandbox, guard interface {
+	Prepare(root string) (cleanup func() error, err error)
+}, missing string) error {
+	if guard == nil {
+		return fmt.Errorf("%s", missing)
+	}
+	cleanup, err := guard.Prepare(s.Root)
+	if err != nil {
+		return err
+	}
+	s.cleanups = append(s.cleanups, cleanup)
+	return nil
 }
 
 func (s *Sandbox) Env() []string {

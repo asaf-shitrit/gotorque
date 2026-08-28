@@ -36,6 +36,14 @@ func DefaultConfig() Config {
 }
 
 func (c Config) normalized() (Config, error) {
+	c = c.withDefaults()
+	if err := c.validate(); err != nil {
+		return Config{}, err
+	}
+	return c, nil
+}
+
+func (c Config) withDefaults() Config {
 	defaults := DefaultConfig()
 	if c.WorkflowName == "" {
 		c.WorkflowName = defaults.WorkflowName
@@ -55,18 +63,21 @@ func (c Config) normalized() (Config, error) {
 	if c.MaxConcurrency == 0 {
 		c.MaxConcurrency = defaults.MaxConcurrency
 	}
+	return c
+}
 
+func (c Config) validate() error {
 	if c.MaxCandidates < 1 {
-		return Config{}, fmt.Errorf("max candidates must be positive")
+		return fmt.Errorf("max candidates must be positive")
 	}
 	if c.MaxConsecutiveFailures < 1 {
-		return Config{}, fmt.Errorf("max consecutive failures must be positive")
+		return fmt.Errorf("max consecutive failures must be positive")
 	}
 	if c.DeterministicTimeout < 0 || c.AgentTimeout < 0 {
-		return Config{}, fmt.Errorf("node timeouts cannot be negative")
+		return fmt.Errorf("node timeouts cannot be negative")
 	}
 	if c.MaxConcurrency < 1 {
-		return Config{}, fmt.Errorf("max concurrency must be positive")
+		return fmt.Errorf("max concurrency must be positive")
 	}
-	return c, nil
+	return nil
 }

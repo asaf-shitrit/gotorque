@@ -126,41 +126,44 @@ func TestFlexStringsObjects(t *testing.T) {
 }
 
 func TestEscapeEmbeddedQuotes(t *testing.T) {
-	t.Run("nested json fixture content", func(t *testing.T) {
-		broken := `{"name":"w","stdin":"{\"languageCount\":1}"}`
-		// already valid: must be unchanged
-		got, changed := EscapeEmbeddedQuotes(broken)
-		if changed || got != broken {
-			t.Fatalf("valid payload rewritten: %q changed=%v", got, changed)
-		}
+	t.Run("nested json fixture content", testEscapeNestedJSON)
+	t.Run("prose with braces and quotes", testEscapeProse)
+}
 
-		raw := `{"fixtures":[{"path":"d.json","content":"{"languageCount":1,"languages":[{"Name":"Go","Code":80}]}"}],"name":"w"}`
-		repaired, changed := EscapeEmbeddedQuotes(raw)
-		if !changed {
-			t.Fatal("expected repair")
-		}
-		var w WorkloadProposal
-		if err := json.Unmarshal([]byte(RepairCommonMalformations(repaired)), &w); err != nil {
-			t.Fatalf("repaired payload does not parse: %v\n%s", err, repaired)
-		}
-		if len(w.Fixtures) != 1 || w.Fixtures[0].Path != "d.json" {
-			t.Fatalf("fixtures=%+v", w.Fixtures)
-		}
-		if w.Fixtures[0].Content == "" {
-			t.Fatal("fixture content lost")
-		}
-	})
+func testEscapeNestedJSON(t *testing.T) {
+	broken := `{"name":"w","stdin":"{\"languageCount\":1}"}`
+	// already valid: must be unchanged
+	got, changed := EscapeEmbeddedQuotes(broken)
+	if changed || got != broken {
+		t.Fatalf("valid payload rewritten: %q changed=%v", got, changed)
+	}
 
-	t.Run("prose with braces and quotes", func(t *testing.T) {
-		raw := `{"next_experiment":"pad = {sprintf(\"k%03d\", i): (i*31+7)} for 8192 blobs","objective":"o"}`
-		got, err := DecodeResult[CoordinatorResult](raw)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got.Objective != "o" || got.NextExperiment == "" {
-			t.Fatalf("got %+v", got)
-		}
-	})
+	raw := `{"fixtures":[{"path":"d.json","content":"{"languageCount":1,"languages":[{"Name":"Go","Code":80}]}"}],"name":"w"}`
+	repaired, changed := EscapeEmbeddedQuotes(raw)
+	if !changed {
+		t.Fatal("expected repair")
+	}
+	var w WorkloadProposal
+	if err := json.Unmarshal([]byte(RepairCommonMalformations(repaired)), &w); err != nil {
+		t.Fatalf("repaired payload does not parse: %v\n%s", err, repaired)
+	}
+	if len(w.Fixtures) != 1 || w.Fixtures[0].Path != "d.json" {
+		t.Fatalf("fixtures=%+v", w.Fixtures)
+	}
+	if w.Fixtures[0].Content == "" {
+		t.Fatal("fixture content lost")
+	}
+}
+
+func testEscapeProse(t *testing.T) {
+	raw := `{"next_experiment":"pad = {sprintf(\"k%03d\", i): (i*31+7)} for 8192 blobs","objective":"o"}`
+	got, err := DecodeResult[CoordinatorResult](raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Objective != "o" || got.NextExperiment == "" {
+		t.Fatalf("got %+v", got)
+	}
 }
 
 func TestStringFixturesTolerance(t *testing.T) {

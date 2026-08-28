@@ -83,6 +83,7 @@ asynchronous work over the Model Context Protocol.
 ## Development
 
 ```sh
+make lint
 GOCACHE=/private/tmp/gotorque-cache go test ./...
 ```
 

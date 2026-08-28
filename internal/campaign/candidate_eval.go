@@ -29,196 +29,254 @@ const measurementRepetitions = 7
 // judgment stays here or in policy; the model never self-approves.
 // evaluateCandidate is invoked through the orchestrator CandidateService adapter.
 func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
-	patchDir := filepath.Join(e.dir, "patches")
-	if err := os.MkdirAll(patchDir, 0o700); err != nil {
+	id, patchPath, err := e.writeCandidatePatch(req)
+	if err != nil {
 		return orchestrator.CandidateEvidence{}, err
 	}
-	id := stableID("candidate", e.state.ID, fmt.Sprint(req.Attempt), req.Proposal.Patch)
-	patchPath := filepath.Join(patchDir, id+".diff")
-	if err := os.WriteFile(patchPath, []byte(req.Proposal.Patch), 0o600); err != nil {
-		return orchestrator.CandidateEvidence{}, err
-	}
-
 	evidence := orchestrator.CandidateEvidence{
 		Candidate:    domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, PatchPath: patchPath},
 		ArtifactURIs: []string{patchPath},
 	}
+	prepared, ok := e.prepareCandidate(ctx, req, patchPath, &evidence)
+	if !ok {
+		return evidence, nil
+	}
+	defer func() { _ = prepared.Close(context.Background()) }()
+	candidateBinary, ok := e.buildAndTestCandidate(ctx, prepared.Worktree, id, &evidence)
+	if !ok {
+		return evidence, nil
+	}
+	if !e.measureAndFinalize(ctx, &evidence, id, candidateBinary) {
+		return evidence, nil
+	}
+	// Informational PGO lane: only candidates that passed the test suite and
+	// produced a full ordinary verdict reach it, so the extra builds and A/B
+	// series are never spent on rejected work.
+	e.runPgoLane(ctx, &evidence, prepared.Worktree, id)
+	return evidence, nil
+}
 
+func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest) (id, patchPath string, err error) {
+	patchDir := filepath.Join(e.dir, "patches")
+	if err := os.MkdirAll(patchDir, 0o700); err != nil {
+		return "", "", err
+	}
+	id = stableID("candidate", e.state.ID, fmt.Sprint(req.Attempt), req.Proposal.Patch)
+	patchPath = filepath.Join(patchDir, id+".diff")
+	if err := os.WriteFile(patchPath, []byte(req.Proposal.Patch), 0o600); err != nil {
+		return "", "", err
+	}
+	return id, patchPath, nil
+}
+
+func (e *Engine) prepareCandidate(ctx context.Context, req orchestrator.CandidateRequest, patchPath string, evidence *orchestrator.CandidateEvidence) (*candidate.Prepared, bool) {
 	prohibited := prohibitedTechniquesFor(e.state.Manifest.OptimizationPolicy)
 	manager := &candidate.WorktreeManager{Toolchain: e.toolchain, Repository: e.state.Repository, Root: filepath.Join(e.dir, "worktrees")}
 	prepared, err := manager.Prepare(ctx, req.Campaign.BaseRevision, patchPath, req.Proposal.Hypothesis, candidate.Policy{ProhibitedTechniques: prohibited})
 	if err != nil {
 		evidence.Summary = fmt.Sprintf("candidate rejected before build: %v", err)
 		evidence.FailureDetail = tail(err.Error(), 400)
-		return evidence, nil
+		return nil, false
 	}
-	defer func() { _ = prepared.Close(context.Background()) }()
 	evidence.Candidate = prepared.Candidate
+	return prepared, true
+}
 
+func (e *Engine) buildAndTestCandidate(ctx context.Context, worktree, id string, evidence *orchestrator.CandidateEvidence) (string, bool) {
 	binDir := filepath.Join(e.dir, "builds")
 	candidateBinary := filepath.Join(binDir, id+"-"+filepath.Base(e.state.Manifest.Target.Build.Binary))
-	buildResult, buildErr := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: prepared.Worktree, Target: e.state.Manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}})
+	if !e.buildCandidateBinary(ctx, worktree, candidateBinary, evidence) {
+		return "", false
+	}
+	evidence.ArtifactURIs = append(evidence.ArtifactURIs, candidateBinary)
+	if !e.candidateTestsPassed(ctx, worktree, evidence) {
+		return "", false
+	}
+	return candidateBinary, true
+}
+
+func (e *Engine) buildCandidateBinary(ctx context.Context, worktree, candidateBinary string, evidence *orchestrator.CandidateEvidence) bool {
+	buildResult, buildErr := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: worktree, Target: e.state.Manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}})
 	if buildErr != nil {
 		evidence.Summary = fmt.Sprintf("candidate build failed: %v", buildErr)
 		evidence.FailureDetail = tail(string(buildResult.Stderr), 600)
 		if evidence.FailureDetail == "" {
 			evidence.FailureDetail = tail(buildErr.Error(), 600)
 		}
-		return evidence, nil
+		return false
 	}
-	evidence.ArtifactURIs = append(evidence.ArtifactURIs, candidateBinary)
+	return true
+}
 
+func (e *Engine) candidateTestsPassed(ctx context.Context, worktree string, evidence *orchestrator.CandidateEvidence) bool {
 	// Behavior gate: the upstream test suite must pass on the patched tree.
-	testResult, testErr := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: prepared.Worktree, Env: []string{"GOTOOLCHAIN=local"}})
-	testsPassed := testErr == nil && testResult.ExitCode == 0
-	if !testsPassed {
-		reason := "unknown failure"
-		if testErr != nil {
-			reason = testErr.Error()
-		} else if len(testResult.Stderr) > 0 {
-			reason = tail(string(testResult.Stderr), 400)
-		}
-		evidence.SafetyChecksPassed = false
-		evidence.Summary = fmt.Sprintf("upstream test suite failed: %s", reason)
-		evidence.FailureDetail = reason
-		return evidence, nil
+	testResult, testErr := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: worktree, Env: []string{"GOTOOLCHAIN=local"}})
+	if testErr == nil && testResult.ExitCode == 0 {
+		return true
 	}
+	reason := "unknown failure"
+	if testErr != nil {
+		reason = testErr.Error()
+	} else if len(testResult.Stderr) > 0 {
+		reason = tail(string(testResult.Stderr), 400)
+	}
+	evidence.SafetyChecksPassed = false
+	evidence.Summary = fmt.Sprintf("upstream test suite failed: %s", reason)
+	evidence.FailureDetail = reason
+	return false
+}
 
+type pooledSamples struct {
+	wallBase, wallCand []float64
+	cpuBase, cpuCand   []float64
+	memBase, memCand   []float64
+}
+
+func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
 	baselineSize, candSize, sizeErr := binarySizes(e.state.BinaryPath, candidateBinary)
 	comparisons := make([]domain.MetricComparison, 0, 4)
-	behaviorMatches := true
-	measuredWorkloads := 0
-	var pooledWallBase, pooledWallCand, pooledCPUBase, pooledCUTCand, pooledMemBase, pooledMemCand []float64
+	var pooled pooledSamples
+	measured, ok := e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, &comparisons, &pooled)
+	if !ok {
+		return false
+	}
+	if measured == 0 {
+		evidence.Summary = "no representative seed workloads available for measurement"
+		evidence.Comparisons = comparisons
+		return false
+	}
+	e.finalizeCandidateEvidence(ctx, evidence, comparisons, pooled, sizeErr, baselineSize, candSize, measured)
+	return true
+}
 
+func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, comparisons *[]domain.MetricComparison, pooled *pooledSamples) (int, bool) {
+	measured := 0
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
 		if seed.Tier != domain.TierRepresentative {
 			continue
 		}
-		baseReq, wid := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
-		candReq := baseReq
-		candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
-		candReq.Workload.Command.Path = candidateBinary
-
-		// First-execution warm-up: a freshly built binary pays a one-time OS
-		// cost on its first exec (Gatekeeper scan, page-in) that otherwise
-		// poisons repetition 0 of the candidate leg — observed as ~470ms vs
-		// ~9ms steady state. Discarded, errors ignored.
-		_, _ = e.runner.Run(ctx, candReq)
-
-		// Self-consistency probe: CLIs with nondeterministic tie ordering
-		// (map iteration plus unstable sort) produce byte-different output
-		// for identical inputs. Only when the baseline itself proves
-		// deterministic do we hold the candidate to byte-exact equality;
-		// otherwise the order-insensitive digest decides, so cosmetic row
-		// order cannot reject a behavior-preserving patch.
-		deterministicOutput := true
-		if probeA, err := e.runner.Run(ctx, baseReq); err == nil {
-			if probeB, err := e.runner.Run(ctx, baseReq); err == nil && probeA.StdoutDigest != probeB.StdoutDigest {
-				deterministicOutput = false
-			}
+		if !e.measureOneSeed(ctx, seed, id, candidateBinary, evidence, comparisons, pooled) {
+			return measured, false
 		}
-
-		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
-		if err != nil {
-			evidence.Summary = fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err)
-			evidence.Comparisons = comparisons
-			return evidence, nil
-		}
-		for i := range ab.Baseline {
-			exitOK := ab.Baseline[i].ExitCode == ab.Candidate[i].ExitCode
-			stdoutOK := ab.Baseline[i].StdoutDigest == ab.Candidate[i].StdoutDigest
-			if !deterministicOutput {
-				stdoutOK = ab.Baseline[i].SortedLinesDigest == ab.Candidate[i].SortedLinesDigest && ab.Baseline[i].SortedLinesDigest != ""
-			}
-			if !stdoutOK || !exitOK {
-				behaviorMatches = false
-				basis := "byte-exact"
-				if !deterministicOutput {
-					basis = "order-insensitive"
-				}
-				evidence.Summary = fmt.Sprintf("behavior mismatch (%s comparison) on workload %q at repetition %d", basis, seed.ID, i+1)
-				evidence.Comparisons = comparisons
-				evidence.SafetyChecksPassed = testsPassed
-				return evidence, nil
-			}
-		}
-		wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, wid, ab.Baseline, ab.Candidate)
-		comparisons = append(comparisons, wallComparisons...)
-		var baseSamples, candSamples []float64
-		for _, r := range ab.Baseline {
-			if v, ok := wallTime(r); ok {
-				baseSamples = append(baseSamples, v)
-			}
-		}
-		for _, r := range ab.Candidate {
-			if v, ok := wallTime(r); ok {
-				candSamples = append(candSamples, v)
-			}
-		}
-		evidence.RepSamples = append(evidence.RepSamples, domain.WorkloadSamples{WorkloadID: wid, BaselineNs: baseSamples, CandidateNs: candSamples})
-		if wallBenchstat != "" {
-			if evidence.BenchstatOutput != "" {
-				evidence.BenchstatOutput += "\n\n"
-			}
-			evidence.BenchstatOutput += fmt.Sprintf("workload %s:\n%s", seed.ID, wallBenchstat)
-		}
-		for _, r := range ab.Baseline {
-			if v, ok := cpuTime(r); ok {
-				pooledCPUBase = append(pooledCPUBase, v)
-			}
-			if v, ok := peakMemory(r); ok {
-				pooledMemBase = append(pooledMemBase, v)
-			}
-		}
-		for _, r := range ab.Candidate {
-			if v, ok := cpuTime(r); ok {
-				pooledCUTCand = append(pooledCUTCand, v)
-			}
-			if v, ok := peakMemory(r); ok {
-				pooledMemCand = append(pooledMemCand, v)
-			}
-		}
-		pooledWallBase = append(pooledWallBase, baseSamples...)
-		pooledWallCand = append(pooledWallCand, candSamples...)
-		measuredWorkloads++
+		measured++
 	}
+	return measured, true
+}
 
-	if measuredWorkloads == 0 {
-		evidence.Summary = "no representative seed workloads available for measurement"
+func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons *[]domain.MetricComparison, pooled *pooledSamples) bool {
+	baseReq, wid := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
+	candReq := baseReq
+	candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
+	candReq.Workload.Command.Path = candidateBinary
+	// First-execution warm-up: a freshly built binary pays a one-time OS
+	// cost on its first exec (Gatekeeper scan, page-in) that otherwise
+	// poisons repetition 0 of the candidate leg — observed as ~470ms vs
+	// ~9ms steady state. Discarded, errors ignored.
+	_, _ = e.runner.Run(ctx, candReq)
+	deterministicOutput := e.outputIsDeterministic(ctx, baseReq)
+	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
+	if err != nil {
+		evidence.Summary = fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err)
+		evidence.Comparisons = *comparisons
+		return false
+	}
+	if !recordBehaviorMatch(ab, deterministicOutput, seed.ID, evidence, *comparisons) {
+		return false
+	}
+	e.recordSeedMetrics(ctx, seed.ID, wid, ab, evidence, comparisons, pooled)
+	return true
+}
+
+func (e *Engine) outputIsDeterministic(ctx context.Context, baseReq runner.RunRequest) bool {
+	// Self-consistency probe: CLIs with nondeterministic tie ordering
+	// (map iteration plus unstable sort) produce byte-different output
+	// for identical inputs. Only when the baseline itself proves
+	// deterministic do we hold the candidate to byte-exact equality;
+	// otherwise the order-insensitive digest decides, so cosmetic row
+	// order cannot reject a behavior-preserving patch.
+	if probeA, err := e.runner.Run(ctx, baseReq); err == nil {
+		if probeB, err := e.runner.Run(ctx, baseReq); err == nil && probeA.StdoutDigest != probeB.StdoutDigest {
+			return false
+		}
+	}
+	return true
+}
+
+func recordBehaviorMatch(ab runner.ABResult, deterministicOutput bool, seedID string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
+	for i := range ab.Baseline {
+		exitOK := ab.Baseline[i].ExitCode == ab.Candidate[i].ExitCode
+		stdoutOK := ab.Baseline[i].StdoutDigest == ab.Candidate[i].StdoutDigest
+		if !deterministicOutput {
+			stdoutOK = ab.Baseline[i].SortedLinesDigest == ab.Candidate[i].SortedLinesDigest && ab.Baseline[i].SortedLinesDigest != ""
+		}
+		if stdoutOK && exitOK {
+			continue
+		}
+		basis := "byte-exact"
+		if !deterministicOutput {
+			basis = "order-insensitive"
+		}
+		evidence.Summary = fmt.Sprintf("behavior mismatch (%s comparison) on workload %q at repetition %d", basis, seedID, i+1)
 		evidence.Comparisons = comparisons
-		return evidence, nil
+		evidence.SafetyChecksPassed = true
+		return false
 	}
+	return true
+}
 
+func (e *Engine) recordSeedMetrics(ctx context.Context, seedID, wid string, ab runner.ABResult, evidence *orchestrator.CandidateEvidence, comparisons *[]domain.MetricComparison, pooled *pooledSamples) {
+	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, wid, ab.Baseline, ab.Candidate)
+	*comparisons = append(*comparisons, wallComparisons...)
+	baseSamples := metricValues(ab.Baseline, wallTime)
+	candSamples := metricValues(ab.Candidate, wallTime)
+	evidence.RepSamples = append(evidence.RepSamples, domain.WorkloadSamples{WorkloadID: wid, BaselineNs: baseSamples, CandidateNs: candSamples})
+	if wallBenchstat != "" {
+		if evidence.BenchstatOutput != "" {
+			evidence.BenchstatOutput += "\n\n"
+		}
+		evidence.BenchstatOutput += fmt.Sprintf("workload %s:\n%s", seedID, wallBenchstat)
+	}
+	pooled.cpuBase = append(pooled.cpuBase, metricValues(ab.Baseline, cpuTime)...)
+	pooled.memBase = append(pooled.memBase, metricValues(ab.Baseline, peakMemory)...)
+	pooled.cpuCand = append(pooled.cpuCand, metricValues(ab.Candidate, cpuTime)...)
+	pooled.memCand = append(pooled.memCand, metricValues(ab.Candidate, peakMemory)...)
+	pooled.wallBase = append(pooled.wallBase, baseSamples...)
+	pooled.wallCand = append(pooled.wallCand, candSamples...)
+}
+
+func metricValues(runs []domain.RunResult, sel metricSelector) []float64 {
+	var values []float64
+	for _, r := range runs {
+		if v, ok := sel(r); ok {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
+func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison, pooled pooledSamples, sizeErr error, baselineSize, candSize int64, measured int) {
 	// Policy looks up canonical metric names ("wall_time_ns" primary plus
 	// required guardrails), so samples from all representative workloads
 	// are pooled into one comparison per metric. Per-workload raw data
 	// remains available in RepSamples for diagnosis.
-	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, "", pooledAsRuns(pooledWallBase, "wall_time_ns"), pooledAsRuns(pooledWallCand, "wall_time_ns"))
+	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, "", pooledAsRuns(pooled.wallBase, "wall_time_ns"), pooledAsRuns(pooled.wallCand, "wall_time_ns"))
 	comparisons = append(comparisons, wallComparisons...)
 	if wallBenchstat != "" {
 		evidence.BenchstatOutput += fmt.Sprintf("pooled representative workloads:\n%s", wallBenchstat)
 	}
 	comparisons = append(comparisons, compareMetric("", "cpu_time_ns", "ns",
-		pooledAsRuns(pooledCPUBase, "cpu_time_ns"), pooledAsRuns(pooledCUTCand, "cpu_time_ns"), cpuTime)...)
+		pooledAsRuns(pooled.cpuBase, "cpu_time_ns"), pooledAsRuns(pooled.cpuCand, "cpu_time_ns"), cpuTime)...)
 	comparisons = append(comparisons, compareMetric("", "peak_memory_bytes", "bytes",
-		pooledAsRuns(pooledMemBase, "peak_memory_bytes"), pooledAsRuns(pooledMemCand, "peak_memory_bytes"), peakMemory)...)
-
+		pooledAsRuns(pooled.memBase, "peak_memory_bytes"), pooledAsRuns(pooled.memCand, "peak_memory_bytes"), peakMemory)...)
 	if sizeErr == nil {
 		comparisons = append(comparisons, domain.MetricComparison{Name: "binary_size_bytes", Unit: "bytes", Baseline: float64(baselineSize), Candidate: float64(candSize), DeltaPercent: percentDelta(float64(baselineSize), float64(candSize)), StatisticallyFit: true})
 	}
-
-	evidence.BehaviorMatches = behaviorMatches
-	evidence.SafetyChecksPassed = testsPassed
-	evidence.RepresentativeEvidence = measuredWorkloads > 0
+	evidence.BehaviorMatches = true
+	evidence.SafetyChecksPassed = true
+	evidence.RepresentativeEvidence = measured > 0
 	evidence.Comparisons = comparisons
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d representative workload(s) measured over %d A/B pairs each", measuredWorkloads, measurementRepetitions)
-
-	// Informational PGO lane: only candidates that passed the test suite and
-	// produced a full ordinary verdict reach it, so the extra builds and A/B
-	// series are never spent on rejected work.
-	e.runPgoLane(ctx, &evidence, prepared.Worktree, id)
-	return evidence, nil
+	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d representative workload(s) measured over %d A/B pairs each", measured, measurementRepetitions)
 }
 
 // seedMeasurementRequest builds the measurement runner request for one seed
@@ -260,80 +318,115 @@ func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, bin
 // re-collected, keeping total runtime bounded at one extra build pair plus
 // one 7-repetition interleaved series per representative workload.
 func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.CandidateEvidence, candidateWorktree, candidateID string) {
-	skip := func(reason string) {
-		evidence.PgoNote = "PGO lane skipped: " + reason
-		_ = e.saveEvent("pgo_lane_skipped", evidence.PgoNote, nil)
-	}
-	if e.state.PGOProfilePath == "" {
-		skip("no pprof-format CPU profile was collected during discovery (sampler reports are not pprof and cannot seed -pgo)")
+	if ok, reason := e.pgoProfileReady(); !ok {
+		e.skipPgoLane(evidence, reason)
 		return
+	}
+	baselinePgo, candidatePgo, ok := e.buildPgoBinaries(ctx, candidateWorktree, candidateID, evidence)
+	if !ok {
+		return
+	}
+	comparisons, measured, ok := e.measurePgoWorkloads(ctx, evidence, candidateID, baselinePgo, candidatePgo)
+	if !ok {
+		return
+	}
+	if measured == 0 {
+		e.skipPgoLane(evidence, "no representative seed workloads available for measurement")
+		return
+	}
+	evidence.PgoComparisons = comparisons
+	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, measurementRepetitions, filepath.Base(e.state.PGOProfilePath))
+	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
+}
+
+func (e *Engine) skipPgoLane(evidence *orchestrator.CandidateEvidence, reason string) {
+	evidence.PgoNote = "PGO lane skipped: " + reason
+	_ = e.saveEvent("pgo_lane_skipped", evidence.PgoNote, nil)
+}
+
+func (e *Engine) pgoProfileReady() (bool, string) {
+	if e.state.PGOProfilePath == "" {
+		return false, "no pprof-format CPU profile was collected during discovery (sampler reports are not pprof and cannot seed -pgo)"
 	}
 	if info, err := os.Stat(e.state.PGOProfilePath); err != nil || info.IsDir() || info.Size() == 0 {
-		skip(fmt.Sprintf("discovery CPU profile %q missing or empty on disk", e.state.PGOProfilePath))
-		return
+		return false, fmt.Sprintf("discovery CPU profile %q missing or empty on disk", e.state.PGOProfilePath)
 	}
+	return true, ""
+}
 
+func (e *Engine) buildPgoBinaries(ctx context.Context, candidateWorktree, candidateID string, evidence *orchestrator.CandidateEvidence) (baselinePgo, candidatePgo string, ok bool) {
 	binDir := filepath.Join(e.dir, "builds")
 	binarySuffix := filepath.Base(e.state.Manifest.Target.Build.Binary)
-	baselinePgoBinary := filepath.Join(binDir, candidateID+"-baseline-pgo-"+binarySuffix)
-	candidatePgoBinary := filepath.Join(binDir, candidateID+"-candidate-pgo-"+binarySuffix)
+	baselinePgo = filepath.Join(binDir, candidateID+"-baseline-pgo-"+binarySuffix)
+	candidatePgo = filepath.Join(binDir, candidateID+"-candidate-pgo-"+binarySuffix)
 	for _, target := range []struct {
 		label, repository, output string
 	}{
-		{"baseline-pgo", e.state.Repository, baselinePgoBinary},
-		{"candidate-pgo", candidateWorktree, candidatePgoBinary},
+		{"baseline-pgo", e.state.Repository, baselinePgo},
+		{"candidate-pgo", candidateWorktree, candidatePgo},
 	} {
-		result, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: target.repository, Target: e.state.Manifest.Target.Build.Package, Output: target.output, PGOProfile: e.state.PGOProfilePath, Env: []string{"GOTOOLCHAIN=local"}})
-		if err != nil {
-			detail := tail(string(result.Stderr), 200)
-			if detail == "" {
-				detail = err.Error()
-			}
-			skip(fmt.Sprintf("%s build failed: %s", target.label, detail))
-			return
+		if !e.buildPgoBinary(ctx, target.label, target.repository, target.output, evidence) {
+			return "", "", false
 		}
-		evidence.ArtifactURIs = append(evidence.ArtifactURIs, target.output)
 	}
+	return baselinePgo, candidatePgo, true
+}
 
+func (e *Engine) buildPgoBinary(ctx context.Context, label, repository, output string, evidence *orchestrator.CandidateEvidence) bool {
+	result, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: repository, Target: e.state.Manifest.Target.Build.Package, Output: output, PGOProfile: e.state.PGOProfilePath, Env: []string{"GOTOOLCHAIN=local"}})
+	if err != nil {
+		detail := tail(string(result.Stderr), 200)
+		if detail == "" {
+			detail = err.Error()
+		}
+		e.skipPgoLane(evidence, fmt.Sprintf("%s build failed: %s", label, detail))
+		return false
+	}
+	evidence.ArtifactURIs = append(evidence.ArtifactURIs, output)
+	return true
+}
+
+func (e *Engine) measurePgoWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, candidateID, baselinePgo, candidatePgo string) ([]domain.MetricComparison, int, bool) {
 	comparisons := make([]domain.MetricComparison, 0, 3)
 	measured := 0
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
 		if seed.Tier != domain.TierRepresentative {
 			continue
 		}
-		baseReq, wid := e.seedMeasurementRequest(seed, candidateID+"-baseline-pgo", baselinePgoBinary)
+		baseReq, wid := e.seedMeasurementRequest(seed, candidateID+"-baseline-pgo", baselinePgo)
 		candReq := baseReq
-		candReq.Build = runner.Build{ID: candidateID + "-candidate-pgo", BinaryPath: candidatePgoBinary}
-		candReq.Workload.Command.Path = candidatePgoBinary
+		candReq.Build = runner.Build{ID: candidateID + "-candidate-pgo", BinaryPath: candidatePgo}
+		candReq.Workload.Command.Path = candidatePgo
 		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
 		if err != nil {
-			skip(fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err))
-			return
+			e.skipPgoLane(evidence, fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err))
+			return nil, 0, false
 		}
-		// Informational behavior sanity check: tolerate output-order noise
-		// without paying for the determinism probe, since a divergence here
-		// only invalidates the comparison, never the candidate verdict.
-		for i := range ab.Baseline {
-			exitOK := ab.Baseline[i].ExitCode == ab.Candidate[i].ExitCode
-			stdoutOK := ab.Baseline[i].StdoutDigest == ab.Candidate[i].StdoutDigest ||
-				(ab.Baseline[i].SortedLinesDigest != "" && ab.Baseline[i].SortedLinesDigest == ab.Candidate[i].SortedLinesDigest)
-			if !exitOK || !stdoutOK {
-				skip(fmt.Sprintf("PGO-built binaries diverged on workload %q at repetition %d", seed.ID, i+1))
-				return
-			}
+		if ok, rep := pgoBehaviorOK(ab); !ok {
+			e.skipPgoLane(evidence, fmt.Sprintf("PGO-built binaries diverged on workload %q at repetition %d", seed.ID, rep))
+			return nil, 0, false
 		}
 		comparisons = append(comparisons, compareMetric(wid, "wall_time_ns", "ns", ab.Baseline, ab.Candidate, wallTime)...)
 		comparisons = append(comparisons, compareMetric(wid, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...)
 		comparisons = append(comparisons, compareMetric(wid, "peak_memory_bytes", "bytes", ab.Baseline, ab.Candidate, peakMemory)...)
 		measured++
 	}
-	if measured == 0 {
-		skip("no representative seed workloads available for measurement")
-		return
+	return comparisons, measured, true
+}
+
+func pgoBehaviorOK(ab runner.ABResult) (bool, int) {
+	// Informational behavior sanity check: tolerate output-order noise
+	// without paying for the determinism probe, since a divergence here
+	// only invalidates the comparison, never the candidate verdict.
+	for i := range ab.Baseline {
+		exitOK := ab.Baseline[i].ExitCode == ab.Candidate[i].ExitCode
+		stdoutOK := ab.Baseline[i].StdoutDigest == ab.Candidate[i].StdoutDigest ||
+			(ab.Baseline[i].SortedLinesDigest != "" && ab.Baseline[i].SortedLinesDigest == ab.Candidate[i].SortedLinesDigest)
+		if !exitOK || !stdoutOK {
+			return false, i + 1
+		}
 	}
-	evidence.PgoComparisons = comparisons
-	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, measurementRepetitions, filepath.Base(e.state.PGOProfilePath))
-	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
+	return true, 0
 }
 
 // pooledAsRuns adapts raw sample values into single-metric RunResults so

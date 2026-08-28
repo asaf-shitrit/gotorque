@@ -17,6 +17,7 @@ import (
 	"example.com/gotorque/internal/workload"
 	adkagent "google.golang.org/adk/v2/agent"
 	adkrunner "google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -25,39 +26,13 @@ import (
 // artifact store used by the CLI path; they do not provide shell access to
 // agents. A caller may inject OpenAI-backed or static agents.
 func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrator.Config) (orchestrator.CampaignResult, error) {
-	if e.state.Status != StatusCompleted && e.state.Status != StatusRunning {
-		return orchestrator.CampaignResult{}, fmt.Errorf("campaign must be running or baseline-completed before ADK: %s", e.state.Status)
-	}
-	services := adkServices{engine: e}
-	orch, err := orchestrator.New(orchestrator.Dependencies{Runner: services, Policy: services, Jobs: services, Agents: roleSet}, cfg)
+	adk, message, err := e.prepareADK(roleSet, cfg)
 	if err != nil {
 		return orchestrator.CampaignResult{}, err
 	}
-	adk, err := adkrunner.NewInMemory("gotorque", orch.Agent)
+	result, err := collectADKResult(ctx, adk, e.state.ID, message)
 	if err != nil {
 		return orchestrator.CampaignResult{}, err
-	}
-	req := orchestrator.CampaignRequest{CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision, BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...), OptimizationMode: e.state.Manifest.OptimizationPolicy}
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return orchestrator.CampaignResult{}, err
-	}
-	message := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}
-	var result orchestrator.CampaignResult
-	for event, runErr := range adk.Run(ctx, "gotorque", e.state.ID, message, adkagent.RunConfig{}) {
-		if runErr != nil {
-			return orchestrator.CampaignResult{}, runErr
-		}
-		if event == nil || event.Output == nil || event.NodeInfo == nil || !strings.Contains(event.NodeInfo.Path, "finalize_campaign") {
-			continue
-		}
-		data, err := json.Marshal(event.Output)
-		if err != nil {
-			return orchestrator.CampaignResult{}, err
-		}
-		if err := json.Unmarshal(data, &result); err != nil {
-			return orchestrator.CampaignResult{}, err
-		}
 	}
 	if result.CampaignID == "" {
 		return orchestrator.CampaignResult{}, errors.New("ADK completed without a campaign result")
@@ -67,6 +42,59 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	}
 	_ = e.saveEvent("adk_completed", result.StopReason, result)
 	return result, nil
+}
+
+func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkrunner.Runner, *genai.Content, error) {
+	if e.state.Status != StatusCompleted && e.state.Status != StatusRunning {
+		return nil, nil, fmt.Errorf("campaign must be running or baseline-completed before ADK: %s", e.state.Status)
+	}
+	services := adkServices{engine: e}
+	orch, err := orchestrator.New(orchestrator.Dependencies{Runner: services, Policy: services, Jobs: services, Agents: roleSet}, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	adk, err := adkrunner.NewInMemory("gotorque", orch.Agent)
+	if err != nil {
+		return nil, nil, err
+	}
+	req := orchestrator.CampaignRequest{CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision, BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...), OptimizationMode: e.state.Manifest.OptimizationPolicy}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return adk, &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}, nil
+}
+
+func collectADKResult(ctx context.Context, adk *adkrunner.Runner, sessionID string, message *genai.Content) (orchestrator.CampaignResult, error) {
+	var result orchestrator.CampaignResult
+	for event, runErr := range adk.Run(ctx, "gotorque", sessionID, message, adkagent.RunConfig{}) {
+		if runErr != nil {
+			return orchestrator.CampaignResult{}, runErr
+		}
+		if !isFinalizeCampaign(event) {
+			continue
+		}
+		decoded, err := decodeCampaignResult(event.Output)
+		if err != nil {
+			return orchestrator.CampaignResult{}, err
+		}
+		result = decoded
+	}
+	return result, nil
+}
+
+func isFinalizeCampaign(event *session.Event) bool {
+	return event != nil && event.Output != nil && event.NodeInfo != nil && strings.Contains(event.NodeInfo.Path, "finalize_campaign")
+}
+
+func decodeCampaignResult(output any) (orchestrator.CampaignResult, error) {
+	data, err := json.Marshal(output)
+	if err != nil {
+		return orchestrator.CampaignResult{}, err
+	}
+	var result orchestrator.CampaignResult
+	err = json.Unmarshal(data, &result)
+	return result, err
 }
 
 // snapshotTokenUsage converts the agents collector's per-role totals into the
