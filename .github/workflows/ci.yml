@@ -37,6 +37,8 @@ jobs:
         run: |
           /tmp/gotorque manifest validate targets/gojq/manifest.json
           /tmp/gotorque manifest validate targets/scc/manifest.json
+          /tmp/gotorque manifest validate targets/dedupe/manifest.json
+          /tmp/gotorque manifest validate targets/numstats/manifest.json
 
       - name: Deterministic campaign smoke test (no network, no model)
         run: |
