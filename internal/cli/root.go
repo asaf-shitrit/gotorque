@@ -6,18 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"time"
 
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/campaign"
-	"example.com/gotorque/internal/jobs"
 	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/mcpserver"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/version"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +33,6 @@ func New(deps Dependencies) *cobra.Command {
 	root.AddCommand(newManifestCommand(deps.Stdout))
 	root.AddCommand(newOptimizeCommand(deps.Stdout))
 	root.AddCommand(newReportCommand(deps.Stdout))
-	root.AddCommand(newMCPCommand())
 	root.AddCommand(newVersionCommand(deps.Stdout))
 	return root
 }
@@ -196,35 +190,6 @@ func newReportCommand(out io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
-	return cmd
-}
-
-func newMCPCommand() *cobra.Command {
-	var stateRoot string
-	serve := &cobra.Command{
-		Use:   "serve",
-		Short: "Serve the campaign engine over stdio MCP",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if stateRoot == "" {
-				return fmt.Errorf("--state-root is required")
-			}
-			if !filepath.IsAbs(stateRoot) {
-				return fmt.Errorf("--state-root must be absolute")
-			}
-			if err := os.MkdirAll(stateRoot, 0o700); err != nil {
-				return err
-			}
-			server, err := mcpserver.New(newEngineBackend(stateRoot), jobs.NewMemoryManager(jobs.Options{}))
-			if err != nil {
-				return err
-			}
-			return server.MCP.Run(cmd.Context(), &mcp.StdioTransport{})
-		},
-	}
-	serve.Flags().StringVar(&stateRoot, "state-root", "", "absolute campaign state root")
-	cmd := &cobra.Command{Use: "mcp", Short: "MCP control surface"}
-	cmd.AddCommand(serve)
 	return cmd
 }
 

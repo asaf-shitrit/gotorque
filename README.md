@@ -75,11 +75,6 @@ A manifest describes the repository, build target, command shape, and seed
 workloads. See `targets/gojq` and `targets/scc` for examples, and
 `docs/target-manifest.md` for the schema.
 
-## MCP server
-
-`gotorque mcp serve --state-root PATH` exposes campaign state and
-asynchronous work over the Model Context Protocol.
-
 ## Development
 
 ```sh

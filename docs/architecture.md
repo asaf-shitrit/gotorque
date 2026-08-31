@@ -2,17 +2,16 @@
 
 ## Responsibility split
 
-Google ADK Go 2.x is the internal orchestration runtime. MCP is the external
-control and observation surface. Neither layer reimplements deterministic Go,
-Git, profiling, coverage, or statistical tools.
+Google ADK Go 2.x is the internal orchestration runtime. It does not
+reimplement deterministic Go, Git, profiling, coverage, or statistical tools.
 
 ```text
-CLI or MCP client
+CLI
     |
     v
-in-process campaign engine ---- asynchronous job manager
-    |                              |
-    v                              v
+in-process campaign engine
+    |
+    v
 ADK workflow graph -------- campaign state and artifacts (bbolt)
     |
     +-- deterministic nodes: inspect, discovery, evaluate candidate, policy, routing
@@ -229,9 +228,8 @@ internal t-test.
 
 Target commands run without network access and with writes confined to a
 fresh temporary directory unless a target manifest explicitly grants
-additional capabilities. The MCP server exposes typed operations, not a
-generic shell. The runner only launches a configured build artifact and
-rejects workload command paths that differ from it. Candidate changes are
+additional capabilities. The runner only launches a configured build artifact
+and rejects workload command paths that differ from it. Candidate changes are
 isolated in Git worktrees; accepted patches are copied to the campaign's
 `accepted/` directory and are never pushed anywhere by the harness.
 

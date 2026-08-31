@@ -30,8 +30,8 @@ type PolicyService interface {
 	Evaluate(context.Context, PolicyInput) (domain.Evaluation, error)
 }
 
-// JobService persists the asynchronous campaign lifecycle for an MCP or CLI
-// control plane. The workflow itself remains independent of storage.
+// JobService persists the asynchronous campaign lifecycle for a CLI control
+// plane. The workflow itself remains independent of storage.
 type JobService interface {
 	StartCampaign(context.Context, CampaignRequest) (domain.Job, error)
 	RecordProgress(context.Context, domain.Job, CampaignProgress) error
