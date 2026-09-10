@@ -14,6 +14,16 @@ import (
 	"google.golang.org/adk/v2/model/openaimodel"
 )
 
+// EnvAPIKey and EnvBaseURL name the only credential and endpoint inputs. The
+// wire protocol is OpenAI-compatible, but the endpoint is OpenRouter: nothing
+// here reads OPENAI_API_KEY, so an OpenAI key left in the shell is never used
+// and an unset base URL cannot fall back to api.openai.com.
+const (
+	EnvAPIKey                = "OPENROUTER_API_KEY"
+	EnvBaseURL               = "OPENROUTER_BASE_URL"
+	DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+)
+
 type OpenAIProvider struct {
 	APIKey  string
 	BaseURL string
@@ -26,7 +36,7 @@ type OpenAIProvider struct {
 }
 
 func NewOpenAIProviderFromEnvironment() OpenAIProvider {
-	return OpenAIProvider{APIKey: os.Getenv("OPENAI_API_KEY"), BaseURL: os.Getenv("OPENAI_BASE_URL"), Routing: RoutingFromEnvironment(), Usage: NewUsageCollector()}
+	return OpenAIProvider{APIKey: os.Getenv(EnvAPIKey), BaseURL: os.Getenv(EnvBaseURL), Routing: RoutingFromEnvironment(), Usage: NewUsageCollector()}
 }
 
 func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, error) {
@@ -50,7 +60,7 @@ func (p OpenAIProvider) UsageReporter() *UsageCollector { return p.Usage }
 // API key or response body in campaign state.
 func (p OpenAIProvider) ValidateConnectivity(ctx context.Context) error {
 	if p.APIKey == "" {
-		return errors.New("OPENAI_API_KEY is required for --adk")
+		return errors.New(EnvAPIKey + " is required for --adk")
 	}
 	if err := p.Routing.Validate(); err != nil {
 		return err
@@ -74,7 +84,7 @@ func httpOK(code int) bool {
 func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]bool, error) {
 	base := strings.TrimRight(p.BaseURL, "/")
 	if base == "" {
-		base = "https://api.openai.com/v1"
+		base = DefaultOpenRouterBaseURL
 	}
 	client := p.Client
 	if client == nil {
@@ -87,11 +97,11 @@ func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]bool
 	req.Header.Set("Authorization", "Bearer "+p.APIKey)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("OpenAI-compatible endpoint: %w", err)
+		return nil, fmt.Errorf("OpenRouter endpoint: %w", err)
 	}
 	defer resp.Body.Close()
 	if !httpOK(resp.StatusCode) {
-		return nil, fmt.Errorf("OpenAI-compatible endpoint returned HTTP %s", resp.Status)
+		return nil, fmt.Errorf("OpenRouter endpoint returned HTTP %s", resp.Status)
 	}
 	var document struct {
 		Data []struct {
@@ -106,7 +116,7 @@ func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]bool
 		available[item.ID] = true
 	}
 	if len(available) == 0 {
-		return nil, errors.New("OpenAI-compatible endpoint returned no models")
+		return nil, errors.New("OpenRouter endpoint returned no models")
 	}
 	return available, nil
 }

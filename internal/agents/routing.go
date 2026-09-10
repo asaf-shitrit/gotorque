@@ -13,15 +13,20 @@ const (
 	EnvReviewerModel    = "GOTORQUE_MODEL_REVIEWER"
 )
 
+// DefaultModel is the model every role uses unless its GOTORQUE_MODEL_* env
+// var overrides it. Reasoning model: roles must allow enough completion tokens
+// for reasoning output ahead of the JSON payload the workflow nodes parse.
+const DefaultModel = "deepseek/deepseek-v4.1-flash"
+
 type Routing map[Role]string
 
 func DefaultRouting() Routing {
 	return Routing{
-		RoleCoordinator: "gpt-5.6-sol",
-		RoleExplorer:    "gpt-5.6-luna",
-		RoleAnalyst:     "gpt-5.6-terra",
-		RoleOptimizer:   "gpt-5.6-sol",
-		RoleReviewer:    "gpt-5.6-terra",
+		RoleCoordinator: DefaultModel,
+		RoleExplorer:    DefaultModel,
+		RoleAnalyst:     DefaultModel,
+		RoleOptimizer:   DefaultModel,
+		RoleReviewer:    DefaultModel,
 	}
 }
 

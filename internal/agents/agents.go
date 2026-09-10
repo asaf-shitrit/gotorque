@@ -139,8 +139,16 @@ func NewSet(ctx context.Context, provider ModelProvider) (Set, error) {
 }
 
 // roleResponseSchema derives the OpenAI-compatible structured-output JSON
-// schema from the Go result type each role must produce. The endpoint then
-// enforces valid, schema-shaped JSON instead of relying on prompt discipline.
+// schema from the Go result type each role must produce.
+//
+// It is deliberately not wired into llmagent.Config. Requesting a schema makes
+// OpenRouter route only to providers advertising structured_outputs, and for
+// the default model that is a single saturated provider: schema requests
+// return HTTP 429 where the same call without a schema succeeds. Roles
+// therefore rely on prompt discipline plus the salvage heuristics in
+// decode.go. Before enabling this, note that strict mode also promotes every
+// omitempty field to required, and that ScalingDimensions (map[string]int)
+// emits an open object that strict mode rejects.
 func roleResponseSchema(role Role) (map[string]any, error) {
 	var resultType reflect.Type
 	switch role {

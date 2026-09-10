@@ -54,3 +54,25 @@ func TestNewSetReportsProviderFailure(t *testing.T) {
 		t.Fatalf("NewSet() error = %v, want wrapped %v", err, wantErr)
 	}
 }
+
+func TestRoleResponseSchemaCoversEveryRole(t *testing.T) {
+	for _, role := range AllRoles {
+		schema, err := roleResponseSchema(role)
+		if err != nil {
+			t.Fatalf("roleResponseSchema(%s) error = %v", role, err)
+		}
+		if schema["type"] != "object" {
+			t.Errorf("roleResponseSchema(%s) type = %v, want object", role, schema["type"])
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok || len(properties) == 0 {
+			t.Errorf("roleResponseSchema(%s) has no properties", role)
+		}
+	}
+}
+
+func TestRoleResponseSchemaRejectsUnknownRole(t *testing.T) {
+	if _, err := roleResponseSchema(Role("nonexistent")); err == nil {
+		t.Fatal("roleResponseSchema(nonexistent) error = nil, want registration failure")
+	}
+}

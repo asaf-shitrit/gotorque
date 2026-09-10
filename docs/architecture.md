@@ -180,18 +180,23 @@ provider. Per-role model IDs come from environment variables:
 `GOTORQUE_MODEL_COORDINATOR`, `GOTORQUE_MODEL_EXPLORER`,
 `GOTORQUE_MODEL_ANALYST`, `GOTORQUE_MODEL_OPTIMIZER`,
 `GOTORQUE_MODEL_REVIEWER`. Unset roles fall back to the built-in defaults
-(`gpt-5.6-sol` for coordinator and optimizer, `gpt-5.6-luna` for explorer,
-`gpt-5.6-terra` for analyst and reviewer). This tiering is cost/latency
-configuration only: cheap models handle high-volume evidence work while
-stronger ones handle synthesis. All builds, measurements, behavior checks,
+(`deepseek/deepseek-v4.1-flash` for every role). Per-role overrides remain a
+cost/latency lever: a cheap model can handle high-volume evidence work while a
+stronger one handles synthesis. All builds, measurements, behavior checks,
 and acceptance transitions remain deterministic and model-independent.
 
 Before expensive repository work starts, the provider validates connectivity:
-it requires `OPENAI_API_KEY`, checks endpoint reachability via `OPENAI_BASE_URL`
-(defaulting to the official OpenAI endpoint), and verifies every configured
-model ID is advertised by the endpoint. Each role also carries a structured
-output schema derived from its Go result type, so the endpoint enforces
-JSON shape instead of relying on prompt discipline alone.
+it requires `OPENROUTER_API_KEY`, checks endpoint reachability via
+`OPENROUTER_BASE_URL` (defaulting to `https://openrouter.ai/api/v1`), and
+verifies every configured model ID is advertised by the endpoint.
+
+Role output shape is not enforced by the endpoint. Each role's instruction
+states strict JSON rules, and `internal/agents/decode.go` repairs the defects
+models actually emit (fenced blocks, unterminated strings, missing brackets).
+`roleResponseSchema` can derive a structured-output schema per role, but
+requesting one restricts OpenRouter to providers advertising
+`structured_outputs`, which for the default model is a single saturated
+provider; see the comment on that function before enabling it.
 
 ## Resume semantics
 

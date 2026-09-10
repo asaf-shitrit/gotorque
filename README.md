@@ -49,13 +49,11 @@ Validate a target manifest:
 Run a model-driven campaign:
 
 ```sh
-export OPENAI_API_KEY=sk-or-v1-...
-export OPENAI_BASE_URL=https://openrouter.ai/api/v1
-export GOTORQUE_MODEL_COORDINATOR=stealth/ox-alpha
-export GOTORQUE_MODEL_EXPLORER=openai/gpt-oss-120b
-export GOTORQUE_MODEL_ANALYST=openai/gpt-oss-120b
-export GOTORQUE_MODEL_OPTIMIZER=stealth/ox-alpha
-export GOTORQUE_MODEL_REVIEWER=stealth/ox-alpha
+export OPENROUTER_API_KEY=sk-or-v1-...
+
+# Optional. Every role defaults to deepseek/deepseek-v4.1-flash; override a
+# role only to tier cost against capability.
+export GOTORQUE_MODEL_OPTIMIZER=deepseek/deepseek-v4.1-flash
 
 /tmp/gotorque optimize \
   --repo /path/to/target-repo \

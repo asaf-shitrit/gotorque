@@ -28,5 +28,5 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 func TestOpenAIProviderRejectsMissingCredential(t *testing.T) {
 	provider := NewOpenAIProviderFromEnvironment()
 	provider.APIKey = ""
-	require.ErrorContains(t, provider.ValidateConnectivity(context.Background()), "OPENAI_API_KEY")
+	require.ErrorContains(t, provider.ValidateConnectivity(context.Background()), EnvAPIKey)
 }
