@@ -21,6 +21,9 @@ const (
 	stateKey      = "optimizer:campaign_state"
 	routeContinue = "continue"
 	routeFinish   = "finish"
+
+	stopReasonMaxCandidates       = "maximum candidate count reached"
+	stopReasonConsecutiveFailures = "consecutive rejection/inconclusive limit reached"
 )
 
 // Dependencies are intentionally narrow so deterministic execution, policy,
@@ -135,7 +138,8 @@ func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string) (workflow
 func (n graphNodes) edges() []workflow.Edge {
 	return workflow.NewEdgeBuilder().
 		Add(workflow.Start, n.initialize).
-		Add(n.initialize, n.inspect).
+		AddRoute(n.initialize, n.inspect, workflow.StringRoute(routeContinue)).
+		AddRoute(n.initialize, n.finalize, workflow.StringRoute(routeFinish)).
 		Add(n.inspect, n.coordinator).
 		Add(n.coordinator, n.mergeCoordinator).
 		Add(n.mergeCoordinator, n.explorer).
@@ -168,8 +172,21 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	if job.ID == "" {
 		return nil, fmt.Errorf("start campaign job: empty job ID")
 	}
-	state := CampaignState{Request: req, Job: job, StartedAt: time.Now()}
-	return stateEvent(ctx, state), nil
+	// Seeding the tally rather than starting at zero is what makes
+	// MaxConsecutiveFailures a campaign bound instead of a per-process one.
+	state := CampaignState{Request: req, Job: job, StartedAt: time.Now(), ConsecutiveFailures: req.PriorConsecutiveFailures}
+	// The route node only runs after a decision, so a campaign that resumes
+	// already at its failure bound would spend one more candidate proving what
+	// the carried-in tally already says. Finishing from here keeps the bound
+	// exact instead of off by the resumed process's first candidate.
+	next := routeContinue
+	if state.ConsecutiveFailures >= g.cfg.MaxConsecutiveFailures {
+		state.StopReason = stopReasonConsecutiveFailures
+		next = routeFinish
+	}
+	ev := stateEvent(ctx, state)
+	ev.Routes = []string{next}
+	return ev, nil
 }
 
 func (g *campaignGraph) inspect(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
@@ -402,11 +419,11 @@ func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*sessi
 	ev := stateEvent(ctx, state)
 	switch {
 	case state.CandidatesTried >= g.cfg.MaxCandidates:
-		state.StopReason = "maximum candidate count reached"
+		state.StopReason = stopReasonMaxCandidates
 		ev = stateEvent(ctx, state)
 		ev.Routes = []string{routeFinish}
 	case state.ConsecutiveFailures >= g.cfg.MaxConsecutiveFailures:
-		state.StopReason = "consecutive rejection/inconclusive limit reached"
+		state.StopReason = stopReasonConsecutiveFailures
 		ev = stateEvent(ctx, state)
 		ev.Routes = []string{routeFinish}
 	default:
@@ -459,6 +476,12 @@ func normalizeRequest(req CampaignRequest) (CampaignRequest, error) {
 	}
 	if req.BuildTarget == "" {
 		return CampaignRequest{}, fmt.Errorf("build target is required")
+	}
+	// A negative carried-in tally would buy the resumed process extra
+	// failures before MaxConsecutiveFailures binds, so it is rejected rather
+	// than clamped: the bound is not negotiable by request content.
+	if req.PriorConsecutiveFailures < 0 {
+		return CampaignRequest{}, fmt.Errorf("prior consecutive failures cannot be negative")
 	}
 	if req.OptimizationMode == "" {
 		req.OptimizationMode = domain.PolicyIdiomatic

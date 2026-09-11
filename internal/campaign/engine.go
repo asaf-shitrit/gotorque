@@ -99,20 +99,32 @@ type State struct {
 	ManifestPath string `json:"manifest_path"`
 	ADKMode      string `json:"adk_mode,omitempty"`
 
-	CandidateRecords            []CandidateRecord `json:"candidate_records,omitempty"`
-	Manifest                    manifest.Manifest `json:"manifest"`
-	Status                      Status            `json:"status"`
-	StartedAt                   time.Time         `json:"started_at"`
-	UpdatedAt                   time.Time         `json:"updated_at"`
-	CompletedAt                 *time.Time        `json:"completed_at,omitempty"`
-	Environment                 Environment       `json:"environment"`
-	Inventory                   Inventory         `json:"inventory"`
-	BuildID                     string            `json:"build_id,omitempty"`
-	BinaryPath                  string            `json:"binary_path,omitempty"`
-	DiscoveryBuildID            string            `json:"discovery_build_id,omitempty"`
-	DiscoveryBinaryPath         string            `json:"discovery_binary_path,omitempty"`
-	DiscoveryHotFunctions       []string          `json:"discovery_hot_functions,omitempty"`
-	DiscoveryProfileSummaryPath string            `json:"discovery_profile_summary_path,omitempty"`
+	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
+	// ConsecutiveFailures mirrors the orchestrator's run of rejected or
+	// inconclusive candidates. The graph builds a fresh CampaignState every
+	// time it is entered, so without a persisted tally each resume would
+	// restart the manifest's stop_after_failures bound at zero and the bound
+	// would only ever hold inside one process.
+	ConsecutiveFailures int               `json:"consecutive_failures,omitempty"`
+	Manifest            manifest.Manifest `json:"manifest"`
+	Status              Status            `json:"status"`
+	StartedAt           time.Time         `json:"started_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
+	CompletedAt         *time.Time        `json:"completed_at,omitempty"`
+	// ElapsedRunTime is the wall time this campaign has spent actually
+	// running, summed over every process that has worked on it. StartedAt
+	// cannot stand in for it: a campaign is idle between an interruption and
+	// its resume, and charging that idle time against max_duration would
+	// expire any campaign resumed the next day.
+	ElapsedRunTime              time.Duration `json:"elapsed_run_time,omitempty"`
+	Environment                 Environment   `json:"environment"`
+	Inventory                   Inventory     `json:"inventory"`
+	BuildID                     string        `json:"build_id,omitempty"`
+	BinaryPath                  string        `json:"binary_path,omitempty"`
+	DiscoveryBuildID            string        `json:"discovery_build_id,omitempty"`
+	DiscoveryBinaryPath         string        `json:"discovery_binary_path,omitempty"`
+	DiscoveryHotFunctions       []string      `json:"discovery_hot_functions,omitempty"`
+	DiscoveryProfileSummaryPath string        `json:"discovery_profile_summary_path,omitempty"`
 	// PGOProfilePath points at the raw pprof-format CPU profile produced by
 	// benchmark-based discovery (profiles/bench-cpu.pb.gz), or is empty when
 	// only a non-pprof sampler report exists. Only this file may seed the
@@ -156,6 +168,11 @@ type Engine struct {
 	now       func() time.Time
 	adkAgents *agents.Set
 	adkConfig orchestrator.Config
+	// runStartedAt and elapsedBefore anchor this process's contribution to
+	// State.ElapsedRunTime; runStartedAt stays zero until Run begins so that
+	// engines driven straight through RunADK never advance the clock.
+	runStartedAt  time.Time
+	elapsedBefore time.Duration
 }
 
 func Create(ctx context.Context, opts Options) (*Engine, error) {
@@ -327,6 +344,7 @@ func (e *Engine) Run(ctx context.Context) (err error) {
 	if e.state.Status == StatusCompleted {
 		return nil
 	}
+	e.startRunClock()
 	ctx, cancel := e.withCampaignDeadline(ctx)
 	if cancel != nil {
 		defer cancel()
@@ -345,12 +363,25 @@ func (e *Engine) Run(ctx context.Context) (err error) {
 	return e.finishCampaign(ctx)
 }
 
+// startRunClock anchors this process's slice of the campaign-wide elapsed
+// time, which continues from the persisted total instead of from zero.
+func (e *Engine) startRunClock() {
+	e.runStartedAt, e.elapsedBefore = e.now(), e.state.ElapsedRunTime
+}
+
+// withCampaignDeadline spends what is left of the manifest's max_duration
+// rather than granting it again. The bound names a campaign, not a process, so
+// an interrupted campaign that resumed with a full budget could run for
+// arbitrarily many multiples of max_duration across enough resumes.
 func (e *Engine) withCampaignDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	deadline := e.state.Manifest.Campaign.MaxDuration.Duration()
-	if deadline > 0 {
-		return context.WithTimeout(ctx, deadline)
+	budget := e.state.Manifest.Campaign.MaxDuration.Duration()
+	if budget <= 0 {
+		return ctx, nil
 	}
-	return ctx, nil
+	// An exhausted budget yields an already-expired context, so a campaign
+	// with nothing left stops down the same deadline path as one that runs
+	// out mid-flight instead of needing a second terminal state.
+	return context.WithTimeout(ctx, max(budget-e.state.ElapsedRunTime, 0))
 }
 
 func (e *Engine) captureRunFailure(err *error) {
@@ -882,6 +913,12 @@ func digestFiles(repository string, paths []string) (map[string]string, error) {
 func (e *Engine) saveEvent(kind, message string, data any) error {
 	now := e.now()
 	e.state.UpdatedAt = now
+	// Advancing the campaign clock on every persisted event bounds what an
+	// abrupt kill can hand back: at most the work since the previous event,
+	// rather than everything this process had already spent.
+	if !e.runStartedAt.IsZero() {
+		e.state.ElapsedRunTime = e.elapsedBefore + now.Sub(e.runStartedAt)
+	}
 	if err := e.store.Save(e.state); err != nil {
 		return err
 	}
