@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -203,6 +204,123 @@ func TestCampaignDeadlineSpendsOnlyTheRemainingBudget(t *testing.T) {
 			require.InDelta(t, tc.wantRemains.Seconds(), time.Until(deadline).Seconds(), 1)
 		})
 	}
+}
+
+// suspendedClock is a wall clock a test can jump forward. It stands in for a
+// machine suspending mid-campaign: time.Now leaps ahead while the monotonic
+// clock Go timers run on does not move at all.
+type suspendedClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *suspendedClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *suspendedClock) suspend(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// suspendingAgent replays a fixed payload like staticAgent, but on its first
+// turn it jumps the clock past the campaign budget and then waits to be
+// cancelled. That puts the overrun where the real one happened -- inside a
+// model call, with no engine code running to notice the budget is gone. The
+// grace period caps the wait, so an unenforced bound fails the test rather
+// than hanging it.
+func suspendingAgent(t *testing.T, name string, value any, clock *suspendedClock, jump, grace time.Duration) adkagent.Agent {
+	t.Helper()
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	var output any
+	require.NoError(t, json.Unmarshal(data, &output))
+	var once sync.Once
+	a, err := adkagent.New(adkagent.Config{Name: name, Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+		return func(yield func(*session.Event, error) bool) {
+			once.Do(func() {
+				clock.suspend(jump)
+				select {
+				case <-ctx.Done():
+				case <-time.After(grace):
+				}
+			})
+			event := session.NewEvent(ctx, ctx.InvocationID())
+			event.Output = output
+			yield(event, nil)
+		}
+	}})
+	require.NoError(t, err)
+	return a
+}
+
+// TestCampaignStopsWhenSuspensionSpendsTheDurationBudget covers the defect
+// that let a 90-minute campaign run for three and a half hours: max_duration
+// was enforced only by context.WithTimeout, whose timer runs on the monotonic
+// clock, and that clock stops while the machine is suspended. ElapsedRunTime
+// is measured with time.Now and kept charging the nap against the same
+// budget, so the two clocks disagreed by the whole length of it.
+func TestCampaignStopsWhenSuspensionSpendsTheDurationBudget(t *testing.T) {
+	clock := &suspendedClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	roles := rejectingRoles(t)
+	// The fixture manifest allows a minute, which the stub graph never spends
+	// for real; only the simulated suspension can exhaust it.
+	roles.Coordinator = suspendingAgent(t, "coordinator", agents.CoordinatorResult{Objective: "test", NextExperiment: "test"}, clock, 2*time.Minute, 5*time.Second)
+	cfg := orchestrator.Config{MaxCandidates: 4, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Minute, AgentTimeout: time.Minute}
+
+	campaignDir := filepath.Join(t.TempDir(), "campaign")
+	engine, err := Create(context.Background(), Options{
+		Repository:                    makeRepository(t),
+		ManifestPath:                  writeManifest(t, t.TempDir()),
+		CampaignDir:                   campaignDir,
+		TestingUnsafeDisableIsolation: true,
+		Now:                           clock.Now,
+		ADKAgents:                     &roles,
+		ADKConfig:                     &cfg,
+	})
+	require.NoError(t, err)
+
+	err = engine.Run(context.Background())
+	require.ErrorIs(t, err, ErrDurationBudgetExhausted)
+	state := engine.State()
+	require.Equal(t, StatusInterrupted, state.Status)
+	require.Contains(t, state.StopReason, "max_duration", "the stop must name the bound that ended the campaign")
+	require.False(t, state.CompletedSteps["complete"], "an over-budget campaign must not be reported as finished")
+	require.NoError(t, engine.Close())
+
+	// Resuming a campaign with nothing left used to report whichever call the
+	// expired context killed first -- "git status ...: context deadline
+	// exceeded" -- naming an incidental command rather than the spent bound.
+	resumed, err := Resume(campaignDir, nil)
+	require.NoError(t, err)
+	defer resumed.Close()
+	require.ErrorIs(t, resumed.Run(context.Background()), ErrDurationBudgetExhausted)
+}
+
+// TestCampaignDeadlineStopsOnWallClockOverrun pins the guard on its own: the
+// campaign context must die once the wall clock says the budget is spent,
+// even while the context's own timer still believes it has the whole hour.
+func TestCampaignDeadlineStopsOnWallClockOverrun(t *testing.T) {
+	clock := &suspendedClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	engine := &Engine{
+		state:        State{Manifest: manifest.Manifest{Campaign: manifest.CampaignLimits{MaxDuration: manifest.Duration(time.Hour)}}},
+		now:          clock.Now,
+		runStartedAt: clock.Now(),
+	}
+	ctx, cancel := engine.withCampaignDeadline(context.Background())
+	defer cancel()
+	require.NoError(t, ctx.Err(), "an hour of budget must not expire the moment it is granted")
+
+	clock.suspend(2 * time.Hour)
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("campaign context outlived its wall-clock budget")
+	}
+	require.ErrorIs(t, context.Cause(ctx), ErrDurationBudgetExhausted)
 }
 
 func TestCampaignRunTimeAccumulatesAcrossProcesses(t *testing.T) {
