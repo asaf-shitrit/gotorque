@@ -75,19 +75,21 @@ func (c *UsageCollector) Snapshot() map[string]RoleUsage {
 // "```json\n{...}\n```" would fail output validation. It also records token
 // usage metadata into a shared collector when one is supplied.
 type fenceStrippingModel struct {
-	inner model.LLM
-	role  string
-	usage *UsageCollector
+	inner    model.LLM
+	role     string
+	usage    *UsageCollector
+	observer CallObserver
 }
 
 // NewFenceStrippingModel decorates an LLM so fenced JSON responses are
 // normalized before any downstream validation runs. The role labels the
 // collector's per-role totals; the collector may be nil to skip tracking.
-func NewFenceStrippingModel(inner model.LLM, role string, usage *UsageCollector) model.LLM {
+// The observer, when non-nil, receives one CallInfo per attempt.
+func NewFenceStrippingModel(inner model.LLM, role string, usage *UsageCollector, observer CallObserver) model.LLM {
 	if inner == nil {
 		return nil
 	}
-	return &fenceStrippingModel{inner: inner, role: role, usage: usage}
+	return &fenceStrippingModel{inner: inner, role: role, usage: usage, observer: observer}
 }
 
 func (m fenceStrippingModel) Name() string { return m.inner.Name() }
@@ -105,7 +107,9 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 				yield(nil, err)
 				return
 			}
-			retry, stop := m.streamAttempt(ctx, req, stream, yield, attempt, attempts-1, &yieldedAny)
+			started := time.Now()
+			retry, stop, attemptErr := m.streamAttempt(ctx, req, stream, yield, attempt, attempts-1, &yieldedAny)
+			m.observer.observe(CallInfo{Role: m.role, Attempt: attempt + 1, Duration: time.Since(started), Err: attemptErr, Retrying: retry})
 			if stop || !retry {
 				return
 			}
@@ -134,28 +138,29 @@ func retryUnparseable(resp *model.LLMResponse, yieldedAny bool, attempt, lastAtt
 	return canRetryGenerate(yieldedAny, attempt, lastAttempt) && !resp.Partial && !responseTextIsJSON(resp)
 }
 
-func (m fenceStrippingModel) streamAttempt(ctx context.Context, req *model.LLMRequest, stream bool, yield func(*model.LLMResponse, error) bool, attempt, last int, yieldedAny *bool) (retry, stop bool) {
+func (m fenceStrippingModel) streamAttempt(ctx context.Context, req *model.LLMRequest, stream bool, yield func(*model.LLMResponse, error) bool, attempt, last int, yieldedAny *bool) (retry, stop bool, attemptErr error) {
 	for resp, err := range m.inner.GenerateContent(ctx, req, stream) {
 		if err != nil {
 			if canRetryGenerate(*yieldedAny, attempt, last) {
-				return true, false
+				return true, false, err
 			}
 			if !yield(resp, err) {
-				return false, true
+				return false, true, err
 			}
+			attemptErr = err
 			continue
 		}
 		rewriteResponse(resp)
 		m.usage.Record(m.role, resp.UsageMetadata)
 		if retryUnparseable(resp, *yieldedAny, attempt, last) {
-			return true, false
+			return true, false, nil
 		}
 		*yieldedAny = true
 		if !yield(resp, nil) {
-			return false, true
+			return false, true, nil
 		}
 	}
-	return false, false
+	return false, false, attemptErr
 }
 
 // responseTextIsJSON reports whether the complete response's visible text

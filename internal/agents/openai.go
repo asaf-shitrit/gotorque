@@ -33,6 +33,10 @@ type OpenAIProvider struct {
 	// Usage accumulates per-role token usage across every model this provider
 	// decorates. It is shared by pointer when the value struct is copied.
 	Usage *UsageCollector
+
+	// Observer, when set, receives one CallInfo per model-call attempt, so a
+	// campaign can report which role is waiting and for how long.
+	Observer CallObserver
 }
 
 func NewOpenAIProviderFromEnvironment() OpenAIProvider {
@@ -60,7 +64,7 @@ func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, err
 	if err != nil {
 		return nil, err
 	}
-	return NewFenceStrippingModel(inner, string(role), p.Usage), nil
+	return NewFenceStrippingModel(inner, string(role), p.Usage, p.Observer), nil
 }
 
 // requestTimeout bounds one model call. ADK runs these non-streaming (it

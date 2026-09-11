@@ -48,7 +48,7 @@ func (f *fakeLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool
 
 func TestFenceStrippingModelRewritesCompleteResponses(t *testing.T) {
 	inner := &fakeLLM{resp: &model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: "```json\n{\"objective\":\"x\"}\n```"}}}}}
-	decorated := NewFenceStrippingModel(inner, "test", nil)
+	decorated := NewFenceStrippingModel(inner, "test", nil, nil)
 	if decorated == nil {
 		t.Fatal("NewFenceStrippingModel returned nil")
 	}
@@ -65,7 +65,7 @@ func TestFenceStrippingModelRewritesCompleteResponses(t *testing.T) {
 
 func TestFenceStrippingModelLeavesPartialsUntouched(t *testing.T) {
 	inner := &fakeLLM{resp: &model.LLMResponse{Partial: true, Content: &genai.Content{Parts: []*genai.Part{{Text: "```json\n{\"obj"}}}}}
-	decorated := NewFenceStrippingModel(inner, "test", nil)
+	decorated := NewFenceStrippingModel(inner, "test", nil, nil)
 	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, true) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -77,7 +77,7 @@ func TestFenceStrippingModelLeavesPartialsUntouched(t *testing.T) {
 }
 
 func TestNewFenceStrippingModelNil(t *testing.T) {
-	if NewFenceStrippingModel(nil, "test", nil) != nil {
+	if NewFenceStrippingModel(nil, "test", nil, nil) != nil {
 		t.Fatal("expected nil for nil inner model")
 	}
 }
@@ -124,7 +124,7 @@ func (f *flakyLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ boo
 
 func TestFenceStrippingModelRetriesFirstFailure(t *testing.T) {
 	inner := &flakyLLM{fail: true, resp: &model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"ok":1}`}}}}}
-	decorated := NewFenceStrippingModel(inner, "test", nil)
+	decorated := NewFenceStrippingModel(inner, "test", nil, nil)
 	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {
 			t.Fatalf("expected retry to succeed, got %v", err)
@@ -144,7 +144,7 @@ func TestFenceStrippingModelRecordsUsage(t *testing.T) {
 		UsageMetadata: &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 120, CandidatesTokenCount: 34, TotalTokenCount: 154},
 	}}
 	collector := NewUsageCollector()
-	decorated := NewFenceStrippingModel(inner, "optimizer", collector)
+	decorated := NewFenceStrippingModel(inner, "optimizer", collector, nil)
 	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -224,7 +224,7 @@ func TestFenceStrippingModelRetriesUnparseableJSON(t *testing.T) {
 		{Content: badContent},
 		{Content: goodContent},
 	}}
-	decorated := NewFenceStrippingModel(seq, "explorer", NewUsageCollector())
+	decorated := NewFenceStrippingModel(seq, "explorer", NewUsageCollector(), nil)
 	count := 0
 	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {
@@ -237,5 +237,34 @@ func TestFenceStrippingModelRetriesUnparseableJSON(t *testing.T) {
 	}
 	if count != 1 || seq.calls != 2 {
 		t.Fatalf("yielded=%d calls=%d, want 1/2", count, seq.calls)
+	}
+}
+
+func TestFenceStrippingModelReportsEachAttemptToObserver(t *testing.T) {
+	// First response is unparseable so a retry happens; the second succeeds.
+	inner := &sequenceLLM{responses: []*model.LLMResponse{
+		{Content: &genai.Content{Parts: []*genai.Part{{Text: "not json at all"}}}},
+		{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"objective":"x"}`}}}},
+	}}
+	var calls []CallInfo
+	decorated := NewFenceStrippingModel(inner, "analyst", nil, func(info CallInfo) {
+		calls = append(calls, info)
+	})
+	for range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("observed %d attempts, want 2: %+v", len(calls), calls)
+	}
+	if calls[0].Attempt != 1 || !calls[0].Retrying {
+		t.Errorf("first attempt = %+v, want attempt 1 marked retrying", calls[0])
+	}
+	if calls[1].Attempt != 2 || calls[1].Retrying {
+		t.Errorf("second attempt = %+v, want attempt 2 not retrying", calls[1])
+	}
+	for _, call := range calls {
+		if call.Role != "analyst" {
+			t.Errorf("role = %q, want analyst", call.Role)
+		}
 	}
 }

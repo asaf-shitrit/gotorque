@@ -65,7 +65,7 @@ func runOptimize(ctx context.Context, out io.Writer, f optimizeFlags) error {
 	if f.runADK && f.runADKStub {
 		return errors.New("--adk and --adk-stub are mutually exclusive")
 	}
-	roleSet, adkConfig, err := configureOptimizeAgents(ctx, f)
+	roleSet, adkConfig, err := configureOptimizeAgents(ctx, out, f)
 	if err != nil {
 		return err
 	}
@@ -75,12 +75,12 @@ func runOptimize(ctx context.Context, out io.Writer, f optimizeFlags) error {
 	return createAndRunOptimize(ctx, out, f, roleSet, adkConfig)
 }
 
-func configureOptimizeAgents(ctx context.Context, f optimizeFlags) (*agents.Set, *orchestrator.Config, error) {
+func configureOptimizeAgents(ctx context.Context, out io.Writer, f optimizeFlags) (*agents.Set, *orchestrator.Config, error) {
 	if f.runADK {
 		if f.manifestPath == "" {
 			return nil, nil, errors.New("--manifest is required with --adk")
 		}
-		return configureADK(ctx, f.manifestPath)
+		return configureADK(ctx, out, f.manifestPath)
 	}
 	if !f.runADKStub {
 		return nil, nil, nil
@@ -101,7 +101,7 @@ func resumeOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet
 		return err
 	}
 	defer engine.Close()
-	if err := attachResumeADK(ctx, engine, f, roleSet, adkConfig); err != nil {
+	if err := attachResumeADK(ctx, out, engine, f, roleSet, adkConfig); err != nil {
 		return err
 	}
 	if err := engine.Run(ctx); err != nil {
@@ -110,12 +110,12 @@ func resumeOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet
 	return printCampaignComplete(out, engine)
 }
 
-func attachResumeADK(ctx context.Context, engine *campaign.Engine, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) error {
+func attachResumeADK(ctx context.Context, out io.Writer, engine *campaign.Engine, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) error {
 	if engine.State().ADKMode != "" && !f.runADK && !f.runADKStub {
 		return fmt.Errorf("campaign %s was started with model agents; pass --adk or --adk-stub to resume model-driven work", f.resume)
 	}
 	if f.runADK {
-		configured, config, err := configureADK(ctx, engine.State().ManifestPath)
+		configured, config, err := configureADK(ctx, out, engine.State().ManifestPath)
 		if err != nil {
 			return err
 		}
@@ -148,11 +148,15 @@ func printCampaignComplete(out io.Writer, engine *campaign.Engine) error {
 	return err
 }
 
-func configureADK(ctx context.Context, manifestPath string) (*agents.Set, *orchestrator.Config, error) {
+func configureADK(ctx context.Context, out io.Writer, manifestPath string) (*agents.Set, *orchestrator.Config, error) {
 	if manifestPath == "" {
 		return nil, nil, errors.New("--manifest is required with --adk")
 	}
 	provider := agents.NewOpenAIProviderFromEnvironment()
+	// Role calls are the slowest and least observable part of a campaign;
+	// without per-attempt lines the run prints nothing between starting the
+	// workflow and the first role that completes.
+	provider.Observer = agents.LogCalls(out)
 	if err := provider.ValidateConnectivity(ctx); err != nil {
 		return nil, nil, err
 	}
