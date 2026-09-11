@@ -109,15 +109,33 @@ func snapshotTokenUsage(usage map[string]agents.RoleUsage) map[string]RoleUsageS
 
 type adkServices struct{ engine *Engine }
 
+// excerptCandidates orders the locations worth reading source for: the
+// analyst's hot paths first, then discovery's own resolved positions.
+//
+// The analyst is a model asked to echo locations, and it reformats them --
+// "compiler (line 121)", "query.go (file-level)" -- which parseLocation
+// rejects, leaving the optimizer with no source and reduced to guessing patch
+// context. Discovery already resolved those functions to path:line
+// deterministically, so appending them keeps excerpts working regardless of
+// how the analyst chose to phrase its answer.
+func excerptCandidates(hotPaths []agents.HotPath, discovered []string) []agents.HotPath {
+	candidates := append([]agents.HotPath(nil), hotPaths...)
+	for _, location := range discovered {
+		candidates = append(candidates, agents.HotPath{Location: location, Evidence: "measured during discovery"})
+	}
+	return candidates
+}
+
 // CollectExcerpts implements the optional orchestrator.ExcerptCollector
 // capability, attaching real source windows around analyst hot paths.
 func (s adkServices) CollectExcerpts(ctx context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
-	excerpts, err := extractExcerpts(s.engine.state.Repository, analysis.HotPaths, defaultMaxExcerpts)
+	candidates := excerptCandidates(analysis.HotPaths, s.engine.state.DiscoveryHotFunctions)
+	excerpts, err := extractExcerpts(s.engine.state.Repository, candidates, defaultMaxExcerpts)
 	locs := make([]string, 0, len(analysis.HotPaths))
 	for _, hp := range analysis.HotPaths {
 		locs = append(locs, hp.Location)
 	}
-	detail := fmt.Sprintf("hot_paths=%d locations=%v excerpts=%d err=%v", len(analysis.HotPaths), locs, len(excerpts), err)
+	detail := fmt.Sprintf("hot_paths=%d locations=%v candidates=%d excerpts=%d err=%v", len(analysis.HotPaths), locs, len(candidates), len(excerpts), err)
 	_ = s.engine.saveEvent("excerpts_debug", detail, nil)
 	return excerpts, err
 }

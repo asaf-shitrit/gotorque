@@ -16,6 +16,7 @@ const (
 	excerptContextBefore = 40
 	maxExcerptBytes      = 8 * 1024
 	defaultMaxExcerpts   = 32 * 1024
+	maxExcerpts          = 5
 )
 
 // extractExcerpts reads real source around analyst-identified hot paths so
@@ -28,17 +29,25 @@ func extractExcerpts(repoRoot string, hotPaths []agents.HotPath, maxTotal int) (
 	if maxTotal <= 0 {
 		maxTotal = defaultMaxExcerpts
 	}
-	limit := len(hotPaths)
-	if limit > 5 {
-		limit = 5
-	}
 	var excerpts []orchestrator.SourceExcerpt
 	total := 0
-	for _, hp := range hotPaths[:limit] {
+	seen := map[string]bool{}
+	for _, hp := range hotPaths {
+		if len(excerpts) == maxExcerpts {
+			break
+		}
 		path, line, ok := parseLocation(hp.Location)
 		if !ok {
 			continue
 		}
+		// The cap counts excerpts actually produced, not locations examined:
+		// capping candidates first meant five unusable leading locations
+		// yielded nothing even when later ones resolved cleanly.
+		key := fmt.Sprintf("%s:%d", path, line)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		full := filepath.Join(repoRoot, path)
 		content, start, size := readWindow(full, line)
 		if content == "" {

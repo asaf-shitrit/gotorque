@@ -782,14 +782,22 @@ func hotFunctionNames(functions []profile.Function, max int) []string {
 	return names
 }
 
-// actionableSymbol rejects frames no source change can address. The OS
-// sampler reports kernel and libc symbols (__psynch_cvwait, kevent, nanosleep)
-// that describe a process waiting, not computing; left in, they consume the
-// hot-function budget and lead agents to reason about blocking as if it were
-// CPU work. Go symbols always carry a package qualifier, so the absence of a
-// dot is a reliable discriminator.
+// actionableSymbol rejects frames no source change can address.
+//
+// The OS sampler reports kernel and libc symbols (__psynch_cvwait, kevent,
+// nanosleep) that describe a process waiting, not computing. Go symbols always
+// carry a package qualifier, so the absence of a dot is a reliable
+// discriminator for those.
+//
+// Benchmark CPU profiles additionally carry the harness that drove them
+// (testing.(*B).runN and friends). Those frames are an artifact of how the
+// measurement was taken rather than of the program under test, and agents
+// otherwise rank them as top hot paths and reason about them as target code.
 func actionableSymbol(name string) bool {
 	if strings.HasPrefix(name, "_") {
+		return false
+	}
+	if strings.HasPrefix(name, "testing.") {
 		return false
 	}
 	return strings.Contains(name, ".")

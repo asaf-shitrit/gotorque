@@ -333,11 +333,15 @@ func flexStringElement(element json.RawMessage) (string, error) {
 // identifyingString picks the most descriptive scalar from an object
 // produced by a model for what our schema declared as a plain string.
 func identifyingString(object map[string]any) string {
-	for _, key := range []string{"symbol", "name", "path", "location", "id", "title", "summary", "description", "value", "text"} {
-		if raw, ok := object[key]; ok {
-			if text, ok := raw.(string); ok && text != "" {
-				return text
-			}
+	return firstString(object, "symbol", "name", "path", "location", "id", "title", "summary", "description", "value", "text")
+}
+
+// firstString returns the first non-empty string value stored under keys,
+// checked in order, or "" when none qualifies.
+func firstString(object map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if text, ok := object[key].(string); ok && text != "" {
+			return text
 		}
 	}
 	return ""

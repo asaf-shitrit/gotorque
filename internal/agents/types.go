@@ -204,22 +204,30 @@ func (f *flexDims) UnmarshalJSON(data []byte) error {
 	}
 	dims := make(map[string]int, len(raw))
 	for key, value := range raw {
-		var number json.Number
-		if err := json.Unmarshal(value, &number); err == nil {
-			if parsed, err := strconv.Atoi(number.String()); err == nil {
-				dims[key] = parsed
-				continue
-			}
-		}
-		var text string
-		if err := json.Unmarshal(value, &text); err == nil {
-			if parsed, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
-				dims[key] = parsed
-			}
+		if parsed, ok := intFromScalar(value); ok {
+			dims[key] = parsed
 		}
 	}
 	*f = dims
 	return nil
+}
+
+// intFromScalar parses an integer given as a JSON number or a numeric
+// string, tolerating whitespace inside the string.
+func intFromScalar(value json.RawMessage) (int, bool) {
+	var number json.Number
+	if err := json.Unmarshal(value, &number); err == nil {
+		if parsed, err := strconv.Atoi(number.String()); err == nil {
+			return parsed, true
+		}
+	}
+	var text string
+	if err := json.Unmarshal(value, &text); err == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 func (w *WorkloadProposal) UnmarshalJSON(data []byte) error {
@@ -392,14 +400,9 @@ func decodeFixture(raw json.RawMessage) (ProposedFixture, bool) {
 	}
 	var object map[string]any
 	if err := json.Unmarshal(raw, &object); err == nil {
-		for _, key := range []string{"path", "name", "file", "filename", "id"} {
-			if value, ok := object[key].(string); ok && value != "" {
-				fixture := ProposedFixture{Path: value}
-				if content, ok := object["content"].(string); ok {
-					fixture.Content = content
-				}
-				return fixture, true
-			}
+		if path := firstString(object, "path", "name", "file", "filename", "id"); path != "" {
+			content, _ := object["content"].(string)
+			return ProposedFixture{Path: path, Content: content}, true
 		}
 	}
 	return ProposedFixture{}, false

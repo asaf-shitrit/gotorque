@@ -117,3 +117,44 @@ func TestExtractExcerptsTotalSizeCapDropsLaterHotPaths(t *testing.T) {
 		t.Fatalf("lowest-priority hot path c.go should have been dropped")
 	}
 }
+
+func TestExtractExcerptsCapsUsableExcerptsNotCandidates(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hot.go"), []byte("package p\n\nfunc Hot() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Five unparseable locations ahead of a good one previously consumed the
+	// whole candidate window and yielded nothing.
+	hotPaths := []agents.HotPath{
+		{Location: "compiler (line 121)"},
+		{Location: "query.go (file-level)"},
+		{Location: "testing.(*B).runN"},
+		{Location: "parser (line 558)"},
+		{Location: "cli input"},
+		{Location: "hot.go:3"},
+	}
+	excerpts, err := extractExcerpts(root, hotPaths, defaultMaxExcerpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(excerpts) != 1 {
+		t.Fatalf("got %d excerpts, want 1", len(excerpts))
+	}
+	if excerpts[0].Path != "hot.go" {
+		t.Errorf("path = %q, want hot.go", excerpts[0].Path)
+	}
+}
+
+func TestExcerptCandidatesFallBackToDiscovery(t *testing.T) {
+	analyst := []agents.HotPath{{Location: "compiler (line 121)"}}
+	got := excerptCandidates(analyst, []string{"cli/encoder.go:260"})
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want 2", len(got))
+	}
+	if got[0].Location != "compiler (line 121)" {
+		t.Errorf("analyst hot path should come first, got %q", got[0].Location)
+	}
+	if got[1].Location != "cli/encoder.go:260" {
+		t.Errorf("discovery location = %q, want cli/encoder.go:260", got[1].Location)
+	}
+}
