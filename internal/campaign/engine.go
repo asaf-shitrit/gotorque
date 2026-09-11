@@ -33,6 +33,12 @@ import (
 
 const DatabaseName = "campaign.db"
 
+// ErrDurationBudgetExhausted reports that a campaign stopped because the
+// manifest's max_duration is spent. It exists so the stop can be recognised
+// by callers and named in state, rather than inferred from whichever call
+// happened to be in flight when the campaign context died.
+var ErrDurationBudgetExhausted = errors.New("campaign max_duration exhausted")
+
 type Status string
 
 const (
@@ -353,7 +359,7 @@ func (e *Engine) Run(ctx context.Context) (err error) {
 	if err = e.saveEvent("campaign_started", "campaign running", nil); err != nil {
 		return err
 	}
-	defer e.captureRunFailure(&err)
+	defer e.captureRunFailure(ctx, &err)
 	if err = e.runBaselineSteps(ctx); err != nil {
 		return err
 	}
@@ -369,6 +375,22 @@ func (e *Engine) startRunClock() {
 	e.runStartedAt, e.elapsedBefore = e.now(), e.state.ElapsedRunTime
 }
 
+// elapsedRunTime is the campaign-wide total as of now, including the slice of
+// this process that no event has persisted yet. An engine that never started
+// a run clock -- one driven straight through RunADK -- contributes nothing.
+func (e *Engine) elapsedRunTime(now time.Time) time.Duration {
+	if e.runStartedAt.IsZero() {
+		return e.state.ElapsedRunTime
+	}
+	return e.elapsedBefore + now.Sub(e.runStartedAt)
+}
+
+// budgetPollInterval bounds how far past its wall-clock budget a campaign can
+// run before guardWallClockBudget notices. It is deliberately short: the check
+// is a single clock read against a fixed instant, and the failure it guards
+// against is an overrun measured in hours.
+const budgetPollInterval = 250 * time.Millisecond
+
 // withCampaignDeadline spends what is left of the manifest's max_duration
 // rather than granting it again. The bound names a campaign, not a process, so
 // an interrupted campaign that resumed with a full budget could run for
@@ -381,16 +403,67 @@ func (e *Engine) withCampaignDeadline(ctx context.Context) (context.Context, con
 	// An exhausted budget yields an already-expired context, so a campaign
 	// with nothing left stops down the same deadline path as one that runs
 	// out mid-flight instead of needing a second terminal state.
-	return context.WithTimeout(ctx, max(budget-e.state.ElapsedRunTime, 0))
+	remaining := max(budget-e.state.ElapsedRunTime, 0)
+	timed, cancelTimer := context.WithTimeoutCause(ctx, remaining, ErrDurationBudgetExhausted)
+	guarded, cancelGuard := context.WithCancelCause(timed)
+	// The guard needs the wall clock the campaign is actually charged against,
+	// and only Run anchors it. An engine driven straight through RunADK never
+	// advances that clock, so it has no wall-clock budget to police.
+	if !e.runStartedAt.IsZero() {
+		e.guardWallClockBudget(guarded, cancelGuard, e.runStartedAt.Add(remaining))
+	}
+	return guarded, func() {
+		cancelGuard(context.Canceled)
+		cancelTimer()
+	}
 }
 
-func (e *Engine) captureRunFailure(err *error) {
+// guardWallClockBudget stops the campaign once the wall clock says the budget
+// is spent, which the context timer above cannot see on its own: Go timers run
+// on the monotonic clock, and that clock stops while the machine is suspended.
+// A laptop that sleeps two hours mid-campaign therefore hands a 90-minute
+// context two extra hours of wall time, while ElapsedRunTime -- measured with
+// time.Now, which keeps counting across a suspend -- charges every one of
+// those minutes against the very same budget. Polling reconciles the two
+// clocks so whichever runs out first ends the run.
+//
+// The goroutine owns no engine state beyond the clock and exits with ctx, so
+// the cancel func returned by withCampaignDeadline also retires the guard.
+func (e *Engine) guardWallClockBudget(ctx context.Context, cancel context.CancelCauseFunc, deadline time.Time) {
+	go func() {
+		ticker := time.NewTicker(budgetPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !e.now().Before(deadline) {
+					cancel(ErrDurationBudgetExhausted)
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (e *Engine) captureRunFailure(ctx context.Context, err *error) {
 	if *err == nil {
 		return
 	}
 	e.state.UpdatedAt = e.now()
+	// A spent budget surfaces as whatever call was in flight when the campaign
+	// context died -- a git status, a model request, an ADK graph that drained
+	// without producing a result -- which names an innocent bystander instead
+	// of the bound that actually stopped the campaign. The context cause knows
+	// better, so it wins.
+	if errors.Is(context.Cause(ctx), ErrDurationBudgetExhausted) {
+		budget := e.state.Manifest.Campaign.MaxDuration.Duration()
+		e.state.StopReason = fmt.Sprintf("max_duration %s spent", budget)
+		*err = fmt.Errorf("%w: spent %s of %s", ErrDurationBudgetExhausted, e.elapsedRunTime(e.state.UpdatedAt).Round(time.Second), budget)
+	}
 	e.state.Error = (*err).Error()
-	if errors.Is(*err, context.Canceled) || errors.Is(*err, context.DeadlineExceeded) {
+	if errors.Is(*err, ErrDurationBudgetExhausted) || errors.Is(*err, context.Canceled) || errors.Is(*err, context.DeadlineExceeded) {
 		e.state.Status = StatusInterrupted
 	} else {
 		e.state.Status = StatusFailed
@@ -981,9 +1054,7 @@ func (e *Engine) saveEvent(kind, message string, data any) error {
 	// Advancing the campaign clock on every persisted event bounds what an
 	// abrupt kill can hand back: at most the work since the previous event,
 	// rather than everything this process had already spent.
-	if !e.runStartedAt.IsZero() {
-		e.state.ElapsedRunTime = e.elapsedBefore + now.Sub(e.runStartedAt)
-	}
+	e.state.ElapsedRunTime = e.elapsedRunTime(now)
 	if err := e.store.Save(e.state); err != nil {
 		return err
 	}
