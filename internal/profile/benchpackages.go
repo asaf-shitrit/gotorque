@@ -28,22 +28,9 @@ func BenchmarkPackages(root string) []string {
 		if d.IsDir() {
 			return skipIgnoredDir(d.Name())
 		}
-		if !strings.HasSuffix(path, "_test.go") {
-			return nil
+		if pkg, found := benchmarksIn(root, path); found > 0 {
+			counts[pkg] += found
 		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil
-		}
-		found := len(benchmarkDecl.FindAll(data, -1))
-		if found == 0 {
-			return nil
-		}
-		rel, relErr := filepath.Rel(root, filepath.Dir(path))
-		if relErr != nil {
-			return nil
-		}
-		counts[packagePath(rel)] += found
 		return nil
 	})
 
@@ -58,6 +45,28 @@ func BenchmarkPackages(root string) []string {
 		return packages[i] < packages[j]
 	})
 	return packages
+}
+
+// benchmarksIn counts the benchmark declarations in path and names the
+// package they belong to. Anything other than a readable test file counts
+// zero.
+func benchmarksIn(root, path string) (string, int) {
+	if !strings.HasSuffix(path, "_test.go") {
+		return "", 0
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0
+	}
+	found := len(benchmarkDecl.FindAll(data, -1))
+	if found == 0 {
+		return "", 0
+	}
+	rel, err := filepath.Rel(root, filepath.Dir(path))
+	if err != nil {
+		return "", 0
+	}
+	return packagePath(rel), found
 }
 
 // packagePath renders a filepath-relative directory as the "./pkg" form the
