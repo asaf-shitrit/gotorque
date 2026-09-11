@@ -44,25 +44,56 @@ func DecodeResult[T any](raw any) (T, error) {
 func decodeText[T any](text string) (T, error) {
 	var out T
 	cleaned := RepairCommonMalformations(UnwrapJSONFence(text))
-	if err := json.Unmarshal([]byte(cleaned), &out); err != nil {
-		// Second chance: models frequently embed raw JSON documents inside
-		// string values without escaping the quotes, which no strict parser
-		// accepts.
-		if repaired, changed := EscapeEmbeddedQuotes(cleaned); changed {
-			repaired = RepairCommonMalformations(repaired)
-			if err2 := json.Unmarshal([]byte(repaired), &out); err2 == nil {
-				return out, nil
-			}
-		}
-		for _, repaired := range RepairCandidates(cleaned) {
-			repaired = RepairCommonMalformations(repaired)
-			if err2 := json.Unmarshal([]byte(repaired), &out); err2 == nil {
-				return out, nil
-			}
-		}
-		return out, fmt.Errorf("decode agent output: %w (payload excerpt: %q)", err, excerptAround(cleaned, err))
+	err := json.Unmarshal([]byte(cleaned), &out)
+	if err == nil {
+		return out, nil
 	}
-	return out, nil
+	// Each repair below has exactly one sane reading of a mistake models
+	// actually make. A failed attempt can leave partial data behind, so every
+	// candidate decodes into a fresh value and the first one that parses wins.
+	for _, repaired := range repairAttempts(cleaned) {
+		var attempt T
+		if json.Unmarshal([]byte(repaired), &attempt) == nil {
+			return attempt, nil
+		}
+	}
+	return out, fmt.Errorf("decode agent output: %w (payload excerpt: %q)", err, excerptAround(cleaned, err))
+}
+
+// repairAttempts returns repaired forms of a payload that failed to parse,
+// ordered from the narrowest rewrite to the most speculative one. Retrying the
+// model is not the alternative to repairing here: the retry loop that wraps the
+// model has already spent its attempts by the time this code runs, so a payload
+// left unrepaired costs the whole campaign cycle, not one more request.
+func repairAttempts(cleaned string) []string {
+	var attempts []string
+	appendIf := func(text string, changed bool) {
+		if changed {
+			attempts = append(attempts, RepairCommonMalformations(text))
+		}
+	}
+	controls, controlsChanged := EscapeRawControlChars(cleaned)
+	appendIf(controls, controlsChanged)
+	quoted, quotedChanged := EscapeEmbeddedQuotes(cleaned)
+	appendIf(quoted, quotedChanged)
+	if controlsChanged {
+		// Pasting a diff verbatim breaks the newlines and the quotes at once;
+		// neither single repair parses on its own.
+		appendIf(EscapeEmbeddedQuotes(controls))
+	}
+	attempts = append(attempts, structuralRepairs(cleaned)...)
+	if controlsChanged {
+		attempts = append(attempts, structuralRepairs(controls)...)
+	}
+	return attempts
+}
+
+func structuralRepairs(text string) []string {
+	repaired := RepairCandidates(text)
+	for i, candidate := range repaired {
+		repaired[i] = RepairCommonMalformations(candidate)
+	}
+	return repaired
 }
 
 func isJSONSpace(c byte) bool {
@@ -94,16 +125,38 @@ func scanJSONString(c byte, escaped *bool) bool {
 	return c != '"'
 }
 
-func openJSONString(c, prev byte) (inString, valueString bool, nextPrev byte) {
+func openJSONString(c, prev byte, inArray bool) (inString, valueString bool, nextPrev byte) {
 	if c == '"' {
 		inString = true
-		valueString = prev == ':'
+		// A string opened after ':' is an object value, and one opened after
+		// '[' or ',' inside an array is an element. Both carry model-authored
+		// text — for the optimizer, one diff line per element — and so may hold
+		// unescaped quotes. Keys never do.
+		valueString = prev == ':' || (inArray && (prev == '[' || prev == ','))
 	}
 	nextPrev = prev
 	if !isJSONSpace(c) {
 		nextPrev = c
 	}
 	return inString, valueString, nextPrev
+}
+
+// trackContainer maintains the stack of open JSON containers so a string can
+// be attributed to the array or object that encloses it.
+func trackContainer(stack []byte, c byte) []byte {
+	switch c {
+	case '{', '[':
+		return append(stack, c)
+	case '}', ']':
+		if len(stack) > 0 {
+			return stack[:len(stack)-1]
+		}
+	}
+	return stack
+}
+
+func innermostIsArray(stack []byte) bool {
+	return len(stack) > 0 && stack[len(stack)-1] == '['
 }
 
 func quoteTerminatesValue(s string, i, embeddedDepth int) bool {
@@ -149,22 +202,24 @@ func trailingComma(text string, i int) bool {
 }
 
 // EscapeEmbeddedQuotes rewrites unescaped double quotes that appear inside
-// JSON string values. A quote ending a value string terminates it only when
-// no embedded brace or bracket is still open and the next non-whitespace
-// byte can legally follow a value; quotes that open in key position always
-// terminate the key. It reports whether any rewrite happened.
+// JSON string values and array elements. A quote ending such a string
+// terminates it only when no embedded brace or bracket is still open and the
+// next non-whitespace byte can legally follow a value; quotes that open in key
+// position always terminate the key. It reports whether any rewrite happened.
 func EscapeEmbeddedQuotes(text string) (string, bool) {
 	var out []byte
 	inString := false
-	valueString := false // string opened right after ':'
+	valueString := false // string holding model text rather than a key
 	escaped := false
 	changed := false
 	embeddedDepth := 0
 	prevSignificant := byte(0)
+	var containers []byte
 	for i := 0; i < len(text); i++ {
 		c := text[i]
 		if !inString {
-			inString, valueString, prevSignificant = openJSONString(c, prevSignificant)
+			containers = trackContainer(containers, c)
+			inString, valueString, prevSignificant = openJSONString(c, prevSignificant, innermostIsArray(containers))
 			out = append(out, c)
 			continue
 		}
@@ -188,6 +243,68 @@ func EscapeEmbeddedQuotes(text string) (string, bool) {
 		out = append(out, c)
 	}
 	return string(out), changed
+}
+
+// EscapeRawControlChars escapes literal control characters found inside JSON
+// string values. A model asked to put a multi-line document into a string —
+// a unified diff above all — routinely writes the line breaks and tabs raw.
+// No strict parser accepts those, and none of the other repairs here help:
+// they assume the payload still tokenizes. The rewrite has one reading, since
+// a raw control byte inside a string is never valid JSON. It reports whether
+// any rewrite happened.
+func EscapeRawControlChars(text string) (string, bool) {
+	var out []byte
+	inString := false
+	escaped := false
+	changed := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if !inString {
+			if c == '"' {
+				inString = true
+				escaped = false
+			}
+			out = append(out, c)
+			continue
+		}
+		if escaped {
+			escaped = false
+			out = append(out, c)
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			out = append(out, c)
+			continue
+		}
+		if replacement, ok := jsonControlEscape(c); ok {
+			out = append(out, replacement...)
+			changed = true
+			continue
+		}
+		if c == '"' {
+			inString = false
+		}
+		out = append(out, c)
+	}
+	return string(out), changed
+}
+
+// jsonControlEscape renders a control byte as the escape sequence JSON
+// requires, reporting false for bytes that need no escaping.
+func jsonControlEscape(c byte) (string, bool) {
+	switch c {
+	case '\n':
+		return `\n`, true
+	case '\r':
+		return `\r`, true
+	case '\t':
+		return `\t`, true
+	}
+	if c < 0x20 {
+		return fmt.Sprintf(`\u%04x`, c), true
+	}
+	return "", false
 }
 
 // RepairCommonMalformations removes trailing commas before object or
@@ -401,7 +518,42 @@ func RepairCandidates(text string) []string {
 		again, _ := RepairMissingClosers(withoutQuote)
 		candidates = append(candidates, again)
 	}
+	// A response cut off at the output-token cap ends in the middle of a
+	// string value, which blocks the closer completion above. Terminating that
+	// string turns a lost cycle into a truncated recommendation that patch
+	// validation and the build gate still get to judge on its merits.
+	if terminated, ok := terminateOpenString(text); ok {
+		closed, _ := RepairMissingClosers(terminated)
+		candidates = append(candidates, closed)
+	}
 	return candidates
+}
+
+// terminateOpenString closes a string value left open at the end of a
+// truncated payload, reporting false when the payload does not end inside one.
+func terminateOpenString(text string) (string, bool) {
+	inString := false
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if inString {
+			inString = scanJSONString(c, &escaped)
+			continue
+		}
+		if c == '"' {
+			inString = true
+			escaped = false
+		}
+	}
+	if !inString {
+		return text, false
+	}
+	if escaped {
+		// The cut landed just after a backslash, which would otherwise
+		// swallow the quote being appended.
+		text = text[:len(text)-1]
+	}
+	return text + `"`, true
 }
 
 // RepairMissingClosers inserts structurally required closing braces and

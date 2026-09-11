@@ -35,6 +35,12 @@ func NormalizeUnifiedDiff(patch string) (string, bool) {
 
 func appendNonHunk(out, lines []string, i, headersIdx int) ([]string, int, int) {
 	line := lines[i]
+	// Models wrap the diff in a Markdown fence inside the patch value. The
+	// closing fence lands in a hunk body and is dropped there as garbage, but
+	// the opening one sits in the preamble and would reach git apply.
+	if strings.HasPrefix(line, "```") {
+		return out, headersIdx, i + 1
+	}
 	out = append(out, line)
 	if strings.HasPrefix(line, "--- ") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+++ ") {
 		out = append(out, lines[i+1])
@@ -85,19 +91,58 @@ func normalizeHunk(header string, body []string) []string {
 	return out
 }
 
+// keepHunkLines returns the leading run of body lines that belong to the hunk,
+// restoring blank context lines on the way.
+//
+// An empty line is ambiguous. A unified diff writes a blank source line as a
+// single space, and that lone trailing space is the first thing lost whenever a
+// diff passes through a model, a JSON string, or anything that trims line ends.
+// Ending the hunk at every empty line therefore truncated genuine patches at
+// their first blank source line, and when the blank fell on the first body line
+// the hunk emptied out, its file headers were dropped with it, and the campaign
+// rejected the candidate as a malformed unified diff. A hunk body is
+// contiguous, so an empty run with more body lines after it can only be blank
+// context; an empty run at the end is trailing slack and still ends the hunk.
 func keepHunkLines(body []string) []string {
 	kept := make([]string, 0, len(body))
-	for _, l := range body {
-		if len(l) == 0 {
-			break // stripped leading space or stray blank line
+	for i := 0; i < len(body); {
+		if body[i] == "" {
+			run, next := blankContextRun(body, i)
+			if run == nil {
+				return kept
+			}
+			kept = append(kept, run...)
+			i = next
+			continue
 		}
-		c := l[0]
-		if c != ' ' && c != '+' && c != '-' && c != '\\' {
-			break
+		if !isHunkBodyPrefix(body[i][0]) {
+			return kept
 		}
-		kept = append(kept, l)
+		kept = append(kept, body[i])
+		i++
 	}
 	return kept
+}
+
+// blankContextRun rewrites the run of empty lines starting at i as context
+// lines, returning nil when nothing belonging to the hunk follows the run.
+func blankContextRun(body []string, i int) ([]string, int) {
+	end := i
+	for end < len(body) && body[end] == "" {
+		end++
+	}
+	if end >= len(body) || !isHunkBodyPrefix(body[end][0]) {
+		return nil, end
+	}
+	run := make([]string, end-i)
+	for j := range run {
+		run[j] = " "
+	}
+	return run, end
+}
+
+func isHunkBodyPrefix(c byte) bool {
+	return c == ' ' || c == '+' || c == '-' || c == '\\'
 }
 
 func countHunkLines(kept []string) (oldCount, newCount int) {
