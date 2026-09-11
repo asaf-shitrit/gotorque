@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"strings"
 	"sync"
@@ -79,7 +80,20 @@ type fenceStrippingModel struct {
 	role     string
 	usage    *UsageCollector
 	observer CallObserver
+
+	// attempts and baseBackoff are fields rather than constants so tests
+	// can drive the full retry ladder without minutes of real sleeping.
+	attempts    int
+	baseBackoff time.Duration
 }
+
+// Transparent retries: shared-pool rate limits (HTTP 429), transport
+// errors, and complete-but-unusable payloads all otherwise abort a
+// multi-hour campaign on a single bad roll. The ladder is 15s, 30s, 60s.
+const (
+	defaultGenerateAttempts = 4
+	defaultGenerateBackoff  = 15 * time.Second
+)
 
 // NewFenceStrippingModel decorates an LLM so fenced JSON responses are
 // normalized before any downstream validation runs. The role labels the
@@ -89,33 +103,80 @@ func NewFenceStrippingModel(inner model.LLM, role string, usage *UsageCollector,
 	if inner == nil {
 		return nil
 	}
-	return &fenceStrippingModel{inner: inner, role: role, usage: usage, observer: observer}
+	return &fenceStrippingModel{inner: inner, role: role, usage: usage, observer: observer, attempts: defaultGenerateAttempts, baseBackoff: defaultGenerateBackoff}
 }
 
 func (m fenceStrippingModel) Name() string { return m.inner.Name() }
 
 func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
-		// Transparent retries: shared-pool rate limits (HTTP 429),
-		// transport errors, and complete-but-unparseable JSON payloads all
-		// otherwise abort a multi-hour campaign on a single bad roll.
-		const attempts = 4
+		run := &generateRun{}
 		var backoff time.Duration
-		yieldedAny := false
-		for attempt := 0; attempt < attempts; attempt++ {
+		for attempt := 0; attempt < m.attempts; attempt++ {
 			if err := waitBackoff(ctx, backoff); err != nil {
 				yield(nil, err)
 				return
 			}
 			started := time.Now()
-			retry, stop, attemptErr := m.streamAttempt(ctx, req, stream, yield, attempt, attempts-1, &yieldedAny)
-			m.observer.observe(CallInfo{Role: m.role, Attempt: attempt + 1, Duration: time.Since(started), Err: attemptErr, Retrying: retry})
-			if stop || !retry {
+			done := m.streamAttempt(ctx, req, stream, yield, run)
+			// Reported per attempt rather than per call: a campaign that
+			// prints only the final outcome cannot distinguish a slow
+			// endpoint from one silently retrying behind a long wait.
+			m.observer.observe(CallInfo{
+				Role:     m.role,
+				Attempt:  attempt + 1,
+				Duration: time.Since(started),
+				Err:      run.lastErr,
+				Retrying: !done && attempt+1 < m.attempts,
+			})
+			if done {
 				return
 			}
-			backoff = time.Duration(1<<uint(attempt)) * 15 * time.Second // 15s, 30s, 60s
+			backoff = time.Duration(1<<uint(attempt)) * m.baseBackoff
 		}
+		run.yieldExhausted(yield, m.role, m.attempts)
 	}
+}
+
+// generateRun carries what one decorated call has learned across its
+// attempts. last and lastErr describe the most recent attempt only — each
+// attempt overwrites both — so the exhaustion path reports the failure the
+// caller actually ended on rather than an older one.
+type generateRun struct {
+	last    *model.LLMResponse
+	lastErr error
+	partial bool
+}
+
+func (r *generateRun) recordErr(err error) { r.last, r.lastErr = nil, err }
+
+func (r *generateRun) recordUnusable(resp *model.LLMResponse) { r.last, r.lastErr = resp, nil }
+
+// yieldExhausted delivers the one response or error a spent retry ladder is
+// allowed to produce.
+//
+// A response carrying no answer part is converted into an error instead of
+// being yielded, because ADK's two consumers of such a turn disagree and the
+// disagreement is fatal: the workflow agent node stamps the turn's (empty)
+// text as the node's output, while the LLM flow classifies it as thinking
+// rather than answering and calls the model again inside the same node
+// execution. The second call's answer then becomes a second output-bearing
+// event and the workflow scheduler kills the run with ErrMultipleOutputs. An
+// error here costs one node, not the campaign.
+//
+// An answer that merely failed to parse as JSON is still yielded: downstream
+// decoding names the offending text, which is far more useful than a generic
+// failure from here.
+func (r *generateRun) yieldExhausted(yield func(*model.LLMResponse, error) bool, role string, attempts int) {
+	if hasAnswerPart(r.last) {
+		yield(r.last, nil)
+		return
+	}
+	if r.lastErr != nil {
+		yield(nil, fmt.Errorf("%s model call failed after %d attempts: %w", role, attempts, r.lastErr))
+		return
+	}
+	yield(nil, fmt.Errorf("%s model call produced no answer in %d attempts: every response was reasoning-only or empty", role, attempts))
 }
 
 func waitBackoff(ctx context.Context, backoff time.Duration) error {
@@ -130,37 +191,72 @@ func waitBackoff(ctx context.Context, backoff time.Duration) error {
 	}
 }
 
-func canRetryGenerate(yieldedAny bool, attempt, lastAttempt int) bool {
-	return !yieldedAny && attempt < lastAttempt
+// usableAnswer reports whether a complete response is one the campaign can
+// act on: it must carry an answer part, and its visible text must parse as
+// the JSON every role is prompted to return.
+func usableAnswer(resp *model.LLMResponse) bool {
+	return hasAnswerPart(resp) && responseTextIsJSON(resp)
 }
 
-func retryUnparseable(resp *model.LLMResponse, yieldedAny bool, attempt, lastAttempt int) bool {
-	return canRetryGenerate(yieldedAny, attempt, lastAttempt) && !resp.Partial && !responseTextIsJSON(resp)
+// hasAnswerPart reports whether resp carries at least one part ADK's flow
+// counts as an answer, mirroring llminternal.isThoughtOnlyTurn: any part not
+// marked Thought. A reasoning model that spends its whole output budget
+// thinking returns a turn of Thought parts only — see yieldExhausted for why
+// such a turn must never reach the flow.
+func hasAnswerPart(resp *model.LLMResponse) bool {
+	if resp == nil || resp.Content == nil {
+		return false
+	}
+	for _, part := range resp.Content.Parts {
+		if part != nil && !part.Thought {
+			return true
+		}
+	}
+	return false
 }
 
-func (m fenceStrippingModel) streamAttempt(ctx context.Context, req *model.LLMRequest, stream bool, yield func(*model.LLMResponse, error) bool, attempt, last int, yieldedAny *bool) (retry, stop bool, attemptErr error) {
+// streamAttempt runs one pass over the inner model. It reports done when the
+// decorated call is finished — a response reached the caller, the caller hung
+// up, or partials already escaped — and false when the attempt produced
+// nothing deliverable and the ladder should try again.
+//
+// At most one complete response ever escapes a call, because the loop returns
+// the moment it yields one instead of ranging on. A node execution that emits
+// two output-bearing events is fatal to the workflow, so the decorator must
+// make that structurally impossible rather than trust the inner iterator to
+// stop at one.
+func (m fenceStrippingModel) streamAttempt(ctx context.Context, req *model.LLMRequest, stream bool, yield func(*model.LLMResponse, error) bool, run *generateRun) bool {
 	for resp, err := range m.inner.GenerateContent(ctx, req, stream) {
 		if err != nil {
-			if canRetryGenerate(*yieldedAny, attempt, last) {
-				return true, false, err
+			run.recordErr(err)
+			if !run.partial {
+				return false
 			}
-			if !yield(resp, err) {
-				return false, true, err
-			}
-			attemptErr = err
-			continue
+			yield(resp, err)
+			return true
 		}
 		rewriteResponse(resp)
 		m.usage.Record(m.role, resp.UsageMetadata)
-		if retryUnparseable(resp, *yieldedAny, attempt, last) {
-			return true, false, nil
+		if resp.Partial {
+			// Streaming partials must reach the caller as they arrive.
+			// Once one has, replaying the turn is no longer transparent,
+			// so this attempt becomes the last one.
+			run.partial = true
+			if !yield(resp, nil) {
+				return true
+			}
+			continue
 		}
-		*yieldedAny = true
-		if !yield(resp, nil) {
-			return false, true, nil
+		if !run.partial && !usableAnswer(resp) {
+			run.recordUnusable(resp)
+			return false
 		}
+		yield(resp, nil)
+		return true
 	}
-	return false, false, attemptErr
+	// An inner iterator that produced nothing at all is a failed attempt,
+	// not a silent success — unless partials already went out.
+	return run.partial
 }
 
 // responseTextIsJSON reports whether the complete response's visible text

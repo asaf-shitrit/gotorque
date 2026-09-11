@@ -2,13 +2,25 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"sync"
 	"testing"
 
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
+	adkrunner "google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
 )
+
+// fastModel builds the decorator with the production attempt count but no
+// backoff, so a test can walk the whole retry ladder in microseconds.
+func fastModel(inner model.LLM, role string, usage *UsageCollector) *fenceStrippingModel {
+	return &fenceStrippingModel{inner: inner, role: role, usage: usage, attempts: defaultGenerateAttempts, baseBackoff: 0}
+}
 
 func TestUnwrapJSONFence(t *testing.T) {
 	tests := []struct {
@@ -124,7 +136,7 @@ func (f *flakyLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ boo
 
 func TestFenceStrippingModelRetriesFirstFailure(t *testing.T) {
 	inner := &flakyLLM{fail: true, resp: &model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"ok":1}`}}}}}
-	decorated := NewFenceStrippingModel(inner, "test", nil, nil)
+	decorated := fastModel(inner, "test", nil)
 	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {
 			t.Fatalf("expected retry to succeed, got %v", err)
@@ -217,6 +229,211 @@ func (s *sequenceLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ 
 	}
 }
 
+// reasoningLLM mimics a reasoning model that burns its whole output budget
+// thinking: the first thoughtOnly calls return a turn whose every part is a
+// Thought part, and the call after that returns the JSON answer.
+type reasoningLLM struct {
+	thoughtOnly int
+	answer      string
+	calls       int
+}
+
+func (r *reasoningLLM) Name() string { return "reasoning" }
+
+func (r *reasoningLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		r.calls++
+		parts := []*genai.Part{{Text: r.answer}}
+		if r.calls <= r.thoughtOnly {
+			parts = []*genai.Part{{Text: "weighing two candidate patch sites", Thought: true}}
+		}
+		yield(&model.LLMResponse{Content: &genai.Content{Role: "model", Parts: parts}}, nil)
+	}
+}
+
+// runSingleNodeWorkflow drives m through the real ADK stack the campaign uses:
+// an llmagent in single-turn mode wrapped in a workflow agent node. That stack
+// is where the one-output-per-execution rule lives, so it is the only way to
+// prove the decorator cannot break it.
+func runSingleNodeWorkflow(t *testing.T, m model.LLM) error {
+	t.Helper()
+	a, err := llmagent.New(llmagent.Config{
+		Name:        "optimizer",
+		Description: "proposes a patch",
+		Model:       m,
+		Instruction: "Return only JSON.",
+		Mode:        llmagent.ModeSingleTurn,
+	})
+	if err != nil {
+		t.Fatalf("llmagent.New: %v", err)
+	}
+	node, err := workflow.NewAgentNode(a, workflow.NodeConfig{})
+	if err != nil {
+		t.Fatalf("NewAgentNode: %v", err)
+	}
+	wf, err := workflow.New("repro", workflow.NewEdgeBuilder().Add(workflow.Start, node).Build())
+	if err != nil {
+		t.Fatalf("workflow.New: %v", err)
+	}
+	root, err := adkagent.New(adkagent.Config{
+		Name:        "root",
+		Description: "runs the single-node graph",
+		SubAgents:   []adkagent.Agent{a},
+		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return wf.Run(ctx)
+		},
+	})
+	if err != nil {
+		t.Fatalf("adkagent.New: %v", err)
+	}
+	adk, err := adkrunner.NewInMemory("test", root)
+	if err != nil {
+		t.Fatalf("NewInMemory: %v", err)
+	}
+	msg := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: "optimize"}}}
+	var runErr error
+	for _, err := range adk.Run(context.Background(), "test", "session", msg, adkagent.RunConfig{}) {
+		if err != nil && runErr == nil {
+			runErr = err
+		}
+	}
+	return runErr
+}
+
+// A reasoning-only turn is the one response the decorator must never let out.
+// ADK's two consumers of such a turn disagree: the workflow agent node stamps
+// its (empty) text as the node's output, while the LLM flow classifies it as
+// "thinking, not answering" and calls the model again — so the next response
+// becomes a second output event and the node dies on ErrMultipleOutputs,
+// taking the campaign with it. Exhausting the retry ladder must therefore end
+// in an error, not in handing that turn to the flow.
+func TestFenceStrippingModelNeverYieldsReasoningOnlyTurn(t *testing.T) {
+	inner := &reasoningLLM{thoughtOnly: defaultGenerateAttempts, answer: `{"hypothesis":"x"}`}
+	err := runSingleNodeWorkflow(t, fastModel(inner, "optimizer", NewUsageCollector()))
+	if errors.Is(err, workflow.ErrMultipleOutputs) {
+		t.Fatalf("decorator produced two output-bearing events for one node execution: %v", err)
+	}
+	if err == nil {
+		t.Fatal("expected the exhausted retry ladder to surface an error")
+	}
+	if inner.calls != defaultGenerateAttempts {
+		t.Fatalf("calls = %d, want %d (one full ladder, no second model call)", inner.calls, defaultGenerateAttempts)
+	}
+}
+
+// A reasoning model that thinks its way through a few attempts and then
+// answers must still produce exactly one output, via the retry ladder rather
+// than via a second flow turn.
+func TestFenceStrippingModelRetriesPastReasoningOnlyTurns(t *testing.T) {
+	inner := &reasoningLLM{thoughtOnly: 2, answer: `{"hypothesis":"x"}`}
+	if err := runSingleNodeWorkflow(t, fastModel(inner, "optimizer", NewUsageCollector())); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inner.calls != 3 {
+		t.Fatalf("calls = %d, want 3 (two reasoning-only turns then the answer)", inner.calls)
+	}
+}
+
+// chattyLLM yields everything in one pass: the errors first, then the
+// responses. It stands in for any inner model that does not stop at a single
+// complete response.
+type chattyLLM struct {
+	errs      []error
+	responses []*model.LLMResponse
+	calls     int
+}
+
+func (c *chattyLLM) Name() string { return "chatty" }
+
+func (c *chattyLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		c.calls++
+		for _, err := range c.errs {
+			if !yield(nil, err) {
+				return
+			}
+		}
+		for _, resp := range c.responses {
+			if !yield(resp, nil) {
+				return
+			}
+		}
+	}
+}
+
+// One node execution may carry at most one output-bearing event, so the
+// decorator has to cap its own output rather than trust the inner iterator to
+// stop at one. Both shapes below used to leak a second value: two complete
+// responses in a row, and an error surfaced with the range loop continuing
+// afterwards.
+func TestFenceStrippingModelYieldsAtMostOneValuePerCall(t *testing.T) {
+	answer := func() *model.LLMResponse {
+		return &model.LLMResponse{Content: &genai.Content{Role: "model", Parts: []*genai.Part{{Text: `{"a":1}`}}}}
+	}
+	tests := []struct {
+		name  string
+		inner *chattyLLM
+	}{
+		{"two complete responses", &chattyLLM{responses: []*model.LLMResponse{answer(), answer()}}},
+		{"error then response", &chattyLLM{errs: []error{context.DeadlineExceeded}, responses: []*model.LLMResponse{answer()}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			yields := 0
+			for range fastModel(tc.inner, "optimizer", NewUsageCollector()).GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+				yields++
+			}
+			if yields != 1 {
+				t.Fatalf("yields = %d, want exactly 1", yields)
+			}
+		})
+	}
+}
+
+// A ladder that only ever sees transport failures must end in one error that
+// still names the underlying cause, so 429s and deadlines stay diagnosable.
+func TestFenceStrippingModelSurfacesLastErrorOnceWhenLadderIsSpent(t *testing.T) {
+	inner := &chattyLLM{errs: []error{context.DeadlineExceeded}}
+	yields := 0
+	var got error
+	for resp, err := range fastModel(inner, "optimizer", nil).GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		yields++
+		got, _ = err, resp
+	}
+	if yields != 1 {
+		t.Fatalf("yields = %d, want exactly 1", yields)
+	}
+	if !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want it to wrap context.DeadlineExceeded", got)
+	}
+	if inner.calls != defaultGenerateAttempts {
+		t.Fatalf("calls = %d, want %d (every transport failure retried)", inner.calls, defaultGenerateAttempts)
+	}
+}
+
+// Usage is per response received, not per response delivered: a discarded
+// attempt still burned tokens the campaign has to account for.
+func TestFenceStrippingModelRecordsUsageForDiscardedAttempts(t *testing.T) {
+	inner := &reasoningLLM{thoughtOnly: 2, answer: `{"a":1}`}
+	collector := NewUsageCollector()
+	for range fastModel(inner, "optimizer", collector).GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+	}
+	if got := collector.Snapshot()["optimizer"].Requests; got != 0 {
+		t.Fatalf("requests = %d, want 0 (the stub reports no usage metadata)", got)
+	}
+	metered := &sequenceLLM{responses: []*model.LLMResponse{
+		{Content: &genai.Content{Role: "model", Parts: []*genai.Part{{Text: "not json"}}}, UsageMetadata: &genai.GenerateContentResponseUsageMetadata{TotalTokenCount: 7}},
+		{Content: &genai.Content{Role: "model", Parts: []*genai.Part{{Text: `{"a":1}`}}}, UsageMetadata: &genai.GenerateContentResponseUsageMetadata{TotalTokenCount: 11}},
+	}}
+	collector = NewUsageCollector()
+	for range fastModel(metered, "optimizer", collector).GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+	}
+	usage := collector.Snapshot()["optimizer"]
+	if usage.Requests != 2 || usage.TotalTokens != 18 {
+		t.Fatalf("usage = %+v, want 2 requests and 18 tokens", usage)
+	}
+}
+
 func TestFenceStrippingModelRetriesUnparseableJSON(t *testing.T) {
 	badContent := &genai.Content{Parts: []*genai.Part{{Text: "not json at all"}}}
 	goodContent := &genai.Content{Parts: []*genai.Part{{Text: `{"a":1}`}}}
@@ -224,7 +441,7 @@ func TestFenceStrippingModelRetriesUnparseableJSON(t *testing.T) {
 		{Content: badContent},
 		{Content: goodContent},
 	}}
-	decorated := NewFenceStrippingModel(seq, "explorer", NewUsageCollector(), nil)
+	decorated := fastModel(seq, "explorer", NewUsageCollector())
 	count := 0
 	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {
@@ -241,15 +458,14 @@ func TestFenceStrippingModelRetriesUnparseableJSON(t *testing.T) {
 }
 
 func TestFenceStrippingModelReportsEachAttemptToObserver(t *testing.T) {
-	// First response is unparseable so a retry happens; the second succeeds.
+	// First response is unusable so a retry happens; the second succeeds.
 	inner := &sequenceLLM{responses: []*model.LLMResponse{
 		{Content: &genai.Content{Parts: []*genai.Part{{Text: "not json at all"}}}},
 		{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"objective":"x"}`}}}},
 	}}
 	var calls []CallInfo
-	decorated := NewFenceStrippingModel(inner, "analyst", nil, func(info CallInfo) {
-		calls = append(calls, info)
-	})
+	decorated := fastModel(inner, "analyst", nil)
+	decorated.observer = func(info CallInfo) { calls = append(calls, info) }
 	for range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 	}
 
