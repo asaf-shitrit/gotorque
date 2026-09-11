@@ -39,12 +39,24 @@ func NewOpenAIProviderFromEnvironment() OpenAIProvider {
 	return OpenAIProvider{APIKey: os.Getenv(EnvAPIKey), BaseURL: os.Getenv(EnvBaseURL), Routing: RoutingFromEnvironment(), Usage: NewUsageCollector()}
 }
 
+// endpoint resolves the base URL every caller must use. It exists so model
+// calls and the connectivity preflight cannot disagree: passing an empty
+// BaseURL to the OpenAI SDK silently targets api.openai.com, which sends the
+// OpenRouter key to the wrong provider and fails with 401 only after the
+// preflight has already passed.
+func (p OpenAIProvider) endpoint() string {
+	if base := strings.TrimRight(p.BaseURL, "/"); base != "" {
+		return base
+	}
+	return DefaultOpenRouterBaseURL
+}
+
 func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, error) {
 	if err := p.Routing.Validate(); err != nil {
 		return nil, err
 	}
 	name := p.Routing[role]
-	inner, err := openaimodel.NewModel(ctx, name, &openaimodel.ClientConfig{APIKey: p.APIKey, BaseURL: p.BaseURL, HTTPClient: p.Client})
+	inner, err := openaimodel.NewModel(ctx, name, &openaimodel.ClientConfig{APIKey: p.APIKey, BaseURL: p.endpoint(), HTTPClient: p.Client})
 	if err != nil {
 		return nil, err
 	}
@@ -82,10 +94,7 @@ func httpOK(code int) bool {
 }
 
 func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]bool, error) {
-	base := strings.TrimRight(p.BaseURL, "/")
-	if base == "" {
-		base = DefaultOpenRouterBaseURL
-	}
+	base := p.endpoint()
 	client := p.Client
 	if client == nil {
 		client = &http.Client{Timeout: 8 * time.Second}

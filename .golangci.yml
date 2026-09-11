@@ -4,7 +4,13 @@ linters:
   default: none
   enable:
     - gocyclo
+    - gocognit
   settings:
     gocyclo:
       # Cyclomatic complexity; report functions with complexity >= 10.
       min-complexity: 10
+    gocognit:
+      # Cognitive complexity (Campbell); report functions above 15.
+      # Current worst offenders in the tree sit at 15, so this gates growth
+      # without demanding an up-front refactor.
+      min-complexity: 15

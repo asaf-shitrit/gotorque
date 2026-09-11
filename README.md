@@ -80,6 +80,10 @@ make lint
 GOCACHE=/private/tmp/gotorque-cache go test ./...
 ```
 
+`make lint` runs golangci-lint with two complexity gates: `gocyclo`
+(cyclomatic, max 10) and `gocognit` (cognitive, max 15). Both are enforced
+in CI; split a function rather than raising the thresholds.
+
 Isolation note: Linux campaigns isolate workloads through bubblewrap. If
 the host cannot support it (some nested CI containers), gotorque detects
 this once and runs commands unwrapped rather than failing; use an

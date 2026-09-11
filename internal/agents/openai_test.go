@@ -30,3 +30,11 @@ func TestOpenAIProviderRejectsMissingCredential(t *testing.T) {
 	provider.APIKey = ""
 	require.ErrorContains(t, provider.ValidateConnectivity(context.Background()), EnvAPIKey)
 }
+
+func TestOpenAIProviderEndpointDefaultsToOpenRouter(t *testing.T) {
+	provider := OpenAIProvider{}
+	require.Equal(t, DefaultOpenRouterBaseURL, provider.endpoint())
+
+	provider.BaseURL = "https://example.test/v1/"
+	require.Equal(t, "https://example.test/v1", provider.endpoint())
+}

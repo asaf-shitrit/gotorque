@@ -22,7 +22,7 @@ jobs:
           go install golang.org/x/perf/cmd/benchstat@latest
           apt-get update && apt-get install -y bubblewrap git patch make
 
-      - name: Cyclomatic complexity
+      - name: Complexity lint (cyclomatic + cognitive)
         run: make lint
 
       - name: Unit tests
