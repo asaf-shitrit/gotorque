@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"testing"
 
@@ -40,4 +42,17 @@ func TestManifestValidate(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 	require.Contains(t, stdout.String(), "valid target manifest")
 	require.Empty(t, stderr.String())
+}
+
+// A resumed campaign reads its manifest from persisted state, and --resume
+// rejects an explicit --manifest, so requiring one would make resuming a
+// model-driven campaign impossible to express.
+func TestResumeDoesNotRequireManifest(t *testing.T) {
+	_, _, err := configureOptimizeAgents(context.Background(), io.Discard, optimizeFlags{resume: "/tmp/campaign", runADK: true})
+	require.NoError(t, err)
+}
+
+func TestFreshADKRunStillRequiresManifest(t *testing.T) {
+	_, _, err := configureOptimizeAgents(context.Background(), io.Discard, optimizeFlags{runADK: true})
+	require.ErrorContains(t, err, "--manifest is required")
 }

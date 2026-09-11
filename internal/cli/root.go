@@ -76,6 +76,13 @@ func runOptimize(ctx context.Context, out io.Writer, f optimizeFlags) error {
 }
 
 func configureOptimizeAgents(ctx context.Context, out io.Writer, f optimizeFlags) (*agents.Set, *orchestrator.Config, error) {
+	// A resumed campaign takes its manifest from persisted state, and
+	// --resume rejects an explicit --manifest, so requiring one here made
+	// "optimize --resume <dir> --adk" impossible to satisfy in either
+	// direction. attachResumeADK configures the roles from that state.
+	if f.resume != "" {
+		return nil, nil, nil
+	}
 	if f.runADK {
 		if f.manifestPath == "" {
 			return nil, nil, errors.New("--manifest is required with --adk")
@@ -85,6 +92,12 @@ func configureOptimizeAgents(ctx context.Context, out io.Writer, f optimizeFlags
 	if !f.runADKStub {
 		return nil, nil, nil
 	}
+	return deterministicAgents()
+}
+
+// deterministicAgents builds the stub role set used by --adk-stub, shared by
+// fresh and resumed campaigns.
+func deterministicAgents() (*agents.Set, *orchestrator.Config, error) {
 	configured, err := agents.NewDeterministicSet()
 	if err != nil {
 		return nil, nil, err
@@ -123,6 +136,13 @@ func attachResumeADK(ctx context.Context, out io.Writer, engine *campaign.Engine
 		return nil
 	}
 	if f.runADKStub {
+		if roleSet == nil {
+			configured, config, err := deterministicAgents()
+			if err != nil {
+				return err
+			}
+			roleSet, adkConfig = configured, config
+		}
 		engine.SetADK(roleSet, adkConfig)
 	}
 	return nil
