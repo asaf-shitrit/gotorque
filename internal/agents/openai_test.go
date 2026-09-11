@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -37,4 +38,25 @@ func TestOpenAIProviderEndpointDefaultsToOpenRouter(t *testing.T) {
 
 	provider.BaseURL = "https://example.test/v1/"
 	require.Equal(t, "https://example.test/v1", provider.endpoint())
+}
+
+func TestOpenAIProviderSuppliesBoundedHTTPClient(t *testing.T) {
+	// A nil client would leave the SDK with an unbounded one, so a stalled
+	// endpoint would burn the whole agent deadline instead of erroring.
+	client := OpenAIProvider{}.httpClient()
+	require.NotNil(t, client)
+	require.Equal(t, requestTimeout, client.Timeout)
+
+	supplied := &http.Client{}
+	require.Same(t, supplied, OpenAIProvider{Client: supplied}.httpClient())
+}
+
+// The agent deadline must fit every retry fence.go performs, or a stalled
+// endpoint still ends the campaign instead of being retried.
+func TestRequestTimeoutFitsInsideAgentDeadline(t *testing.T) {
+	const attempts = 4
+	const backoff = 15*time.Second + 30*time.Second + 60*time.Second
+	if worst := attempts*requestTimeout + backoff; worst > 20*time.Minute {
+		t.Errorf("worst-case role call = %s, want <= the 20m agent deadline", worst)
+	}
 }

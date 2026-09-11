@@ -56,11 +56,43 @@ func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, err
 		return nil, err
 	}
 	name := p.Routing[role]
-	inner, err := openaimodel.NewModel(ctx, name, &openaimodel.ClientConfig{APIKey: p.APIKey, BaseURL: p.endpoint(), HTTPClient: p.Client})
+	inner, err := openaimodel.NewModel(ctx, name, &openaimodel.ClientConfig{APIKey: p.APIKey, BaseURL: p.endpoint(), HTTPClient: p.httpClient()})
 	if err != nil {
 		return nil, err
 	}
 	return NewFenceStrippingModel(inner, string(role), p.Usage), nil
+}
+
+// requestTimeout bounds one model call. ADK runs these non-streaming (it
+// streams only in SSE mode), so the endpoint sends nothing until generation
+// finishes and a whole-request timeout is the only bound that fits: there is
+// no byte flow to measure idleness against.
+//
+// It is sized against the orchestrator's per-role agent deadline. fence.go
+// retries a failed call up to four times with 15s/30s/60s backoff, so the
+// timeout must leave room for those attempts inside that deadline. Observed
+// role calls finish in seconds to about two minutes.
+const requestTimeout = 4 * time.Minute
+
+// httpClient returns the transport model calls use. Without one the SDK
+// supplies a client with no timeout at all, so a request the endpoint never
+// completes hangs until the orchestrator's agent deadline expires, consuming
+// the whole budget for that role and failing the campaign with nothing but
+// "context deadline exceeded". The retry logic in fence.go cannot help,
+// because a stalled request never produces an error to retry.
+func (p OpenAIProvider) httpClient() *http.Client {
+	if p.Client != nil {
+		return p.Client
+	}
+	return &http.Client{
+		Timeout: requestTimeout,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ExpectContinueTimeout: 5 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+		},
+	}
 }
 
 // UsageReporter exposes the shared token-usage collector so the campaign

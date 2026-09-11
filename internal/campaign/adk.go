@@ -204,6 +204,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	}
 	result := policy.Evaluate(policy.DefaultConfig(), policy.Evidence{
 		BehaviorMatches:        input.Evidence.BehaviorMatches,
+		FailureSummary:         input.Evidence.Summary,
 		SafetyChecksPassed:     input.Evidence.SafetyChecksPassed,
 		RepresentativeEvidence: input.Evidence.RepresentativeEvidence,
 		Comparisons:            comparisons,

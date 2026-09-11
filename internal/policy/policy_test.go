@@ -96,3 +96,27 @@ func TestComparisonResultsAreSortedAndInvalidValuesAreInconclusive(t *testing.T)
 		t.Fatalf("decision = %s, comparisons = %d", result.Decision, len(result.Comparisons))
 	}
 }
+
+func TestEvaluateReportsWhyBehaviorWasNeverVerified(t *testing.T) {
+	evidence := Evidence{
+		FailureSummary:         "candidate rejected before build: git apply check failed",
+		SafetyChecksPassed:     true,
+		RepresentativeEvidence: true,
+	}
+	result := Evaluate(DefaultConfig(), evidence)
+	if result.Decision != domain.DecisionRejected {
+		t.Fatalf("Decision = %v, want rejected", result.Decision)
+	}
+	want := "candidate rejected before build: git apply check failed"
+	if len(result.Reasons) != 1 || result.Reasons[0] != want {
+		t.Errorf("Reasons = %v, want [%q]", result.Reasons, want)
+	}
+}
+
+func TestEvaluateFallsBackToBehaviorMismatchReason(t *testing.T) {
+	result := Evaluate(DefaultConfig(), Evidence{SafetyChecksPassed: true, RepresentativeEvidence: true})
+	want := "behavior does not match the baseline after normalization"
+	if len(result.Reasons) != 1 || result.Reasons[0] != want {
+		t.Errorf("Reasons = %v, want [%q]", result.Reasons, want)
+	}
+}

@@ -15,8 +15,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -563,7 +565,7 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", hotFunctionNames(result.Functions, 15))
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", hotFunctionNames(result.Functions, hotFunctionBudget))
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
 }
@@ -582,34 +584,62 @@ func amplifyStdin(stdin []byte) []byte {
 	return amplified
 }
 
-// profileHotFunctions runs the target package's benchmarks under a CPU
-// profile, then summarizes the top functions via go tool pprof.
+// profileHotFunctions runs benchmarks under a CPU profile, then summarizes
+// the top functions via go tool pprof.
+//
+// The target package is tried first, then the whole module. A CLI's command
+// package usually holds no benchmarks while the library packages it drives do
+// (gojq benchmarks its evaluator, not ./cmd/gojq), and a module-wide profile
+// still carries exact file and line data for every sampled frame. Without the
+// widened attempt those targets silently degrade to the OS sampler, whose
+// frames carry no source position at all.
 func (e *Engine) profileHotFunctions(ctx context.Context) error {
 	dir := filepath.Join(e.dir, "profiles")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
-	result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{e.state.Manifest.Target.Build.Package}, Bench: ".", Cpuprofile: cpuProfile, Env: []string{"GOTOOLCHAIN=local"}})
-	if err != nil {
-		return err
+	var benched bool
+	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package) {
+		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Cpuprofile: cpuProfile, Env: []string{"GOTOOLCHAIN=local"}})
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(result.Stdout), "Benchmark") {
+			benched = true
+			break
+		}
 	}
-	if !strings.Contains(string(result.Stdout), "Benchmark") {
-		return errors.New("target package has no benchmark functions")
+	if !benched {
+		return errors.New("no package in the module produced a benchmark CPU profile")
 	}
 	artifacts, err := runner.NewArtifactStore(filepath.Join(e.dir, "artifacts"))
 	if err != nil {
 		return err
 	}
-	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprof(ctx, cpuProfile, 15)
+	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprof(ctx, cpuProfile, hotFunctionScanDepth)
 	if err != nil {
 		return fmt.Errorf("summarize benchmark CPU profile: %w", err)
 	}
-	names := hotFunctionNames(summary.Functions, 15)
+	names := hotFunctionNames(summary.Functions, hotFunctionBudget)
 	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, cpuProfile, names)
 	e.state.DiscoveryProfileSummaryPath = summary.RawReport
 	e.state.PGOProfilePath = cpuProfile
 	return nil
+}
+
+// benchmarkPackageOrder lists the packages worth profiling, target package
+// first so a target that benchmarks its own command keeps that evidence, then
+// the module's benchmark-bearing packages richest first. Each is a single
+// package because the go command rejects -cpuprofile for more than one.
+func benchmarkPackageOrder(repository, targetPackage string) []string {
+	order := []string{targetPackage}
+	for _, pkg := range profile.BenchmarkPackages(repository) {
+		if pkg != targetPackage {
+			order = append(order, pkg)
+		}
+	}
+	return order
 }
 
 // resolveHotLocations annotates hot function names with repository-relative
@@ -662,13 +692,76 @@ func (e *Engine) hotLocationFromRepo(name string) (string, bool) {
 	return "", false
 }
 
+// functionNameCandidates lists the identifiers worth searching for in the
+// repository, most specific first. Profile frames name closures and methods in
+// forms no `func` declaration ever uses: pkg.outer.func1 for a closure (and
+// .func1.2 when nested), pkg.(*T).method for a method. Searching those
+// verbatim never matches, which is why a measured module symbol such as
+// cli.newJSONInputIter.func1 used to resolve to no source location at all.
 func functionNameCandidates(name string) []string {
 	candidates := []string{name}
-	if idx := strings.LastIndex(name, "."); idx >= 0 && idx < len(name)-1 {
-		candidates = append(candidates, name[idx+1:])
+	add := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == candidate {
+				return
+			}
+		}
+		candidates = append(candidates, candidate)
 	}
+
+	// Strip closure suffixes until an enclosing declaration name remains.
+	enclosing := name
+	for {
+		trimmed, ok := trimClosureSuffix(enclosing)
+		if !ok {
+			break
+		}
+		enclosing = trimmed
+		add(enclosing)
+	}
+
+	// The declared identifier is the final segment, with any method receiver
+	// removed: pkg.(*T).method declares "func (t *T) method(".
+	add(lastSegment(enclosing))
+	add(lastSegment(name))
 	return candidates
 }
+
+var closureSuffix = regexp.MustCompile(`\.func\d+$`)
+
+func trimClosureSuffix(name string) (string, bool) {
+	if loc := closureSuffix.FindStringIndex(name); loc != nil {
+		return name[:loc[0]], true
+	}
+	// Nested closures append an ordinal: outer.func1.2.
+	if idx := strings.LastIndex(name, "."); idx > 0 {
+		if _, err := strconv.Atoi(name[idx+1:]); err == nil {
+			return name[:idx], true
+		}
+	}
+	return name, false
+}
+
+func lastSegment(name string) string {
+	if idx := strings.LastIndex(name, "."); idx >= 0 && idx < len(name)-1 {
+		return name[idx+1:]
+	}
+	return name
+}
+
+const (
+	// hotFunctionBudget caps how many actionable functions reach the agents.
+	hotFunctionBudget = 15
+	// hotFunctionScanDepth is how many profile nodes are summarized to fill
+	// that budget. A Go CPU profile's hottest nodes are overwhelmingly
+	// runtime scheduler and allocator frames, so scanning only as deep as the
+	// budget yields a handful of module functions and wastes the rest of the
+	// budget on frames no patch can touch.
+	hotFunctionScanDepth = 4 * hotFunctionBudget
+)
 
 // hotFunctionNames extracts deduplicated function names from a parsed pprof
 // top summary, skipping runtime frames that never belong to the target.
@@ -677,7 +770,7 @@ func hotFunctionNames(functions []profile.Function, max int) []string {
 	seen := map[string]bool{}
 	for _, fn := range functions {
 		name := strings.TrimSpace(fn.Name)
-		if name == "" || strings.HasPrefix(name, "runtime.") || seen[name] {
+		if name == "" || strings.HasPrefix(name, "runtime.") || seen[name] || !actionableSymbol(name) {
 			continue
 		}
 		seen[name] = true
@@ -687,6 +780,19 @@ func hotFunctionNames(functions []profile.Function, max int) []string {
 		}
 	}
 	return names
+}
+
+// actionableSymbol rejects frames no source change can address. The OS
+// sampler reports kernel and libc symbols (__psynch_cvwait, kevent, nanosleep)
+// that describe a process waiting, not computing; left in, they consume the
+// hot-function budget and lead agents to reason about blocking as if it were
+// CPU work. Go symbols always carry a package qualifier, so the absence of a
+// dot is a reliable discriminator.
+func actionableSymbol(name string) bool {
+	if strings.HasPrefix(name, "_") {
+		return false
+	}
+	return strings.Contains(name, ".")
 }
 
 func (e *Engine) verifyClean(ctx context.Context) error {

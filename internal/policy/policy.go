@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"example.com/gotorque/internal/domain"
 )
@@ -31,7 +32,13 @@ type Guardrail struct {
 }
 
 type Evidence struct {
-	BehaviorMatches        bool
+	BehaviorMatches bool
+	// FailureSummary states what actually happened when an evaluation did not
+	// reach a behavior comparison: the patch failed to apply, the build failed,
+	// or the upstream test suite failed. Without it every such candidate is
+	// reported as a behavior mismatch, which misdescribes the rejection to
+	// anyone reading a campaign report.
+	FailureSummary         string
 	SafetyChecksPassed     bool
 	RepresentativeEvidence bool
 	Comparisons            []Comparison
@@ -102,6 +109,9 @@ func Evaluate(config Config, evidence Evidence) Result {
 
 func evidenceGates(result Result, evidence Evidence) (Result, bool) {
 	if !evidence.BehaviorMatches {
+		if summary := strings.TrimSpace(evidence.FailureSummary); summary != "" {
+			return reject(result, summary), true
+		}
 		return reject(result, "behavior does not match the baseline after normalization"), true
 	}
 	if !evidence.SafetyChecksPassed {

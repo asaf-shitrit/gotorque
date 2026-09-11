@@ -158,6 +158,6 @@ func TestHotFunctionNamesSkipsRuntimeAndDeduplicates(t *testing.T) {
 	got := hotFunctionNames(functions, 15)
 	require.Equal(t, []string{"main.handle", "main.parse"}, got)
 	require.Empty(t, hotFunctionNames(nil, 15))
-	capped := hotFunctionNames([]profile.Function{{Name: "a"}, {Name: "b"}}, 1)
-	require.Equal(t, []string{"a"}, capped)
+	capped := hotFunctionNames([]profile.Function{{Name: "main.a"}, {Name: "main.b"}}, 1)
+	require.Equal(t, []string{"main.a"}, capped)
 }
