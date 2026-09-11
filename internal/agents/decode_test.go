@@ -219,3 +219,166 @@ func TestDecodeSurvivesStrayQuoteTail(t *testing.T) {
 	}
 	t.Logf("unrecoverable as expected or new shape: %v", err)
 }
+
+// The optimizer sends its diff as an array of lines, but campaign state
+// persisted before that change replays the string form on resume, and a model
+// that ignores the instruction sends other shapes too. All of them must land on
+// the same canonical diff text.
+func TestOptimizerPatchWireShapes(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{
+			name: "array of lines",
+			in:   `{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go","@@ -1,2 +1,2 @@","-\ta()","+\tb()"]}`,
+			want: "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-\ta()\n+\tb()\n",
+		},
+		{
+			name: "string form from persisted state",
+			in:   `{"hypothesis":"h","patch":"--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n"}`,
+			want: "--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+		},
+		{
+			name: "elements carrying their own terminator are not doubled",
+			in:   `{"hypothesis":"h","patch":["--- a/m.go\n","+++ b/m.go\n","@@ -1,1 +1,1 @@\n","-a\n","+b\n"]}`,
+			want: "--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+		},
+		{
+			name: "blank context line survives as a space element",
+			in:   `{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go","@@ -1,3 +1,3 @@"," a"," ","-b","+B"]}`,
+			want: "--- a/m.go\n+++ b/m.go\n@@ -1,3 +1,3 @@\n a\n \n-b\n+B\n",
+		},
+		{
+			name: "wrapper object collapses to its content",
+			in:   `{"hypothesis":"h","patch":{"content":"--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n"}}`,
+			want: "--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+		},
+		{
+			name: "empty array yields an empty patch rather than a stray newline",
+			in:   `{"hypothesis":"h","patch":[]}`,
+			want: "",
+		},
+		{
+			name: "missing patch stays empty",
+			in:   `{"hypothesis":"h"}`,
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got OptimizerResult
+			if err := json.Unmarshal([]byte(tc.in), &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got.Patch != tc.want {
+				t.Fatalf("patch = %q, want %q", got.Patch, tc.want)
+			}
+		})
+	}
+}
+
+// Patch text must survive the round trip through campaign state unchanged:
+// the field marshals as a plain string whichever wire shape produced it.
+func TestOptimizerPatchRoundTripsAsString(t *testing.T) {
+	var decoded OptimizerResult
+	if err := json.Unmarshal([]byte(`{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go"]}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reread OptimizerResult
+	if err := json.Unmarshal(encoded, &reread); err != nil {
+		t.Fatalf("re-reading persisted state: %v", err)
+	}
+	if reread.Patch != decoded.Patch {
+		t.Fatalf("patch changed across persistence: %q -> %q", decoded.Patch, reread.Patch)
+	}
+}
+
+func TestEscapeRawControlChars(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+		wantChanged    bool
+	}{
+		{
+			name:        "raw newline inside value",
+			in:          "{\"patch\":\"--- a/m.go\n+++ b/m.go\"}",
+			want:        `{"patch":"--- a/m.go\n+++ b/m.go"}`,
+			wantChanged: true,
+		},
+		{
+			name:        "raw tab inside value",
+			in:          "{\"patch\":\"+\tfoo()\"}",
+			want:        `{"patch":"+\tfoo()"}`,
+			wantChanged: true,
+		},
+		{
+			name:        "formatting newlines outside strings kept",
+			in:          "{\n  \"a\": 1\n}",
+			want:        "{\n  \"a\": 1\n}",
+			wantChanged: false,
+		},
+		{
+			name:        "already escaped sequences untouched",
+			in:          `{"patch":"a\nb\tc"}`,
+			want:        `{"patch":"a\nb\tc"}`,
+			wantChanged: false,
+		},
+		{
+			name:        "escaped backslash does not hide the next quote",
+			in:          "{\"a\":\"x\\\\\",\"b\":\"y\nz\"}",
+			want:        `{"a":"x\\","b":"y\nz"}`,
+			wantChanged: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := EscapeRawControlChars(tc.in)
+			if got != tc.want || changed != tc.wantChanged {
+				t.Fatalf("got %q changed=%v, want %q changed=%v", got, changed, tc.want, tc.wantChanged)
+			}
+		})
+	}
+}
+
+// Malformations observed on real optimizer turns, each of which cost a retry
+// or the whole cycle before the repairs below existed.
+func TestDecodeOptimizerMalformations(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		wantPatch string
+	}{
+		{
+			name:      "diff pasted verbatim with raw newlines",
+			raw:       "{\"hypothesis\":\"h\",\"patch\":\"--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n\",\"expected_effect\":\"e\"}",
+			wantPatch: "--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+		},
+		{
+			name:      "unescaped quotes inside a line element",
+			raw:       `{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go","@@ -1,2 +1,2 @@","-    s := "old"","+    s := "new""],"expected_effect":"e"}`,
+			wantPatch: "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := \"old\"\n+    s := \"new\"\n",
+		},
+		{
+			name:      "unescaped quotes inside a string-form patch",
+			raw:       `{"hypothesis":"h","patch":"--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := "old"\n+    s := "new"\n","expected_effect":"e"}`,
+			wantPatch: "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := \"old\"\n+    s := \"new\"\n",
+		},
+		{
+			name:      "response cut off at the output token cap",
+			raw:       `{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go","@@ -1,2 +1,2 @@","-    a()","+    b(`,
+			wantPatch: "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    a()\n+    b(\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeResult[OptimizerResult](tc.raw)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Patch != tc.wantPatch {
+				t.Fatalf("patch = %q, want %q", got.Patch, tc.wantPatch)
+			}
+		})
+	}
+}

@@ -132,7 +132,10 @@ type AnalystResult struct {
 	AdditionalChecks    []string  `json:"additional_checks,omitempty"`
 }
 
-// OptimizerResult is one focused, reversible source candidate.
+// OptimizerResult is one focused, reversible source candidate. Patch holds a
+// unified diff; flexPatch documents the wire shapes accepted for it. The field
+// stays a Go string and marshals back as one, so campaign state written by
+// either transport reads the same on resume.
 type OptimizerResult struct {
 	Hypothesis     string   `json:"hypothesis"`
 	Patch          string   `json:"patch"`
@@ -449,15 +452,85 @@ func (o *OptimizerResult) UnmarshalJSON(data []byte) error {
 	type alias OptimizerResult
 	aux := struct {
 		*alias
+		Patch          flexPatch   `json:"patch"`
 		Risks          flexStrings `json:"risks,omitempty"`
 		ValidationPlan flexStrings `json:"validation_plan,omitempty"`
 	}{alias: (*alias)(o)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
+	o.Patch = string(aux.Patch)
 	o.Risks = aux.Risks
 	o.ValidationPlan = aux.ValidationPlan
 	return nil
+}
+
+// flexPatch decodes a unified diff sent either as an array of diff lines or as
+// one JSON string.
+//
+// A diff is the worst payload a JSON string can carry: every line break, quote,
+// and backslash of the source has to survive escaping, and one miss makes the
+// entire role response unparseable, not just the patch. One array element per
+// line removes the line breaks — by far the largest share of the escaping — and
+// confines whatever escaping the model still gets wrong to the single line that
+// contains it. The string form remains accepted for two reasons: proposals
+// persisted by earlier runs replay through this decoder when a campaign
+// directory resumes, and a model that ignores the instruction still produces a
+// candidate the deterministic gates can judge.
+type flexPatch string
+
+func (p *flexPatch) UnmarshalJSON(data []byte) error {
+	trimmed := trimSpaceBytes(data)
+	if emptyOrNull(trimmed) {
+		return nil
+	}
+	switch trimmed[0] {
+	case '"':
+		var text string
+		if err := json.Unmarshal(trimmed, &text); err != nil {
+			return err
+		}
+		*p = flexPatch(text)
+		return nil
+	case '[':
+		var list []json.RawMessage
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return err
+		}
+		*p = flexPatch(joinPatchLines(list))
+		return nil
+	}
+	// Wrapper objects such as {"content": "..."} collapse through the shared
+	// text extraction rather than failing the whole optimizer turn.
+	var text flexText
+	if err := text.UnmarshalJSON(trimmed); err != nil {
+		return err
+	}
+	*p = flexPatch(text)
+	return nil
+}
+
+// joinPatchLines reassembles an array-of-lines patch into canonical diff text:
+// exactly one newline between lines and one at the end, which is the shape
+// NormalizeUnifiedDiff and git apply expect. Elements that already carry their
+// own line terminator are trimmed rather than doubled, because a duplicated
+// newline reads downstream as a blank line inside a hunk. Non-string elements
+// are kept as their compact JSON so a garbled line is rejected by diff
+// validation instead of silently vanishing from the patch.
+func joinPatchLines(list []json.RawMessage) string {
+	lines := make([]string, 0, len(list))
+	for _, element := range list {
+		line, err := flexStringElement(element)
+		if err != nil {
+			continue
+		}
+		lines = append(lines, strings.TrimRight(line, "\r\n"))
+	}
+	joined := strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	if joined == "" {
+		return ""
+	}
+	return joined + "\n"
 }
 
 func (rv *ReviewerResult) UnmarshalJSON(data []byte) error {

@@ -68,9 +68,11 @@ MECHANISM PLAYBOOK (pick one per patch): preallocate slices and maps whose final
 
 PATCH FORMAT: Base hunks on the supplied source_excerpts ONLY. Copy context lines and deleted lines character-for-character from the excerpt text, keep a few context lines around each change, use correct unified-diff @@ headers, and never reformat, rename, or clean up unrelated code — one mechanism, one site, minimal diff. If no excerpt covers your intended site, restrict the patch to a site excerpts DO cover rather than guessing context; git apply failures waste the entire attempt. If the excerpt shows line numbers, trust them for headers. prior_candidates entries may carry failure_detail — the compiler or patch error caused by that attempt's diff; your patch must not repeat a previously failed approach and must fix whatever the recorded error indicates.
 
+PATCH TRANSPORT: patch is a JSON ARRAY OF STRINGS, one diff line per element, in source order, starting with the --- and +++ file headers. No element may contain a newline character: the array carries the line structure, so you never escape one. A blank source line is the context line " " — one space, never an empty element. Escape only the double quotes and backslashes that occur within a single line. Do not wrap the array, or any element, in Markdown fences.
+
 VALIDATION: validation_plan must reference the target's own tests plus the exact workload behaviors at risk. List honest risks — every optimization that touches shared state, caching, or laziness carries one.
 
-An empty patch wastes the campaign attempt and is never acceptable: even without profile data or excerpts you must propose one small idiomatic patch on a plausible site from the repository inventory. Return only JSON with hypothesis, patch, expected_effect, risks, and validation_plan fields. STRICT JSON RULES: Output raw JSON only: no Markdown fences, no commentary. Escape every double quote and backslash inside string values (\\\" and \\\\). Keep stdin and fixture content under 500 characters. Include exactly the listed fields and no others.`,
+An empty patch wastes the campaign attempt and is never acceptable: even without profile data or excerpts you must propose one small idiomatic patch on a plausible site from the repository inventory. Return only JSON with hypothesis, patch (the array of diff lines), expected_effect, risks, and validation_plan fields. STRICT JSON RULES: Output raw JSON only: no Markdown fences, no commentary. Escape every double quote and backslash inside string values (\\\" and \\\\). Keep stdin and fixture content under 500 characters. Include exactly the listed fields and no others.`,
 	},
 	{
 		role:        RoleReviewer,
@@ -146,9 +148,14 @@ func NewSet(ctx context.Context, provider ModelProvider) (Set, error) {
 // the default model that is a single saturated provider: schema requests
 // return HTTP 429 where the same call without a schema succeeds. Roles
 // therefore rely on prompt discipline plus the salvage heuristics in
-// decode.go. Before enabling this, note that strict mode also promotes every
-// omitempty field to required, and that ScalingDimensions (map[string]int)
-// emits an open object that strict mode rejects.
+// decode.go.
+//
+// Reviving this means more than flipping it on. Strict mode promotes every
+// omitempty field to required, ScalingDimensions (map[string]int) emits an
+// open object that strict mode rejects, and reflection cannot see the shapes
+// the tolerant unmarshalers accept -- a schema built here would demand the
+// optimizer's patch as a single string, the transport this package moved away
+// from, so the array-of-lines form has to be declared by hand.
 func roleResponseSchema(role Role) (map[string]any, error) {
 	var resultType reflect.Type
 	switch role {
