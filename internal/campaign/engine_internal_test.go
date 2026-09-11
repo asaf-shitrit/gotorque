@@ -19,6 +19,8 @@ func TestHotFunctionNamesDropsNonActionableFrames(t *testing.T) {
 		{Name: "nanosleep"},
 		{Name: "runtime.mallocgc"},
 		{Name: "testing.(*B).runN"},
+		{Name: "github.com/tomnomnom/gron.BenchmarkBigJSON"},
+		{Name: "github.com/tomnomnom/gron.TestFill"},
 	}
 	got := hotFunctionNames(functions, 15)
 	want := []string{

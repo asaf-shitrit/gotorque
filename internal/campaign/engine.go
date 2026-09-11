@@ -761,6 +761,15 @@ func functionNameCandidates(name string) []string {
 	return candidates
 }
 
+func isTestEntryPoint(segment string) bool {
+	for _, prefix := range []string{"Benchmark", "Test", "Fuzz", "Example"} {
+		if strings.HasPrefix(segment, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 var closureSuffix = regexp.MustCompile(`\.func\d+$`)
 
 func trimClosureSuffix(name string) (string, bool) {
@@ -829,6 +838,13 @@ func actionableSymbol(name string) bool {
 		return false
 	}
 	if strings.HasPrefix(name, "testing.") {
+		return false
+	}
+	// The module's own benchmark, test and fuzz entry points are sampled too
+	// when the profile comes from its test binary. They are measurement
+	// scaffolding, not the program, and a patch to one optimizes nothing the
+	// target ships.
+	if isTestEntryPoint(lastSegment(name)) {
 		return false
 	}
 	return strings.Contains(name, ".")
