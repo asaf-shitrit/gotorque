@@ -438,3 +438,105 @@ func TestCampaignGraphAcceptsStatisticallySupportedCandidate(t *testing.T) {
 		t.Fatalf("stop reason = %q", result.StopReason)
 	}
 }
+
+// runExpectingError drives the graph to completion and returns the first run
+// error, for request content the deterministic guards must refuse.
+func runExpectingError(t *testing.T, orch *Orchestrator, sessionID string, req CampaignRequest) error {
+	t.Helper()
+	r := mustRunner(t, "optimizer-test", orch)
+	for _, runErr := range r.Run(context.Background(), "user-1", sessionID, mustMessage(t, req), adkagent.RunConfig{}) {
+		if runErr != nil {
+			return runErr
+		}
+	}
+	return nil
+}
+
+func rejectingRoleSet(t *testing.T, calls *int) agents.Set {
+	t.Helper()
+	return agents.Set{
+		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "cut runtime", NextExperiment: "patch parser"}, calls),
+		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, calls),
+		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}, calls),
+		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, calls),
+		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}, calls),
+	}
+}
+
+// TestConsecutiveFailureBoundCountsCarriedInFailures pins the bound to the
+// campaign rather than to one process. A campaign interrupted by the OS and
+// resumed re-enters the graph with a fresh CampaignState, so the tally has to
+// arrive on the request; without it every resume bought a full new run of
+// MaxConsecutiveFailures rejections.
+func TestConsecutiveFailureBoundCountsCarriedInFailures(t *testing.T) {
+	tests := []struct {
+		name                   string
+		priorFailures          int
+		maxConsecutiveFailures int
+		wantCandidates         int
+	}{
+		{name: "fresh campaign spends the whole allowance", priorFailures: 0, maxConsecutiveFailures: 4, wantCandidates: 4},
+		{name: "resume spends only what the campaign has left", priorFailures: 3, maxConsecutiveFailures: 4, wantCandidates: 1},
+		{name: "resume already at the bound evaluates nothing", priorFailures: 4, maxConsecutiveFailures: 4, wantCandidates: 0},
+		{name: "resume past the bound evaluates nothing", priorFailures: 9, maxConsecutiveFailures: 4, wantCandidates: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			runnerService := &fakeRunnerService{}
+			orch := mustNew(t, Dependencies{
+				Runner: runnerService,
+				Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+				Jobs:   &fakeJobService{},
+				Agents: rejectingRoleSet(t, &calls),
+			}, Config{
+				// MaxCandidates is deliberately slack so the failure bound is
+				// the only thing that can stop the graph.
+				MaxCandidates:          16,
+				MaxConsecutiveFailures: tc.maxConsecutiveFailures,
+				DeterministicTimeout:   time.Second,
+				AgentTimeout:           time.Second,
+				MaxConcurrency:         1,
+			})
+			req := CampaignRequest{
+				CampaignID:               "campaign-resume",
+				Repository:               "/repo",
+				BaseRevision:             "abc123",
+				BuildTarget:              "./cmd/tool",
+				OptimizationMode:         domain.PolicyIdiomatic,
+				PriorConsecutiveFailures: tc.priorFailures,
+			}
+			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", tc.name, req, "finalize_campaign")
+
+			if result.CandidatesTried != tc.wantCandidates {
+				t.Errorf("candidates tried = %d, want %d", result.CandidatesTried, tc.wantCandidates)
+			}
+			if runnerService.evaluateCalls != tc.wantCandidates {
+				t.Errorf("candidate evaluations = %d, want %d", runnerService.evaluateCalls, tc.wantCandidates)
+			}
+			if result.StopReason != stopReasonConsecutiveFailures {
+				t.Errorf("stop reason = %q, want %q", result.StopReason, stopReasonConsecutiveFailures)
+			}
+		})
+	}
+}
+
+func TestInitializeRejectsNegativePriorConsecutiveFailures(t *testing.T) {
+	var calls int
+	orch := mustNew(t, Dependencies{
+		Runner: &fakeRunnerService{},
+		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+		Jobs:   &fakeJobService{},
+		Agents: rejectingRoleSet(t, &calls),
+	}, DefaultConfig())
+	err := runExpectingError(t, orch, "session-negative", CampaignRequest{
+		CampaignID:               "campaign-negative",
+		Repository:               "/repo",
+		BaseRevision:             "abc123",
+		BuildTarget:              "./cmd/tool",
+		PriorConsecutiveFailures: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "prior consecutive failures cannot be negative") {
+		t.Fatalf("run error = %v, want negative prior failure rejection", err)
+	}
+}

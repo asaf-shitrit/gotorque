@@ -13,6 +13,7 @@ import (
 
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/profile"
 	"github.com/stretchr/testify/require"
@@ -100,6 +101,138 @@ func TestRunADKFullGraphWithDeterministicAgents(t *testing.T) {
 		}
 	}
 	require.True(t, saw)
+}
+
+// staticAgent replays a fixed decoded payload as one agent turn, standing in
+// for a model so campaign-level graph runs stay deterministic and offline.
+func staticAgent(t *testing.T, name string, value any) adkagent.Agent {
+	t.Helper()
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	var output any
+	require.NoError(t, json.Unmarshal(data, &output))
+	a, err := adkagent.New(adkagent.Config{Name: name, Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+		return func(yield func(*session.Event, error) bool) {
+			event := session.NewEvent(ctx, ctx.InvocationID())
+			event.Output = output
+			yield(event, nil)
+		}
+	}})
+	require.NoError(t, err)
+	return a
+}
+
+// rejectingRoles proposes a patch that cannot apply, so every candidate the
+// graph evaluates is rejected deterministically without a build or a model.
+func rejectingRoles(t *testing.T) agents.Set {
+	t.Helper()
+	return agents.Set{
+		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "test", NextExperiment: "test"}),
+		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"main"}}),
+		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"test"}}),
+		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "test", Patch: "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n"}),
+		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}),
+	}
+}
+
+// TestConsecutiveFailureBoundSurvivesResume covers the defect that let an
+// interrupted campaign evaluate 12 rejected candidates under
+// stop_after_failures=4: the tally lived only in the in-process orchestrator
+// run, so every `optimize --resume` restarted it at zero.
+func TestConsecutiveFailureBoundSurvivesResume(t *testing.T) {
+	repo := makeRepository(t)
+	campaignDir := filepath.Join(t.TempDir(), "campaign")
+	engine, err := Create(context.Background(), Options{Repository: repo, ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: campaignDir, TestingUnsafeDisableIsolation: true})
+	require.NoError(t, err)
+	require.NoError(t, engine.Run(context.Background()))
+
+	roles := rejectingRoles(t)
+	bounded := func(maxCandidates int) orchestrator.Config {
+		return orchestrator.Config{MaxCandidates: maxCandidates, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Minute, AgentTimeout: time.Minute}
+	}
+	// First process: stopped by its candidate ceiling with two of the four
+	// allowed consecutive failures already spent, as an OS interrupt would.
+	first, err := engine.RunADK(context.Background(), roles, bounded(2))
+	require.NoError(t, err)
+	require.Equal(t, 2, first.CandidatesTried)
+	require.Equal(t, 2, engine.State().ConsecutiveFailures)
+	require.NoError(t, engine.Close())
+
+	resumed, err := Resume(campaignDir, nil)
+	require.NoError(t, err)
+	defer resumed.Close()
+	require.Equal(t, 2, resumed.State().ConsecutiveFailures, "tally must survive the process boundary")
+
+	// Second process: a slack candidate ceiling, so only the carried-in tally
+	// can stop it. Before the fix this ran the full four rejections again.
+	second, err := resumed.RunADK(context.Background(), roles, bounded(12))
+	require.NoError(t, err)
+	require.Equal(t, 2, second.CandidatesTried, "resume must spend only the campaign's remaining allowance")
+	require.Equal(t, "consecutive rejection/inconclusive limit reached", second.StopReason)
+	require.Equal(t, 4, resumed.State().ConsecutiveFailures)
+}
+
+func TestCampaignDeadlineSpendsOnlyTheRemainingBudget(t *testing.T) {
+	tests := []struct {
+		name         string
+		budget       time.Duration
+		elapsed      time.Duration
+		wantRemains  time.Duration
+		wantDeadline bool
+	}{
+		{name: "fresh campaign gets the whole budget", budget: time.Minute, wantRemains: time.Minute, wantDeadline: true},
+		{name: "resume gets what the campaign has left", budget: time.Minute, elapsed: 45 * time.Second, wantRemains: 15 * time.Second, wantDeadline: true},
+		{name: "exhausted budget expires immediately", budget: time.Minute, elapsed: 90 * time.Second, wantDeadline: true},
+		{name: "absent budget leaves the context alone", elapsed: time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := &Engine{state: State{
+				Manifest:       manifest.Manifest{Campaign: manifest.CampaignLimits{MaxDuration: manifest.Duration(tc.budget)}},
+				ElapsedRunTime: tc.elapsed,
+			}}
+			ctx, cancel := engine.withCampaignDeadline(context.Background())
+			if cancel != nil {
+				defer cancel()
+			}
+			deadline, ok := ctx.Deadline()
+			require.Equal(t, tc.wantDeadline, ok)
+			if !tc.wantDeadline {
+				return
+			}
+			require.InDelta(t, tc.wantRemains.Seconds(), time.Until(deadline).Seconds(), 1)
+		})
+	}
+}
+
+func TestCampaignRunTimeAccumulatesAcrossProcesses(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, DatabaseName))
+	require.NoError(t, err)
+	defer store.Close()
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	tick := func() time.Time { clock = clock.Add(10 * time.Second); return clock }
+	// Persisted state round-trips through the manifest decoder, which refuses
+	// the zero-value durations a bare State would carry.
+	m, err := manifest.LoadFile(writeManifest(t, t.TempDir()))
+	require.NoError(t, err)
+
+	first, err := compose(dir, store, State{Manifest: m, CompletedSteps: map[string]bool{}}, nil, tick)
+	require.NoError(t, err)
+	first.startRunClock()
+	require.NoError(t, first.saveEvent("test_event", "first", nil))
+	require.NoError(t, first.saveEvent("test_event", "second", nil))
+	require.Equal(t, 20*time.Second, first.state.ElapsedRunTime)
+
+	persisted, err := store.Load()
+	require.NoError(t, err)
+	require.Equal(t, 20*time.Second, persisted.ElapsedRunTime)
+
+	second, err := compose(dir, store, persisted, nil, tick)
+	require.NoError(t, err)
+	second.startRunClock()
+	require.NoError(t, second.saveEvent("test_event", "third", nil))
+	require.Equal(t, 30*time.Second, second.state.ElapsedRunTime, "a resumed process continues the campaign total")
 }
 
 func makeRepository(t *testing.T) string {

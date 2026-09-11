@@ -17,6 +17,13 @@ type CampaignRequest struct {
 	BuildTarget      string                    `json:"build_target"`
 	CommandArgs      []string                  `json:"command_args,omitempty"`
 	OptimizationMode domain.OptimizationPolicy `json:"optimization_mode"`
+	// PriorConsecutiveFailures carries the campaign-wide run of rejected or
+	// inconclusive candidates that a caller already recorded for this
+	// campaign. The graph builds a fresh CampaignState on every entry, so a
+	// campaign resumed after an interruption would otherwise restart the
+	// MaxConsecutiveFailures tally at zero and the bound would hold only
+	// within a single process rather than over the whole campaign.
+	PriorConsecutiveFailures int `json:"prior_consecutive_failures,omitempty"`
 }
 
 // Inspection is deterministic repository and target inventory.
