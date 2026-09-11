@@ -706,7 +706,56 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 	if !ok {
 		return "", false
 	}
+	path, ok = e.repoRelative(path)
+	if !ok {
+		return "", false
+	}
 	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
+}
+
+// repoRelative rewrites a profiler's absolute source path into the
+// repository-relative form the excerpt collector requires, and rejects paths
+// outside the repository.
+//
+// `go tool pprof -list` reports absolute paths. extractExcerpts refuses those
+// because an absolute location is indistinguishable from one escaping the
+// repository, so every profiled frame resolved to a location no source window
+// could ever be read from: a target checked out under a path the profiler
+// echoed back produced one usable excerpt out of eleven measured functions.
+// Frames in the standard library or module cache are dropped outright rather
+// than kept as bare paths, since no patch this campaign may write can reach
+// them and they otherwise occupy the excerpt budget.
+func (e *Engine) repoRelative(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(path) {
+		return filepath.ToSlash(path), true
+	}
+	// Both sides are compared in raw and symlink-resolved form. macOS resolves
+	// a temporary root through /private while a source file the profiler named
+	// may not resolve at all, and comparing one resolved path against one raw
+	// path reports a file inside the repository as escaping it.
+	for _, root := range symlinkForms(e.state.Repository) {
+		for _, candidate := range symlinkForms(path) {
+			rel, err := filepath.Rel(root, candidate)
+			if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+				continue
+			}
+			return filepath.ToSlash(rel), true
+		}
+	}
+	return "", false
+}
+
+// symlinkForms returns the path as given and, when it differs, its
+// symlink-resolved form.
+func symlinkForms(path string) []string {
+	forms := []string{path}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
+		forms = append(forms, resolved)
+	}
+	return forms
 }
 
 func (e *Engine) hotLocationFromRepo(name string) (string, bool) {

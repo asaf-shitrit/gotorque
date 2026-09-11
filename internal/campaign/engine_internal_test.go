@@ -1,6 +1,7 @@
 package campaign
 
 import (
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -50,5 +51,34 @@ func TestFunctionNameCandidatesUnwrapsClosuresAndReceivers(t *testing.T) {
 		if got[0] != tt.name {
 			t.Errorf("functionNameCandidates(%q) first = %q, want the original name first", tt.name, got[0])
 		}
+	}
+}
+
+func TestRepoRelativeRewritesProfilerPaths(t *testing.T) {
+	root := t.TempDir()
+	engine := &Engine{state: State{Repository: root}}
+	tests := []struct {
+		name   string
+		path   string
+		want   string
+		wantOK bool
+	}{
+		{"absolute inside repo", filepath.Join(root, "statements.go"), "statements.go", true},
+		{"absolute nested", filepath.Join(root, "cmd", "main.go"), "cmd/main.go", true},
+		{"already relative", "identifier.go", "identifier.go", true},
+		{"standard library", "/opt/homebrew/Cellar/go/1.27.0/libexec/src/unicode/graphic.go", "", false},
+		{"repository root itself", root, "", false},
+		{"empty", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := engine.repoRelative(tt.path)
+			if ok != tt.wantOK {
+				t.Fatalf("repoRelative(%q) ok = %v, want %v", tt.path, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("repoRelative(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
 	}
 }
