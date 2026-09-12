@@ -12,8 +12,15 @@ COVERPKG ?= ./...
 CRAP_THRESHOLD ?= 30
 
 COVER_FLAGS := -coverprofile=$(COVERAGE_PROFILE) -coverpkg=$(COVERPKG)
+# Platform-exclusive code cannot be covered on the other OS, so its 0% there is a
+# portability fact rather than an untested-decision risk. The sampler dispatch
+# (internal/profile/sample.go) picks sampleMacOS on darwin and sampleLinuxPerf on
+# Linux, and each has tests only on its own platform; counting them made the gate
+# pass on macOS and fail on the identical commit in Linux CI. Override with
+# `make crap CRAP_EXCLUDE=` to see every function.
+CRAP_EXCLUDE ?= --exclude '(sampleMacOS|sampleLinuxPerf)'
 CRAP_SCAN := go run $(GO_CRAP) scan . --coverage-profile $(COVERAGE_PROFILE) \
-	--threshold $(CRAP_THRESHOLD) --no-progress
+	--threshold $(CRAP_THRESHOLD) --no-progress $(CRAP_EXCLUDE)
 
 .PHONY: lint
 lint:

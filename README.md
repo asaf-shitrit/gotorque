@@ -96,7 +96,9 @@ Makefile) over the `go test -coverprofile` output — the suite runs once and no
 coverage tooling is duplicated. At `CRAP_THRESHOLD` 30 a CC 9 function with 0%
 coverage scores 90, and a fully covered one scores 9, so the gate catches the
 uncovered half. CI runs `make crap-check` as a blocking step, and `make hooks`
-installs the same three gates in front of every commit.
+installs the same three gates in front of every commit. Code that only executes
+on another OS is excluded via `CRAP_EXCLUDE`, because its 0% coverage there is a
+portability fact rather than an untested decision.
 
 `make hooks` points git at `.githooks/`, so every commit runs the same three
 gates in that order: `make lint`, then `make cover` (the unit tests, which also

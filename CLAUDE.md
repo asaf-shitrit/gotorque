@@ -71,7 +71,11 @@ covered one scores 9 — the gate exists to catch the uncovered half. Coverage i
 measured cross-package (`-coverpkg=./...` in `COVERPKG`): a function exercised
 by another package's tests is tested, and a per-package profile reports it as
 0%. CI runs `make crap-check` blocking; the backlog is at zero, so a new
-function above the threshold fails the build.
+function above the threshold fails the build. Platform-exclusive code is
+excluded (`CRAP_EXCLUDE` in the Makefile): the sampler dispatch picks
+`sampleMacOS` on darwin and `sampleLinuxPerf` on Linux, and neither can be
+covered on the other OS, so counting them made the gate pass locally and fail
+on the identical commit in Linux CI.
 
 Raising coverage on a flagged function is the preferred fix; splitting it is
 the fallback, and excluding it (`--exclude` in the Makefile target) needs a
