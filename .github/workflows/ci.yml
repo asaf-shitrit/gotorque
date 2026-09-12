@@ -35,10 +35,9 @@ jobs:
 
       - name: Validate target manifests
         run: |
-          /tmp/gotorque manifest validate targets/gojq/manifest.json
-          /tmp/gotorque manifest validate targets/scc/manifest.json
-          /tmp/gotorque manifest validate targets/dedupe/manifest.json
-          /tmp/gotorque manifest validate targets/numstats/manifest.json
+          for m in targets/*/manifest.json; do
+            /tmp/gotorque manifest validate "$m"
+          done
 
       - name: Deterministic campaign smoke test (no network, no model)
         run: |

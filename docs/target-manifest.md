@@ -58,17 +58,29 @@ cannot silently weaken a campaign's safety or acceptance settings.
     "stderr": {"mode": "exact"},
     "files": []
   },
+  "performance": {},
+  "campaign": {},
   "optimization_policy": "idiomatic"
 }
 ```
 
-The example omits optional performance and campaign values. The loader fills
-them with the version-one defaults below.
+Every top-level key above is required, `performance` and `campaign` included.
+Their *contents* are optional — an empty object is enough, and the loader
+fills in the version-one defaults below — but the objects themselves must be
+present or schema validation fails with `missing properties 'performance',
+'campaign'`.
+
+Check a manifest without running a campaign:
+
+```sh
+gotorque manifest validate targets/gron/manifest.json
+```
 
 ## Workloads and hybrid discovery
 
-Each seed has an `args` array, optional deterministic `stdin`, optional fixture
-`files`, a tier, and provenance. Fixture paths must be relative and remain
+Each seed has an `id`, `name`, `tier`, `args` array, and `provenance`, plus
+optional deterministic `stdin`, optional fixture `files`, an optional
+`description`, and an optional per-seed `timeout`. Fixture paths must be relative and remain
 inside the temporary sandbox. `target.command` is a fixed prefix or
 subcommand; it is empty for a root CLI.
 
@@ -143,5 +155,16 @@ fixtures, benchmark drivers, and instrumentation, but it may not add or
 upgrade production dependencies. Version one never merges, pushes, or opens a
 pull request.
 
-See the example assets in [`targets/gojq`](../targets/gojq/) and
-[`targets/scc`](../targets/scc/).
+## Checked-in examples
+
+| target | repository | exercises |
+| --- | --- | --- |
+| [`targets/gojq`](../targets/gojq/) | `itchyny/gojq` | CPU, parsing, interpretation, allocation |
+| [`targets/scc`](../targets/scc/) | `boyter/scc` | filesystem traversal, classification, scaling |
+| [`targets/gron`](../targets/gron/) | `tomnomnom/gron` | JSON flattening; benchmarks live in the root package |
+| [`targets/dedupe`](../targets/dedupe/) | `asaf-shitrit/gotorque-targets` | line deduplication |
+| [`targets/numstats`](../targets/numstats/) | `asaf-shitrit/gotorque-targets` | numeric aggregation |
+
+All five validate. `dedupe` and `numstats` name a repository that does not
+exist yet, so they validate but cannot be run until it is published; the other
+three point at live upstreams.
