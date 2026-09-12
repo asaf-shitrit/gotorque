@@ -132,7 +132,54 @@ func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string) (workflow
 	if err != nil {
 		return nil, fmt.Errorf("%s node: %w", role, err)
 	}
-	return n, nil
+	return degradeNode(n, role), nil
+}
+
+// emptyRoleResult is the degraded output every role decodes into a zero value.
+const emptyRoleResult = "{}"
+
+// degradingNode stops one role's model-boundary failure from ending the
+// campaign.
+//
+// A workflow node error ends the whole ADK run, and every agent node here is
+// one model call away from an error: a provider that stalls past the retry
+// ladder ended a campaign before it evaluated a single candidate. Each role
+// already has a deterministic fallback for an absent answer — the manifest's
+// seed workloads, discoveryHotPaths for an empty analysis, and a candidate the
+// evaluator rejects for an empty patch — so an empty JSON object is the
+// correct degraded output. It decodes to a zero-value result, the failure is
+// reported, and the authoritative decision stays with the deterministic half.
+type degradingNode struct {
+	workflow.Node
+	role string
+}
+
+func degradeNode(inner workflow.Node, role string) workflow.Node {
+	return degradingNode{Node: inner, role: role}
+}
+
+func (n degradingNode) Run(ctx adkagent.Context, input any) iter.Seq2[*session.Event, error] {
+	return func(yield func(*session.Event, error) bool) {
+		delivered := false
+		for event, err := range n.Node.Run(ctx, input) {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[role_degraded] %s node failed, continuing with an empty result: %v\n", n.role, err)
+				break
+			}
+			if event != nil && event.Output != nil {
+				delivered = true
+			}
+			if !yield(event, nil) {
+				return
+			}
+		}
+		if delivered {
+			return
+		}
+		event := session.NewEvent(ctx, ctx.InvocationID())
+		event.Output = emptyRoleResult
+		yield(event, nil)
+	}
 }
 
 func (n graphNodes) edges() []workflow.Edge {
@@ -235,12 +282,10 @@ func (g *campaignGraph) discover(ctx adkagent.Context, raw any) (*session.Event,
 }
 
 func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.Event, error) {
-	debugAnalystRaw(raw)
 	result, err := salvageAnalystResult(raw)
 	if err != nil {
 		return nil, fmt.Errorf("analyst output: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "[analyst_raw_debug] decoded hot_paths=%d\n", len(result.HotPaths))
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
@@ -248,23 +293,6 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	state.Analysis = result
 	attachExcerpts(ctx, g.deps.Runner, &state, result)
 	return stateEvent(ctx, state), nil
-}
-
-func debugAnalystRaw(raw any) {
-	debugText, ok := raw.(string)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "[analyst_raw_debug] non-string raw %T\n", raw)
-		return
-	}
-	head := debugText
-	if len(head) > 200 {
-		head = head[:200]
-	}
-	tail := ""
-	if len(debugText) > 200 {
-		tail = debugText[len(debugText)-200:]
-	}
-	fmt.Fprintf(os.Stderr, "[analyst_raw_debug] len=%d head=%q tail=%q\n", len(debugText), head, tail)
 }
 
 func salvageAnalystResult(raw any) (agents.AnalystResult, error) {

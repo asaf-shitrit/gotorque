@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"slices"
@@ -128,6 +129,70 @@ func staticAgent[T any](t *testing.T, name string, output T, calls *int) adkagen
 		t.Fatalf("create %s agent: %v", name, err)
 	}
 	return a
+}
+
+// failingAgent models a role whose model call never succeeds: the provider
+// stalls past the retry ladder, so the node yields an error instead of an
+// answer.
+func failingAgent(t *testing.T, name string, calls *int) adkagent.Agent {
+	t.Helper()
+	a, err := adkagent.New(adkagent.Config{
+		Name: name,
+		Run: func(adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				*calls++
+				yield(nil, errors.New("provider stalled past the retry ladder"))
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("create %s agent: %v", name, err)
+	}
+	return a
+}
+
+// TestCampaignSurvivesRoleFailures pins the campaign-level bound: a role whose
+// model call fails costs one candidate, not the run. Without the degrading
+// node the same failure ended the workflow, so a campaign that had built a
+// baseline and run discovery was recorded as failed with nothing evaluated.
+func TestCampaignSurvivesRoleFailures(t *testing.T) {
+	var coordinatorCalls, explorerCalls, analystCalls, optimizerCalls, reviewerCalls int
+	roleSet := agents.Set{
+		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "objective", NextExperiment: "experiment"}, &coordinatorCalls),
+		Explorer:    failingAgent(t, "explorer", &explorerCalls),
+		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"hypothesis"}}, &analystCalls),
+		Optimizer:   failingAgent(t, "optimizer", &optimizerCalls),
+		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: false}, &reviewerCalls),
+	}
+	seq := &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected, domain.DecisionRejected}}
+	runnerService := &fakeRunnerService{}
+	jobs := &fakeJobService{}
+	orch := mustNew(t, Dependencies{Runner: runnerService, Policy: seq, Jobs: jobs, Agents: roleSet}, Config{
+		MaxCandidates:          8,
+		MaxConsecutiveFailures: 2,
+		DeterministicTimeout:   time.Second,
+		AgentTimeout:           time.Second,
+		MaxConcurrency:         1,
+	})
+	req := CampaignRequest{
+		CampaignID:       "campaign-degraded",
+		Repository:       "/repo",
+		BaseRevision:     "abc123",
+		BuildTarget:      "./cmd/tool",
+		CommandArgs:      []string{"scan"},
+		OptimizationMode: domain.PolicyIdiomatic,
+	}
+	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-1", req, "finalize_campaign")
+
+	if result.CandidatesTried != 2 {
+		t.Errorf("candidates tried = %d, want 2: the campaign must keep running on a failed role", result.CandidatesTried)
+	}
+	if result.StopReason != "consecutive rejection/inconclusive limit reached" {
+		t.Errorf("stop reason = %q", result.StopReason)
+	}
+	if explorerCalls == 0 || optimizerCalls == 0 {
+		t.Errorf("failed roles were never called: explorer=%d optimizer=%d", explorerCalls, optimizerCalls)
+	}
 }
 
 func mustNew(t *testing.T, deps Dependencies, cfg Config) *Orchestrator {

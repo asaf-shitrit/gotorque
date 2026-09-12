@@ -81,10 +81,12 @@ type fenceStrippingModel struct {
 	usage    *UsageCollector
 	observer CallObserver
 
-	// attempts and baseBackoff are fields rather than constants so tests
-	// can drive the full retry ladder without minutes of real sleeping.
-	attempts    int
-	baseBackoff time.Duration
+	// attempts, baseBackoff and attemptTimeout are fields rather than
+	// constants so tests can drive the full retry ladder without minutes of
+	// real sleeping.
+	attempts       int
+	baseBackoff    time.Duration
+	attemptTimeout time.Duration
 }
 
 // Transparent retries: shared-pool rate limits (HTTP 429), transport
@@ -103,7 +105,7 @@ func NewFenceStrippingModel(inner model.LLM, role string, usage *UsageCollector,
 	if inner == nil {
 		return nil
 	}
-	return &fenceStrippingModel{inner: inner, role: role, usage: usage, observer: observer, attempts: defaultGenerateAttempts, baseBackoff: defaultGenerateBackoff}
+	return &fenceStrippingModel{inner: inner, role: role, usage: usage, observer: observer, attempts: defaultGenerateAttempts, baseBackoff: defaultGenerateBackoff, attemptTimeout: attemptTimeout}
 }
 
 func (m fenceStrippingModel) Name() string { return m.inner.Name() }
@@ -118,7 +120,7 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 				return
 			}
 			started := time.Now()
-			done := m.streamAttempt(ctx, req, stream, yield, run)
+			done := m.runAttempt(ctx, req, stream, yield, run)
 			// Reported per attempt rather than per call: a campaign that
 			// prints only the final outcome cannot distinguish a slow
 			// endpoint from one silently retrying behind a long wait.
@@ -136,6 +138,26 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 		}
 		run.yieldExhausted(yield, m.role, m.attempts)
 	}
+}
+
+// runAttempt runs one ladder attempt under its own deadline.
+//
+// The bound exists because the client timeout bounds one HTTP exchange, not
+// one attempt: the inner model may stack its own retries beneath the ladder,
+// so an attempt can cost a multiple of requestTimeout. Observed: a single
+// explorer attempt ran 12m1s against a 4m client timeout, which consumed the
+// orchestrator's 20m per-node deadline and aborted the whole campaign before
+// it evaluated a single candidate. Bounding the attempt keeps the ladder's
+// worst case (attempts×attemptTimeout + backoff) inside the node deadline, so
+// every attempt actually gets to run instead of the node being killed
+// mid-ladder. A non-positive attemptTimeout leaves the attempt unbounded.
+func (m fenceStrippingModel) runAttempt(ctx context.Context, req *model.LLMRequest, stream bool, yield func(*model.LLMResponse, error) bool, run *generateRun) bool {
+	if m.attemptTimeout <= 0 {
+		return m.streamAttempt(ctx, req, stream, yield, run)
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, m.attemptTimeout)
+	defer cancel()
+	return m.streamAttempt(attemptCtx, req, stream, yield, run)
 }
 
 // generateRun carries what one decorated call has learned across its

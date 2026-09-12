@@ -6,6 +6,7 @@ import (
 	"iter"
 	"sync"
 	"testing"
+	"time"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -55,6 +56,80 @@ func (f *fakeLLM) Name() string { return "fake" }
 func (f *fakeLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		yield(f.resp, nil)
+	}
+}
+
+// stallingLLM never answers: it returns only when its context is done, which
+// is what a provider that stalls past the client timeout looks like from the
+// retry ladder's point of view.
+type stallingLLM struct {
+	calls int
+}
+
+func (s *stallingLLM) Name() string { return "stalling" }
+
+func (s *stallingLLM) GenerateContent(ctx context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		s.calls++
+		<-ctx.Done()
+		yield(nil, ctx.Err())
+	}
+}
+
+// TestRunAttemptBoundsEachLadderAttempt pins the invariant that a stalled
+// provider consumes the per-attempt bound rather than the caller's whole
+// budget: without it one attempt stacked the client's own retries to 12m1s
+// against a 4m client timeout, ate the orchestrator's 20m node deadline, and
+// aborted a campaign before it evaluated a single candidate.
+func TestRunAttemptBoundsEachLadderAttempt(t *testing.T) {
+	tests := []struct {
+		name           string
+		attemptTimeout time.Duration
+		callerTimeout  time.Duration
+		wantAtLeast    time.Duration
+	}{
+		// The bound, not the caller, must end the attempt: the caller deadline
+		// here is far away, so an unbounded attempt would blow the 1s ceiling.
+		{"bounded attempt ends before the caller deadline", 20 * time.Millisecond, 10 * time.Second, 0},
+		// A non-positive bound is the documented escape hatch: the caller's
+		// deadline is then the only thing that ends a stalled attempt.
+		{"unbounded attempt falls back to the caller deadline", 0, 200 * time.Millisecond, 200 * time.Millisecond},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertLadderBounded(t, tc.attemptTimeout, tc.callerTimeout, tc.wantAtLeast)
+		})
+	}
+}
+
+func assertLadderBounded(t *testing.T, attemptTimeout, callerTimeout, wantAtLeast time.Duration) {
+	t.Helper()
+	inner := &stallingLLM{}
+	m := &fenceStrippingModel{
+		inner: inner, role: "explorer", attempts: 3,
+		baseBackoff: 0, attemptTimeout: attemptTimeout,
+	}
+	callerCtx, cancel := context.WithTimeout(context.Background(), callerTimeout)
+	defer cancel()
+
+	started := time.Now()
+	var gotErr error
+	for _, err := range m.GenerateContent(callerCtx, &model.LLMRequest{}, false) {
+		gotErr = err
+	}
+	elapsed := time.Since(started)
+
+	if inner.calls != 3 {
+		t.Errorf("attempts run = %d, want 3: the ladder must run to exhaustion", inner.calls)
+	}
+	if gotErr == nil {
+		t.Fatal("expected ladder exhaustion, got nil error")
+	}
+	if elapsed < wantAtLeast {
+		t.Errorf("ladder finished in %s, want at least %s", elapsed, wantAtLeast)
+	}
+	if elapsed >= time.Second {
+		t.Errorf("ladder took %s: an attempt is not bounded", elapsed)
 	}
 }
 

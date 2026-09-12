@@ -78,6 +78,14 @@ func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, err
 // role calls finish in seconds to about two minutes.
 const requestTimeout = 4 * time.Minute
 
+// attemptTimeout bounds one attempt of the retry ladder in fence.go, which is
+// not the same thing as requestTimeout: the client timeout bounds a single
+// HTTP exchange, while one ladder attempt may stack several of them. The
+// ladder's worst case must fit inside the orchestrator's per-node agent
+// deadline (attempts×attemptTimeout + backoff < AgentTimeout), otherwise a
+// stalled provider kills the node mid-ladder and takes the campaign with it.
+const attemptTimeout = requestTimeout
+
 // httpClient returns the transport model calls use. Without one the SDK
 // supplies a client with no timeout at all, so a request the endpoint never
 // completes hangs until the orchestrator's agent deadline expires, consuming
