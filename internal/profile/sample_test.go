@@ -112,6 +112,46 @@ func TestSampleMacOSHappyPath(t *testing.T) {
 	}
 }
 
+// The macOS path starts a long-lived target and reaps it itself through
+// terminate(). Starting that target with exec.CommandContext leaks: the watcher
+// goroutine it spawns only finishes when Cmd.Wait drains its unbuffered result
+// channel, and this code waits on os.Process instead. A single leak is
+// invisible in one test run and unbounded across a campaign.
+func TestSampleMacOSReapsTargetWithoutLeakingGoroutines(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-only sampler path")
+	}
+	req := SampleTarget{
+		BinaryPath:   "/bin/sleep",
+		Args:         []string{"30"},
+		OutputPath:   filepath.Join(t.TempDir(), "out.txt"),
+		Duration:     time.Second,
+		SampleBinary: writeFakeSampler(t, 0, macSampleReport),
+	}
+	// Warm up once so runtime goroutines started on first use are not counted.
+	if _, err := SampleTargetProfile(context.Background(), req); err != nil {
+		t.Fatalf("warm-up sample: %v", err)
+	}
+	before := runtime.NumGoroutine()
+	for i := range 3 {
+		req.OutputPath = filepath.Join(t.TempDir(), "out.txt")
+		if _, err := SampleTargetProfile(context.Background(), req); err != nil {
+			t.Fatalf("sample %d: %v", i, err)
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		after := runtime.NumGoroutine()
+		if after <= before {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines grew from %d to %d over 3 samples: the sampled target is not being reaped", before, after)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // writeFakeSampler creates an executable script that mimics
 // `/usr/bin/sample <pid> <duration> -file <path>` by writing report to the
 // path named by its fourth argument and exiting with the given status.

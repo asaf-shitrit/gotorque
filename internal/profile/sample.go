@@ -255,7 +255,16 @@ func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 	}
 	defer cleanup()
 
-	target := exec.CommandContext(ctx, req.BinaryPath, req.Args...)
+	// Started with exec.Command rather than exec.CommandContext deliberately:
+	// this target outlives the sampler call and is reaped by terminate() through
+	// os.Process.Wait, never Cmd.Wait. CommandContext starts a watcher goroutine
+	// that only finishes once Wait drains its unbuffered result channel, so every
+	// sample would leak that goroutine and retain the Cmd until the process
+	// exits. Cancellation still reaches the target: the sampler runs under ctx,
+	// and every path out of this function reaps the target.
+	//
+	//nolint:noctx // reaped by terminate(), not Cmd.Wait; CommandContext would leak a watcher goroutine
+	target := exec.Command(req.BinaryPath, req.Args...)
 	target.Dir = workDir
 	target.Stdin = bytes.NewReader(req.Stdin)
 	target.Stdout = nil
