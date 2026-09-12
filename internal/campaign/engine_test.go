@@ -65,7 +65,7 @@ func TestRunADKFullGraphWithDeterministicAgents(t *testing.T) {
 	engine, err := Create(context.Background(), Options{Repository: repo, ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true})
 	require.NoError(t, err)
 	require.NoError(t, engine.Run(context.Background()))
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 	static := func(name string, value any) adkagent.Agent {
 		data, err := json.Marshal(value)
 		require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestConsecutiveFailureBoundSurvivesResume(t *testing.T) {
 
 	resumed, err := Resume(campaignDir, nil)
 	require.NoError(t, err)
-	defer resumed.Close()
+	defer func() { _ = resumed.Close() }()
 	require.Equal(t, 2, resumed.State().ConsecutiveFailures, "tally must survive the process boundary")
 
 	// Second process: a slack candidate ceiling, so only the carried-in tally
@@ -296,7 +296,7 @@ func TestCampaignStopsWhenSuspensionSpendsTheDurationBudget(t *testing.T) {
 	// exceeded" -- naming an incidental command rather than the spent bound.
 	resumed, err := Resume(campaignDir, nil)
 	require.NoError(t, err)
-	defer resumed.Close()
+	defer func() { _ = resumed.Close() }()
 	require.ErrorIs(t, resumed.Run(context.Background()), ErrDurationBudgetExhausted)
 }
 
@@ -327,7 +327,7 @@ func TestCampaignRunTimeAccumulatesAcrossProcesses(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(filepath.Join(dir, DatabaseName))
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	tick := func() time.Time { clock = clock.Add(10 * time.Second); return clock }
 	// Persisted state round-trips through the manifest decoder, which refuses

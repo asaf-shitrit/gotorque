@@ -28,6 +28,11 @@ jobs:
       - name: Unit tests
         run: go test ./...
 
+      # Blocking: the backlog is cleared, so a function above CRAP 30 now fails
+      # the build instead of only annotating it.
+      - name: CRAP score (change risk anti-patterns)
+        run: make crap-check
+
       - name: Build operator CLI
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"

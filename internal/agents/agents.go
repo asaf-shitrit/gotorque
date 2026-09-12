@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -94,7 +95,7 @@ Return only JSON with proceed, behavior_argument, concerns, and required_checks 
 // models. It performs no environment lookup and requires no API key itself.
 func NewSet(ctx context.Context, provider ModelProvider) (Set, error) {
 	if provider == nil {
-		return Set{}, fmt.Errorf("model provider is required")
+		return Set{}, errors.New("model provider is required")
 	}
 
 	created := make(map[Role]adkagent.Agent, len(roleSpecs))

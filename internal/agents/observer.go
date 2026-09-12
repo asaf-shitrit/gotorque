@@ -39,11 +39,11 @@ func LogCalls(w io.Writer) CallObserver {
 		defer mu.Unlock()
 		switch {
 		case info.Err != nil:
-			fmt.Fprintf(w, "[model_call] %s attempt %d failed after %s: %v\n", info.Role, info.Attempt, info.Duration.Round(time.Millisecond), info.Err)
+			_, _ = fmt.Fprintf(w, "[model_call] %s attempt %d failed after %s: %v\n", info.Role, info.Attempt, info.Duration.Round(time.Millisecond), info.Err)
 		case info.Retrying:
-			fmt.Fprintf(w, "[model_call] %s attempt %d returned unparseable output after %s; retrying\n", info.Role, info.Attempt, info.Duration.Round(time.Millisecond))
+			_, _ = fmt.Fprintf(w, "[model_call] %s attempt %d returned unparseable output after %s; retrying\n", info.Role, info.Attempt, info.Duration.Round(time.Millisecond))
 		default:
-			fmt.Fprintf(w, "[model_call] %s attempt %d completed in %s\n", info.Role, info.Attempt, info.Duration.Round(time.Millisecond))
+			_, _ = fmt.Fprintf(w, "[model_call] %s attempt %d completed in %s\n", info.Role, info.Attempt, info.Duration.Round(time.Millisecond))
 		}
 	}
 }

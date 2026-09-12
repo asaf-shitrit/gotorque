@@ -357,7 +357,7 @@ func validateNormalization(n Normalization) error {
 	}
 	for _, file := range n.Files {
 		if err := validateRelativePath(file.Path); err != nil {
-			return fmt.Errorf("normalization file: %v", err)
+			return fmt.Errorf("normalization file: %w", err)
 		}
 		if err := validateRules("file "+file.Path, file.Mode, file.Rules); err != nil {
 			return err

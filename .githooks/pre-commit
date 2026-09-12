@@ -1,0 +1,19 @@
+#!/bin/sh
+# Pre-commit gate for gotorque. Installed with `make hooks`, which points git at
+# this directory (core.hooksPath), so it runs on every commit in this clone.
+#
+# Order matters: lint first (fast), then the suite — which also writes the
+# coverage profile — then the CRAP threshold that profile feeds. `make cover`
+# is the unit-test step; it is not run twice for the sake of a second gate.
+#
+# Deliberate bypass for one commit: git commit --no-verify
+set -e
+
+echo "pre-commit: complexity lint (golangci-lint: gocyclo, gocognit, gofmt)"
+make lint
+
+echo "pre-commit: unit tests (with coverage for the CRAP scan)"
+make cover
+
+echo "pre-commit: CRAP threshold"
+make crap-scan

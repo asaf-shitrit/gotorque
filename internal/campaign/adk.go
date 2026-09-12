@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -128,7 +129,7 @@ func excerptCandidates(hotPaths []agents.HotPath, discovered []string) []agents.
 
 // CollectExcerpts implements the optional orchestrator.ExcerptCollector
 // capability, attaching real source windows around analyst hot paths.
-func (s adkServices) CollectExcerpts(ctx context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
+func (s adkServices) CollectExcerpts(_ context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
 	candidates := excerptCandidates(analysis.HotPaths, s.engine.state.DiscoveryHotFunctions)
 	excerpts, err := extractExcerpts(s.engine.state.Repository, candidates, defaultMaxExcerpts)
 	locs := make([]string, 0, len(analysis.HotPaths))
@@ -140,7 +141,7 @@ func (s adkServices) CollectExcerpts(ctx context.Context, analysis agents.Analys
 	return excerpts, err
 }
 
-func (s adkServices) StartCampaign(ctx context.Context, req orchestrator.CampaignRequest) (domain.Job, error) {
+func (s adkServices) StartCampaign(_ context.Context, req orchestrator.CampaignRequest) (domain.Job, error) {
 	now := time.Now().UTC()
 	job := domain.Job{ID: "job-" + req.CampaignID, Kind: "optimization_campaign", Status: domain.JobRunning, CreatedAt: now, UpdatedAt: now}
 	_ = s.engine.saveEvent("adk_started", "ADK workflow started", req)
@@ -162,12 +163,12 @@ func (s adkServices) Inspect(_ context.Context, _ orchestrator.CampaignRequest) 
 	return orchestrator.Inspection{Packages: append([]string(nil), s.engine.state.Inventory.Packages...), Commands: append([]string(nil), s.engine.state.Inventory.Commands...), Metadata: map[string]string{"authority": s.engine.state.Environment.Authority}}, nil
 }
 func (s adkServices) Discover(_ context.Context, req orchestrator.DiscoveryRequest) (orchestrator.DiscoveryEvidence, error) {
-	runs := []string{}
+	runs := make([]string, 0, len(s.engine.state.Runs))
 	for _, run := range s.engine.state.Runs {
 		runs = append(runs, run.ID)
 	}
 	hotFunctions := append([]string(nil), s.engine.state.DiscoveryHotFunctions...)
-	metadata := map[string]string{"entry_points": fmt.Sprint(len(req.Explorer.EntryPoints))}
+	metadata := map[string]string{"entry_points": strconv.Itoa(len(req.Explorer.EntryPoints))}
 	if s.engine.state.DiscoveryProfileSummaryPath != "" {
 		metadata["profile_summary"] = s.engine.state.DiscoveryProfileSummaryPath
 	}
@@ -183,8 +184,8 @@ func (s adkServices) Discover(_ context.Context, req orchestrator.DiscoveryReque
 		}
 		accepted++
 	}
-	metadata["proposals_accepted"] = fmt.Sprint(accepted)
-	metadata["proposals_rejected"] = fmt.Sprint(len(rejections))
+	metadata["proposals_accepted"] = strconv.Itoa(accepted)
+	metadata["proposals_rejected"] = strconv.Itoa(len(rejections))
 	if len(rejections) > 0 {
 		metadata["proposal_rejections"] = strings.Join(rejections, "; ")
 	}

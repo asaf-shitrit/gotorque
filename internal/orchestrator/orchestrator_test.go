@@ -380,8 +380,8 @@ type acceptingRunnerService struct {
 	fakeRunnerService
 }
 
-func (a *acceptingRunnerService) EvaluateCandidate(_ context.Context, req CandidateRequest) (CandidateEvidence, error) {
-	ev, err := a.fakeRunnerService.EvaluateCandidate(context.Background(), req)
+func (a *acceptingRunnerService) EvaluateCandidate(ctx context.Context, req CandidateRequest) (CandidateEvidence, error) {
+	ev, err := a.fakeRunnerService.EvaluateCandidate(ctx, req)
 	if err != nil {
 		return ev, err
 	}

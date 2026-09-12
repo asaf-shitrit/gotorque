@@ -188,7 +188,8 @@ func LoadReport(dir string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	defer store.Close()
+	// Read-only load; a Close error carries no data-loss meaning.
+	defer func() { _ = store.Close() }()
 	return store.Load()
 }
 

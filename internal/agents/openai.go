@@ -19,7 +19,7 @@ import (
 // here reads OPENAI_API_KEY, so an OpenAI key left in the shell is never used
 // and an unset base URL cannot fall back to api.openai.com.
 const (
-	EnvAPIKey                = "OPENROUTER_API_KEY"
+	EnvAPIKey                = "OPENROUTER_API_KEY" //nolint:gosec // environment variable name, not a credential value
 	EnvBaseURL               = "OPENROUTER_BASE_URL"
 	DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
 )
@@ -144,7 +144,7 @@ func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]bool
 	if err != nil {
 		return nil, fmt.Errorf("OpenRouter endpoint: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if !httpOK(resp.StatusCode) {
 		return nil, fmt.Errorf("OpenRouter endpoint returned HTTP %s", resp.Status)
 	}

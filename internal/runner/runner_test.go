@@ -31,7 +31,7 @@ func TestRunInterleavesBaselineAndCandidate(t *testing.T) {
 	}
 	r.now = func() time.Time { return time.Unix(1, 0).UTC() }
 	binary := filepath.Join(root, "binary")
-	if err := os.WriteFile(binary, []byte("placeholder"), 0o700); err != nil {
+	if err := os.WriteFile(binary, []byte("placeholder"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	workload := domain.Workload{ID: "w", Command: domain.Command{Args: []string{"--input", "sample"}}}
@@ -63,7 +63,7 @@ func TestRunUsesPolicyMetricNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(root, "binary")
-	if err := os.WriteFile(binary, []byte("placeholder"), 0o700); err != nil {
+	if err := os.WriteFile(binary, []byte("placeholder"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	result, err := runner.Run(context.Background(), RunRequest{

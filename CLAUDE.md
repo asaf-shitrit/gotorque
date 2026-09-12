@@ -19,7 +19,10 @@ of that line.
 ## Commands
 
 ```sh
-make lint                                        # golangci-lint (gocyclo + gocognit only)
+make hooks                                       # one-time: install the pre-commit gate
+make lint                                        # golangci-lint (gocyclo + gocognit + gofmt)
+make crap                                        # CRAP report: complexity × coverage risk
+make crap-check                                  # CRAP gate, exits 1 above CRAP_THRESHOLD
 GOCACHE=/private/tmp/gotorque-cache go test ./... # full suite
 go test ./internal/policy/ -run TestEvaluate -v   # single test
 go build -o /tmp/gotorque ./cmd/gotorque
@@ -44,10 +47,42 @@ spends tokens.
 
 ## Lint gates
 
-`.golangci.yml` enables exactly two linters: `gocyclo` (max 10) and `gocognit`
-(max 15), both enforced in CI. When a function trips one, split it — do not
-raise the thresholds. Recent commits (`afda33e`) follow that pattern: extract
-the inner loop body into a named helper.
+`.golangci.yml` enables a curated best-practice set on top of `standard`
+(errcheck, govet, ineffassign, staticcheck, unused): errorlint, nilerr, nilnil,
+noctx, contextcheck, exhaustive, gosec, gocritic, revive, perfsprint,
+testifylint, inamedparam and more — plus `gocyclo` (max 10) and `gocognit`
+(max 15) and the `gofmt` formatter. All are enforced in CI. When a function
+trips a complexity gate, split it — do not raise the thresholds. Recent commits
+(`afda33e`) follow that pattern: extract the inner loop body into a named
+helper.
+
+Two deliberate narrowings, both commented in the config: `gosec`'s G204/G304/
+G703 are off because they fire on the harness's core job (running a target's
+manifest-defined commands through the allowlisted `internal/toolchain` wrapper,
+and reading repository paths it was pointed at), and `revive`'s `exported` and
+`package-comments` rules are off because architecture lives in
+`docs/architecture.md` and this file, not in per-symbol doc blocks.
+
+Complexity alone does not see whether a test reaches the function, so `make
+crap` adds that axis: CRAP = CC² × (1 − coverage)³ + CC, computed by `go-crap`
+(pinned in the Makefile) from the `go test -coverprofile` output. At
+`CRAP_THRESHOLD` 30 a CC 9 function with 0% coverage scores 90, while a fully
+covered one scores 9 — the gate exists to catch the uncovered half. Coverage is
+measured cross-package (`-coverpkg=./...` in `COVERPKG`): a function exercised
+by another package's tests is tested, and a per-package profile reports it as
+0%. CI runs `make crap-check` blocking; the backlog is at zero, so a new
+function above the threshold fails the build.
+
+Raising coverage on a flagged function is the preferred fix; splitting it is
+the fallback, and excluding it (`--exclude` in the Makefile target) needs a
+comment saying why it cannot be tested.
+
+Both gates run before every commit: `make hooks` (once per clone) sets
+`core.hooksPath` to `.githooks/`, whose pre-commit hook runs `make lint`, then
+`make cover` (tests + coverage profile), then `make crap-scan`. Commit aborts on
+failure; `--no-verify` is the escape hatch. The hook is local config, so CI
+stays the enforcement point for anyone who has not run `make hooks` — do not
+treat a green local commit as proof CI will pass.
 
 ## Architecture
 

@@ -927,8 +927,8 @@ const (
 
 // hotFunctionNames extracts deduplicated function names from a parsed pprof
 // top summary, skipping runtime frames that never belong to the target.
-func hotFunctionNames(functions []profile.Function, max int) []string {
-	names := make([]string, 0, max)
+func hotFunctionNames(functions []profile.Function, limit int) []string {
+	names := make([]string, 0, limit)
 	seen := map[string]bool{}
 	for _, fn := range functions {
 		name := strings.TrimSpace(fn.Name)
@@ -937,7 +937,7 @@ func hotFunctionNames(functions []profile.Function, max int) []string {
 		}
 		seen[name] = true
 		names = append(names, name)
-		if len(names) == max {
+		if len(names) == limit {
 			break
 		}
 	}
@@ -1086,7 +1086,8 @@ func cpuName() string {
 	if err != nil {
 		return runtime.GOARCH
 	}
-	defer file.Close()
+	// Read-only file; a Close error here carries no data-loss meaning.
+	defer func() { _ = file.Close() }()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()

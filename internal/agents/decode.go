@@ -337,9 +337,11 @@ func RepairCommonMalformations(text string) string {
 func excerptAround(text string, err error) string {
 	const width = 160
 	offset := -1
-	if syntaxErr, ok := err.(*json.SyntaxError); ok {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) {
 		offset = int(syntaxErr.Offset)
-	} else if typeErr, ok := err.(*json.UnmarshalTypeError); ok {
+	} else if errors.As(err, &typeErr) {
 		offset = int(typeErr.Offset)
 	}
 	if offset < 0 || offset > len(text) {

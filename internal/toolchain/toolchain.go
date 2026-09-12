@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -109,7 +111,7 @@ func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
 		args = append(args, "-run=^$", "-bench", req.Bench, "-benchmem")
 	}
 	if req.Count > 0 {
-		args = append(args, "-count", fmt.Sprint(req.Count))
+		args = append(args, "-count", strconv.Itoa(req.Count))
 	}
 	if req.TraceFile != "" {
 		args = append(args, "-trace", req.TraceFile)
@@ -294,15 +296,53 @@ func (t *Toolchain) TracePprof(ctx context.Context, tracePath, kind string) (Res
 }
 
 func (t *Toolchain) run(ctx context.Context, path string, args []string, dir string, env []string, stdin io.Reader) (Result, error) {
-	result, err := t.executor.Run(ctx, Invocation{Path: path, Args: args, Dir: dir, Env: mergeEnvironment(env), Stdin: stdin})
+	base := os.Environ()
+	// git resolves a repository, index, and worktree from these variables ahead
+	// of the working directory, so an inherited value would silently redirect a
+	// command at a different checkout than the one Dir names.
+	if path == t.gitPath {
+		base = withoutGitScoping(base)
+	}
+	result, err := t.executor.Run(ctx, Invocation{Path: path, Args: args, Dir: dir, Env: mergeEnvironment(base, env), Stdin: stdin})
 	if err != nil {
 		return result, fmt.Errorf("%s %s: %w", path, strings.Join(args, " "), err)
 	}
 	return result, nil
 }
 
-func mergeEnvironment(overrides []string) []string {
-	base := os.Environ()
+// gitScopingEnv lists the variables git uses to select a repository, index, or
+// worktree independently of the working directory. Every git call in this
+// package is pointed at a target checkout with Dir, so a value inherited from
+// the caller must not override that: inside a git hook git exports
+// GIT_INDEX_FILE and GIT_PREFIX, and a caller working in another repository may
+// export GIT_DIR or GIT_WORK_TREE. Dropping them keeps the target checkout the
+// only repository in play, which is what makes these wrappers safe to call from
+// a commit hook or from within another checkout.
+var gitScopingEnv = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_PREFIX",
+	"GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_NAMESPACE",
+	"GIT_CEILING_DIRECTORIES",
+}
+
+func withoutGitScoping(env []string) []string {
+	kept := make([]string, 0, len(env))
+	for _, pair := range env {
+		key, _, _ := strings.Cut(pair, "=")
+		if slices.Contains(gitScopingEnv, key) {
+			continue
+		}
+		kept = append(kept, pair)
+	}
+	return kept
+}
+
+func mergeEnvironment(base, overrides []string) []string {
 	if len(overrides) == 0 {
 		return base
 	}

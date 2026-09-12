@@ -76,3 +76,67 @@ func TestFlexDimsCoercion(t *testing.T) {
 		t.Fatalf("malformed object: expected error, got %#v", got)
 	}
 }
+
+func TestDecodeHotPathShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want HotPath
+		ok   bool
+	}{
+		{"location object keeps all fields", `{"location":"a.go:12","impact":3,"evidence":"cpu","confidence":0.5}`, HotPath{Location: "a.go:12", Impact: 3, Evidence: "cpu", Confidence: 0.5}, true},
+		{"bare location string", `"b.go:7"`, HotPath{Location: "b.go:7"}, true},
+		{"name key", `{"name":"c.go:9"}`, HotPath{Location: "c.go:9"}, true},
+		{"symbol outranks path", `{"path":"p.go:1","symbol":"S"}`, HotPath{Location: "S"}, true},
+		{"object without identifier", `{"impact":3}`, HotPath{}, false},
+		{"empty object", `{}`, HotPath{}, false},
+		{"empty string", `""`, HotPath{}, false},
+		{"number", `42`, HotPath{}, false},
+		{"malformed json", `{bad`, HotPath{}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := decodeHotPath(json.RawMessage(tc.in))
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("got (%+v, %v) want (%+v, %v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestFlexHotPathsShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want flexHotPaths
+	}{
+		{"null left unset", `null`, nil},
+		{"empty input left unset", ``, nil},
+		{"empty object left unset", `{}`, nil},
+		{"array of location strings", `["a.go:1","b.go:2"]`, flexHotPaths{{Location: "a.go:1"}, {Location: "b.go:2"}}},
+		{"array drops non-identifying elements", `["a.go:1",{"location":"b.go:2"},7,{}]`, flexHotPaths{{Location: "a.go:1"}, {Location: "b.go:2"}}},
+		{"single hot path object", `{"location":"c.go:3","impact":2}`, flexHotPaths{{Location: "c.go:3", Impact: 2}}},
+		{"single object via identifying key", `{"name":"d.go:4"}`, flexHotPaths{{Location: "d.go:4"}}},
+		{"grouped measured and suspected", `{"measured":["m.go:1"],"suspected":[{"location":"s.go:2"}]}`, flexHotPaths{{Location: "m.go:1"}, {Location: "s.go:2"}}},
+		{"grouped alias keys", `{"paths":["p.go:1"],"items":["i.go:2"]}`, flexHotPaths{{Location: "p.go:1"}, {Location: "i.go:2"}}},
+		{"non-array group skipped", `{"suspected":"oops"}`, nil},
+		{"non-array group does not block later group", `{"measured":5,"suspected":["s.go:2"]}`, flexHotPaths{{Location: "s.go:2"}}},
+		{"unknown keys ignored", `{"other":["x"]}`, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got flexHotPaths
+			if err := got.UnmarshalJSON([]byte(tc.in)); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %#v want %#v", got, tc.want)
+			}
+		})
+	}
+
+	var got flexHotPaths
+	if err := got.UnmarshalJSON([]byte(`{bad`)); err == nil {
+		t.Fatalf("malformed object: expected error, got %#v", got)
+	}
+}

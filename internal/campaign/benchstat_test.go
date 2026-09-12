@@ -18,7 +18,7 @@ type cannedBenchstatExecutor struct {
 	calls  int
 }
 
-func (f *cannedBenchstatExecutor) Run(_ context.Context, in toolchain.Invocation) (toolchain.Result, error) {
+func (f *cannedBenchstatExecutor) Run(_ context.Context, _ toolchain.Invocation) (toolchain.Result, error) {
 	f.calls++
 	return toolchain.Result{Stdout: []byte(f.stdout), ExitCode: 0}, nil
 }
@@ -129,15 +129,17 @@ func benchstatEnabledEngine(t *testing.T, exec toolchain.Executor, benchstatPath
 	return e
 }
 
-// installFakeBenchstat creates an executable placeholder file so LookPath
-// succeeds while the injected executor supplies the actual output.
+// installFakeBenchstat points the toolchain's LookPath probe at the running
+// test binary: it is always an existing executable file, so the benchstat
+// path is taken while the injected executor supplies the actual output. No
+// fixture file needs elevated mode to be executable.
 func installFakeBenchstat(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "benchstat")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	exe, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return exe
 }
 
 func TestCompareWallTimeMetricWithBenchstat(t *testing.T) {

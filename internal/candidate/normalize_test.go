@@ -1,6 +1,7 @@
 package candidate
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,7 +213,7 @@ func TestNormalizeUnifiedDiffNoHunks(t *testing.T) {
 func TestNormalizeThenGitApplyCheck(t *testing.T) {
 	repo := t.TempDir()
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = repo
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
@@ -236,7 +237,7 @@ func TestNormalizeThenGitApplyCheck(t *testing.T) {
 	if err := os.WriteFile(patchPath, []byte(normalized), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "apply", "--check", patchPath)
+	cmd := exec.CommandContext(context.Background(), "git", "apply", "--check", patchPath)
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git apply --check failed on normalized diff: %v: %s", err, out)
@@ -247,7 +248,7 @@ func TestNormalizeThenGitApplyCheck(t *testing.T) {
 	if err := os.WriteFile(badPath, []byte(corrupt), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.Command("git", "apply", "--check", badPath)
+	cmd = exec.CommandContext(context.Background(), "git", "apply", "--check", badPath)
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected git apply --check to reject corrupt diff, output: %s", out)
@@ -262,7 +263,7 @@ func TestNormalizeThenGitApplyCheck(t *testing.T) {
 func TestNormalizeBlankContextThenGitApplyCheck(t *testing.T) {
 	repo := t.TempDir()
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = repo
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
@@ -292,7 +293,7 @@ func TestNormalizeBlankContextThenGitApplyCheck(t *testing.T) {
 	if err := os.WriteFile(patchPath, []byte(normalized), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "apply", "--check", patchPath)
+	cmd := exec.CommandContext(context.Background(), "git", "apply", "--check", patchPath)
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git apply --check failed on normalized diff: %v: %s\n%s", err, out, normalized)

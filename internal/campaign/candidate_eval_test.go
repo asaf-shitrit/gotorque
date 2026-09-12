@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/orchestrator"
+	"example.com/gotorque/internal/runner"
 )
 
 func TestMean(t *testing.T) {
@@ -384,5 +386,211 @@ func TestProhibitedTechniquesForReturnsFreshSlice(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(b, ","), "unsafe.") {
 		t.Fatalf("unexpected content %v", b)
+	}
+}
+
+func behaviorRun(exitCode int, stdout, sorted string) domain.RunResult {
+	return domain.RunResult{ExitCode: exitCode, StdoutDigest: stdout, SortedLinesDigest: sorted}
+}
+
+func TestRecordBehaviorMatch(t *testing.T) {
+	comparisons := []domain.MetricComparison{{Name: "wl/wall_time_ns", Unit: "ns", Baseline: 1, Candidate: 1}}
+
+	t.Run("no repetitions passes without touching evidence", func(t *testing.T) {
+		checkBehaviorNoRepetitions(t, comparisons)
+	})
+
+	t.Run("byte-exact equal digests and exits pass", func(t *testing.T) {
+		checkBehaviorByteExactEqual(t, comparisons)
+	})
+
+	t.Run("byte-exact digest mismatch rejects with repetition and basis", func(t *testing.T) {
+		checkBehaviorDigestMismatch(t, comparisons)
+	})
+
+	t.Run("byte-exact exit mismatch rejects", func(t *testing.T) {
+		checkBehaviorExitMismatch(t, comparisons)
+	})
+
+	t.Run("nondeterministic sorted digests agree", func(t *testing.T) {
+		checkBehaviorSortedDigestsAgree(t, comparisons)
+	})
+
+	t.Run("nondeterministic sorted digest mismatch rejects as order-insensitive", func(t *testing.T) {
+		checkBehaviorSortedDigestMismatch(t, comparisons)
+	})
+
+	t.Run("nondeterministic empty sorted digest rejects even when bytes match", func(t *testing.T) {
+		checkBehaviorEmptySortedDigest(t, comparisons)
+	})
+}
+
+func checkBehaviorNoRepetitions(t *testing.T, comparisons []domain.MetricComparison) {
+	t.Helper()
+	evidence := orchestrator.CandidateEvidence{}
+	if !recordBehaviorMatch(runner.ABResult{}, true, "seed", &evidence, comparisons) {
+		t.Fatal("empty A/B result should match")
+	}
+	if evidence.Summary != "" || evidence.SafetyChecksPassed || evidence.Comparisons != nil {
+		t.Fatalf("evidence mutated on success: %+v", evidence)
+	}
+}
+
+func checkBehaviorByteExactEqual(t *testing.T, comparisons []domain.MetricComparison) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "aaa", "a1"), behaviorRun(1, "bbb", "b1")},
+		Candidate: []domain.RunResult{behaviorRun(0, "aaa", "a2"), behaviorRun(1, "bbb", "b2")},
+	}
+	if !recordBehaviorMatch(ab, true, "seed", &orchestrator.CandidateEvidence{}, comparisons) {
+		t.Fatal("identical byte-exact runs should match")
+	}
+}
+
+func checkBehaviorDigestMismatch(t *testing.T, comparisons []domain.MetricComparison) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "aaa", "x"), behaviorRun(0, "bbb", "x")},
+		Candidate: []domain.RunResult{behaviorRun(0, "aaa", "x"), behaviorRun(0, "ccc", "x")},
+	}
+	evidence := orchestrator.CandidateEvidence{}
+	if recordBehaviorMatch(ab, true, "seed-7", &evidence, comparisons) {
+		t.Fatal("digest mismatch should reject")
+	}
+	if !strings.Contains(evidence.Summary, "byte-exact") || !strings.Contains(evidence.Summary, "seed-7") || !strings.Contains(evidence.Summary, "repetition 2") {
+		t.Fatalf("unexpected summary %q", evidence.Summary)
+	}
+	if !evidence.SafetyChecksPassed {
+		t.Fatal("mismatch must flag safety checks passed")
+	}
+	if len(evidence.Comparisons) != 1 || evidence.Comparisons[0].Name != "wl/wall_time_ns" {
+		t.Fatalf("comparisons not attached: %+v", evidence.Comparisons)
+	}
+}
+
+func checkBehaviorExitMismatch(t *testing.T, comparisons []domain.MetricComparison) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "same", "s")},
+		Candidate: []domain.RunResult{behaviorRun(2, "same", "s")},
+	}
+	if recordBehaviorMatch(ab, true, "seed", &orchestrator.CandidateEvidence{}, comparisons) {
+		t.Fatal("exit mismatch should reject")
+	}
+}
+
+func checkBehaviorSortedDigestsAgree(t *testing.T, comparisons []domain.MetricComparison) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "unsorted-a", "sorted")},
+		Candidate: []domain.RunResult{behaviorRun(0, "unsorted-b", "sorted")},
+	}
+	if !recordBehaviorMatch(ab, false, "seed", &orchestrator.CandidateEvidence{}, comparisons) {
+		t.Fatal("equal non-empty sorted digests should match")
+	}
+}
+
+func checkBehaviorSortedDigestMismatch(t *testing.T, comparisons []domain.MetricComparison) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "same-digest", "sorted-a")},
+		Candidate: []domain.RunResult{behaviorRun(0, "same-digest", "sorted-b")},
+	}
+	evidence := orchestrator.CandidateEvidence{}
+	if recordBehaviorMatch(ab, false, "seed", &evidence, comparisons) {
+		t.Fatal("sorted digest mismatch should reject")
+	}
+	if !strings.Contains(evidence.Summary, "order-insensitive") {
+		t.Fatalf("unexpected summary %q", evidence.Summary)
+	}
+}
+
+func checkBehaviorEmptySortedDigest(t *testing.T, comparisons []domain.MetricComparison) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "same-digest", "")},
+		Candidate: []domain.RunResult{behaviorRun(0, "same-digest", "")},
+	}
+	if recordBehaviorMatch(ab, false, "seed", &orchestrator.CandidateEvidence{}, comparisons) {
+		t.Fatal("empty sorted digest cannot prove order-insensitive equality")
+	}
+}
+
+func TestPgoBehaviorOK(t *testing.T) {
+	t.Run("no repetitions is ok", func(t *testing.T) {
+		checkPgoNoRepetitions(t)
+	})
+
+	t.Run("matching exit and digest is ok", func(t *testing.T) {
+		checkPgoMatchingDigest(t)
+	})
+
+	t.Run("exit mismatch reports 1-based repetition", func(t *testing.T) {
+		checkPgoExitMismatch(t)
+	})
+
+	t.Run("order-insensitive divergence only rejects when sorted digest absent", func(t *testing.T) {
+		checkPgoSortedDigestFallback(t)
+	})
+
+	t.Run("empty sorted digests on both sides rejects", func(t *testing.T) {
+		checkPgoEmptySortedDigests(t)
+	})
+}
+
+func checkPgoNoRepetitions(t *testing.T) {
+	t.Helper()
+	ok, rep := pgoBehaviorOK(runner.ABResult{})
+	if !ok || rep != 0 {
+		t.Fatalf("got (%v, %d), want (true, 0)", ok, rep)
+	}
+}
+
+func checkPgoMatchingDigest(t *testing.T) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "a", ""), behaviorRun(1, "b", "")},
+		Candidate: []domain.RunResult{behaviorRun(0, "a", ""), behaviorRun(1, "b", "")},
+	}
+	if ok, rep := pgoBehaviorOK(ab); !ok || rep != 0 {
+		t.Fatalf("got (%v, %d), want (true, 0)", ok, rep)
+	}
+}
+
+func checkPgoExitMismatch(t *testing.T) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "a", ""), behaviorRun(0, "b", "")},
+		Candidate: []domain.RunResult{behaviorRun(0, "a", ""), behaviorRun(3, "b", "")},
+	}
+	if ok, rep := pgoBehaviorOK(ab); ok || rep != 2 {
+		t.Fatalf("got (%v, %d), want (false, 2)", ok, rep)
+	}
+}
+
+func checkPgoSortedDigestFallback(t *testing.T) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "order-a", "sorted")},
+		Candidate: []domain.RunResult{behaviorRun(0, "order-b", "sorted")},
+	}
+	if ok, _ := pgoBehaviorOK(ab); !ok {
+		t.Fatal("stdout digests differ but sorted digests agree; should pass")
+	}
+
+	ab.Candidate[0].SortedLinesDigest = ""
+	if ok, rep := pgoBehaviorOK(ab); ok || rep != 1 {
+		t.Fatalf("got (%v, %d), want (false, 1)", ok, rep)
+	}
+}
+
+func checkPgoEmptySortedDigests(t *testing.T) {
+	t.Helper()
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "a", "")},
+		Candidate: []domain.RunResult{behaviorRun(0, "b", "")},
+	}
+	if ok, rep := pgoBehaviorOK(ab); ok || rep != 1 {
+		t.Fatalf("got (%v, %d), want (false, 1)", ok, rep)
 	}
 }

@@ -255,7 +255,7 @@ func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 	}
 	defer cleanup()
 
-	target := exec.Command(req.BinaryPath, req.Args...)
+	target := exec.CommandContext(ctx, req.BinaryPath, req.Args...)
 	target.Dir = workDir
 	target.Stdin = bytes.NewReader(req.Stdin)
 	target.Stdout = nil
@@ -272,18 +272,18 @@ func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 
 	temp, err := os.CreateTemp("", "gotorque-sample-*.txt")
 	if err != nil {
-		terminate(target.Process)
+		_ = terminate(target.Process)
 		return SampleResult{}, err
 	}
 	_ = temp.Close()
-	defer os.Remove(temp.Name())
+	defer func() { _ = os.Remove(temp.Name()) }()
 
 	durationSeconds := strconv.Itoa(int(req.Duration.Seconds() + 1))
 	sampleCmd := exec.CommandContext(ctx, sampler, strconv.Itoa(target.Process.Pid), durationSeconds, "-file", temp.Name())
 	output, sampleErr := runBounded(sampleCmd)
 	waitErr := terminate(target.Process)
 	if sampleErr != nil {
-		return SampleResult{}, fmt.Errorf("sample pid %d: %v: %s", target.Process.Pid, sampleErr, truncateForError(output))
+		return SampleResult{}, fmt.Errorf("sample pid %d: %w: %s", target.Process.Pid, sampleErr, truncateForError(output))
 	}
 	if waitErr != nil {
 		return SampleResult{}, fmt.Errorf("reap sampled target: %w", waitErr)
@@ -310,7 +310,7 @@ func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error
 	defer cleanup()
 
 	dataFile := filepath.Join(filepath.Dir(req.OutputPath), "perf.data.tmp")
-	defer os.Remove(dataFile)
+	defer func() { _ = os.Remove(dataFile) }()
 
 	args := append([]string{"record", "-q", "-F", "999", "-e", "cpu-clock",
 		"-o", dataFile, "--", req.BinaryPath}, req.Args...)
@@ -319,12 +319,12 @@ func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error
 	record.Stdin = bytes.NewReader(req.Stdin)
 	output, recordErr := runBounded(record)
 	if recordErr != nil {
-		return SampleResult{}, fmt.Errorf("perf record: %v: %s", recordErr, truncateForError(output))
+		return SampleResult{}, fmt.Errorf("perf record: %w: %s", recordErr, truncateForError(output))
 	}
 	script := exec.CommandContext(ctx, perf, "script", "-i", dataFile)
 	scriptOutput, scriptErr := runBounded(script)
 	if scriptErr != nil {
-		return SampleResult{}, fmt.Errorf("perf script: %v: %s", scriptErr, truncateForError(scriptOutput))
+		return SampleResult{}, fmt.Errorf("perf script: %w: %s", scriptErr, truncateForError(scriptOutput))
 	}
 	return finishSampleResult("linux-perf", req.OutputPath, string(scriptOutput))
 }

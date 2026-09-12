@@ -39,13 +39,14 @@ func RemapDiffPaths(worktree string, patch []byte) ([]byte, bool) {
 
 func parseRemapHeader(line string) (prefix, namespace, target, extra string, ok bool) {
 	var rawPath string
-	if strings.HasPrefix(line, "--- ") {
+	switch {
+	case strings.HasPrefix(line, "--- "):
 		prefix, namespace = "--- ", "a/"
 		rawPath = strings.TrimPrefix(strings.TrimPrefix(line, "--- "), "a/")
-	} else if strings.HasPrefix(line, "+++ ") {
+	case strings.HasPrefix(line, "+++ "):
 		prefix, namespace = "+++ ", "b/"
 		rawPath = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
-	} else {
+	default:
 		return "", "", "", "", false
 	}
 	if rawPath == "/dev/null" {
@@ -88,6 +89,7 @@ func matchSuffixFile(root, target, path string, d os.DirEntry, err error, match 
 		return filepath.SkipAll
 	}
 	if err != nil {
+		//nolint:nilerr // skip unreadable entries; one bad path must not abort the suffix search
 		return nil
 	}
 	if skip, dirErr := skipWalkDir(d); skip {

@@ -22,14 +22,14 @@ var benchmarkDecl = regexp.MustCompile(`(?m)^func Benchmark[A-Za-z0-9_]*\(`)
 func BenchmarkPackages(root string) []string {
 	counts := map[string]int{}
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			return skipIgnoredDir(d.Name())
-		}
-		if pkg, found := benchmarksIn(root, path); found > 0 {
-			counts[pkg] += found
+		// Best-effort walk: unreadable subtrees contribute no packages.
+		if err == nil {
+			if d.IsDir() {
+				return skipIgnoredDir(d.Name())
+			}
+			if pkg, found := benchmarksIn(root, path); found > 0 {
+				counts[pkg] += found
+			}
 		}
 		return nil
 	})

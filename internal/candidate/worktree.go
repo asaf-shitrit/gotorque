@@ -89,13 +89,13 @@ func (m *WorktreeManager) applyPreparedPatch(ctx context.Context, prepared *Prep
 		// to GNU patch fuzz matching; the applied tree still faces the full
 		// test-suite behavior gate before any measurement.
 		if _, fuzzyErr := m.Toolchain.ApplyPatchFuzzy(ctx, path, patchPath); fuzzyErr != nil {
-			_ = prepared.Close(context.Background())
+			_ = prepared.Close(context.WithoutCancel(ctx))
 			return fmt.Errorf("git apply check: %w%s", checkErr, stderrSuffix(checkResult.Stderr))
 		}
 		return nil
 	}
 	if applyResult, applyErr := m.Toolchain.ApplyPatch(ctx, path, patchPath); applyErr != nil {
-		_ = prepared.Close(context.Background())
+		_ = prepared.Close(context.WithoutCancel(ctx))
 		return fmt.Errorf("apply candidate: %w%s", applyErr, stderrSuffix(applyResult.Stderr))
 	}
 	return nil

@@ -91,7 +91,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 		return domain.RunResult{}, err
 	}
 	if closer != nil {
-		defer closer.Close()
+		defer func() { _ = closer.Close() }()
 	}
 	env, err := discoveryEnv(sandbox, req)
 	if err != nil {
@@ -100,7 +100,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 	workloadCtx, cancel := withWorkloadTimeout(ctx, req.Workload.Timeout)
 	defer cancel()
 	started := r.now()
-	commandPath, commandArgs, err := maybeIsolate(localIsolation, sandbox, networkDisabled, req)
+	commandPath, commandArgs, err := maybeIsolate(ctx, localIsolation, sandbox, networkDisabled, req)
 	if err != nil {
 		return domain.RunResult{}, err
 	}
@@ -129,9 +129,13 @@ func (r *Runner) sandboxOptions(req RunRequest, networkDisabled, localIsolation 
 }
 
 func openStdin(req RunRequest) (io.Reader, io.Closer, error) {
-	file, err := openInput(req.Workload.StdinPath)
-	if err != nil {
-		return nil, nil, err
+	var file *os.File
+	if req.Workload.StdinPath != "" {
+		var err error
+		file, err = openInput(req.Workload.StdinPath)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	// A typed-nil *os.File must never reach exec.Cmd: os/exec would wire the
 	// child's descriptor 0 to an invalid file and Go runtimes abort on startup
@@ -164,13 +168,13 @@ func withWorkloadTimeout(ctx context.Context, timeout time.Duration) (context.Co
 	return ctx, func() {}
 }
 
-func maybeIsolate(localIsolation bool, sandbox *Sandbox, networkDisabled bool, req RunRequest) (string, []string, error) {
+func maybeIsolate(ctx context.Context, localIsolation bool, sandbox *Sandbox, networkDisabled bool, req RunRequest) (string, []string, error) {
 	path := req.Build.BinaryPath
 	args := append([]string(nil), req.Workload.Command.Args...)
 	if !localIsolation {
 		return path, args, nil
 	}
-	return isolatedCommand(sandbox.Root, sandbox.WorkDir, networkDisabled, path, args)
+	return isolatedCommand(ctx, sandbox.Root, sandbox.WorkDir, networkDisabled, path, args)
 }
 
 func buildRunResult(req RunRequest, started time.Time, commandResult toolchain.Result, runErr error) domain.RunResult {
@@ -240,8 +244,14 @@ func (r *Runner) snapshotCoverage(result *domain.RunResult, root string) error {
 	return nil
 }
 
-func isolatedCommand(root, workDir string, denyNetwork bool, path string, args []string) (string, []string, error) {
-	switch runtime.GOOS {
+func isolatedCommand(ctx context.Context, root, workDir string, denyNetwork bool, path string, args []string) (string, []string, error) {
+	return isolatedCommandFor(ctx, runtime.GOOS, root, workDir, denyNetwork, path, args)
+}
+
+// isolatedCommandFor takes the platform as an argument so the wrapper decision
+// logic can be tested on any host without a sandbox being installed there.
+func isolatedCommandFor(ctx context.Context, goos, root, workDir string, denyNetwork bool, path string, args []string) (string, []string, error) {
+	switch goos {
 	case "darwin":
 		profile := "(version 1)(allow default)(deny file-write*)(allow file-write* (subpath \"" + strings.ReplaceAll(root, "\"", "\\\"") + "\"))"
 		if denyNetwork {
@@ -258,17 +268,17 @@ func isolatedCommand(root, workDir string, denyNetwork bool, path string, args [
 		// cannot be established here, run unwrapped rather than failing
 		// every campaign. Authoritative measurement environments should
 		// provide working bubblewrap.
-		if !bwrapIsolationSupported(bwrap, root, workDir) {
+		if !bwrapIsolationSupported(ctx, bwrap, root, workDir) {
 			return path, args, nil
 		}
 		wrapped := []string{"--die-with-parent"}
-		if denyNetwork && bwrapNetNamespaceSupported(bwrap) {
+		if denyNetwork && bwrapNetNamespaceSupported(ctx, bwrap) {
 			wrapped = append(wrapped, "--unshare-net")
 		}
 		wrapped = append(wrapped, "--ro-bind", "/", "/", "--bind", root, root, "--chdir", workDir, path)
 		return bwrap, append(wrapped, args...), nil
 	default:
-		return "", nil, fmt.Errorf("local isolation is unsupported on %s", runtime.GOOS)
+		return "", nil, fmt.Errorf("local isolation is unsupported on %s", goos)
 	}
 }
 
@@ -280,9 +290,9 @@ var (
 	bwrapProbeOK   bool
 )
 
-func bwrapIsolationSupported(bwrap, root, workDir string) bool {
+func bwrapIsolationSupported(ctx context.Context, bwrap, root, workDir string) bool {
 	bwrapProbeOnce.Do(func() {
-		probe := exec.Command(bwrap, "--die-with-parent", "--ro-bind", "/", "/",
+		probe := exec.CommandContext(ctx, bwrap, "--die-with-parent", "--ro-bind", "/", "/",
 			"--bind", root, root, "--chdir", workDir, "/bin/true")
 		bwrapProbeOK = probe.Run() == nil
 	})
@@ -298,9 +308,9 @@ var (
 	bwrapNetNamespaceOK   bool
 )
 
-func bwrapNetNamespaceSupported(bwrap string) bool {
+func bwrapNetNamespaceSupported(ctx context.Context, bwrap string) bool {
 	bwrapNetNamespaceOnce.Do(func() {
-		probe := exec.Command(bwrap, "--unshare-net", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "true")
+		probe := exec.CommandContext(ctx, bwrap, "--unshare-net", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "true")
 		bwrapNetNamespaceOK = probe.Run() == nil
 	})
 	return bwrapNetNamespaceOK
@@ -369,9 +379,6 @@ func validateWorkloadBinary(req RunRequest) error {
 }
 
 func openInput(path string) (*os.File, error) {
-	if path == "" {
-		return nil, nil
-	}
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("stdin path must be absolute")
 	}

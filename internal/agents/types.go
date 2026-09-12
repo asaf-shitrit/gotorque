@@ -39,7 +39,7 @@ var AllRoles = []Role{
 // ModelProvider keeps model construction, credentials, and routing outside
 // the role package. A provider may return a different model for each role.
 type ModelProvider interface {
-	ModelFor(context.Context, Role) (model.LLM, error)
+	ModelFor(ctx context.Context, role Role) (model.LLM, error)
 }
 
 // UsageReporter is an optional ModelProvider capability exposing the shared

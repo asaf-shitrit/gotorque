@@ -122,6 +122,7 @@ func writeFakeSampler(t *testing.T, exitCode int, report string) string {
 		"OUT=\"$4\"\n" +
 		"if [ -n \"$OUT\" ]; then printf '%s' " + shellQuote(report) + " > \"$OUT\"; fi\n" +
 		"exit " + itoa(exitCode) + "\n"
+	//nolint:gosec // fake sampler must be owner-executable; 0700 is the tightest mode that allows exec
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +163,7 @@ func TestPrepareWorkDirMaterializesFixtures(t *testing.T) {
 }
 
 func TestRunBoundedCapturesOutput(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c", "printf hello; exit 3")
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "printf hello; exit 3")
 	output, err := runBounded(cmd)
 	if string(output) != "hello" {
 		t.Fatalf("output = %q, want hello", output)
@@ -201,7 +202,7 @@ func TestTerminateNilProcess(t *testing.T) {
 }
 
 func TestTerminateStopsRunningProcess(t *testing.T) {
-	cmd := exec.Command("/bin/sleep", "5")
+	cmd := exec.CommandContext(context.Background(), "/bin/sleep", "5")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +319,7 @@ Call graph:
 Total number in stack: 100
 `
 	functions := ParseMacOSSample(report)
-	var got []string
+	got := make([]string, 0, len(functions))
 	for _, fn := range functions {
 		got = append(got, fn.Name)
 	}
@@ -353,7 +354,7 @@ helper  991/991 [002] 12345.680001: cpu-clock:
 func TestParsePerfScriptCountsFramesPerEvent(t *testing.T) {
 	functions := ParsePerfScript(perfScriptOutput)
 	weights := map[string]int{}
-	order := []string{}
+	order := make([]string, 0, len(functions))
 	for _, fn := range functions {
 		weights[fn.Name] = mustInt(t, fn.Flat)
 		order = append(order, fn.Name)

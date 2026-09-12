@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"example.com/gotorque/internal/candidate"
@@ -41,7 +42,9 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	if !ok {
 		return evidence, nil
 	}
-	defer func() { _ = prepared.Close(context.Background()) }()
+	// Worktree teardown runs even when the caller's context is already
+	// canceled (duration budget or Ctrl-C), but keeps its values.
+	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
 	candidateBinary, ok := e.buildAndTestCandidate(ctx, prepared.Worktree, id, &evidence)
 	if !ok {
 		return evidence, nil
@@ -61,7 +64,7 @@ func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest) (id, pat
 	if err := os.MkdirAll(patchDir, 0o700); err != nil {
 		return "", "", err
 	}
-	id = stableID("candidate", e.state.ID, fmt.Sprint(req.Attempt), req.Proposal.Patch)
+	id = stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), req.Proposal.Patch)
 	patchPath = filepath.Join(patchDir, id+".diff")
 	if err := os.WriteFile(patchPath, []byte(req.Proposal.Patch), 0o600); err != nil {
 		return "", "", err
@@ -121,7 +124,7 @@ func (e *Engine) candidateTestsPassed(ctx context.Context, worktree string, evid
 		reason = tail(string(testResult.Stderr), 400)
 	}
 	evidence.SafetyChecksPassed = false
-	evidence.Summary = fmt.Sprintf("upstream test suite failed: %s", reason)
+	evidence.Summary = "upstream test suite failed: " + reason
 	evidence.FailureDetail = reason
 	return false
 }
@@ -262,7 +265,7 @@ func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orches
 	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, "", pooledAsRuns(pooled.wallBase, "wall_time_ns"), pooledAsRuns(pooled.wallCand, "wall_time_ns"))
 	comparisons = append(comparisons, wallComparisons...)
 	if wallBenchstat != "" {
-		evidence.BenchstatOutput += fmt.Sprintf("pooled representative workloads:\n%s", wallBenchstat)
+		evidence.BenchstatOutput += "pooled representative workloads:\n" + wallBenchstat
 	}
 	comparisons = append(comparisons, compareMetric("", "cpu_time_ns", "ns",
 		pooledAsRuns(pooled.cpuBase, "cpu_time_ns"), pooledAsRuns(pooled.cpuCand, "cpu_time_ns"), cpuTime)...)
@@ -472,9 +475,9 @@ func peakMemory(r domain.RunResult) (float64, bool) {
 // with a conservative two-sample t-test for statistical support. The
 // comparison name carries the workload so guardrails can be evaluated per
 // workload; policy treats any regressed guardrail as a rejection.
-func compareMetric(workloadID, metric, unit string, baseline, candidateRuns []domain.RunResult, select_ metricSelector) []domain.MetricComparison {
-	baseVals := collectMetric(baseline, select_)
-	candVals := collectMetric(candidateRuns, select_)
+func compareMetric(workloadID, metric, unit string, baseline, candidateRuns []domain.RunResult, selector metricSelector) []domain.MetricComparison {
+	baseVals := collectMetric(baseline, selector)
+	candVals := collectMetric(candidateRuns, selector)
 	name := metric
 	if workloadID != "" {
 		name = workloadID + "/" + metric
@@ -537,7 +540,7 @@ func metricSupport(a, b []float64, baselineMean, deltaPercent float64) bool {
 	if se == 0 {
 		return ma == mb // exact identical measurements
 	}
-	t := math.Abs(ma - mb) / se
+	t := math.Abs(ma-mb) / se
 	if t > 2.2 {
 		return true
 	}
@@ -612,6 +615,10 @@ func tail(text string, limit int) string {
 
 func prohibitedTechniquesFor(mode domain.OptimizationPolicy) []string {
 	switch mode {
+	case domain.PolicyIdiomatic:
+		// Idiomatic optimization forbids no technique: it is the default lane
+		// where the patch must stand on ordinary source changes alone.
+		return nil
 	case domain.PolicySpecialized:
 		return []string{"unsafe.", "assembly", "cgo"}
 	case domain.PolicyNative:

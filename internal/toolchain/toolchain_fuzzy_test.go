@@ -14,7 +14,7 @@ func setupGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(t.Context(), "git", args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)

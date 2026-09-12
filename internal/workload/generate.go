@@ -101,7 +101,7 @@ func Seed(base uint64, namespace Namespace) [2]uint64 {
 func SizeSweep(base uint64, namespace Namespace, sizes []int) []int {
 	values := append([]int(nil), sizes...)
 	seed := Seed(base, namespace)
-	r := rand.New(rand.NewPCG(seed[0], seed[1]))
+	r := rand.New(rand.NewPCG(seed[0], seed[1])) //nolint:gosec // deterministic fixture ordering, not security material
 	r.Shuffle(len(values), func(i, j int) { values[i], values[j] = values[j], values[i] })
 	return values
 }
@@ -124,7 +124,7 @@ func JSONShapeProposals(base uint64, namespace Namespace, maxCases int) []agents
 func FileTreeProposals(base uint64, namespace Namespace, maxCases, maxDepth int) []agents.WorkloadProposal {
 	extensions := []string{"go", "py", "js", "rs"}
 	seed := Seed(base, namespace)
-	r := rand.New(rand.NewPCG(seed[0], seed[1]))
+	r := rand.New(rand.NewPCG(seed[0], seed[1])) //nolint:gosec // deterministic fixture generation, not security material
 	if maxCases > len(extensions) {
 		maxCases = len(extensions)
 	}

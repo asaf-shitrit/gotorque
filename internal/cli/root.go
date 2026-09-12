@@ -92,7 +92,7 @@ func configureOptimizeAgents(ctx context.Context, out io.Writer, f optimizeFlags
 	if !f.runADKStub {
 		return nil, nil, nil
 	}
-	return deterministicAgents()
+	return deterministicAgents() //nolint:contextcheck // builds five static stub agents from literals: no I/O, nothing to cancel
 }
 
 // deterministicAgents builds the stub role set used by --adk-stub, shared by
@@ -105,15 +105,15 @@ func deterministicAgents() (*agents.Set, *orchestrator.Config, error) {
 	return &configured, &orchestrator.Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: 20 * time.Minute, AgentTimeout: 2 * time.Minute, MaxConcurrency: 1}, nil
 }
 
-func resumeOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) error {
+func resumeOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) (err error) {
 	if f.repo != "" || f.manifestPath != "" || f.campaignDir != "" {
-		return fmt.Errorf("--resume cannot be combined with --repo, --manifest, or --campaign-dir")
+		return errors.New("--resume cannot be combined with --repo, --manifest, or --campaign-dir")
 	}
 	engine, err := campaign.Resume(f.resume, out)
 	if err != nil {
 		return err
 	}
-	defer engine.Close()
+	defer func() { err = errors.Join(err, engine.Close()) }()
 	if err := attachResumeADK(ctx, out, engine, f, roleSet, adkConfig); err != nil {
 		return err
 	}
@@ -137,7 +137,7 @@ func attachResumeADK(ctx context.Context, out io.Writer, engine *campaign.Engine
 	}
 	if f.runADKStub {
 		if roleSet == nil {
-			configured, config, err := deterministicAgents()
+			configured, config, err := deterministicAgents() //nolint:contextcheck // static stub set: no I/O, nothing to cancel
 			if err != nil {
 				return err
 			}
@@ -148,15 +148,15 @@ func attachResumeADK(ctx context.Context, out io.Writer, engine *campaign.Engine
 	return nil
 }
 
-func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) error {
+func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) (err error) {
 	if f.repo == "" || f.manifestPath == "" {
-		return fmt.Errorf("--repo and --manifest are required unless --resume is used")
+		return errors.New("--repo and --manifest are required unless --resume is used")
 	}
 	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig})
 	if err != nil {
 		return err
 	}
-	defer engine.Close()
+	defer func() { err = errors.Join(err, engine.Close()) }()
 	if err := engine.Run(ctx); err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package manifest
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +17,7 @@ const SchemaURL = "https://example.com/gotorque/target-manifest-v1.schema.json"
 var (
 	schemaOnce     sync.Once
 	compiledSchema *jsonschema.Schema
-	schemaErr      error
+	errSchema      error
 )
 
 // ValidateJSON validates the structural v1 contract with jsonschema/v6.
@@ -33,7 +34,7 @@ func ValidateJSON(data []byte) error {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return fmt.Errorf("manifest must contain exactly one JSON value")
+			return errors.New("manifest must contain exactly one JSON value")
 		}
 		return fmt.Errorf("decode trailing manifest JSON: %w", err)
 	}
@@ -41,18 +42,18 @@ func ValidateJSON(data []byte) error {
 	schemaOnce.Do(func() {
 		var schemaDocument any
 		if err := json.Unmarshal(schemaJSON, &schemaDocument); err != nil {
-			schemaErr = fmt.Errorf("decode embedded manifest schema: %w", err)
+			errSchema = fmt.Errorf("decode embedded manifest schema: %w", err)
 			return
 		}
 		compiler := jsonschema.NewCompiler()
 		if err := compiler.AddResource(SchemaURL, schemaDocument); err != nil {
-			schemaErr = fmt.Errorf("register manifest schema: %w", err)
+			errSchema = fmt.Errorf("register manifest schema: %w", err)
 			return
 		}
-		compiledSchema, schemaErr = compiler.Compile(SchemaURL)
+		compiledSchema, errSchema = compiler.Compile(SchemaURL)
 	})
-	if schemaErr != nil {
-		return schemaErr
+	if errSchema != nil {
+		return errSchema
 	}
 	if err := compiledSchema.Validate(document); err != nil {
 		return fmt.Errorf("manifest schema validation failed: %w", err)

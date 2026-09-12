@@ -11,9 +11,13 @@ import (
 )
 
 func TestSeedNamespacesAreDeterministicAndSeparate(t *testing.T) {
-	require.Equal(t, Seed(42, Ordinary), Seed(42, Ordinary))
+	firstSeed := Seed(42, Ordinary)
+	secondSeed := Seed(42, Ordinary)
+	require.Equal(t, firstSeed, secondSeed)
 	require.NotEqual(t, Seed(42, Ordinary), Seed(42, HiddenHoldout))
-	require.Equal(t, SizeSweep(42, Ordinary, []int{1, 2, 3}), SizeSweep(42, Ordinary, []int{1, 2, 3}))
+	firstSweep := SizeSweep(42, Ordinary, []int{1, 2, 3})
+	secondSweep := SizeSweep(42, Ordinary, []int{1, 2, 3})
+	require.Equal(t, firstSweep, secondSweep)
 }
 
 func TestValidateProposalRejectsShellIndependentEscape(t *testing.T) {

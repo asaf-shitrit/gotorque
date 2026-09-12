@@ -1,6 +1,7 @@
 package campaign
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ const (
 // deterministic and best-effort: unusable locations are skipped silently.
 func extractExcerpts(repoRoot string, hotPaths []agents.HotPath, maxTotal int) ([]orchestrator.SourceExcerpt, error) {
 	if repoRoot == "" {
-		return nil, fmt.Errorf("repository root is required")
+		return nil, errors.New("repository root is required")
 	}
 	if maxTotal <= 0 {
 		maxTotal = defaultMaxExcerpts

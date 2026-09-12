@@ -78,7 +78,7 @@ func (c Collector) SummarizeTrace(ctx context.Context, tracePath, kind string, n
 	if err != nil {
 		return TraceSummary{}, err
 	}
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 	summary, err := c.SummarizePprof(ctx, tempPath, nodeCount)
 	if err != nil {
 		return TraceSummary{}, fmt.Errorf("summarize %s trace: %w", kind, err)

@@ -153,20 +153,18 @@ func (s *functionSearch) matchFile(path string) error {
 		return filepath.SkipAll
 	}
 	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
+	if err == nil {
+		if loc := s.decl.FindIndex(data); loc != nil {
+			rel, relErr := filepath.Rel(s.root, path)
+			if relErr != nil {
+				rel = path
+			}
+			s.found = filepath.ToSlash(rel)
+			s.line = 1 + strings.Count(string(data[:loc[0]]), "\n")
+			return filepath.SkipAll
+		}
 	}
-	loc := s.decl.FindIndex(data)
-	if loc == nil {
-		return nil
-	}
-	rel, err := filepath.Rel(s.root, path)
-	if err != nil {
-		rel = path
-	}
-	s.found = filepath.ToSlash(rel)
-	s.line = 1 + strings.Count(string(data[:loc[0]]), "\n")
-	return filepath.SkipAll
+	return nil
 }
 
 func atoi(s string) int {

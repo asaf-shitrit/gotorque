@@ -39,7 +39,7 @@ type Result struct {
 
 // Executor makes command wrappers testable without executing processes.
 type Executor interface {
-	Run(context.Context, Invocation) (Result, error)
+	Run(ctx context.Context, in Invocation) (Result, error)
 }
 
 // OSExecutor kills the entire process group on cancellation. This matters for
@@ -50,7 +50,11 @@ func (OSExecutor) Run(ctx context.Context, in Invocation) (Result, error) {
 	if in.Path == "" {
 		return Result{}, errors.New("command path is required")
 	}
-	cmd := exec.Command(in.Path, in.Args...)
+	cmd := exec.CommandContext(ctx, in.Path, in.Args...)
+	// waitOrCancel terminates the whole process group on cancellation so Go's
+	// compiler/test/helper children die with it; disable exec's default
+	// leader-only kill to keep that single cancellation path.
+	cmd.Cancel = nil
 	cmd.Dir = in.Dir
 	cmd.Env = in.Env
 	cmd.Stdin = normalizeStdin(in.Stdin)

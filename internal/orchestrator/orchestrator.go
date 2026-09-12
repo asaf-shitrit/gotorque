@@ -170,7 +170,7 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 		return nil, fmt.Errorf("start campaign job: %w", err)
 	}
 	if job.ID == "" {
-		return nil, fmt.Errorf("start campaign job: empty job ID")
+		return nil, errors.New("start campaign job: empty job ID")
 	}
 	// Seeding the tally rather than starting at zero is what makes
 	// MaxConsecutiveFailures a campaign bound instead of a per-process one.
@@ -337,7 +337,7 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 		return nil, fmt.Errorf("evaluate candidate: %w", err)
 	}
 	if evidence.Candidate.ID == "" {
-		return nil, fmt.Errorf("evaluate candidate: empty candidate ID")
+		return nil, errors.New("evaluate candidate: empty candidate ID")
 	}
 	state.Candidate = evidence
 	return stateEvent(ctx, state), nil
@@ -451,13 +451,13 @@ func (g *campaignGraph) finalize(ctx adkagent.Context, state CampaignState) (Cam
 
 func validateDependencies(deps Dependencies) error {
 	if deps.Runner == nil {
-		return fmt.Errorf("runner service is required")
+		return errors.New("runner service is required")
 	}
 	if deps.Policy == nil {
-		return fmt.Errorf("policy service is required")
+		return errors.New("policy service is required")
 	}
 	if deps.Jobs == nil {
-		return fmt.Errorf("job service is required")
+		return errors.New("job service is required")
 	}
 	for i, a := range deps.Agents.All() {
 		if a == nil {
@@ -469,19 +469,19 @@ func validateDependencies(deps Dependencies) error {
 
 func normalizeRequest(req CampaignRequest) (CampaignRequest, error) {
 	if req.CampaignID == "" {
-		return CampaignRequest{}, fmt.Errorf("campaign ID is required")
+		return CampaignRequest{}, errors.New("campaign ID is required")
 	}
 	if req.Repository == "" {
-		return CampaignRequest{}, fmt.Errorf("repository is required")
+		return CampaignRequest{}, errors.New("repository is required")
 	}
 	if req.BuildTarget == "" {
-		return CampaignRequest{}, fmt.Errorf("build target is required")
+		return CampaignRequest{}, errors.New("build target is required")
 	}
 	// A negative carried-in tally would buy the resumed process extra
 	// failures before MaxConsecutiveFailures binds, so it is rejected rather
 	// than clamped: the bound is not negotiable by request content.
 	if req.PriorConsecutiveFailures < 0 {
-		return CampaignRequest{}, fmt.Errorf("prior consecutive failures cannot be negative")
+		return CampaignRequest{}, errors.New("prior consecutive failures cannot be negative")
 	}
 	if req.OptimizationMode == "" {
 		req.OptimizationMode = domain.PolicyIdiomatic
@@ -520,22 +520,36 @@ func stateEvent(ctx adkagent.Context, state CampaignState) *session.Event {
 }
 
 func loadState(ctx adkagent.Context) (CampaignState, error) {
-	if ctx.Session() == nil || ctx.Session().State() == nil {
-		return CampaignState{}, fmt.Errorf("campaign state unavailable: session state is nil")
+	return loadSessionState(ctx.Session())
+}
+
+// loadSessionState reads the persisted campaign state out of the session.
+// The nil and read-error branches live here rather than in loadState so each
+// can be exercised directly against a session double.
+func loadSessionState(sess session.Session) (CampaignState, error) {
+	if sess == nil || sess.State() == nil {
+		return CampaignState{}, errors.New("campaign state unavailable: session state is nil")
 	}
-	raw, err := ctx.Session().State().Get(stateKey)
+	raw, err := sess.State().Get(stateKey)
 	if err != nil {
 		if errors.Is(err, session.ErrStateKeyNotExist) {
 			return CampaignState{}, fmt.Errorf("campaign state unavailable: %w", err)
 		}
 		return CampaignState{}, fmt.Errorf("read campaign state: %w", err)
 	}
+	return decodeCampaignState(raw)
+}
+
+// decodeCampaignState normalizes whatever the session store returned into a
+// CampaignState, accepting the typed values the graph writes and the JSON
+// shape a store may have persisted.
+func decodeCampaignState(raw any) (CampaignState, error) {
 	switch value := raw.(type) {
 	case CampaignState:
 		return value, nil
 	case *CampaignState:
 		if value == nil {
-			return CampaignState{}, fmt.Errorf("campaign state unavailable: nil value")
+			return CampaignState{}, errors.New("campaign state unavailable: nil value")
 		}
 		return *value, nil
 	}

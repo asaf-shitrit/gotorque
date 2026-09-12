@@ -43,7 +43,7 @@ func TestTracePprofRejectsUnknownKind(t *testing.T) {
 }
 
 func TestMergeEnvironmentOverridesOnce(t *testing.T) {
-	values := mergeEnvironment([]string{"GO_AGENT_TEST=value", "GO_AGENT_TEST=final"})
+	values := mergeEnvironment(os.Environ(), []string{"GO_AGENT_TEST=value", "GO_AGENT_TEST=final"})
 	seen := 0
 	for _, value := range values {
 		if value == "GO_AGENT_TEST=final" {

@@ -76,13 +76,34 @@ workloads. See `targets/gojq` and `targets/scc` for examples, and
 ## Development
 
 ```sh
+make hooks       # one-time per clone: install the pre-commit gate
 make lint
+make crap        # CRAP report (complexity × coverage)
+make crap-check  # same, exits 1 above CRAP 30
 GOCACHE=/private/tmp/gotorque-cache go test ./...
 ```
 
 `make lint` runs golangci-lint with two complexity gates: `gocyclo`
-(cyclomatic, max 10) and `gocognit` (cognitive, max 15). Both are enforced
-in CI; split a function rather than raising the thresholds.
+(cyclomatic, max 10) and `gocognit` (cognitive, max 15), plus `gofmt`. All are
+enforced in CI; split a function rather than raising the thresholds. Alongside
+them runs a curated correctness set — errcheck, staticcheck, govet, unused,
+errorlint, nilerr, noctx, contextcheck, exhaustive, gosec, gocritic, revive
+(curated), testifylint and others.
+
+Complexity says nothing about whether a test reaches a function, so `make crap`
+scores CRAP = CC² × (1 − coverage)³ + CC using `go-crap` (pinned in the
+Makefile) over the `go test -coverprofile` output — the suite runs once and no
+coverage tooling is duplicated. At `CRAP_THRESHOLD` 30 a CC 9 function with 0%
+coverage scores 90, and a fully covered one scores 9, so the gate catches the
+uncovered half. CI runs `make crap-check` as a blocking step, and `make hooks`
+installs the same three gates in front of every commit.
+
+`make hooks` points git at `.githooks/`, so every commit runs the same three
+gates in that order: `make lint`, then `make cover` (the unit tests, which also
+writes the coverage profile), then `make crap-scan` reading that profile. The
+suite therefore runs once per commit, not twice. A failing gate aborts the
+commit — `git commit --no-verify` is the deliberate escape hatch, and CI is the
+backstop. `git config --unset core.hooksPath` removes it.
 
 Isolation note: Linux campaigns isolate workloads through bubblewrap. If
 the host cannot support it (some nested CI containers), gotorque detects

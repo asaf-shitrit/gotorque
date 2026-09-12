@@ -416,7 +416,10 @@ func TestFenceStrippingModelSurfacesLastErrorOnceWhenLadderIsSpent(t *testing.T)
 func TestFenceStrippingModelRecordsUsageForDiscardedAttempts(t *testing.T) {
 	inner := &reasoningLLM{thoughtOnly: 2, answer: `{"a":1}`}
 	collector := NewUsageCollector()
-	for range fastModel(inner, "optimizer", collector).GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+	for _, err := range fastModel(inner, "optimizer", collector).GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	}
 	if got := collector.Snapshot()["optimizer"].Requests; got != 0 {
 		t.Fatalf("requests = %d, want 0 (the stub reports no usage metadata)", got)
@@ -426,7 +429,10 @@ func TestFenceStrippingModelRecordsUsageForDiscardedAttempts(t *testing.T) {
 		{Content: &genai.Content{Role: "model", Parts: []*genai.Part{{Text: `{"a":1}`}}}, UsageMetadata: &genai.GenerateContentResponseUsageMetadata{TotalTokenCount: 11}},
 	}}
 	collector = NewUsageCollector()
-	for range fastModel(metered, "optimizer", collector).GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+	for _, err := range fastModel(metered, "optimizer", collector).GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	}
 	usage := collector.Snapshot()["optimizer"]
 	if usage.Requests != 2 || usage.TotalTokens != 18 {
@@ -466,7 +472,10 @@ func TestFenceStrippingModelReportsEachAttemptToObserver(t *testing.T) {
 	var calls []CallInfo
 	decorated := fastModel(inner, "analyst", nil)
 	decorated.observer = func(info CallInfo) { calls = append(calls, info) }
-	for range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	}
 
 	if len(calls) != 2 {

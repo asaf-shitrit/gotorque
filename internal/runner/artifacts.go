@@ -4,7 +4,7 @@ package runner
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,9 +19,9 @@ type ArtifactStore struct{ Root string }
 
 func NewArtifactStore(root string) (*ArtifactStore, error) {
 	if !filepath.IsAbs(root) {
-		return nil, fmt.Errorf("artifact root must be absolute")
+		return nil, errors.New("artifact root must be absolute")
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
 	return &ArtifactStore{Root: root}, nil
@@ -29,10 +29,10 @@ func NewArtifactStore(root string) (*ArtifactStore, error) {
 
 func (s *ArtifactStore) Put(name string, content []byte) (id, path string, err error) {
 	if s == nil {
-		return "", "", fmt.Errorf("artifact store is required")
+		return "", "", errors.New("artifact store is required")
 	}
 	if filepath.Base(name) != name {
-		return "", "", fmt.Errorf("artifact name must not contain a path")
+		return "", "", errors.New("artifact name must not contain a path")
 	}
 	digest := Digest(content)
 	id = digest
@@ -53,7 +53,7 @@ func DigestFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
@@ -65,7 +65,7 @@ func DigestFile(path string) (string, error) {
 // live in a different directory and are therefore never included.
 func (s *ArtifactStore) SnapshotFiles(root string) (map[string]string, error) {
 	if s == nil {
-		return nil, fmt.Errorf("artifact store is required")
+		return nil, errors.New("artifact store is required")
 	}
 	files := make([]string, 0)
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {

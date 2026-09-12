@@ -1,7 +1,7 @@
 package orchestrator
 
 import (
-	"fmt"
+	"errors"
 	"time"
 )
 
@@ -68,16 +68,16 @@ func (c Config) withDefaults() Config {
 
 func (c Config) validate() error {
 	if c.MaxCandidates < 1 {
-		return fmt.Errorf("max candidates must be positive")
+		return errors.New("max candidates must be positive")
 	}
 	if c.MaxConsecutiveFailures < 1 {
-		return fmt.Errorf("max consecutive failures must be positive")
+		return errors.New("max consecutive failures must be positive")
 	}
 	if c.DeterministicTimeout < 0 || c.AgentTimeout < 0 {
-		return fmt.Errorf("node timeouts cannot be negative")
+		return errors.New("node timeouts cannot be negative")
 	}
 	if c.MaxConcurrency < 1 {
-		return fmt.Errorf("max concurrency must be positive")
+		return errors.New("max concurrency must be positive")
 	}
 	return nil
 }

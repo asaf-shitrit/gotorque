@@ -1,10 +1,39 @@
 version: "2"
 
 linters:
-  default: none
+  # `standard` is errcheck, govet, ineffassign, staticcheck, unused — the
+  # correctness baseline. Everything below is added on top of it.
+  default: standard
   enable:
-    - gocyclo
+    - bodyclose        # leaked HTTP bodies
+    - contextcheck     # context not propagated
+    - copyloopvar      # loop-variable capture
+    - durationcheck    # duration arithmetic mistakes
+    - errname          # sentinel error naming
+    - errorlint        # %v instead of %w, type assertions on wrapped errors
+    - exhaustive       # missing switch cases on repo enums
+    - gocritic         # broad correctness checks
     - gocognit
+    - gocyclo
+    - gosec            # security-relevant patterns
+    - inamedparam      # unnamed interface parameters
+    - makezero         # append to a slice that already has length
+    - misspell
+    - nilerr           # returning nil after checking a non-nil error
+    - nilnil           # ambiguous (nil, nil) returns
+    - noctx            # exec/http calls without context
+    - perfsprint       # fmt calls with a cheaper equivalent
+    - prealloc
+    - predeclared
+    - reassign
+    - revive
+    - testifylint
+    - thelper
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
   settings:
     gocyclo:
       # Cyclomatic complexity; report functions with complexity >= 10.
@@ -14,3 +43,45 @@ linters:
       # Current worst offenders in the tree sit at 15, so this gates growth
       # without demanding an up-front refactor.
       min-complexity: 15
+    gosec:
+      # These three fire on the harness's core job — running a target's own
+      # manifest-defined commands and reading repository paths it was pointed
+      # at. The command surface is the allowlisted internal/toolchain wrapper,
+      # not a general shell, so the finding is the design rather than a defect.
+      # Excluded narrowly; every other gosec rule stays on.
+      excludes:
+        - G204 # subprocess launched with a variable
+        - G304 # file inclusion via variable
+        - G703 # path traversal via taint analysis
+    revive:
+      # Curated rule set. `exported` and `package-comments` are deliberately
+      # absent: architecture lives in docs/architecture.md and CLAUDE.md, and
+      # demanding a comment block on all ~150 exported symbols would be churn,
+      # not review value.
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-equal
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+        - name: waitgroup-by-value
+
+# Formatting is checked separately from linters in golangci-lint v2. gofmt only
+# for now — add goimports when import grouping is worth enforcing.
+formatters:
+  enable:
+    - gofmt
