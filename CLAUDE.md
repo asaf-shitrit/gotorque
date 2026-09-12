@@ -41,7 +41,7 @@ gotorque report <campaign-dir> [--json]
 ```
 
 `--adk-stub` runs the whole pipeline with deterministic stub agents and no
-network — that is the fast way to exercise engine changes end to end, and it is
+network. That is the fast way to exercise engine changes end to end, and it is
 what CI runs. `--adk` needs `OPENROUTER_API_KEY` (see `.env`, gitignored) and
 spends tokens.
 
@@ -50,9 +50,9 @@ spends tokens.
 `.golangci.yml` enables a curated best-practice set on top of `standard`
 (errcheck, govet, ineffassign, staticcheck, unused): errorlint, nilerr, nilnil,
 noctx, contextcheck, exhaustive, gosec, gocritic, revive, perfsprint,
-testifylint, inamedparam and more — plus `gocyclo` (max 10) and `gocognit`
+testifylint, inamedparam and more, plus `gocyclo` (max 10) and `gocognit`
 (max 15) and the `gofmt` formatter. All are enforced in CI. When a function
-trips a complexity gate, split it — do not raise the thresholds. Recent commits
+trips a complexity gate, split it. Do not raise the thresholds. Recent commits
 (`afda33e`) follow that pattern: extract the inner loop body into a named
 helper.
 
@@ -67,7 +67,7 @@ Complexity alone does not see whether a test reaches the function, so `make
 crap` adds that axis: CRAP = CC² × (1 − coverage)³ + CC, computed by `go-crap`
 (pinned in the Makefile) from the `go test -coverprofile` output. At
 `CRAP_THRESHOLD` 30 a CC 9 function with 0% coverage scores 90, while a fully
-covered one scores 9 — the gate exists to catch the uncovered half. Coverage is
+covered one scores 9. The gate exists to catch the uncovered half. Coverage is
 measured cross-package (`-coverpkg=./...` in `COVERPKG`): a function exercised
 by another package's tests is tested, and a per-package profile reports it as
 0%. CI runs `make crap-check` blocking; the backlog is at zero, so a new
@@ -85,63 +85,63 @@ Both gates run before every commit: `make hooks` (once per clone) sets
 `core.hooksPath` to `.githooks/`, whose pre-commit hook runs `make lint`, then
 `make cover` (tests + coverage profile), then `make crap-scan`. Commit aborts on
 failure; `--no-verify` is the escape hatch. The hook is local config, so CI
-stays the enforcement point for anyone who has not run `make hooks` — do not
+stays the enforcement point for anyone who has not run `make hooks`, so do not
 treat a green local commit as proof CI will pass.
 
 ## Architecture
 
 Read `docs/architecture.md` before non-trivial engine work; it is detailed and
-deliberately kept current. Keep it that way — a doc-sync commit (`8e92b07`)
+deliberately kept current. Keep it that way: a doc-sync commit (`8e92b07`)
 exists because sixteen engine commits landed without touching it.
 
-Flow: CLI → `internal/campaign` engine → ADK workflow graph
+Flow: CLI -> `internal/campaign` engine -> ADK workflow graph
 (`internal/orchestrator`) alternating agent nodes with deterministic nodes:
 
 ```
-inspect_repository → coordinator → explorer → run_discovery → analyst
-  → merge_analysis → optimizer → evaluate_candidate → reviewer
-  → apply_policy → route_campaign (loop or finalize)
+inspect_repository -> coordinator -> explorer -> run_discovery -> analyst
+  -> merge_analysis -> optimizer -> evaluate_candidate -> reviewer
+  -> apply_policy -> route_campaign (loop or finalize)
 ```
 
 Package map:
 
-- `internal/campaign` — the engine. `engine.go` owns campaign lifecycle, bounds,
+- `internal/campaign`: the engine. `engine.go` owns campaign lifecycle, bounds,
   and discovery profiling; `candidate_eval.go` is the deterministic evaluation
-  loop (normalize → worktree → build → test gate → A/B measure → stats);
+  loop (normalize -> worktree -> build -> test gate -> A/B measure -> stats);
   `adk.go` bridges engine state into the ADK graph; `store.go` is bbolt state;
   `excerpts.go` feeds real source windows to the optimizer.
-- `internal/orchestrator` — graph construction, node wiring, service interfaces.
-- `internal/agents` — role definitions, OpenAI-compatible provider, model
+- `internal/orchestrator`: graph construction, node wiring, service interfaces.
+- `internal/agents`: role definitions, OpenAI-compatible provider, model
   routing, and the model-boundary leniency layer (`fence.go`, `decode.go`,
   `types.go`). This layer only removes parse failures; it never relaxes policy.
-- `internal/policy` — pure acceptance decision. No filesystem, process, or
+- `internal/policy`: pure acceptance decision. No filesystem, process, or
   network access; keep it that way.
-- `internal/candidate` — unified-diff normalization, validation, worktrees.
-- `internal/toolchain` — allowlisted wrappers for `go`, `git`, `pprof`,
+- `internal/candidate`: unified-diff normalization, validation, worktrees.
+- `internal/toolchain`: allowlisted wrappers for `go`, `git`, `pprof`,
   `benchstat`. It deliberately exposes no general shell API; add a typed method
   rather than a generic `Run(string)`.
-- `internal/runner` — sandboxed workload execution (bubblewrap / `sandbox-exec`).
-- `internal/profile` — benchmark/CPU profiling, symbol filtering, source
+- `internal/runner`: sandboxed workload execution (bubblewrap / `sandbox-exec`).
+- `internal/profile`: benchmark/CPU profiling, symbol filtering, source
   position annotation.
-- `internal/manifest` — target manifest types, defaults, embedded JSON schema.
+- `internal/manifest`: target manifest types, defaults, embedded JSON schema.
 
 ### Things that are easy to break
 
-- **Diff normalization** (`internal/candidate/normalize.go`) — blank context
-  lines in unified diffs are a single space and get trimmed in transit. The
+- Diff normalization (`internal/candidate/normalize.go`): blank context lines
+  in unified diffs are a single space and get trimmed in transit. The
   hunk-termination rules there encode hard-won cases; change them with tests.
-- **Model-boundary decoding** (`internal/agents/fence.go`) — a reasoning-only
-  turn must become an error, not an empty yield, or ADK kills the run with
+- Model-boundary decoding (`internal/agents/fence.go`): a reasoning-only turn
+  must become an error, not an empty yield, or ADK kills the run with
   `ErrMultipleOutputs`.
-- **Campaign bounds** (`engine.go`) — `max_duration` is charged against
-  persisted `ElapsedRunTime` and polled on the wall clock, because Go's
-  monotonic timers stop across machine suspend.
-- **Resume** — `--resume DIR` requires re-supplying `--adk` or `--adk-stub`
-  (agent clients cannot be serialized) and rejects `--repo`, `--manifest`, and
+- Campaign bounds (`engine.go`): `max_duration` is charged against persisted
+  `ElapsedRunTime` and polled on the wall clock, because Go's monotonic timers
+  stop across machine suspend.
+- Resume: `--resume DIR` requires re-supplying `--adk` or `--adk-stub` (agent
+  clients cannot be serialized) and rejects `--repo`, `--manifest`, and
   `--campaign-dir`. Anything that must survive resume has to be persisted in
   bbolt; in-graph `CampaignState` is rebuilt on every entry.
-- **Profiled source positions** must be rewritten repository-relative; the
-  excerpt collector rejects absolute paths.
+- Profiled source positions must be rewritten repository-relative; the excerpt
+  collector rejects absolute paths.
 
 ## Target manifests
 
@@ -152,8 +152,8 @@ in the loader (3% minimum improvement, 2% guardrail regression ceiling,
 12 candidate patches).
 
 CI globs `targets/*/manifest.json`, so a new target is validated automatically.
-`dedupe` and `numstats` point at an unpublished repo — they validate but cannot
-run a campaign.
+`dedupe` and `numstats` point at an unpublished repo, so they validate but
+cannot run a campaign.
 
 `internal/manifest/docs_test.go` loads the JSON block out of
 `docs/target-manifest.md` through the real loader, so editing that example or

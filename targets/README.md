@@ -15,7 +15,7 @@ Pointing at live upstreams:
   in the module's root package rather than under `./cmd`, which is why
   discovery profiling widens past the target package.
 
-Pointing at `asaf-shitrit/gotorque-targets`, which is not published yet — both
+Pointing at `asaf-shitrit/gotorque-targets`, which is not published yet. Both
 validate, but neither can run a campaign until that repository exists:
 
 - `dedupe/` exercises line deduplication and map behavior.

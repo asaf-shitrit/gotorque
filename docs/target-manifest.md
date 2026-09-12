@@ -65,8 +65,8 @@ cannot silently weaken a campaign's safety or acceptance settings.
 ```
 
 Every top-level key above is required, `performance` and `campaign` included.
-Their *contents* are optional — an empty object is enough, and the loader
-fills in the version-one defaults below — but the objects themselves must be
+Their *contents* are optional, so an empty object is enough and the loader
+fills in the version-one defaults below, but the objects themselves must be
 present or schema validation fails with `missing properties 'performance',
 'campaign'`.
 

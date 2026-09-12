@@ -86,13 +86,13 @@ GOCACHE=/private/tmp/gotorque-cache go test ./...
 `make lint` runs golangci-lint with two complexity gates: `gocyclo`
 (cyclomatic, max 10) and `gocognit` (cognitive, max 15), plus `gofmt`. All are
 enforced in CI; split a function rather than raising the thresholds. Alongside
-them runs a curated correctness set — errcheck, staticcheck, govet, unused,
+them runs a curated correctness set: errcheck, staticcheck, govet, unused,
 errorlint, nilerr, noctx, contextcheck, exhaustive, gosec, gocritic, revive
 (curated), testifylint and others.
 
 Complexity says nothing about whether a test reaches a function, so `make crap`
 scores CRAP = CC² × (1 − coverage)³ + CC using `go-crap` (pinned in the
-Makefile) over the `go test -coverprofile` output — the suite runs once and no
+Makefile) over the `go test -coverprofile` output. The suite runs once and no
 coverage tooling is duplicated. At `CRAP_THRESHOLD` 30 a CC 9 function with 0%
 coverage scores 90, and a fully covered one scores 9, so the gate catches the
 uncovered half. CI runs `make crap-check` as a blocking step, and `make hooks`
@@ -104,7 +104,7 @@ portability fact rather than an untested decision.
 gates in that order: `make lint`, then `make cover` (the unit tests, which also
 writes the coverage profile), then `make crap-scan` reading that profile. The
 suite therefore runs once per commit, not twice. A failing gate aborts the
-commit — `git commit --no-verify` is the deliberate escape hatch, and CI is the
+commit, so `git commit --no-verify` is the deliberate escape hatch, and CI is the
 backstop. `git config --unset core.hooksPath` removes it.
 
 Isolation note: Linux campaigns isolate workloads through bubblewrap. If

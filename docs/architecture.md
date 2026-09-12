@@ -111,7 +111,7 @@ produced here or in policy.
    the coarse t-test may have granted, and delta-only legacy output is
    informational and can never grant support by itself. Trimmed benchstat
    output is kept in the candidate record for reports. Representative
-   workloads are folded per repetition before the pooled comparison — the
+   workloads are folded per repetition before the pooled comparison: the
    mean across workloads for wall and CPU time, the maximum for peak memory,
    which is a high-water mark rather than an additive quantity. Concatenating
    raw samples from workloads of different scale instead inflates the pooled
@@ -132,8 +132,8 @@ produced here or in policy.
    the limit. Every verdict is persisted with
    reasons and metric comparisons. An evaluation that never reached a
    behavior comparison carries a `FailureSummary` naming what actually
-   happened — the patch failed to apply, the build failed, the upstream test
-   suite failed — and policy reports that instead of the behavior-mismatch
+   happened (the patch failed to apply, the build failed, the upstream test
+   suite failed) and policy reports that instead of the behavior-mismatch
    reason, which would misdescribe the rejection to anyone reading a report.
 
 ## Source-excerpt enrichment
@@ -180,7 +180,7 @@ target that outlives the sampling window, so the workload input is amplified
 first: `amplifyStdin` replicates the elements of the largest JSON array,
 which keeps the document valid and multiplies the work it describes, and
 falls back to repeating raw bytes for input that is not JSON. Repeating bytes
-alone only lengthens the run for a target that consumes all of stdin — a
+alone only lengthens the run for a target that consumes all of stdin. A
 single-shot JSON CLI reads one document and ignores the rest, so gron
 finished a 16 MiB concatenation of its 84 KiB seed in 21 ms, exactly as fast
 as the unamplified seed, and the sampler could never attach. Safer frames are
@@ -197,8 +197,8 @@ then every benchmark-bearing package in the module, richest first:
 `internal/profile.BenchmarkPackages` counts `func Benchmark…` declarations in
 `_test.go` files, breaking ties lexicographically so repeated campaigns
 profile the same package. A CLI's command package typically declares no
-benchmarks while the library packages it drives do — gojq benchmarks its
-evaluator, not `./cmd/gojq` — and the widened attempt still gives those
+benchmarks while the library packages it drives do (gojq benchmarks its
+evaluator, not `./cmd/gojq`), and the widened attempt still gives those
 targets benchmark evidence when sampling is unavailable.
 
 The profile is summarized through `go tool pprof`. Summarizing scans four
@@ -210,7 +210,7 @@ module functions and spends the rest on frames no patch can touch.
 `actionableSymbol` drops the rest of what no source change can address:
 unqualified and `_`-prefixed symbols, which is how the OS sampler's kernel and
 libc names (`__psynch_cvwait`, `kevent`, `nanosleep`) present and which
-describe a process waiting rather than computing — Go symbols always carry a
+describe a process waiting rather than computing. Go symbols always carry a
 package qualifier, so a missing dot is a reliable discriminator; `testing.`
 harness frames; and the module's own `Benchmark`, `Test`, `Fuzz` and `Example`
 entry points, which are measurement scaffolding rather than the program the
@@ -224,8 +224,8 @@ closure suffixes (`outer.func1`, `outer.func1.2`) and method receivers
 (`pkg.(*T).method`) that no `func` declaration is ever written with.
 `go tool pprof -list` reports absolute paths, and the excerpt collector
 refuses those because an absolute location is indistinguishable from one
-escaping the repository — every profiled frame therefore resolved to a
-location no source window could be read from. Positions are rewritten
+escaping the repository, so every profiled frame resolved to a location no
+source window could be read from. Positions are rewritten
 repository-relative, and frames in the standard library or module cache are
 dropped outright rather than kept as bare paths, since no patch this campaign
 may write can reach them and they would otherwise occupy the excerpt budget.
@@ -257,20 +257,20 @@ output in several shapes, and brittle rejections waste whole campaign turns.
 Deterministic policy still validates everything downstream, so tolerance here
 only removes parse failures of otherwise usable recommendations.
 
-- **Fence and prose extraction** (`internal/agents/fence.go`): a single
+- Fence and prose extraction (`internal/agents/fence.go`): a single
   Markdown code fence with an optional language tag is stripped, and the
   first balanced JSON object or array is extracted from surrounding prose.
   Text with no extractable payload passes through unchanged. Only complete
   responses are rewritten; streaming partials pass through untouched.
-- **Common-malformation repair** (`internal/agents/decode.go`): trailing
+- Common-malformation repair (`internal/agents/decode.go`): trailing
   commas before object or array closers are removed, string contents left
   untouched. If parsing still fails, unescaped double quotes embedded inside
   JSON string values are escaped heuristically and repair is retried once.
-- **Tolerant field shapes**: fields declared as string arrays also accept a
+- Tolerant field shapes: fields declared as string arrays also accept a
   single string, an object collapsed to its most identifying scalar field,
   or an array of objects likewise collapsed. Booleans accept common string
   spellings. Hot-path lists accept objects, strings, or grouped objects.
-- **Patch transport** (`internal/agents/types.go`): the optimizer is
+- Patch transport (`internal/agents/types.go`): the optimizer is
   instructed to carry its unified diff as a JSON array of lines, and
   `flexPatch` joins one back into a diff. A diff embedded in a single JSON
   string is the shape models escape worst, and one bad escape corrupts the
@@ -280,27 +280,27 @@ only removes parse failures of otherwise usable recommendations.
   because a model that ignores the instruction still produces a candidate the
   deterministic gates can judge. Wrapper objects such as `{"content": "…"}`
   collapse through the shared text extraction.
-- **Reasoning-only turns** (`fence.go`): a response carrying no answer part is
+- Reasoning-only turns (`fence.go`): a response carrying no answer part is
   converted into an error rather than yielded. ADK's two consumers of such a
   turn disagree, and the disagreement is fatal: the workflow agent node stamps
   the turn's empty text as the node's output, while the LLM flow classifies it
   as thinking rather than answering and calls the model again inside the same
-  node execution — the second call's answer becomes a second output-bearing
+  node execution. The second call's answer becomes a second output-bearing
   event and the scheduler kills the run with `ErrMultipleOutputs`. An error
   costs one node instead of the campaign. A reasoning model that spends its
   whole output budget thinking produces exactly this turn. An answer that
   merely failed to parse as JSON is still yielded, because downstream decoding
   names the offending text. At most one complete response escapes a call, by
   construction rather than by trusting the inner iterator.
-- **Retry and usage decoration**: the OpenAI-compatible provider wraps every
+- Retry and usage decoration: the OpenAI-compatible provider wraps every
   role model in a decorator that transparently retries up to four attempts
   with 15, 30, then 60 second backoff while a call fails before producing
   any content (shared-pool rate limits otherwise abort multi-hour campaigns),
   and records per-role token usage into a collector persisted with campaign
   state. Endpoint credentials and API keys are never persisted.
-- **Per-attempt call logging** (`internal/agents/observer.go`): a `CallObserver`
-  receives one `CallInfo` per attempt — role, attempt number, duration, error,
-  and whether a retry follows — and `--adk` wires `LogCalls` to the command's
+- Per-attempt call logging (`internal/agents/observer.go`): a `CallObserver`
+  receives one `CallInfo` per attempt (role, attempt number, duration, error,
+  and whether a retry follows), and `--adk` wires `LogCalls` to the command's
   output as `[model_call]` lines. Role calls are the slowest and least
   observable part of a campaign; without them a run prints nothing between
   starting the workflow and the first role that completes, so a slow call, a
@@ -332,7 +332,7 @@ key to the wrong provider and fails with HTTP 401 only after a preflight that
 already passed against OpenRouter.
 
 One model call is bounded by a four-minute whole-request timeout. ADK issues
-these non-streaming — it streams only in SSE mode — so the endpoint sends
+these non-streaming (it streams only in SSE mode), so the endpoint sends
 nothing until generation finishes and there is no byte flow to measure
 idleness against, which makes a header or idle timeout the wrong instrument.
 Without any client timeout the SDK supplies a client with none, so a request
@@ -367,16 +367,16 @@ runs out mid-flight.
 
 Two clocks have to agree. Go timers run on the monotonic clock, which stops
 while the machine is suspended, so a laptop that sleeps two hours mid-campaign
-hands a 90-minute context two extra hours of wall time — while `ElapsedRunTime`,
+hands a 90-minute context two extra hours of wall time, while `ElapsedRunTime`,
 measured with `time.Now`, keeps counting across the suspend and charges every
 one of those minutes against the same budget. `guardWallClockBudget` polls the
 wall clock every 250 ms against a fixed deadline and cancels the context when
 it passes, so whichever clock runs out first ends the run. The goroutine owns
 no engine state beyond the clock and exits with the context.
 
-A spent budget otherwise surfaces as whatever call happened to be in flight —
+A spent budget otherwise surfaces as whatever call happened to be in flight,
 a git status, a model request, an ADK graph that drained without producing a
-result — naming an innocent bystander instead of the bound that stopped the
+result, naming an innocent bystander instead of the bound that stopped the
 campaign, so the context cause wins: the run ends as `interrupted` with
 `ErrDurationBudgetExhausted` and a stop reason naming the budget and what was
 spent of it.
@@ -392,8 +392,8 @@ for deterministic stubs. Campaign state records `adk_mode`, and resuming a
 campaign that was started with agents without passing either flag fails with
 an explicit error. Because a resumed campaign takes its manifest from
 persisted state and `--resume` rejects an explicit `--manifest`, the resume
-path reads the manifest path out of state rather than requiring the flag —
-demanding one made `optimize --resume DIR --adk` impossible to satisfy in
+path reads the manifest path out of state rather than requiring the flag.
+Demanding one made `optimize --resume DIR --adk` impossible to satisfy in
 either direction. `--resume` cannot be combined with `--repo`, `--manifest`,
 or `--campaign-dir`.
 
