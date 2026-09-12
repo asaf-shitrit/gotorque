@@ -44,6 +44,44 @@ func TestEvaluateRejectsGuardrailRegression(t *testing.T) {
 	}
 }
 
+// TestEvaluateAcceptsWithinLimitUnsupportedGuardrail pins the manifest's
+// guardrail contract: the limit is the barrier, not proof of the absence of a
+// regression. A required guardrail that moved +0.16% against a 2% limit used
+// to be reported inconclusive and blocked a candidate whose primary metric
+// improved 14.38% with statistical support, because a jittery high-water mark
+// cannot be shown flat at seven samples.
+func TestEvaluateAcceptsWithinLimitUnsupportedGuardrail(t *testing.T) {
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []Comparison{
+			{Name: "wall_time_ns", Baseline: 100, Candidate: 85.62, StatisticallySupported: true},
+			{Name: "peak_memory_bytes", Baseline: 14811000, Candidate: 14835000, StatisticallySupported: false},
+			{Name: "cpu_time_ns", Baseline: 100, Candidate: 84.37, StatisticallySupported: true},
+			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		},
+	})
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+}
+
+// TestEvaluateRejectsUnsupportedGuardrailOverLimit keeps the threshold binding
+// even when the guardrail measurement carries no statistical support.
+func TestEvaluateRejectsUnsupportedGuardrailOverLimit(t *testing.T) {
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []Comparison{
+			{Name: "wall_time_ns", Baseline: 100, Candidate: 85, StatisticallySupported: true},
+			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 106, StatisticallySupported: false},
+			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		},
+	})
+	if result.Decision != domain.DecisionRejected {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+}
+
 func TestEvaluateInconclusiveBelowThreshold(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,

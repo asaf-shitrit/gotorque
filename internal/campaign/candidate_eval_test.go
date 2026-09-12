@@ -594,3 +594,100 @@ func checkPgoEmptySortedDigests(t *testing.T) {
 		t.Fatalf("got (%v, %d), want (false, 1)", ok, rep)
 	}
 }
+
+// gronAttempt4Ms holds the wall-time samples, in milliseconds, that a campaign
+// recorded for a bufio.Writer candidate on gron: a real 20.83% win on the
+// workload it affects and a 3.98% regression on a workload roughly half its
+// size that has almost nothing to batch. Two representative workloads of
+// different scale are precisely the case that broke concatenated pooling.
+var (
+	gronBigBaseMs   = []float64{22.65, 24.30, 22.80, 23.58, 22.92, 23.50, 25.53}
+	gronBigCandMs   = []float64{18.51, 18.48, 19.85, 17.75, 19.21, 18.55, 18.51}
+	gronSmallBaseMs = []float64{10.81, 10.26, 10.47, 10.73, 10.66, 10.21, 10.64}
+	gronSmallCandMs = []float64{11.25, 10.31, 10.85, 11.38, 10.39, 10.31, 12.23}
+)
+
+func TestPooledWorkloadFolding(t *testing.T) {
+	t.Run("concatenated samples hide a real improvement", testConcatenatedSamplesHideImprovement)
+	t.Run("per-repetition folding keeps the delta and finds support", testFoldingKeepsDeltaAndFindsSupport)
+	t.Run("peak memory folds to the high-water mark", testPeakMemoryFoldsToHighWaterMark)
+}
+
+func wallRunsMs(series ...[]float64) []domain.RunResult {
+	var values []float64
+	for _, s := range series {
+		for _, v := range s {
+			values = append(values, v*1e6)
+		}
+	}
+	return metricRuns("wall_time_ns", values...)
+}
+
+func scaledMs(series ...[]float64) [][]float64 {
+	scaled := make([][]float64, 0, len(series))
+	for _, s := range series {
+		row := make([]float64, len(s))
+		for i, v := range s {
+			row[i] = v * 1e6
+		}
+		scaled = append(scaled, row)
+	}
+	return scaled
+}
+
+// testConcatenatedSamplesHideImprovement pins the defect the folding fixes:
+// concatenating raw samples from workloads with different means inflates the
+// pooled spread with between-workload variance (here ~42.6 ms² against ~1 ms²
+// of measurement noise), so the test measures the workload mix rather than the
+// candidate's effect and a measured 20.83% win reads as no evidence at all.
+func testConcatenatedSamplesHideImprovement(t *testing.T) {
+	pooled := compareMetric("", "wall_time_ns", "ns",
+		wallRunsMs(gronBigBaseMs, gronSmallBaseMs),
+		wallRunsMs(gronBigCandMs, gronSmallCandMs), wallTime)[0]
+	if pooled.StatisticallyFit {
+		t.Fatalf("concatenated pooling claimed support, so this test no longer guards the defect: %+v", pooled)
+	}
+	affected := compareMetric("big", "wall_time_ns", "ns",
+		wallRunsMs(gronBigBaseMs), wallRunsMs(gronBigCandMs), wallTime)[0]
+	if !affected.StatisticallyFit {
+		t.Fatalf("the affected workload on its own must show support: %+v", affected)
+	}
+}
+
+func testFoldingKeepsDeltaAndFindsSupport(t *testing.T) {
+	folded := compareMetric("", "wall_time_ns", "ns",
+		pooledAsRuns(meanPerRepetition(scaledMs(gronBigBaseMs, gronSmallBaseMs)), "wall_time_ns"),
+		pooledAsRuns(meanPerRepetition(scaledMs(gronBigCandMs, gronSmallCandMs)), "wall_time_ns"), wallTime)[0]
+	concatenated := compareMetric("", "wall_time_ns", "ns",
+		wallRunsMs(gronBigBaseMs, gronSmallBaseMs),
+		wallRunsMs(gronBigCandMs, gronSmallCandMs), wallTime)[0]
+
+	if !folded.StatisticallyFit {
+		t.Fatalf("folded comparison must be supported: %+v", folded)
+	}
+	if math.Abs(folded.DeltaPercent-concatenated.DeltaPercent) > 0.01 {
+		t.Fatalf("folding changed the reported effect: folded %.2f%% vs concatenated %.2f%%", folded.DeltaPercent, concatenated.DeltaPercent)
+	}
+	if folded.DeltaPercent > -10 {
+		t.Fatalf("delta = %.2f%%, want about -13%%", folded.DeltaPercent)
+	}
+}
+
+func testPeakMemoryFoldsToHighWaterMark(t *testing.T) {
+	series := [][]float64{{100, 200, 300}, {150, 120, 90}}
+	gotMax := maxPerRepetition(series)
+	wantMax := []float64{150, 200, 300}
+	gotMean := meanPerRepetition(series)
+	wantMean := []float64{125, 160, 195}
+	for i := range wantMax {
+		if gotMax[i] != wantMax[i] {
+			t.Fatalf("maxPerRepetition() = %v, want %v", gotMax, wantMax)
+		}
+		if gotMean[i] != wantMean[i] {
+			t.Fatalf("meanPerRepetition() = %v, want %v", gotMean, wantMean)
+		}
+	}
+	if len(maxPerRepetition(nil)) != 0 || len(meanPerRepetition(nil)) != 0 {
+		t.Fatal("folding no workloads must yield no samples")
+	}
+}

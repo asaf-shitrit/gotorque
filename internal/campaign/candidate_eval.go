@@ -129,10 +129,20 @@ func (e *Engine) candidateTestsPassed(ctx context.Context, worktree string, evid
 	return false
 }
 
+// pooledSamples keeps one sample series per representative workload rather
+// than one flat series.
+//
+// Concatenating raw series from workloads of different scale inflates the
+// pooled spread with between-workload variance, and Welch's t-test then
+// measures the workload mix instead of the candidate's effect. On gron the two
+// representative workloads average 23.6ms and 10.5ms, so a real 20.8% win on
+// the large one produced a pooled t of 1.06 against 10.69 measured on the
+// affected workload alone; the candidate was reported inconclusive. Folding
+// across workloads per repetition keeps the test on the effect.
 type pooledSamples struct {
-	wallBase, wallCand []float64
-	cpuBase, cpuCand   []float64
-	memBase, memCand   []float64
+	wallBase, wallCand [][]float64
+	cpuBase, cpuCand   [][]float64
+	memBase, memCand   [][]float64
 }
 
 func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
@@ -239,12 +249,12 @@ func (e *Engine) recordSeedMetrics(ctx context.Context, seedID, wid string, ab r
 		}
 		evidence.BenchstatOutput += fmt.Sprintf("workload %s:\n%s", seedID, wallBenchstat)
 	}
-	pooled.cpuBase = append(pooled.cpuBase, metricValues(ab.Baseline, cpuTime)...)
-	pooled.memBase = append(pooled.memBase, metricValues(ab.Baseline, peakMemory)...)
-	pooled.cpuCand = append(pooled.cpuCand, metricValues(ab.Candidate, cpuTime)...)
-	pooled.memCand = append(pooled.memCand, metricValues(ab.Candidate, peakMemory)...)
-	pooled.wallBase = append(pooled.wallBase, baseSamples...)
-	pooled.wallCand = append(pooled.wallCand, candSamples...)
+	pooled.cpuBase = append(pooled.cpuBase, metricValues(ab.Baseline, cpuTime))
+	pooled.memBase = append(pooled.memBase, metricValues(ab.Baseline, peakMemory))
+	pooled.cpuCand = append(pooled.cpuCand, metricValues(ab.Candidate, cpuTime))
+	pooled.memCand = append(pooled.memCand, metricValues(ab.Candidate, peakMemory))
+	pooled.wallBase = append(pooled.wallBase, baseSamples)
+	pooled.wallCand = append(pooled.wallCand, candSamples)
 }
 
 func metricValues(runs []domain.RunResult, sel metricSelector) []float64 {
@@ -259,18 +269,20 @@ func metricValues(runs []domain.RunResult, sel metricSelector) []float64 {
 
 func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison, pooled pooledSamples, sizeErr error, baselineSize, candSize int64, measured int) {
 	// Policy looks up canonical metric names ("wall_time_ns" primary plus
-	// required guardrails), so samples from all representative workloads
-	// are pooled into one comparison per metric. Per-workload raw data
-	// remains available in RepSamples for diagnosis.
-	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, "", pooledAsRuns(pooled.wallBase, "wall_time_ns"), pooledAsRuns(pooled.wallCand, "wall_time_ns"))
+	// required guardrails), so the representative workloads are folded into
+	// one comparison per metric. Folding happens per repetition, not by
+	// concatenating raw samples: see pooledSamples for why the concatenated
+	// form turned a measured 20.8% win into an inconclusive verdict. Raw
+	// per-workload data remains in RepSamples for diagnosis.
+	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, "", pooledAsRuns(meanPerRepetition(pooled.wallBase), "wall_time_ns"), pooledAsRuns(meanPerRepetition(pooled.wallCand), "wall_time_ns"))
 	comparisons = append(comparisons, wallComparisons...)
 	if wallBenchstat != "" {
 		evidence.BenchstatOutput += "pooled representative workloads:\n" + wallBenchstat
 	}
 	comparisons = append(comparisons, compareMetric("", "cpu_time_ns", "ns",
-		pooledAsRuns(pooled.cpuBase, "cpu_time_ns"), pooledAsRuns(pooled.cpuCand, "cpu_time_ns"), cpuTime)...)
+		pooledAsRuns(meanPerRepetition(pooled.cpuBase), "cpu_time_ns"), pooledAsRuns(meanPerRepetition(pooled.cpuCand), "cpu_time_ns"), cpuTime)...)
 	comparisons = append(comparisons, compareMetric("", "peak_memory_bytes", "bytes",
-		pooledAsRuns(pooled.memBase, "peak_memory_bytes"), pooledAsRuns(pooled.memCand, "peak_memory_bytes"), peakMemory)...)
+		pooledAsRuns(maxPerRepetition(pooled.memBase), "peak_memory_bytes"), pooledAsRuns(maxPerRepetition(pooled.memCand), "peak_memory_bytes"), peakMemory)...)
 	if sizeErr == nil {
 		comparisons = append(comparisons, domain.MetricComparison{Name: "binary_size_bytes", Unit: "bytes", Baseline: float64(baselineSize), Candidate: float64(candSize), DeltaPercent: percentDelta(float64(baselineSize), float64(candSize)), StatisticallyFit: true})
 	}
@@ -440,6 +452,61 @@ func pooledAsRuns(values []float64, metric string) []domain.RunResult {
 		runs = append(runs, domain.RunResult{Metrics: []domain.Metric{{Name: metric, Value: v}}})
 	}
 	return runs
+}
+
+// meanPerRepetition folds per-workload sample series into one series holding
+// the mean across workloads for each repetition.
+//
+// Wall and CPU time are additive, so this is the average cost of one pass over
+// the representative workload set, which is the quantity the primary metric
+// threshold is about. Dividing every sample by a constant leaves a Welch t
+// unchanged, so the reported absolute values stay on the single-run scale
+// while the test no longer counts between-workload spread as noise. Series of
+// differing length are folded over their common prefix.
+func meanPerRepetition(series [][]float64) []float64 {
+	depth := commonDepth(series)
+	if depth == 0 {
+		return nil
+	}
+	out := make([]float64, depth)
+	for i := range out {
+		sum := 0.0
+		for _, s := range series {
+			sum += s[i]
+		}
+		out[i] = sum / float64(len(series))
+	}
+	return out
+}
+
+// maxPerRepetition folds per-workload series into one series holding the
+// largest value per repetition. Peak memory is a high-water mark rather than
+// an additive quantity: the sum of two workloads' peaks is a number no run
+// ever produced.
+func maxPerRepetition(series [][]float64) []float64 {
+	depth := commonDepth(series)
+	if depth == 0 {
+		return nil
+	}
+	out := make([]float64, depth)
+	for i := range out {
+		out[i] = series[0][i]
+		for _, s := range series[1:] {
+			out[i] = max(out[i], s[i])
+		}
+	}
+	return out
+}
+
+func commonDepth(series [][]float64) int {
+	if len(series) == 0 {
+		return 0
+	}
+	depth := len(series[0])
+	for _, s := range series[1:] {
+		depth = min(depth, len(s))
+	}
+	return depth
 }
 
 type metricSelector func(domain.RunResult) (float64, bool)
