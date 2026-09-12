@@ -110,12 +110,26 @@ produced here or in policy.
    grants support, a parseable but insignificant p-value withdraws support
    the coarse t-test may have granted, and delta-only legacy output is
    informational and can never grant support by itself. Trimmed benchstat
-   output is kept in the candidate record for reports.
+   output is kept in the candidate record for reports. Representative
+   workloads are folded per repetition before the pooled comparison — the
+   mean across workloads for wall and CPU time, the maximum for peak memory,
+   which is a high-water mark rather than an additive quantity. Concatenating
+   raw samples from workloads of different scale instead inflates the pooled
+   spread with between-workload variance: on gron a real 20.8% win on the
+   large workload produced a pooled `t` of 1.06 against 10.69 measured on the
+   affected workload alone, and the candidate was reported inconclusive.
+   Folding leaves the reported delta unchanged, because dividing every sample
+   by a constant leaves a Welch t unchanged.
 7. **Policy.** `internal/policy` applies the fixed verdict order: behavior
    and safety failures are hard rejections; missing evidence or a primary
    metric that is not statistically supported or improves less than 3 percent
    is inconclusive; any guardrail (CPU time, peak memory, binary size)
-   regressing more than 2 percent rejects. Every verdict is persisted with
+   regressing more than 2 percent rejects. Statistical support is required of
+   the primary metric, where it protects the win itself; a required guardrail
+   is judged against its own `maximum_regression_percent` limit, because
+   demanding proof of the absence of a regression from a jittery high-water
+   mark reports inconclusive for a candidate that moved it by a fraction of
+   the limit. Every verdict is persisted with
    reasons and metric comparisons. An evaluation that never reached a
    behavior comparison carries a `FailureSummary` naming what actually
    happened — the patch failed to apply, the build failed, the upstream test
@@ -144,10 +158,37 @@ strict `git apply` viable on model-generated patches.
 ## Discovery benchmark profiling
 
 Before the model phase, the engine runs one best-effort profiling pass
-(`collectDiscoveryProfile`), which tries Go benchmark CPU profiles first and
-falls back to sampling the built binary, so every target gets hot-path
-evidence.
+(`collectDiscoveryProfile`), which samples the built binary on a manifest seed
+workload first and falls back to Go benchmark CPU profiles, so every target
+gets hot-path evidence. Sampling comes first because the measured workloads
+are what the campaign is about: a benchmark CPU profile weights every
+benchmark in the module equally regardless of how much it resembles the
+command, so microbenchmarks dominate the hot list and point the optimizer at
+code that cannot move the measured wall time. On gron three identifier
+microbenchmarks put `validFirstRune` at 36% cumulative while the measured
+workload's own hot frames (`write`, `statements.Less`, `statement.String`)
+never appeared, and the first two candidates of every campaign attacked rune
+classification before reaching the real cost. The completed event names the
+source it used (`measured N hot functions from a target sample`, `… from
+target benchmarks`, or `… from no source`).
 
+`sampleTargetProfile` runs the first representative seed workload against the
+release baseline binary under the platform sampler (macOS `sample`, Linux
+`perf`), records the hottest frames as discovery evidence, and preserves the
+raw report under `profile-sample/` in the campaign directory. It needs a
+target that outlives the sampling window, so the workload input is amplified
+first: `amplifyStdin` replicates the elements of the largest JSON array,
+which keeps the document valid and multiplies the work it describes, and
+falls back to repeating raw bytes for input that is not JSON. Repeating bytes
+alone only lengthens the run for a target that consumes all of stdin — a
+single-shot JSON CLI reads one document and ignores the rest, so gron
+finished a 16 MiB concatenation of its 84 KiB seed in 21 ms, exactly as fast
+as the unamplified seed, and the sampler could never attach. Safer frames are
+annotated with source positions through the same repository search the
+benchmark path uses, because sampler frames name a symbol but no position.
+
+When sampling succeeds the benchmark profile is still collected if the module
+declares benchmarks, because the informational PGO lane is built from it.
 `profileHotFunctions` executes `go test -bench . -cpuprofile` against a
 single package at a time, because the go command rejects `-cpuprofile` for
 more than one package and `./...` is therefore never a usable profiling
@@ -157,9 +198,8 @@ then every benchmark-bearing package in the module, richest first:
 `_test.go` files, breaking ties lexicographically so repeated campaigns
 profile the same package. A CLI's command package typically declares no
 benchmarks while the library packages it drives do — gojq benchmarks its
-evaluator, not `./cmd/gojq` — and without the widened attempt those targets
-silently degrade to the OS sampler, whose frames carry no source position at
-all.
+evaluator, not `./cmd/gojq` — and the widened attempt still gives those
+targets benchmark evidence when sampling is unavailable.
 
 The profile is summarized through `go tool pprof`. Summarizing scans four
 times the hot-function budget (`hotFunctionScanDepth`) to fill it, because a
@@ -192,17 +232,10 @@ may write can reach them and they would otherwise occupy the excerpt budget.
 Unresolvable functions keep their bare names so no entry is lost.
 
 The annotated locations are stored in campaign state as
-`discovery_hot_functions` along with the raw pprof summary artifact, and
-surface to the analyst and coordinator as measured hot functions. Any failure
-(no benchmarks, pprof failure, missing tool) falls through to
-`sampleTargetProfile`, which runs the first representative seed workload
-against the release baseline binary under the platform sampler (macOS
-`sample`, Linux `perf`), records the hottest frames as discovery evidence, and
-preserves the raw report under `profile-sample/` in the campaign directory.
-Sampler frames carry no source position, which is why the benchmark path is
-tried first. Only when both fail does the engine record a
-`discovery_profile_skipped` event and leave discovery evidence empty, rather
-than failing the campaign.
+`discovery_hot_functions` along with the raw summary artifact, and surface to
+the analyst and coordinator as measured hot functions. Only when both sources
+fail does the engine record a `discovery_profile_skipped` event and leave
+discovery evidence empty, rather than failing the campaign.
 
 ## Run modes
 

@@ -5,6 +5,7 @@ package campaign
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -527,11 +528,9 @@ func (e *Engine) runDiscoveryStep(ctx context.Context) error {
 	if e.state.CompletedSteps["discovery_profile"] {
 		return nil
 	}
-	if err := e.collectDiscoveryProfile(ctx); err != nil {
-		return err
-	}
+	source := e.collectDiscoveryProfile(ctx)
 	e.state.CompletedSteps["discovery_profile"] = true
-	return e.saveEvent("discovery_profile_completed", fmt.Sprintf("measured %d hot functions", len(e.state.DiscoveryHotFunctions)), nil)
+	return e.saveEvent("discovery_profile_completed", fmt.Sprintf("measured %d hot functions from %s", len(e.state.DiscoveryHotFunctions), source), nil)
 }
 
 func (e *Engine) finishCampaign(ctx context.Context) error {
@@ -619,22 +618,43 @@ func (e *Engine) runSeed(ctx context.Context, seed manifest.SeedWorkload) error 
 	return nil
 }
 
-// collectDiscoveryProfile is best-effort: any failure records an event and
-// leaves discovery evidence empty rather than failing the campaign. It first
-// tries Go benchmark CPU profiles; targets without benchmarks (or failing
-// profile summarization) fall back to sampling the built target binary
-// directly with platform tools, so every target gets hot-path evidence.
-func (e *Engine) collectDiscoveryProfile(ctx context.Context) error {
-	var benchErr error
-	if err := e.profileHotFunctions(ctx); err != nil {
-		benchErr = err
-	} else {
-		return nil
+const (
+	profileSourceTargetSample = "a target sample"
+	profileSourceBenchmark    = "target benchmarks"
+	profileSourceNone         = "no source"
+)
+
+// collectDiscoveryProfile chooses where discovery hot paths come from, and
+// returns that source's name for the completed event.
+//
+// The measured workloads come first, because they are what the campaign is
+// about. A benchmark CPU profile weights every benchmark in the module equally
+// regardless of how much it resembles the command, so microbenchmarks dominate
+// the hot list and point the optimizer at code that cannot move the measured
+// wall time: on gron three identifier microbenchmarks put validFirstRune at
+// 36% cumulative while the measured workload's own hot frames (write,
+// statements.Less, statement.String) never appeared, and the first two
+// candidates of every campaign attacked rune classification before reaching
+// the real cost. Sampling the release binary on a manifest seed workload
+// profiles the execution the primary metric is taken from.
+// Every path through this function records its own event, so it has no error
+// to return: discovery evidence is best-effort and a missing source must not
+// fail the campaign.
+func (e *Engine) collectDiscoveryProfile(ctx context.Context) string {
+	sampleErr := e.sampleTargetProfile(ctx)
+	if sampleErr == nil {
+		// Still collect the benchmark profile when the module has benchmarks:
+		// the informational PGO lane is built from it, and dropping that lane
+		// because sampling won would be a silent feature regression.
+		_, _ = e.benchmarkCPUProfile(ctx)
+		return profileSourceTargetSample
 	}
-	if err := e.sampleTargetProfile(ctx); err != nil {
-		_ = e.saveEvent("discovery_profile_skipped", fmt.Sprintf("benchmark CPU profile unavailable (%s); direct target sampling unavailable (%s)", benchErr.Error(), err.Error()), nil)
+	benchErr := e.profileHotFunctions(ctx)
+	if benchErr == nil {
+		return profileSourceBenchmark
 	}
-	return nil
+	_ = e.saveEvent("discovery_profile_skipped", fmt.Sprintf("direct target sampling unavailable (%s); benchmark CPU profile unavailable (%s)", sampleErr.Error(), benchErr.Error()), nil)
+	return profileSourceNone
 }
 
 // sampleTargetProfile runs the first representative seed workload against the
@@ -674,15 +694,129 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	return nil
 }
 
-// The sampler needs the target to stay alive for the whole window.
-// Tiny seed inputs finish in milliseconds, so amplify stdin by
-// repetition (capped at 32 MiB) until the workload is long-lived.
+// amplifyStdin grows a seed input so a short-lived target stays alive for the
+// sampler's window.
+//
+// Repeating the raw bytes only lengthens the run for a target that consumes
+// all of stdin. A single-shot JSON CLI reads one document and ignores the
+// rest: gron finished a 16 MiB concatenation of its 84 KiB seed in 21 ms,
+// exactly as fast as the unamplified seed, so the target was gone before the
+// sampler could attach and every campaign fell back to a benchmark profile.
+// Replicating the elements of the document's largest array keeps the document
+// valid and multiplies the work it describes, which turns that same seed into
+// a multi-second run.
 func amplifyStdin(stdin []byte) []byte {
-	if len(stdin) == 0 || len(stdin) >= 32<<20 {
+	if len(stdin) == 0 || len(stdin) >= maxAmplifiedStdin {
 		return stdin
 	}
-	amplified := make([]byte, 0, 32<<20)
-	for len(amplified) < 16<<20 {
+	if amplified, ok := amplifyJSONArray(stdin); ok {
+		return amplified
+	}
+	return repeatStdin(stdin)
+}
+
+// maxAmplifiedStdin bounds a sampling input's size.
+const maxAmplifiedStdin = 32 << 20
+
+// amplificationTarget is how much input the amplifiers aim to produce.
+const amplificationTarget = 16 << 20
+
+// amplifyJSONArray duplicates the body of the largest JSON array so the result
+// is still one valid document. It reports false when stdin is not JSON with a
+// non-empty array, leaving the caller to fall back to byte repetition.
+func amplifyJSONArray(stdin []byte) ([]byte, bool) {
+	start, end, ok := largestJSONArray(stdin)
+	if !ok {
+		return nil, false
+	}
+	body := stdin[start+1 : end]
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, false
+	}
+	// The prefix already ends with '[', so each repetition contributes a
+	// separating comma and one more element list.
+	amplified := make([]byte, 0, amplificationTarget)
+	amplified = append(amplified, stdin[:end]...)
+	for len(amplified) < amplificationTarget {
+		amplified = append(amplified, ',')
+		amplified = append(amplified, body...)
+	}
+	return append(amplified, stdin[end:]...), true
+}
+
+// jsonSpan is a half-open byte range of a JSON container.
+type jsonSpan struct{ start, end int }
+
+// largestJSONArray returns the offsets of the '[' and ']' of the largest JSON
+// array in data. The scan is string-aware so brackets inside string literals
+// cannot confuse it, and it finds nested arrays because every closing bracket
+// is compared against the opening one it matches.
+func largestJSONArray(data []byte) (start, end int, ok bool) {
+	var stack []int
+	best := jsonSpan{start: -1, end: -1}
+	var state jsonScanState
+	for i := 0; i < len(data); i++ {
+		if state.advance(data[i]) {
+			continue
+		}
+		switch data[i] {
+		case '[':
+			stack = append(stack, i)
+		case ']':
+			if len(stack) == 0 {
+				continue
+			}
+			open := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			best = widest(best, jsonSpan{start: open, end: i})
+		}
+	}
+	if best.start < 0 {
+		return 0, 0, false
+	}
+	return best.start, best.end, true
+}
+
+// jsonScanState tracks whether the scan is inside a string literal, so a
+// bracket in string content is never mistaken for structure.
+type jsonScanState struct {
+	inString bool
+	escaped  bool
+}
+
+// advance consumes one byte and reports whether it belonged to a string
+// literal, meaning the caller must not treat it as structure.
+func (s *jsonScanState) advance(c byte) bool {
+	if !s.inString {
+		if c == '"' {
+			s.inString = true
+			return true
+		}
+		return false
+	}
+	switch {
+	case s.escaped:
+		s.escaped = false
+	case c == '\\':
+		s.escaped = true
+	case c == '"':
+		s.inString = false
+	}
+	return true
+}
+
+func widest(a, b jsonSpan) jsonSpan {
+	if b.end-b.start > a.end-a.start {
+		return b
+	}
+	return a
+}
+
+// repeatStdin is the format-agnostic fallback: it lengthens the input for any
+// target that consumes all of stdin.
+func repeatStdin(stdin []byte) []byte {
+	amplified := make([]byte, 0, maxAmplifiedStdin)
+	for len(amplified) < amplificationTarget {
 		amplified = append(amplified, stdin...)
 	}
 	return amplified
@@ -698,9 +832,21 @@ func amplifyStdin(stdin []byte) []byte {
 // widened attempt those targets silently degrade to the OS sampler, whose
 // frames carry no source position at all.
 func (e *Engine) profileHotFunctions(ctx context.Context) error {
+	cpuProfile, err := e.benchmarkCPUProfile(ctx)
+	if err != nil {
+		return err
+	}
+	return e.summarizeBenchmarkProfile(ctx, cpuProfile)
+}
+
+// benchmarkCPUProfile runs the module's benchmarks under -cpuprofile and
+// records the profile as the PGO lane's input, returning its path. It is also
+// called when the sampler already supplied the hot functions, because the
+// informational PGO lane is built from this profile.
+func (e *Engine) benchmarkCPUProfile(ctx context.Context) (string, error) {
 	dir := filepath.Join(e.dir, "profiles")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return "", err
 	}
 	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
 	var benched bool
@@ -715,8 +861,15 @@ func (e *Engine) profileHotFunctions(ctx context.Context) error {
 		}
 	}
 	if !benched {
-		return errors.New("no package in the module produced a benchmark CPU profile")
+		return "", errors.New("no package in the module produced a benchmark CPU profile")
 	}
+	e.state.PGOProfilePath = cpuProfile
+	return cpuProfile, nil
+}
+
+// summarizeBenchmarkProfile turns a benchmark CPU profile into hot functions
+// annotated with repository-relative source positions.
+func (e *Engine) summarizeBenchmarkProfile(ctx context.Context, cpuProfile string) error {
 	artifacts, err := runner.NewArtifactStore(filepath.Join(e.dir, "artifacts"))
 	if err != nil {
 		return err
@@ -725,10 +878,8 @@ func (e *Engine) profileHotFunctions(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("summarize benchmark CPU profile: %w", err)
 	}
-	names := hotFunctionNames(summary.Functions, hotFunctionBudget)
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, cpuProfile, names)
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, cpuProfile, hotFunctionNames(summary.Functions, hotFunctionBudget))
 	e.state.DiscoveryProfileSummaryPath = summary.RawReport
-	e.state.PGOProfilePath = cpuProfile
 	return nil
 }
 
