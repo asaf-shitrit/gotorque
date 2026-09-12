@@ -48,7 +48,9 @@ initialize_campaign
 ```
 
 The route node stops the loop when the manifest's maximum candidate count or
-consecutive-failure limit is reached. The final acceptance transition is
+consecutive-failure limit is reached; the engine's `max_duration` bound (see
+Campaign bounds) can also end a run from outside the graph, at whatever node
+is executing when it expires. The final acceptance transition is
 always produced by deterministic policy (`internal/policy`); agent output,
 including the reviewer's recommendation, never decides acceptance by itself.
 
@@ -62,6 +64,15 @@ produced here or in policy.
    normalized by `internal/candidate/normalize.go`, which repairs hunk line
    counts, truncates hunks at the first malformed body line, drops emptied
    hunks with their file headers, and canonicalizes the trailing newline.
+   It also restores blank context lines. A unified diff writes a blank source
+   line as a single space, and that lone trailing space is the first thing
+   lost when a diff crosses a model, a JSON string, or anything that trims
+   line ends; ending a hunk at every empty line truncated genuine patches at
+   their first blank source line, and when the blank fell on the first body
+   line the hunk emptied out, its file headers went with it, and the campaign
+   rejected a valid candidate as a malformed diff. A hunk body is contiguous,
+   so an empty run with more body lines after it can only be blank context,
+   while an empty run at the end is trailing slack and still ends the hunk.
    `ValidateUnifiedDiff` then rejects empty or oversized patches, binary
    content, paths escaping the repository, edits to `go.mod`, `go.sum`,
    `default.pgo`, or vendored files, diagnostic instrumentation files, and,
@@ -105,17 +116,27 @@ produced here or in policy.
    metric that is not statistically supported or improves less than 3 percent
    is inconclusive; any guardrail (CPU time, peak memory, binary size)
    regressing more than 2 percent rejects. Every verdict is persisted with
-   reasons and metric comparisons.
+   reasons and metric comparisons. An evaluation that never reached a
+   behavior comparison carries a `FailureSummary` naming what actually
+   happened — the patch failed to apply, the build failed, the upstream test
+   suite failed — and policy reports that instead of the behavior-mismatch
+   reason, which would misdescribe the rejection to anyone reading a report.
 
 ## Source-excerpt enrichment
 
 After the analyst reports hot paths, `merge_analysis` calls
-`internal/campaign/excerpts.go` (best effort, deterministic). Up to five
-analyst hot-path locations of the form `path.go:line` are resolved to real
-source windows: up to 120 lines starting 40 lines before the target line,
-capped at 8 KiB each and 32 KiB total. Locations that are absolute, escape
-the repository root, or do not resolve to readable files are skipped
-silently. The excerpts travel in campaign state as `source_excerpts`, and
+`internal/campaign/excerpts.go` (best effort, deterministic). The candidate
+locations are the analyst's hot paths followed by discovery's own measured
+locations (`discovery_hot_functions`, marked `measured during discovery`), so
+a turn in which the analyst reports nothing resolvable still yields excerpts
+from the profiler's evidence. Locations of the form `path.go:line` are
+resolved to real source windows: up to 120 lines starting 40 lines before the
+target line, capped at 8 KiB each and 32 KiB total, five excerpts at most.
+Locations that are absolute, escape the repository root, repeat a
+`path:line` already taken, or do not resolve to readable files are skipped
+silently. The cap counts excerpts actually produced rather than locations
+examined: capping candidates first meant five unusable leading locations
+yielded nothing even when later ones resolved cleanly. The excerpts travel in campaign state as `source_excerpts`, and
 both coordinator and optimizer instructions direct the optimizer to anchor
 diff context lines to excerpt text rather than guessing, which is what keeps
 strict `git apply` viable on model-generated patches.
@@ -123,15 +144,65 @@ strict `git apply` viable on model-generated patches.
 ## Discovery benchmark profiling
 
 Before the model phase, the engine runs one best-effort profiling pass
-(`collectDiscoveryProfile`). It executes `go test -bench . -cpuprofile`
-against the target package in the canonical checkout, requires benchmark
-functions to actually run, and summarizes the resulting CPU profile through
-`go tool pprof`. Up to 15 non-runtime function names are stored in campaign
-state as `discovery_hot_functions` along with the raw pprof summary artifact;
-these names surface to the analyst and coordinator as measured hot functions.
-Any failure (no benchmarks, pprof failure, missing tool) records a
-`discovery_profile_skipped` event and leaves discovery evidence empty instead
-of failing the campaign.
+(`collectDiscoveryProfile`), which tries Go benchmark CPU profiles first and
+falls back to sampling the built binary, so every target gets hot-path
+evidence.
+
+`profileHotFunctions` executes `go test -bench . -cpuprofile` against a
+single package at a time, because the go command rejects `-cpuprofile` for
+more than one package and `./...` is therefore never a usable profiling
+target. `benchmarkPackageOrder` tries the manifest's target package first and
+then every benchmark-bearing package in the module, richest first:
+`internal/profile.BenchmarkPackages` counts `func Benchmark…` declarations in
+`_test.go` files, breaking ties lexicographically so repeated campaigns
+profile the same package. A CLI's command package typically declares no
+benchmarks while the library packages it drives do — gojq benchmarks its
+evaluator, not `./cmd/gojq` — and without the widened attempt those targets
+silently degrade to the OS sampler, whose frames carry no source position at
+all.
+
+The profile is summarized through `go tool pprof`. Summarizing scans four
+times the hot-function budget (`hotFunctionScanDepth`) to fill it, because a
+Go CPU profile's hottest nodes are overwhelmingly runtime scheduler and
+allocator frames; scanning only as deep as the budget yields a handful of
+module functions and spends the rest on frames no patch can touch.
+`hotFunctionNames` then deduplicates and drops `runtime.` frames, and
+`actionableSymbol` drops the rest of what no source change can address:
+unqualified and `_`-prefixed symbols, which is how the OS sampler's kernel and
+libc names (`__psynch_cvwait`, `kevent`, `nanosleep`) present and which
+describe a process waiting rather than computing — Go symbols always carry a
+package qualifier, so a missing dot is a reliable discriminator; `testing.`
+harness frames; and the module's own `Benchmark`, `Test`, `Fuzz` and `Example`
+entry points, which are measurement scaffolding rather than the program the
+target ships. Agents otherwise rank that scaffolding as a top hot path and
+reason about it as target code.
+
+Up to 15 surviving names (`hotFunctionBudget`) are annotated with source
+positions: `go tool pprof -list` over the same profile where it resolves,
+otherwise a repository search for the declaration, which matches through
+closure suffixes (`outer.func1`, `outer.func1.2`) and method receivers
+(`pkg.(*T).method`) that no `func` declaration is ever written with.
+`go tool pprof -list` reports absolute paths, and the excerpt collector
+refuses those because an absolute location is indistinguishable from one
+escaping the repository — every profiled frame therefore resolved to a
+location no source window could be read from. Positions are rewritten
+repository-relative, and frames in the standard library or module cache are
+dropped outright rather than kept as bare paths, since no patch this campaign
+may write can reach them and they would otherwise occupy the excerpt budget.
+Unresolvable functions keep their bare names so no entry is lost.
+
+The annotated locations are stored in campaign state as
+`discovery_hot_functions` along with the raw pprof summary artifact, and
+surface to the analyst and coordinator as measured hot functions. Any failure
+(no benchmarks, pprof failure, missing tool) falls through to
+`sampleTargetProfile`, which runs the first representative seed workload
+against the release baseline binary under the platform sampler (macOS
+`sample`, Linux `perf`), records the hottest frames as discovery evidence, and
+preserves the raw report under `profile-sample/` in the campaign directory.
+Sampler frames carry no source position, which is why the benchmark path is
+tried first. Only when both fail does the engine record a
+`discovery_profile_skipped` event and leave discovery evidence empty, rather
+than failing the campaign.
 
 ## Run modes
 
@@ -166,12 +237,43 @@ only removes parse failures of otherwise usable recommendations.
   single string, an object collapsed to its most identifying scalar field,
   or an array of objects likewise collapsed. Booleans accept common string
   spellings. Hot-path lists accept objects, strings, or grouped objects.
+- **Patch transport** (`internal/agents/types.go`): the optimizer is
+  instructed to carry its unified diff as a JSON array of lines, and
+  `flexPatch` joins one back into a diff. A diff embedded in a single JSON
+  string is the shape models escape worst, and one bad escape corrupts the
+  whole patch; an array confines the damage to the line containing it. The
+  string form stays accepted, both because proposals persisted by earlier
+  runs replay through this decoder when a campaign directory resumes, and
+  because a model that ignores the instruction still produces a candidate the
+  deterministic gates can judge. Wrapper objects such as `{"content": "…"}`
+  collapse through the shared text extraction.
+- **Reasoning-only turns** (`fence.go`): a response carrying no answer part is
+  converted into an error rather than yielded. ADK's two consumers of such a
+  turn disagree, and the disagreement is fatal: the workflow agent node stamps
+  the turn's empty text as the node's output, while the LLM flow classifies it
+  as thinking rather than answering and calls the model again inside the same
+  node execution — the second call's answer becomes a second output-bearing
+  event and the scheduler kills the run with `ErrMultipleOutputs`. An error
+  costs one node instead of the campaign. A reasoning model that spends its
+  whole output budget thinking produces exactly this turn. An answer that
+  merely failed to parse as JSON is still yielded, because downstream decoding
+  names the offending text. At most one complete response escapes a call, by
+  construction rather than by trusting the inner iterator.
 - **Retry and usage decoration**: the OpenAI-compatible provider wraps every
   role model in a decorator that transparently retries up to four attempts
   with 15, 30, then 60 second backoff while a call fails before producing
   any content (shared-pool rate limits otherwise abort multi-hour campaigns),
   and records per-role token usage into a collector persisted with campaign
   state. Endpoint credentials and API keys are never persisted.
+- **Per-attempt call logging** (`internal/agents/observer.go`): a `CallObserver`
+  receives one `CallInfo` per attempt — role, attempt number, duration, error,
+  and whether a retry follows — and `--adk` wires `LogCalls` to the command's
+  output as `[model_call]` lines. Role calls are the slowest and least
+  observable part of a campaign; without them a run prints nothing between
+  starting the workflow and the first role that completes, so a slow call, a
+  silent retry, and a hung endpoint are indistinguishable until the agent
+  deadline expires. Diagnosing that difference otherwise costs one campaign
+  per guess.
 
 ## Model routing
 
@@ -190,6 +292,24 @@ it requires `OPENROUTER_API_KEY`, checks endpoint reachability via
 `OPENROUTER_BASE_URL` (defaulting to `https://openrouter.ai/api/v1`), and
 verifies every configured model ID is advertised by the endpoint.
 
+Model calls and that preflight resolve their base URL through the same
+`endpoint()` accessor, so they cannot disagree. Passing an empty `BaseURL` to
+the OpenAI SDK silently targets `api.openai.com`, which sends the OpenRouter
+key to the wrong provider and fails with HTTP 401 only after a preflight that
+already passed against OpenRouter.
+
+One model call is bounded by a four-minute whole-request timeout. ADK issues
+these non-streaming — it streams only in SSE mode — so the endpoint sends
+nothing until generation finishes and there is no byte flow to measure
+idleness against, which makes a header or idle timeout the wrong instrument.
+Without any client timeout the SDK supplies a client with none, so a request
+the endpoint never completes hangs until the orchestrator's per-role agent
+deadline expires, consuming that role's whole budget and failing the campaign
+with nothing but `context deadline exceeded`; the retry ladder cannot help,
+because a stalled request never produces an error to retry. Four minutes
+leaves room for the ladder's attempts inside the agent deadline, against
+observed role calls of seconds to about two minutes.
+
 Role output shape is not enforced by the endpoint. Each role's instruction
 states strict JSON rules, and `internal/agents/decode.go` repairs the defects
 models actually emit (fenced blocks, unterminated strings, missing brackets).
@@ -197,6 +317,36 @@ models actually emit (fenced blocks, unterminated strings, missing brackets).
 requesting one restricts OpenRouter to providers advertising
 `structured_outputs`, which for the default model is a single saturated
 provider; see the comment on that function before enabling it.
+
+## Campaign bounds
+
+`max_duration` names a campaign, not a process. `withCampaignDeadline` spends
+what is left of the budget rather than granting it again, because an
+interrupted campaign resuming with a full budget could otherwise run for
+arbitrarily many multiples of `max_duration` across enough resumes. The
+remaining budget is `max_duration` minus the persisted `ElapsedRunTime`, the
+wall time summed over every process that has worked on the campaign;
+`StartedAt` cannot stand in for it, since a campaign is idle between an
+interruption and its resume and charging that idle time would expire any
+campaign resumed the next day. An exhausted budget yields an already-expired
+context, so a campaign with nothing left stops down the same path as one that
+runs out mid-flight.
+
+Two clocks have to agree. Go timers run on the monotonic clock, which stops
+while the machine is suspended, so a laptop that sleeps two hours mid-campaign
+hands a 90-minute context two extra hours of wall time — while `ElapsedRunTime`,
+measured with `time.Now`, keeps counting across the suspend and charges every
+one of those minutes against the same budget. `guardWallClockBudget` polls the
+wall clock every 250 ms against a fixed deadline and cancels the context when
+it passes, so whichever clock runs out first ends the run. The goroutine owns
+no engine state beyond the clock and exits with the context.
+
+A spent budget otherwise surfaces as whatever call happened to be in flight —
+a git status, a model request, an ADK graph that drained without producing a
+result — naming an innocent bystander instead of the bound that stopped the
+campaign, so the context cause wins: the run ends as `interrupted` with
+`ErrDurationBudgetExhausted` and a stop reason naming the budget and what was
+spent of it.
 
 ## Resume semantics
 
@@ -207,8 +357,22 @@ requires re-supplying the agent mode: pass `--adk` again for live agents
 (the provider and role set are rebuilt from the environment) or `--adk-stub`
 for deterministic stubs. Campaign state records `adk_mode`, and resuming a
 campaign that was started with agents without passing either flag fails with
-an explicit error. `--resume` cannot be combined with `--repo`,
-`--manifest`, or `--campaign-dir`.
+an explicit error. Because a resumed campaign takes its manifest from
+persisted state and `--resume` rejects an explicit `--manifest`, the resume
+path reads the manifest path out of state rather than requiring the flag —
+demanding one made `optimize --resume DIR --adk` impossible to satisfy in
+either direction. `--resume` cannot be combined with `--repo`, `--manifest`,
+or `--campaign-dir`.
+
+The stop bounds are campaign-wide, not per-process. The ADK graph builds a
+fresh `CampaignState` every time it is entered, so a tally living only there
+restarts at zero on every resume and the bound holds only within one process.
+`ConsecutiveFailures` is therefore persisted at every policy decision and fed
+back as `PriorConsecutiveFailures` when the graph is re-entered.
+
+`MaxCandidates` is a known exception: `CandidatesTried` is not persisted, so
+`max_candidate_patches` still binds per process and a campaign resumed enough
+times can exceed it.
 
 ## Reports
 
