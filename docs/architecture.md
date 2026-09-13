@@ -105,8 +105,12 @@ produced here or in policy.
    the report names the tests it broke.
 5. **Interleaved A/B measurement.** For each representative-tier seed
    workload, baseline and candidate binaries are measured in serialized
-   alternating pairs (baseline first, seven pairs per workload) so CPU
-   contention affects both sides equally. Before the pairs run, the baseline
+   alternating pairs (baseline first, twenty-five pairs per workload) so CPU
+   contention affects both sides equally. The pair count is sized against the
+   noise of short CLI workloads: a target that runs for 10-25 ms per seed
+   carries 6-8% per-run spread, and at seven pairs a real 3.75% win measured
+   as unsupported while thirty pairs resolved the same effect at p<1e-4.
+   Before the pairs run, the baseline
    is executed twice against itself: if two identical runs produce different
    stdout digests, the workload is treated as nondeterministic and behavior
    comparison switches to an order-insensitive sorted-lines digest, so

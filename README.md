@@ -67,6 +67,12 @@ Without an endpoint, `--adk-stub` runs the full pipeline with deterministic
 stub agents, which makes it usable in CI. Resume an interrupted campaign
 with `optimize --resume <dir> --adk`.
 
+`report` also works while a campaign is running. A live campaign holds its
+database's exclusive lock, so the report reads the snapshot the engine writes
+at startup, after baseline discovery, and after every verdict: expect the
+state as of the last of those, and one line per verdict on the progress
+stream.
+
 ## Target manifests
 
 A manifest describes the repository, build target, command shape, and seed

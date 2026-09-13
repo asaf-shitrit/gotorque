@@ -364,10 +364,15 @@ func (e *Engine) Run(ctx context.Context) (err error) {
 	if err = e.saveEvent("campaign_started", "campaign running", nil); err != nil {
 		return err
 	}
+	// A report exists from the start: the per-verdict snapshot leaves the first
+	// ten minutes of a ninety-minute campaign unreadable, which is exactly the
+	// window an operator wants to check that the run is on the right target.
+	e.snapshotReports()
 	defer e.captureRunFailure(ctx, &err)
 	if err = e.runBaselineSteps(ctx); err != nil {
 		return err
 	}
+	e.snapshotReports()
 	if err = e.verifyClean(ctx); err != nil {
 		return err
 	}

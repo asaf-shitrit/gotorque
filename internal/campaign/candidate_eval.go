@@ -19,9 +19,17 @@ import (
 )
 
 // measurementRepetitions is the interleaved A/B sample count per workload.
-// Seven pairs give the t-test enough degrees of freedom while keeping one
-// candidate cycle inside the manifest's command-timeout budget.
-const measurementRepetitions = 7
+//
+// Twenty-five pairs, not seven. The acceptance bar is 3% of wall time, and a
+// short CLI workload carries roughly 6-8% per-run spread (gojq ~9ms runs,
+// gron's 84 KiB seed ~23ms), so seven pairs leave a 3% effect sitting near
+// 1.5σ — inside the noise the Welch t-test is asked to see through. Measured
+// directly on a gron candidate that the campaign recorded as inconclusive at
+// -3.51%: thirty interleaved pairs put its real effect at -3.75% with p<1e-4,
+// while the campaign's seven pairs could not resolve it. The extra runs cost
+// about a second per workload, against minutes for the model call and the
+// build that produced the candidate.
+const measurementRepetitions = 25
 
 // evaluateCandidate runs the deterministic half of the candidate loop:
 // validate the proposed diff, apply it in an isolated worktree, build,

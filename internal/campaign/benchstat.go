@@ -175,10 +175,23 @@ func writeBenchstatSamples(dir, workloadID string, baseVals, candVals []float64)
 
 // writeSampleFile stores one duration-per-line sample file ("1234ns"),
 // the plain-text format benchstat parses natively.
+// writeSampleFile renders one measurement per line in the Go benchmark format
+// benchstat parses.
+//
+// The previous shape — one bare value per line — is not a benchmark report at
+// all: benchstat skips every line, exits 0, and prints nothing, so this lane
+// had never once contributed a p-value and every verdict fell back to a Welch
+// t-test over means. On gojq two outlier samples (19.7ms and 16.7ms against a
+// 9.9ms median) were enough to report a 6.8% pooled improvement that the
+// distribution does not contain; benchstat's rank-based comparison answers
+// ~ (p=0.648 n=7) for the same samples, which is the honest reading.
+//
+// Iterations are 1 because a sample is one whole run of the target binary
+// rather than a batch inside one process: ns/op is then the run's wall time.
 func writeSampleFile(path string, values []float64) error {
 	var b strings.Builder
-	for _, v := range values {
-		fmt.Fprintf(&b, "%s\n", strconv.FormatFloat(v, 'g', -1, 64)+"ns")
+	for i, v := range values {
+		fmt.Fprintf(&b, "BenchmarkWallTime-1\t%d\t%.0f ns/op\n", i+1, v)
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }

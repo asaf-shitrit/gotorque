@@ -3,9 +3,11 @@ package campaign
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/toolchain"
@@ -176,10 +178,81 @@ func requireBenchstatSampleFiles(t *testing.T, dir string, names ...string) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if !strings.Contains(string(data), "ns\n") {
-			t.Fatalf("%s content unexpected: %q", name, string(data))
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if !strings.HasPrefix(line, "Benchmark") || !strings.HasSuffix(line, " ns/op") {
+				t.Fatalf("%s line %q is not a measurement benchstat can parse", name, line)
+			}
 		}
 	}
+}
+
+// The lane is only worth anything if the installed benchstat accepts what the
+// engine writes, so this drives the real binary. The canned-executor tests
+// above could not see the mismatch that made every benchstat run return empty
+// output, which is how the lane stayed dead without a failing test.
+func TestWrittenSamplesSurviveRealBenchstat(t *testing.T) {
+	if _, err := exec.LookPath("benchstat"); err != nil {
+		t.Skip("benchstat is not installed")
+	}
+	for _, tt := range writtenSampleCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			summary, output := compareWithRealBenchstat(t, tt.base, tt.cand)
+			if summary.supported() != tt.supported {
+				t.Fatalf("supported = %v, want %v (p=%v) from:\n%s", summary.supported(), tt.supported, summary.PValue, output)
+			}
+		})
+	}
+}
+
+func writtenSampleCases() []struct {
+	name      string
+	base      []float64
+	cand      []float64
+	supported bool
+} {
+	return []struct {
+		name      string
+		base      []float64
+		cand      []float64
+		supported bool
+	}{
+		{
+			name: "outliers do not read as an improvement",
+			// Values from a live gojq campaign whose plain means differed by
+			// 11.7% because two baseline samples caught unrelated load.
+			base:      []float64{9.86e6, 10.25e6, 9.71e6, 19.68e6, 16.74e6, 9.88e6, 10.27e6},
+			cand:      []float64{9.97e6, 10.05e6, 9.98e6, 16.36e6, 10.14e6, 9.71e6, 10.09e6},
+			supported: false,
+		},
+		{
+			name:      "a separated pair is supported",
+			base:      []float64{10.00e6, 10.05e6, 9.98e6, 10.02e6, 9.95e6, 10.01e6, 9.99e6},
+			cand:      []float64{8.00e6, 8.02e6, 7.98e6, 8.01e6, 7.99e6, 8.03e6, 7.97e6},
+			supported: true,
+		},
+	}
+}
+
+func compareWithRealBenchstat(t *testing.T, base, cand []float64) (benchstatSummary, string) {
+	t.Helper()
+	basePath, candPath, ok := writeBenchstatSamples(t.TempDir(), "wid", base, cand)
+	if !ok {
+		t.Fatal("sample files were not written")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "benchstat", basePath, candPath).Output()
+	if err != nil {
+		t.Fatalf("benchstat: %v", err)
+	}
+	if strings.TrimSpace(string(output)) == "" {
+		t.Fatal("benchstat produced no comparison: the written samples are not in a format it parses")
+	}
+	summary, ok := parseBenchstatOutput(string(output))
+	if !ok || !summary.HasPValue {
+		t.Fatalf("no p-value parsed from real benchstat output:\n%s", output)
+	}
+	return summary, string(output)
 }
 
 func TestCompareWallTimeMetricInsignificantPWithdrawsSupport(t *testing.T) {
