@@ -1,6 +1,7 @@
 package campaign
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,5 +157,37 @@ func TestExcerptCandidatesFallBackToDiscovery(t *testing.T) {
 	}
 	if got[1].Location != "cli/encoder.go:260" {
 		t.Errorf("discovery location = %q, want cli/encoder.go:260", got[1].Location)
+	}
+}
+
+// The optimizer can only attack what it can see, so the window count has to
+// cover a measured hot list rather than a handful of frames: discovery reports
+// 15-29 hot functions on the campaign targets.
+func TestExtractExcerptsCoversAMeasuredHotList(t *testing.T) {
+	root := t.TempDir()
+	var hotPaths []agents.HotPath
+	for i := 0; i < maxExcerpts+3; i++ {
+		name := fmt.Sprintf("hot%02d.go", i)
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package p\n\nfunc Hot() {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		hotPaths = append(hotPaths, agents.HotPath{Location: name + ":3"})
+	}
+	excerpts, err := extractExcerpts(root, hotPaths, defaultMaxExcerpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(excerpts) != maxExcerpts {
+		t.Fatalf("got %d excerpts, want the %d-window budget", len(excerpts), maxExcerpts)
+	}
+	if maxExcerpts <= 5 {
+		t.Fatalf("window budget %d cannot cover a measured hot list", maxExcerpts)
+	}
+	total := 0
+	for _, e := range excerpts {
+		total += len(e.Content)
+	}
+	if total > defaultMaxExcerpts {
+		t.Fatalf("excerpts total %d bytes, over the %d-byte budget", total, defaultMaxExcerpts)
 	}
 }

@@ -16,8 +16,15 @@ const (
 	maxExcerptLines      = 120
 	excerptContextBefore = 40
 	maxExcerptBytes      = 8 * 1024
-	defaultMaxExcerpts   = 32 * 1024
-	maxExcerpts          = 5
+	// Twelve windows, and a total budget that fits twelve full ones. Five was
+	// the limiter the optimizer actually hit: discovery measures 15-29 hot
+	// functions per target (gron: 25, gojq: 8) and the analyst adds its own,
+	// so five windows showed the model roughly a fifth of the hot path and
+	// each candidate could only attack the one frame it could see. Twelve
+	// costs about 24k prompt tokens, which is noise against a model call that
+	// already takes 15s-3m, and covers the top half of a measured hot list.
+	maxExcerpts        = 12
+	defaultMaxExcerpts = maxExcerpts * maxExcerptBytes
 )
 
 // extractExcerpts reads real source around analyst-identified hot paths so

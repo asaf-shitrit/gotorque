@@ -160,7 +160,12 @@ locations (`discovery_hot_functions`, marked `measured during discovery`), so
 a turn in which the analyst reports nothing resolvable still yields excerpts
 from the profiler's evidence. Locations of the form `path.go:line` are
 resolved to real source windows: up to 120 lines starting 40 lines before the
-target line, capped at 8 KiB each and 32 KiB total, five excerpts at most.
+target line, capped at 8 KiB each and a total budget of twelve full windows
+(96 KiB), which is why the constants read `maxExcerpts * maxExcerptBytes`
+rather than two independent numbers. Five windows was the limiter the
+optimizer actually hit: discovery measures 15-29 hot functions per target, so
+a five-window budget showed the model about a fifth of the hot path and every
+candidate could only attack the one frame it could see.
 Locations that are absolute, escape the repository root, repeat a
 `path:line` already taken, or do not resolve to readable files are skipped
 silently. The cap counts excerpts actually produced rather than locations
