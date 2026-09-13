@@ -203,7 +203,13 @@ annotated with source positions through the same repository search the
 benchmark path uses, because sampler frames name a symbol but no position.
 
 When sampling succeeds the benchmark profile is still collected if the module
-declares benchmarks, because the informational PGO lane is built from it.
+declares benchmarks, because the informational PGO lane is built from it. That
+lane never changes a verdict, so it is bounded rather than trusted: each
+profile-guided build gets five minutes, and the lane is skipped outright when
+the campaign has less than three such budgets left to spend. On gron one
+`-pgo` build ran for thirty-six minutes inside a forty-minute campaign, the
+deadline fired mid-lane, and a candidate whose measurement had already
+completed was never recorded — the campaign ended with no verdict at all.
 `profileHotFunctions` executes `go test -bench . -cpuprofile` against a
 single package at a time, because the go command rejects `-cpuprofile` for
 more than one package and `./...` is therefore never a usable profiling

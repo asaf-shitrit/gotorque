@@ -184,6 +184,10 @@ type Engine struct {
 	// engines driven straight through RunADK never advance the clock.
 	runStartedAt  time.Time
 	elapsedBefore time.Duration
+	// pgoBuildTimeout overrides pgoLaneBuildTimeout. It is a field rather than
+	// a constant so tests can drive the lane's bound without waiting minutes
+	// for it, the same reason fence.go keeps its retry ladder in fields.
+	pgoBuildTimeout time.Duration
 }
 
 func Create(ctx context.Context, opts Options) (*Engine, error) {

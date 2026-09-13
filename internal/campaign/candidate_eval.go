@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"example.com/gotorque/internal/candidate"
 	"example.com/gotorque/internal/domain"
@@ -30,6 +31,18 @@ import (
 // about a second per workload, against minutes for the model call and the
 // build that produced the candidate.
 const measurementRepetitions = 25
+
+// The PGO lane is informational and never changes a verdict, so it must not be
+// able to spend the campaign's budget. A target whose profile-guided build is
+// slower than pgoLaneBuildTimeout gets a recorded skip instead of an eaten
+// run: on gron one `-pgo` build ran for thirty-six minutes inside a
+// forty-minute campaign, the deadline fired, and the candidate's completed
+// measurement was never recorded — the whole campaign ended with no verdict at
+// all. The floor keeps a lane that is about to be cut short from starting in
+// the tail of a campaign.
+const (
+	pgoLaneBuildTimeout = 5 * time.Minute
+)
 
 // evaluateCandidate runs the deterministic half of the candidate loop:
 // validate the proposed diff, apply it in an isolated worktree, build,
@@ -345,7 +358,14 @@ func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.Candidat
 		e.skipPgoLane(evidence, reason)
 		return
 	}
-	baselinePgo, candidatePgo, ok := e.buildPgoBinaries(ctx, candidateWorktree, candidateID, evidence)
+	if reason := e.pgoLaneUnaffordable(); reason != "" {
+		e.skipPgoLane(evidence, reason)
+		return
+	}
+	buildCtx, cancelBuild := context.WithTimeout(ctx, e.pgoBuildBudget())
+	defer cancelBuild()
+	started := e.now()
+	baselinePgo, candidatePgo, ok := e.buildPgoBinaries(buildCtx, candidateWorktree, candidateID, evidence)
 	if !ok {
 		return
 	}
@@ -358,8 +378,33 @@ func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.Candidat
 		return
 	}
 	evidence.PgoComparisons = comparisons
-	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, measurementRepetitions, filepath.Base(e.state.PGOProfilePath))
+	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each, lane cost %s; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, measurementRepetitions, e.now().Sub(started).Round(time.Second), filepath.Base(e.state.PGOProfilePath))
 	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
+}
+
+// pgoBuildBudget is the wall-clock bound on one profile-guided build in the
+// informational lane.
+func (e *Engine) pgoBuildBudget() time.Duration {
+	if e.pgoBuildTimeout > 0 {
+		return e.pgoBuildTimeout
+	}
+	return pgoLaneBuildTimeout
+}
+
+// pgoLaneUnaffordable reports why the informational lane should not start, or
+// an empty string when the campaign can afford it. A campaign with no duration
+// bound has nothing to protect.
+func (e *Engine) pgoLaneUnaffordable() string {
+	budget := e.state.Manifest.Campaign.MaxDuration.Duration()
+	if budget <= 0 {
+		return ""
+	}
+	floor := 3 * e.pgoBuildBudget()
+	remaining := budget - e.elapsedRunTime(e.now())
+	if remaining >= floor {
+		return ""
+	}
+	return fmt.Sprintf("campaign has %s of its %s budget left and the lane may spend up to %s", remaining.Round(time.Second), budget, floor)
 }
 
 func (e *Engine) skipPgoLane(evidence *orchestrator.CandidateEvidence, reason string) {
@@ -398,6 +443,12 @@ func (e *Engine) buildPgoBinaries(ctx context.Context, candidateWorktree, candid
 func (e *Engine) buildPgoBinary(ctx context.Context, label, repository, output string, evidence *orchestrator.CandidateEvidence) bool {
 	result, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: repository, Target: e.state.Manifest.Target.Build.Package, Output: output, PGOProfile: e.state.PGOProfilePath, Env: []string{"GOTOOLCHAIN=local"}})
 	if err != nil {
+		// A build the lane's own budget cut short is a statement about the
+		// lane, not about the target's compiler output.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			e.skipPgoLane(evidence, fmt.Sprintf("%s build exceeded the lane's %s budget", label, e.pgoBuildBudget()))
+			return false
+		}
 		detail := tail(string(result.Stderr), 200)
 		if detail == "" {
 			detail = err.Error()

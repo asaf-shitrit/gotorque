@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/toolchain"
 )
@@ -91,6 +92,73 @@ func TestPgoLaneSkipsWhenProfileFileEmpty(t *testing.T) {
 	if !strings.Contains(evidence.PgoNote, "missing or empty") {
 		t.Fatalf("note should mention the empty profile file, got %q", evidence.PgoNote)
 	}
+}
+
+// The lane is informational, so it must yield to the budget a verdict needs:
+// on gron a single profile-guided build ran for thirty-six minutes inside a
+// forty-minute campaign, the deadline fired mid-lane, and the candidate's
+// completed measurement was never recorded.
+func TestPgoLaneSkipsWhenTheCampaignCannotAffordIt(t *testing.T) {
+	e := pgoLaneTestEngine(t)
+	path := filepath.Join(e.dir, "bench-cpu.pb.gz")
+	if err := os.WriteFile(path, []byte("profile"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.state.PGOProfilePath = path
+	e.state.Manifest.Campaign.MaxDuration = manifest.Duration(90 * time.Minute)
+	e.state.ElapsedRunTime = 88 * time.Minute
+	evidence := orchestrator.CandidateEvidence{}
+
+	e.runPgoLane(context.Background(), &evidence, t.TempDir(), "cand-budget")
+
+	if len(evidence.PgoComparisons) != 0 {
+		t.Fatalf("expected no comparisons, got %+v", evidence.PgoComparisons)
+	}
+	if !strings.Contains(evidence.PgoNote, "budget left") {
+		t.Fatalf("note should say the campaign cannot afford the lane, got %q", evidence.PgoNote)
+	}
+}
+
+func TestPgoLaneStillRunsWithBudgetToSpare(t *testing.T) {
+	e := pgoLaneTestEngine(t)
+	e.state.Manifest.Campaign.MaxDuration = manifest.Duration(90 * time.Minute)
+	e.state.ElapsedRunTime = 30 * time.Minute
+
+	if reason := e.pgoLaneUnaffordable(); reason != "" {
+		t.Fatalf("lane refused with 60m of budget left: %q", reason)
+	}
+}
+
+// A build the lane's own budget cuts short is reported as the lane's cost, not
+// as a compiler failure, so the report does not blame the target.
+func TestPgoLaneBoundsItsOwnBuild(t *testing.T) {
+	e := pgoLaneTestEngine(t)
+	path := filepath.Join(e.dir, "bench-cpu.pb.gz")
+	if err := os.WriteFile(path, []byte("profile"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.state.PGOProfilePath = path
+	e.state.Repository = t.TempDir()
+	e.state.Manifest.Target.Build.Package = "."
+	e.state.Manifest.Campaign.MaxDuration = manifest.Duration(90 * time.Minute)
+	e.pgoBuildTimeout = 50 * time.Millisecond
+	e.toolchain = toolchain.New(toolchain.Options{Executor: blockingExecutor{}})
+	evidence := orchestrator.CandidateEvidence{}
+
+	e.runPgoLane(context.Background(), &evidence, t.TempDir(), "cand-slow-build")
+
+	if !strings.Contains(evidence.PgoNote, "exceeded the lane's") {
+		t.Fatalf("note should name the lane's own budget, got %q", evidence.PgoNote)
+	}
+}
+
+// blockingExecutor blocks until the caller's context is done, which is how a
+// profile-guided build behaves when it outruns the lane's budget.
+type blockingExecutor struct{}
+
+func (blockingExecutor) Run(ctx context.Context, _ toolchain.Invocation) (toolchain.Result, error) {
+	<-ctx.Done()
+	return toolchain.Result{}, ctx.Err()
 }
 
 func TestPgoEvidenceFlowsIntoCandidateRecord(t *testing.T) {
