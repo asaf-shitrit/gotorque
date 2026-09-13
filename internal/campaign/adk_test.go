@@ -2,9 +2,11 @@ package campaign
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
@@ -163,4 +165,37 @@ func TestEligiblePrimaryNameSelectsPooledAndPerWorkloadReadings(t *testing.T) {
 	require.False(t, eligiblePrimaryName("cpu_time_ns", "wall_time_ns"))
 	require.False(t, eligiblePrimaryName("8a7a59da4a397c0cf4b4c5b5/cpu_time_ns", "wall_time_ns"))
 	require.False(t, eligiblePrimaryName("wall_time_ns_suffix", "wall_time_ns"))
+}
+
+// An operator reading a live report after an accept should see which patch
+// landed: the verdict snapshot is written before promotion, so promotion has to
+// refresh it rather than leave the accepted marker for the end of the campaign.
+func TestPromoteCandidateRefreshesTheLiveSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, DatabaseName))
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, err)
+	patchPath := filepath.Join(dir, "candidate.diff")
+	require.NoError(t, os.WriteFile(patchPath, []byte("--- a/x.go\n+++ b/x.go\n"), 0o600))
+	engine := &Engine{dir: dir, store: store, progress: io.Discard, now: func() time.Time { return time.Now().UTC() }}
+	// The snapshot is read back through the manifest's duration type, which
+	// rejects a non-positive value, so the fixture needs the positive durations
+	// the loader guarantees in a real campaign.
+	engine.state.Manifest.Campaign = manifest.CampaignLimits{
+		MaxDuration:           manifest.Duration(time.Minute),
+		DiscoveryStallTimeout: manifest.Duration(time.Minute),
+		MinimumCommandTimeout: manifest.Duration(time.Second),
+	}
+	engine.state.CandidateRecords = []CandidateRecord{{Attempt: 1, CandidateID: "cand-1", Decision: domain.DecisionAccepted}}
+	services := adkServices{engine: engine}
+
+	require.NoError(t, services.PromoteCandidate(context.Background(), domain.Candidate{ID: "cand-1", PatchPath: patchPath}))
+
+	accepted, err := os.ReadFile(filepath.Join(dir, "accepted", "cand-1.diff"))
+	require.NoError(t, err)
+	require.Contains(t, string(accepted), "--- a/x.go")
+	snapshot, err := LoadReport(dir)
+	require.NoError(t, err)
+	require.Len(t, snapshot.CandidateRecords, 1)
+	require.True(t, snapshot.CandidateRecords[0].Accepted, "live snapshot must show the accepted marker")
 }

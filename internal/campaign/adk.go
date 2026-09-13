@@ -217,6 +217,11 @@ func (s adkServices) PromoteCandidate(_ context.Context, candidate domain.Candid
 			s.engine.state.CandidateRecords[i].Accepted = true
 		}
 	}
+	// The verdict snapshot was written before promotion, so it shows the
+	// decision but not which patch landed. An operator reading the live report
+	// after an accept should see the accepted marker and the accepted/ artifact
+	// without waiting for the campaign to finish.
+	s.engine.snapshotReports()
 	return s.engine.saveEvent("candidate_accepted", "policy accepted candidate "+candidate.ID, candidate)
 }
 
