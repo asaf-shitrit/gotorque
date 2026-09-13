@@ -87,7 +87,12 @@ func ParseMacOSSample(report string) []Function {
 	return parseMacOSSampleCallGraph(report)
 }
 
-var macSampleTOSLine = regexp.MustCompile(`^\s*(\d+)\s+(\S+)(?:\s+\(in [^)]*\))?\s*$`)
+// Each entry is `symbol  (in binary)  count`, with the count right-aligned at
+// the end of the line. Reading the count from the front matched nothing a real
+// report ever prints: the shipped fixture was hand-written in a shape
+// /usr/bin/sample does not emit, so every macOS campaign parsed zero hot
+// functions, fell back to zero excerpts, and optimized blind.
+var macSampleTOSLine = regexp.MustCompile(`^\s*(\S+)\s+\(in [^)]*\)\s+(\d+)\s*$`)
 
 const macSampleTOSSection = "Sort by top of stack"
 
@@ -103,11 +108,11 @@ func parseMacOSSampleTopOfStack(report string) []Function {
 		if match == nil {
 			continue
 		}
-		count, err := strconv.Atoi(match[1])
+		count, err := strconv.Atoi(match[2])
 		if err != nil || count <= 0 {
 			continue
 		}
-		name := macSampleSymbol(match[2])
+		name := macSampleSymbol(match[1])
 		if name == "" {
 			continue
 		}
@@ -118,7 +123,11 @@ func parseMacOSSampleTopOfStack(report string) []Function {
 	return rankWeights(weights)
 }
 
-var macSampleFrameLine = regexp.MustCompile(`^\s*(\d+)\s+([A-Za-z_~][^\s(+]*)(?:\s|$)`)
+// Call-graph rows are indented one level per frame and prefixed with `+` for
+// the sampled frame and `!` for a truncated branch, so the count never starts
+// the line. The old pattern required it to, which left only thread headers
+// matching and made this fallback useless on a real report.
+var macSampleFrameLine = regexp.MustCompile(`^\s*(?:[+!|]\s*)*(\d+)\s+([A-Za-z_~][^\s(+]*)(?:\s|$)`)
 
 func parseMacOSSampleCallGraph(report string) []Function {
 	weights := map[string]int{}
@@ -144,9 +153,14 @@ func parseMacOSSampleCallGraph(report string) []Function {
 
 // macSampleSymbol strips C-style argument lists from symbols such as
 // `free(void*)`, drops process-lifecycle noise, and rejects thread headers.
+//
+// A parenthesis that follows a dot belongs to a Go receiver
+// (`github.com/itchyny/gojq.(*env).Next`), not to an argument list, so cutting
+// there reduced every Go method frame to its package prefix and left the hot
+// list naming functions that do not exist.
 func macSampleSymbol(raw string) string {
 	name := raw
-	if idx := strings.Index(name, "("); idx > 0 && !strings.HasPrefix(name, "_Z") {
+	if idx := strings.Index(name, "("); idx > 0 && name[idx-1] != '.' && !strings.HasPrefix(name, "_Z") {
 		name = name[:idx]
 	}
 	name = strings.TrimPrefix(name, "0x")

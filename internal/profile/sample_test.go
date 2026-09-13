@@ -318,11 +318,39 @@ Call graph:
 Total number in stack: 2873
 
 Sort by top of stack, same collapsed (when >= 5):
-      1200  tokenize (in gojq)
-       700  compileQuery (in gojq)
-       473  free (in libsystem_malloc.dylib)
-       120  __select (in libsystem_kernel.dylib)
+        tokenize  (in gojq)        1200
+        compileQuery  (in gojq)        700
+        free  (in libsystem_malloc.dylib)        473
+        __select  (in libsystem_kernel.dylib)        120
 `
+
+// TestParseMacOSSampleOnRealReport parses a report captured from
+// /usr/bin/sample on a release build of a target, so the parser cannot drift
+// back to a shape the tool never emits.
+func TestParseMacOSSampleOnRealReport(t *testing.T) {
+	report, err := os.ReadFile(filepath.Join("testdata", "macos-sample-gojq.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	functions := ParseMacOSSample(string(report))
+	weights := map[string]int{}
+	for _, fn := range functions {
+		weights[fn.Name] = mustInt(t, fn.Flat)
+	}
+	for name, want := range map[string]int{
+		"github.com/itchyny/gojq.(*env).Next":                 22,
+		"github.com/itchyny/gojq.(*env).pushfork":             11,
+		"github.com/itchyny/gojq/cli.(*encoder).encodeString": 7,
+		"__psynch_cvwait": 4596,
+	} {
+		if weights[name] != want {
+			t.Errorf("weights[%q] = %d, want %d", name, weights[name], want)
+		}
+	}
+	if functions[0].Name != "__psynch_cvwait" {
+		t.Errorf("hottest frame = %q, want __psynch_cvwait", functions[0].Name)
+	}
+}
 
 func TestParseMacOSSamplePrefersTopOfStack(t *testing.T) {
 	functions := ParseMacOSSample(macSampleReport)

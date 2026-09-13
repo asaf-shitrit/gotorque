@@ -1,0 +1,49 @@
+Analysis of sampling 4bf95bb8250be44c31117eea-gojq (pid 23059) every 1 millisecond
+Process:         4bf95bb8250be44c31117eea-gojq [23059]
+Path:            /private/tmp/*/4bf95bb8250be44c31117eea-gojq
+Load Address:    0x100878000
+Identifier:      4bf95bb8250be44c31117eea-gojq
+Version:         ???
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  gotorque [22994]
+Target Type:     live task
+
+Date/Time:       2026-09-13 12:29:39.924 +0300
+Launch Time:     2026-09-13 12:29:39.347 +0300
+OS Version:      macOS 15.4.1 (24E263)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+----
+
+Call graph:
+    519 Thread_103209771   DispatchQueue_1: com.apple.main-thread  (serial)
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        4596
+        __semwait_signal  (in libsystem_kernel.dylib)        517
+        write  (in libsystem_kernel.dylib)        322
+        runtime.tryDeferToSpanScan  (in 4bf95bb8250be44c31117eea-gojq)        25
+        runtime.scanObjectsSmall  (in 4bf95bb8250be44c31117eea-gojq)        23
+        github.com/itchyny/gojq.(*env).Next  (in 4bf95bb8250be44c31117eea-gojq)        22
+        runtime.memclrNoHeapPointers  (in 4bf95bb8250be44c31117eea-gojq)        15
+        bytes.(*Buffer).WriteByte  (in 4bf95bb8250be44c31117eea-gojq)        11
+        github.com/itchyny/gojq.(*env).pushfork  (in 4bf95bb8250be44c31117eea-gojq)        11
+        internal/runtime/maps.(*Map).getWithoutKeySmallFastStr  (in 4bf95bb8250be44c31117eea-gojq)        11
+        internal/runtime/maps.(*Iter).Next  (in 4bf95bb8250be44c31117eea-gojq)        10
+        runtime.(*mspan).moveInlineMarks  (in 4bf95bb8250be44c31117eea-gojq)        9
+        github.com/itchyny/gojq/cli.(*encoder).encodeString  (in 4bf95bb8250be44c31117eea-gojq)        7
+        internal/chacha8rand.block  (in 4bf95bb8250be44c31117eea-gojq)        5
+        internal/runtime/maps.memHashAES  (in 4bf95bb8250be44c31117eea-gojq)        5
+        runtime.(*mspan).writeHeapBitsSmall  (in 4bf95bb8250be44c31117eea-gojq)        5
+        runtime.exitsyscall  (in 4bf95bb8250be44c31117eea-gojq)        5
+
+Binary Images:
+       0x100878000 -        0x100bf9a4f +4bf95bb8250be44c31117eea-gojq (???) <FA140BE7-314A-3F17-9A12-3B0454D8823F> /tmp/*/4bf95bb8250be44c31117eea-gojq
+       0x1802c4000 -        0x180317833  libobjc.A.dylib (940.4) <3262CD12-9CC3-3417-895F-E859872C3848> /usr/lib/libobjc.A.dylib
+       0x180318000 -        0x1803b2a83  dyld (1.0.0 - 1284.15) <ACA43A8D-6369-3A2C-AF92-3D4C458523D6> /usr/lib/dyld
+       0x1803b3000 -        0x1803b6168  libsystem_blocks.dylib (96) <AC7AF500-F60C-3198-8A67-AAD1F450E7ED> /usr/lib/system/libsystem_blocks.dylib
+
+Binary Images:
+       0x100878000 -        0x100bf9a4f +4bf95bb8250be44c31117eea-gojq (???) <FA140BE7-314A-3F17-9A12-3B0454D8823F> /tmp/*/4bf95bb8250be44c31117eea-gojq
+       0x1802c4000 -        0x180317833  libobjc.A.dylib (940.4) <3262CD12-9CC3-3417-895F-E859872C3848> /usr/lib/libobjc.A.dylib
+       0x180318000 -        0x1803b2a83  dyld (1.0.0 - 1284.15) <ACA43A8D-6369-3A2C-AF92-3D4C458523D6> /usr/lib/dyld
