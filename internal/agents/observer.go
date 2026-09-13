@@ -7,12 +7,16 @@ import (
 	"time"
 )
 
-// CallInfo describes one completed attempt at a role's model call.
+// CallInfo describes one attempt at a role's model call, either as it starts
+// or once it has finished.
 type CallInfo struct {
 	Role     string
 	Attempt  int // 1-based
 	Duration time.Duration
 	Err      error
+	// Started reports the attempt is beginning, and that Duration, Err and
+	// Retrying are not meaningful yet.
+	Started bool
 	// Retrying reports that fence.go will try again, either because the
 	// attempt errored or because it returned text that was not valid JSON.
 	Retrying bool
@@ -38,6 +42,8 @@ func LogCalls(w io.Writer) CallObserver {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
+		case info.Started:
+			_, _ = fmt.Fprintf(w, "[model_call] %s attempt %d started\n", info.Role, info.Attempt)
 		case info.Err != nil:
 			_, _ = fmt.Fprintf(w, "[model_call] %s attempt %d failed after %s: %v\n", info.Role, info.Attempt, info.Duration.Round(time.Millisecond), info.Err)
 		case info.Retrying:

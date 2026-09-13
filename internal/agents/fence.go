@@ -120,6 +120,10 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 				return
 			}
 			started := time.Now()
+			// The start line is what separates a slow endpoint from a hung one:
+			// a completion line alone arrives only once the attempt is over, so
+			// four minutes of silence reads the same as four minutes of work.
+			m.observer.observe(CallInfo{Role: m.role, Attempt: attempt + 1, Started: true})
 			done := m.runAttempt(ctx, req, stream, yield, run)
 			// Reported per attempt rather than per call: a campaign that
 			// prints only the final outcome cannot distinguish a slow

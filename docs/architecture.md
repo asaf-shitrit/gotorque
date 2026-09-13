@@ -417,6 +417,12 @@ policy reasons, a metric comparison table (baseline, candidate, delta
 percent, statistical support), trimmed benchstat output when benchstat
 contributed, and a per-role token usage table.
 
+A running campaign holds the database's exclusive lock, so a report read
+while one is in flight used to fail with bbolt's lock timeout. The engine
+rewrites `report.json` and `report.md` after every verdict, and `report`
+falls back to that snapshot when the database cannot be opened: the snapshot
+is the state as of the last candidate, not the live one.
+
 ## Dependency policy
 
 Use maintained libraries aggressively for orchestration, protocols, schemas,

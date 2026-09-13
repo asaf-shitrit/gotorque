@@ -24,6 +24,11 @@ func TestLogCallsReportsEveryOutcome(t *testing.T) {
 			want: []string{"optimizer", "attempt 2", "failed after 4m0s", "context deadline exceeded"},
 		},
 		{
+			name: "started",
+			info: CallInfo{Role: "reviewer", Attempt: 3, Started: true},
+			want: []string{"reviewer", "attempt 3", "started"},
+		},
+		{
 			name: "retrying on unparseable output",
 			info: CallInfo{Role: "reviewer", Attempt: 3, Duration: time.Second, Retrying: true},
 			want: []string{"reviewer", "attempt 3", "unparseable", "retrying"},

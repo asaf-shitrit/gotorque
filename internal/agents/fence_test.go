@@ -546,7 +546,11 @@ func TestFenceStrippingModelReportsEachAttemptToObserver(t *testing.T) {
 	}}
 	var calls []CallInfo
 	decorated := fastModel(inner, "analyst", nil)
-	decorated.observer = func(info CallInfo) { calls = append(calls, info) }
+	decorated.observer = func(info CallInfo) {
+		if !info.Started {
+			calls = append(calls, info)
+		}
+	}
 	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -566,5 +570,27 @@ func TestFenceStrippingModelReportsEachAttemptToObserver(t *testing.T) {
 		if call.Role != "analyst" {
 			t.Errorf("role = %q, want analyst", call.Role)
 		}
+	}
+}
+
+// A start event has to reach the observer before the attempt runs: it is what
+// makes a stalled call visible while it stalls rather than after it ends.
+func TestFenceStrippingModelAnnouncesAttemptsBeforeRunningThem(t *testing.T) {
+	inner := &sequenceLLM{responses: []*model.LLMResponse{
+		{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"objective":"x"}`}}}},
+	}}
+	var order []string
+	decorated := fastModel(inner, "optimizer", nil)
+	decorated.observer = func(info CallInfo) {
+		if info.Started {
+			order = append(order, "start")
+			return
+		}
+		order = append(order, "finish")
+	}
+	for range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+	}
+	if len(order) != 2 || order[0] != "start" || order[1] != "finish" {
+		t.Fatalf("observer order = %v, want [start finish]", order)
 	}
 }
