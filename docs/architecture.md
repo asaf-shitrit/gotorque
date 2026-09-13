@@ -89,9 +89,20 @@ produced here or in policy.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
    the compiler stderr attached to the candidate record.
-4. **Upstream test-suite gate.** `go test` must pass on the patched tree
-   before measurement starts. A test failure rejects the candidate without
-   any timing comparison.
+4. **Upstream test-suite gate.** `go test -json` must not regress against the
+   unpatched revision before measurement starts: the campaign runs the
+   target's own suite once during baseline discovery, records the failing
+   tests it finds there (`baseline_test_failures`), and rejects a candidate
+   only for failures absent from that set. Without the subtraction an
+   environment-drifted suite rejects everything — on Go 1.27 gojq's tests
+   assert an `encoding/json` error string a later release changed, so no
+   patch could ever have passed — and a test failure that predates the patch
+   is evidence about the operator's toolchain, not about the candidate. A
+   baseline run whose tests never executed at all (build or setup failure)
+   stops the campaign instead, because subtracting it would leave the gate
+   switched off while still reporting verdicts. A candidate that breaks a
+   test the baseline passed is rejected without any timing comparison, and
+   the report names the tests it broke.
 5. **Interleaved A/B measurement.** For each representative-tier seed
    workload, baseline and candidate binaries are measured in serialized
    alternating pairs (baseline first, seven pairs per workload) so CPU

@@ -1,0 +1,5 @@
+{"Time":"2026-09-13T12:50:28.21925+03:00","Action":"pass","Package":"github.com/itchyny/gojq","Test":"TestCompare/\u003cnil\u003e,\u003cnil\u003e","Elapsed":0}
+{"Time":"2026-09-13T12:50:28.219269+03:00","Action":"pass","Package":"github.com/itchyny/gojq","Test":"TestCompare/\u003cnil\u003e,false","Elapsed":0}
+{"Time":"2026-09-13T12:50:29.036669+03:00","Action":"fail","Package":"github.com/itchyny/gojq/cli","Test":"TestCliRun/stream_option_with_unterminated_input","Elapsed":0}
+{"Time":"2026-09-13T12:50:29.043922+03:00","Action":"fail","Package":"github.com/itchyny/gojq/cli","Test":"TestCliRun","Elapsed":0.49}
+{"Time":"2026-09-13T12:50:29.119263+03:00","Action":"fail","Package":"github.com/itchyny/gojq/cli","Elapsed":0.752}

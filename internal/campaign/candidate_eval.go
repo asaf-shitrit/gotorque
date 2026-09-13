@@ -112,16 +112,16 @@ func (e *Engine) buildCandidateBinary(ctx context.Context, worktree, candidateBi
 }
 
 func (e *Engine) candidateTestsPassed(ctx context.Context, worktree string, evidence *orchestrator.CandidateEvidence) bool {
-	// Behavior gate: the upstream test suite must pass on the patched tree.
-	testResult, testErr := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: worktree, Env: []string{"GOTOOLCHAIN=local"}})
+	// Behavior gate: the upstream test suite must not regress against the
+	// unpatched revision. Failures that predate the patch are subtracted
+	// rather than charged to it.
+	testResult, testErr := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: worktree, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
 	if testErr == nil && testResult.ExitCode == 0 {
 		return true
 	}
-	reason := "unknown failure"
-	if testErr != nil {
-		reason = testErr.Error()
-	} else if len(testResult.Stderr) > 0 {
-		reason = tail(string(testResult.Stderr), 400)
+	reason, passed := e.classifyTestOutcome(testResult, testErr)
+	if passed {
+		return true
 	}
 	evidence.SafetyChecksPassed = false
 	evidence.Summary = "upstream test suite failed: " + reason

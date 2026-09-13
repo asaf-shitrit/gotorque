@@ -90,6 +90,7 @@ func RenderMarkdown(state State) string {
 	var b strings.Builder
 	writeReportHeader(&b, state)
 	writeInventory(&b, state)
+	writeBehaviorGate(&b, state)
 	writeBaselineWorkloads(&b, state)
 	writeCandidateExperiments(&b, state)
 	writeTokenUsage(&b, state)
@@ -107,6 +108,20 @@ func writeInventory(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "## Repository inventory\n\nDiscovered %d packages and %d command entry points.\n\n", len(state.Inventory.Packages), len(state.Inventory.Commands))
 	for _, command := range state.Inventory.Commands {
 		fmt.Fprintf(b, "- `%s`\n", command)
+	}
+}
+
+// writeBehaviorGate states what the candidate gate could verify, because a
+// target whose own suite is already red cannot be held to "the suite passes"
+// and the report must not imply otherwise.
+func writeBehaviorGate(b *strings.Builder, state State) {
+	if len(state.BaselineTestFailures) == 0 {
+		b.WriteString("\n## Behavior gate\n\nThe upstream test suite passes on the unpatched revision, so every candidate's full suite must pass.\n")
+		return
+	}
+	fmt.Fprintf(b, "\n## Behavior gate\n\nThe upstream test suite already fails on the unpatched revision: %d test(s) are excluded from the gate, and a candidate is rejected only for failures not listed here.\n\n", len(state.BaselineTestFailures))
+	for _, failure := range state.BaselineTestFailures {
+		fmt.Fprintf(b, "- `%s`\n", failure)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
@@ -538,19 +540,14 @@ func TestFenceStrippingModelRetriesUnparseableJSON(t *testing.T) {
 	}
 }
 
-func TestFenceStrippingModelReportsEachAttemptToObserver(t *testing.T) {
-	// First response is unusable so a retry happens; the second succeeds.
+func TestFenceStrippingModelReportsEachAttemptToObserver(t *testing.T) { // First response is unusable so a retry happens; the second succeeds.
 	inner := &sequenceLLM{responses: []*model.LLMResponse{
 		{Content: &genai.Content{Parts: []*genai.Part{{Text: "not json at all"}}}},
 		{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"objective":"x"}`}}}},
 	}}
 	var calls []CallInfo
 	decorated := fastModel(inner, "analyst", nil)
-	decorated.observer = func(info CallInfo) {
-		if !info.Started {
-			calls = append(calls, info)
-		}
-	}
+	decorated.observer = completionsOnly(&calls)
 	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -575,6 +572,17 @@ func TestFenceStrippingModelReportsEachAttemptToObserver(t *testing.T) {
 
 // A start event has to reach the observer before the attempt runs: it is what
 // makes a stalled call visible while it stalls rather than after it ends.
+// completionsOnly records finished attempts, so a test can assert on the
+// outcome of each attempt without the start events interleaved.
+func completionsOnly(calls *[]CallInfo) CallObserver {
+	return func(info CallInfo) {
+		if info.Started {
+			return
+		}
+		*calls = append(*calls, info)
+	}
+}
+
 func TestFenceStrippingModelAnnouncesAttemptsBeforeRunningThem(t *testing.T) {
 	inner := &sequenceLLM{responses: []*model.LLMResponse{
 		{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"objective":"x"}`}}}},
@@ -588,7 +596,8 @@ func TestFenceStrippingModelAnnouncesAttemptsBeforeRunningThem(t *testing.T) {
 		}
 		order = append(order, "finish")
 	}
-	for range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		require.NoError(t, err)
 	}
 	if len(order) != 2 || order[0] != "start" || order[1] != "finish" {
 		t.Fatalf("observer order = %v, want [start finish]", order)

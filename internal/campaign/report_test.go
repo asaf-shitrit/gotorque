@@ -7,9 +7,21 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/require"
+
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/manifest"
 )
+
+func TestRenderMarkdownStatesWhatTheBehaviorGateVerified(t *testing.T) {
+	green := RenderMarkdown(State{})
+	require.Contains(t, green, "The upstream test suite passes on the unpatched revision")
+
+	preExisting := RenderMarkdown(State{BaselineTestFailures: []string{"github.com/itchyny/gojq/cli::TestCliRun"}})
+	require.Contains(t, preExisting, "already fails on the unpatched revision")
+	require.Contains(t, preExisting, "`github.com/itchyny/gojq/cli::TestCliRun`")
+	require.NotContains(t, preExisting, "passes on the unpatched revision")
+}
 
 func TestCandidateEventSummaryNamesPrimaryMetricAndReason(t *testing.T) {
 	record := CandidateRecord{

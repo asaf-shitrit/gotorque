@@ -143,6 +143,10 @@ type State struct {
 	Error             string             `json:"error,omitempty"`
 	LocalIsolation    bool               `json:"local_isolation"`
 	DependencyDigests map[string]string  `json:"dependency_digests,omitempty"`
+	// BaselineTestFailures holds the tests that already fail on the unpatched
+	// revision, keyed `package::Test`. The behavior gate only rejects a
+	// candidate for failures absent from this set.
+	BaselineTestFailures []string `json:"baseline_test_failures,omitempty"`
 	// TokenUsage holds per-role model token totals collected during ADK runs.
 	TokenUsage map[string]RoleUsageSnapshot `json:"token_usage,omitempty"`
 }
@@ -477,6 +481,9 @@ func (e *Engine) runBaselineSteps(ctx context.Context) error {
 		return err
 	}
 	if err := e.runBuildStep(ctx); err != nil {
+		return err
+	}
+	if err := e.runBaselineTestStep(ctx); err != nil {
 		return err
 	}
 	if err := e.runSeedSteps(ctx); err != nil {

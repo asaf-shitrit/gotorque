@@ -91,6 +91,9 @@ type TestRequest struct {
 	Repository string
 	Packages   []string
 	Race       bool
+	// JSON asks for `go test -json`, whose per-test outcomes the behavior
+	// gate compares against the unpatched revision's.
+	JSON       bool
 	Bench      string
 	Count      int
 	CoverDir   string
@@ -103,9 +106,24 @@ func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
 	if err := requireDirectory(req.Repository); err != nil {
 		return Result{}, err
 	}
+	if req.Cpuprofile != "" && !filepath.IsAbs(req.Cpuprofile) {
+		return Result{}, errors.New("cpuprofile path must be absolute")
+	}
+	env := append([]string(nil), req.Env...)
+	if req.CoverDir != "" {
+		env = append(env, "GOCOVERDIR="+req.CoverDir)
+	}
+	return t.run(ctx, t.goPath, testArgs(req), req.Repository, env, nil)
+}
+
+// testArgs renders the `go test` argument list for one request.
+func testArgs(req TestRequest) []string {
 	args := []string{"test", "-mod=readonly"}
 	if req.Race {
 		args = append(args, "-race")
+	}
+	if req.JSON {
+		args = append(args, "-json")
 	}
 	if req.Bench != "" {
 		args = append(args, "-run=^$", "-bench", req.Bench, "-benchmem")
@@ -117,21 +135,12 @@ func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
 		args = append(args, "-trace", req.TraceFile)
 	}
 	if req.Cpuprofile != "" {
-		if !filepath.IsAbs(req.Cpuprofile) {
-			return Result{}, errors.New("cpuprofile path must be absolute")
-		}
 		args = append(args, "-cpuprofile", req.Cpuprofile)
 	}
-	env := append([]string(nil), req.Env...)
-	if req.CoverDir != "" {
-		env = append(env, "GOCOVERDIR="+req.CoverDir)
-	}
 	if len(req.Packages) == 0 {
-		args = append(args, "./...")
-	} else {
-		args = append(args, req.Packages...)
+		return append(args, "./...")
 	}
-	return t.run(ctx, t.goPath, args, req.Repository, env, nil)
+	return append(args, req.Packages...)
 }
 
 func (t *Toolchain) GoEnv(ctx context.Context, repository string) (Result, error) {
