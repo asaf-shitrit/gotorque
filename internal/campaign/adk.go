@@ -253,6 +253,10 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	// Persist immediately: an ADK failure later in the run must not lose
 	// already-evaluated verdicts from bbolt.
-	_ = s.engine.saveEvent("candidate_evaluated", fmt.Sprintf("attempt %d: %s", record.Attempt, result.Decision), record)
+	_ = s.engine.saveEvent("candidate_evaluated", candidateEventSummary(record), record)
+	// A live campaign holds the database's exclusive lock, so report.json is
+	// the only artifact an operator can read while the run is in flight.
+	// Snapshot it per verdict rather than only at completion.
+	s.engine.snapshotReports()
 	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: converted, Reasons: result.Reasons}, nil
 }

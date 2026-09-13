@@ -1216,6 +1216,15 @@ func (e *Engine) saveEvent(kind, message string, data any) error {
 	return nil
 }
 
+func (e *Engine) snapshotReports() {
+	// Snapshot failure is not fatal: the verdicts live in bbolt and the report
+	// is rewritten when the campaign completes, but a silent failure would
+	// leave an operator reading a stale snapshot with no hint it is stale.
+	if err := WriteReports(e.dir, e.state); err != nil {
+		_, _ = fmt.Fprintf(e.progress, "[report_snapshot_failed] %v\n", err)
+	}
+}
+
 func stableID(parts ...string) string {
 	h := sha256.New()
 	for _, part := range parts {

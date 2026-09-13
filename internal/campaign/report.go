@@ -11,7 +11,68 @@ import (
 	"strings"
 
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/manifest"
 )
+
+// Report file names. A live campaign holds the database's exclusive lock, so
+// these two files are the only artifacts an operator can read while the run is
+// in flight.
+const (
+	ReportJSONName     = "report.json"
+	ReportMarkdownName = "report.md"
+)
+
+// candidateEventSummary renders the verdict line the progress stream prints
+// while a campaign runs. The full record, with every reason and the metric
+// table, reaches only the report file: a live campaign holds the database's
+// exclusive lock, so an operator watching a ninety-minute run has no other
+// place to read why a candidate was refused.
+func candidateEventSummary(record CandidateRecord) string {
+	summary := fmt.Sprintf("attempt %d: %s", record.Attempt, record.Decision)
+	if metric := primaryComparisonSummary(record.Comparisons); metric != "" {
+		summary += " — " + metric
+	}
+	if len(record.Reasons) > 0 {
+		summary += ": " + oneLine(record.Reasons[0], maxEventReasonChars)
+	}
+	return summary
+}
+
+const maxEventReasonChars = 200
+
+// primaryComparisonSummary describes the metric the verdict turns on, with its
+// delta and whether benchstat supported it.
+func primaryComparisonSummary(comparisons []domain.MetricComparison) string {
+	chosen := -1
+	for i, c := range comparisons {
+		if c.Name == manifest.DefaultPrimaryMetric {
+			chosen = i
+			break
+		}
+		if chosen < 0 {
+			chosen = i
+		}
+	}
+	if chosen < 0 {
+		return ""
+	}
+	c := comparisons[chosen]
+	support := "unsupported"
+	if c.StatisticallyFit {
+		support = "supported"
+	}
+	return fmt.Sprintf("%s %+.2f%% (%s)", c.Name, c.DeltaPercent, support)
+}
+
+// oneLine collapses a reason's line structure so it cannot break the
+// one-event-per-line progress format, and bounds its length.
+func oneLine(text string, limit int) string {
+	collapsed := strings.Join(strings.Fields(text), " ")
+	if len(collapsed) <= limit {
+		return collapsed
+	}
+	return collapsed[:limit] + "…"
+}
 
 func WriteReports(dir string, state State) error {
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -19,10 +80,10 @@ func WriteReports(dir string, state State) error {
 		return err
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(filepath.Join(dir, "report.json"), data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ReportJSONName), data, 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "report.md"), []byte(RenderMarkdown(state)), 0o600)
+	return os.WriteFile(filepath.Join(dir, ReportMarkdownName), []byte(RenderMarkdown(state)), 0o600)
 }
 
 func RenderMarkdown(state State) string {
@@ -186,11 +247,30 @@ func LoadReport(dir string) (State, error) {
 	}
 	store, err := OpenStore(filepath.Join(abs, DatabaseName))
 	if err != nil {
+		// A running campaign holds the database's exclusive lock, so the
+		// snapshot it writes after every verdict is the only readable copy.
+		// Falling back to it turns "timeout" into the campaign's state as of
+		// its last candidate.
+		if state, snapshotErr := loadReportSnapshot(filepath.Join(abs, ReportJSONName)); snapshotErr == nil {
+			return state, nil
+		}
 		return State{}, err
 	}
 	// Read-only load; a Close error carries no data-loss meaning.
 	defer func() { _ = store.Close() }()
 	return store.Load()
+}
+
+func loadReportSnapshot(path string) (State, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return State{}, err
+	}
+	var state State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return State{}, err
+	}
+	return state, nil
 }
 
 func fmtFloats(values []float64) string {
