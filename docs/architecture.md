@@ -133,6 +133,34 @@ produced here or in policy.
    spread with between-workload variance: on gron a real 20.8% win on the
    large workload produced a pooled `t` of 1.06 against 10.69 measured on the
    affected workload alone, and the candidate was reported inconclusive.
+
+### What a verdict rests on
+
+Acceptance is decided over the set of **acceptance-eligible workloads**: the
+pooled primary metric plus one comparison per representative-tier seed (only
+those seeds are measured, so every per-workload primary comparison is eligible
+by construction). A candidate passes when any member of that set improves by
+at least the manifest's `minimum_improvement_percent` with statistical
+support, and no member regresses past `maximum_guardrail_regression_percent`;
+the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
+`binary_size_bytes` by default) are checked on the pooled comparisons as
+before. The reason names the workload the verdict rests on.
+
+The pooled figure alone was the wrong instrument. A seed whose measured run is
+mostly process startup cannot be improved by any patch, so pooling it dilutes
+real wins toward zero: on gron the large-document seed improved 3.35% with
+support (benchstat p=0.006) while the 41-byte seed sat at -0.81% unsupported,
+which pooled to -2.53% against a 3% bar — a supported win reported as
+inconclusive. The eligible set is supplied by the engine, which owns the
+manifest and the tier rules; `internal/policy` still holds every decision and
+still touches no filesystem, process, or network.
+
+The acceptance criteria themselves come from the target's manifest
+(`performance.minimum_improvement_percent`, `maximum_guardrail_regression_percent`,
+`primary_metric`, `guardrails`, `statistical_support_required`). They used to
+be loaded, validated, and then ignored, because the policy was handed
+`policy.DefaultConfig()`; the defaults now fill in only what a manifest leaves
+out.
    Folding leaves the reported delta unchanged, because dividing every sample
    by a constant leaves a Welch t unchanged.
 7. **Policy.** `internal/policy` applies the fixed verdict order: behavior

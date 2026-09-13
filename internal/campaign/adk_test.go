@@ -10,6 +10,7 @@ import (
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/orchestrator"
+	"example.com/gotorque/internal/policy"
 
 	"github.com/stretchr/testify/require"
 )
@@ -122,4 +123,44 @@ func TestDiscoverAcceptsAllValidProposalsWithoutRejectionMetadata(t *testing.T) 
 	require.Equal(t, "0", evidence.Metadata["proposals_accepted"])
 	require.Equal(t, "0", evidence.Metadata["proposals_rejected"])
 	require.NotContains(t, evidence.Metadata, "proposal_rejections")
+}
+
+// The manifest's performance block is the acceptance contract between a
+// repository and this harness. It used to be loaded, defaulted, and validated,
+// and then ignored: the policy was handed policy.DefaultConfig(), so a target
+// asking for a 5% floor or a narrower guardrail list was judged by 3% and the
+// default guardrails.
+func TestPolicyConfigComesFromTheManifest(t *testing.T) {
+	support := false
+	m := manifest.Manifest{Performance: manifest.PerformancePolicy{
+		PrimaryMetric:                     "peak_memory_bytes",
+		MinimumImprovementPercent:         5,
+		MaximumGuardrailRegressionPercent: 1.5,
+		StatisticalSupportRequired:        &support,
+		Guardrails:                        []manifest.Guardrail{{Name: "cpu_time_ns", MaximumRegressionPercent: 0.5, Required: true}},
+	}}
+	config := policyConfigFromManifest(m)
+	require.Equal(t, "peak_memory_bytes", config.PrimaryMetric)
+	require.InDelta(t, 5.0, config.MinimumImprovementPercent, 1e-9)
+	require.InDelta(t, 1.5, config.MaximumGuardrailRegressionPercent, 1e-9)
+	require.False(t, config.StatisticalSupportRequired)
+	require.Len(t, config.Guardrails, 1)
+	require.Equal(t, "cpu_time_ns", config.Guardrails[0].Name)
+	require.InDelta(t, 0.5, config.Guardrails[0].MaximumRegressionPercent, 1e-9)
+	require.True(t, config.Guardrails[0].Required)
+}
+
+// An empty performance block must fall back to the documented defaults rather
+// than judging every candidate by a zero threshold.
+func TestPolicyConfigFallsBackToDefaults(t *testing.T) {
+	config := policyConfigFromManifest(manifest.Manifest{})
+	require.Equal(t, policy.DefaultConfig(), config)
+}
+
+func TestEligiblePrimaryNameSelectsPooledAndPerWorkloadReadings(t *testing.T) {
+	require.True(t, eligiblePrimaryName("wall_time_ns", "wall_time_ns"))
+	require.True(t, eligiblePrimaryName("8a7a59da4a397c0cf4b4c5b5/wall_time_ns", "wall_time_ns"))
+	require.False(t, eligiblePrimaryName("cpu_time_ns", "wall_time_ns"))
+	require.False(t, eligiblePrimaryName("8a7a59da4a397c0cf4b4c5b5/cpu_time_ns", "wall_time_ns"))
+	require.False(t, eligiblePrimaryName("wall_time_ns_suffix", "wall_time_ns"))
 }

@@ -42,6 +42,19 @@ type Evidence struct {
 	SafetyChecksPassed     bool
 	RepresentativeEvidence bool
 	Comparisons            []Comparison
+	// PrimaryComparisons lists the comparisons that may carry the acceptance
+	// decision: the pooled primary metric plus one entry per
+	// acceptance-eligible workload. The engine measures only
+	// representative-tier seeds, so every per-workload primary comparison it
+	// supplies is eligible by construction.
+	//
+	// The set exists because pooling is a poor fit for a seed whose run is
+	// dominated by process startup: on gron a candidate improved its
+	// large-document seed by 3.35% with support (benchstat p=0.006) while the
+	// 41-byte seed, whose measured time is mostly exec and runtime init, sat
+	// at -0.81% unsupported and pulled the pooled figure to -2.53% against a
+	// 3% bar. An empty set means "judge the pooled primary metric alone".
+	PrimaryComparisons []Comparison
 }
 
 type Comparison struct {
@@ -83,7 +96,8 @@ func DefaultConfig() Config {
 
 // Evaluate applies the v1 policy in a stable order. Behavior and safety
 // failures are hard rejections. Missing or noisy evidence is inconclusive;
-// only a statistically supported representative improvement can be accepted.
+// only a statistically supported improvement on an acceptance-eligible
+// workload can be accepted.
 func Evaluate(config Config, evidence Evidence) Result {
 	config = withDefaults(config)
 	result := Result{Decision: domain.DecisionInconclusive, Comparisons: comparisonResults(evidence.Comparisons)}
@@ -91,20 +105,91 @@ func Evaluate(config Config, evidence Evidence) Result {
 		return early
 	}
 	byName := indexComparisons(result.Comparisons)
-	primary, result, ok := lookupPrimary(config, byName, result)
+	eligible, result, ok := eligiblePrimary(config, evidence, result)
 	if !ok {
 		return result
 	}
 	if early, done := checkGuardrails(config, byName, result); done {
 		return early
 	}
-	improvement := -primary.DeltaPercent
-	if improvement < config.MinimumImprovementPercent {
-		return inconclusive(result, fmt.Sprintf("primary metric improved by %.2f%%, below the %.2f%% threshold", improvement, config.MinimumImprovementPercent))
+	if early, done := checkEligibleRegressions(config, eligible, result); done {
+		return early
+	}
+	return decideOnImprovement(config, eligible, result)
+}
+
+// eligiblePrimary resolves the comparisons that may carry acceptance. A caller
+// that supplies no per-workload breakdown keeps the pooled-only behavior,
+// reasons included.
+func eligiblePrimary(config Config, evidence Evidence, result Result) ([]ComparisonResult, Result, bool) {
+	if len(evidence.PrimaryComparisons) == 0 {
+		primary, updated, ok := lookupPrimary(config, indexComparisons(result.Comparisons), result)
+		if !ok {
+			return nil, updated, false
+		}
+		return []ComparisonResult{primary}, updated, true
+	}
+	eligible := comparisonResults(evidence.PrimaryComparisons)
+	if len(eligible) == 0 {
+		return nil, inconclusive(result, fmt.Sprintf("primary metric %q is missing", config.PrimaryMetric)), false
+	}
+	return eligible, result, true
+}
+
+// checkEligibleRegressions refuses a candidate that bought its win on one
+// workload by hurting another acceptance-eligible one past the manifest's
+// ceiling: the eligible set is a set of representative workloads, not a menu.
+func checkEligibleRegressions(config Config, eligible []ComparisonResult, result Result) (Result, bool) {
+	for _, comparison := range eligible {
+		if !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
+			return inconclusive(result, fmt.Sprintf("primary metric %q has invalid measurements", comparison.Name)), true
+		}
+		if comparison.DeltaPercent > config.MaximumGuardrailRegressionPercent {
+			return reject(result, fmt.Sprintf("workload %q regressed by %+.2f%%, over the %.2f%% limit", comparison.Name, comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent)), true
+		}
+	}
+	return result, false
+}
+
+// decideOnImprovement accepts on the best supported win in the eligible set.
+// The best unsupported improvement still shapes the reason, so an operator can
+// see how close an unsupported candidate came.
+func decideOnImprovement(config Config, eligible []ComparisonResult, result Result) Result {
+	best, supported := bestImprovement(eligible)
+	if !supported {
+		return inconclusive(result, fmt.Sprintf("no acceptance-eligible workload has a statistically supported %q improvement (best %.2f%%)", config.PrimaryMetric, -best.DeltaPercent))
+	}
+	if -best.DeltaPercent < config.MinimumImprovementPercent {
+		return inconclusive(result, fmt.Sprintf("best acceptance-eligible workload improved by %.2f%%, below the %.2f%% threshold", -best.DeltaPercent, config.MinimumImprovementPercent))
 	}
 	result.Decision = domain.DecisionAccepted
-	result.Reasons = []string{fmt.Sprintf("primary metric improved by %.2f%% with required evidence and no guardrail regression", improvement)}
+	result.Reasons = []string{fmt.Sprintf("%s improved by %.2f%% with required evidence and no guardrail regression", acceptanceSubject(best.Name, config.PrimaryMetric), -best.DeltaPercent)}
 	return result
+}
+
+// bestImprovement returns the largest improvement in the eligible set together
+// with whether that comparison carried statistical support. The supported
+// comparison wins when one exists, because that is the one acceptance rests
+// on.
+func bestImprovement(eligible []ComparisonResult) (ComparisonResult, bool) {
+	best := eligible[0]
+	supported := best.StatisticallySupported
+	for _, comparison := range eligible[1:] {
+		better := comparison.DeltaPercent < best.DeltaPercent
+		if better || (comparison.StatisticallySupported && !supported) {
+			best, supported = comparison, comparison.StatisticallySupported
+		}
+	}
+	return best, supported
+}
+
+// acceptanceSubject names what a verdict rests on: the pooled metric keeps its
+// original wording, a per-workload win names the workload.
+func acceptanceSubject(name, primaryMetric string) string {
+	if name == primaryMetric {
+		return "primary metric"
+	}
+	return fmt.Sprintf("workload %q", name)
 }
 
 func evidenceGates(result Result, evidence Evidence) (Result, bool) {

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"example.com/gotorque/internal/domain"
@@ -156,5 +157,106 @@ func TestEvaluateFallsBackToBehaviorMismatchReason(t *testing.T) {
 	want := "behavior does not match the baseline after normalization"
 	if len(result.Reasons) != 1 || result.Reasons[0] != want {
 		t.Errorf("Reasons = %v, want [%q]", result.Reasons, want)
+	}
+}
+
+// A seed whose run is dominated by process startup cannot be improved by any
+// patch, so it must not be able to veto a supported win elsewhere: gron's
+// large-document seed improved 3.35% with support (benchstat p=0.006) while
+// the 41-byte seed stayed flat and pulled the pooled figure to 2.53%, under a
+// 3% bar. The eligible set is where that decision lives.
+func TestEvaluateAcceptsOnOneEligibleWorkload(t *testing.T) {
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []Comparison{
+			{Name: "wall_time_ns", Baseline: 100, Candidate: 97.47, StatisticallySupported: true},
+			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 39.68, StatisticallySupported: false},
+			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 57.99, StatisticallySupported: true},
+			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 98, StatisticallySupported: true},
+			{Name: "cpu_time_ns", Baseline: 100, Candidate: 98, StatisticallySupported: true},
+			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		},
+		PrimaryComparisons: []Comparison{
+			{Name: "wall_time_ns", Baseline: 100, Candidate: 97.47, StatisticallySupported: true},
+			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 39.68, StatisticallySupported: false},
+			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 57.99, StatisticallySupported: true},
+		},
+	})
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if len(result.Reasons) == 0 || !strings.Contains(result.Reasons[0], `workload "big/wall_time_ns"`) {
+		t.Fatalf("reasons should name the workload the verdict rests on: %v", result.Reasons)
+	}
+}
+
+func TestEvaluateRefusesWhenNoEligibleWorkloadClearsTheThreshold(t *testing.T) {
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []Comparison{
+			{Name: "wall_time_ns", Baseline: 100, Candidate: 98, StatisticallySupported: true},
+			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 39.8, StatisticallySupported: true},
+			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 58.56, StatisticallySupported: true},
+			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		},
+		PrimaryComparisons: []Comparison{
+			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 58.56, StatisticallySupported: true},
+		},
+	})
+	if result.Decision != domain.DecisionInconclusive {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[0], "below the 3.00% threshold") {
+		t.Fatalf("reason = %v", result.Reasons)
+	}
+}
+
+// A candidate that wins on one workload by hurting another representative one
+// is not a win: the eligible set is a set, not a menu.
+func TestEvaluateRejectsRegressionOnAnotherEligibleWorkload(t *testing.T) {
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []Comparison{
+			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 57, StatisticallySupported: true},
+			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 41, StatisticallySupported: true},
+			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		},
+		PrimaryComparisons: []Comparison{
+			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 57, StatisticallySupported: true},
+			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 41, StatisticallySupported: true},
+		},
+	})
+	if result.Decision != domain.DecisionRejected {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[0], "over the 2.00% limit") {
+		t.Fatalf("reason = %v", result.Reasons)
+	}
+}
+
+// A large movement nobody can attribute is not evidence, so an unsupported
+// workload win cannot carry acceptance while a supported small one exists.
+func TestEvaluateWillNotAcceptAnUnsupportedWorkloadWin(t *testing.T) {
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []Comparison{
+			{Name: "wall_time_ns", Baseline: 100, Candidate: 99.7, StatisticallySupported: true},
+			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		},
+		PrimaryComparisons: []Comparison{
+			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 56.4, StatisticallySupported: false},
+		},
+	})
+	if result.Decision != domain.DecisionInconclusive {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[0], "statistically supported") {
+		t.Fatalf("reason = %v", result.Reasons)
 	}
 }

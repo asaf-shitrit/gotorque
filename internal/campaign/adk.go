@@ -13,6 +13,7 @@ import (
 
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/policy"
 	"example.com/gotorque/internal/workload"
@@ -219,17 +220,62 @@ func (s adkServices) PromoteCandidate(_ context.Context, candidate domain.Candid
 	return s.engine.saveEvent("candidate_accepted", "policy accepted candidate "+candidate.ID, candidate)
 }
 
-func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput) (domain.Evaluation, error) {
-	comparisons := make([]policy.Comparison, 0, len(input.Evidence.Comparisons))
-	for _, c := range input.Evidence.Comparisons {
-		comparisons = append(comparisons, policy.Comparison{Name: c.Name, Unit: c.Unit, Baseline: c.Baseline, Candidate: c.Candidate, StatisticallySupported: c.StatisticallyFit})
+// eligiblePrimaryName reports whether a comparison may carry acceptance: the
+// pooled primary metric itself, or a per-workload reading of it. The engine
+// measures only representative-tier seeds, so every per-workload primary
+// comparison it records is acceptance-eligible.
+func eligiblePrimaryName(name, primaryMetric string) bool {
+	return name == primaryMetric || strings.HasSuffix(name, "/"+primaryMetric)
+}
+
+// policyConfigFromManifest builds the acceptance policy from the target's own
+// manifest. The performance block used to be loaded, validated, and then
+// ignored, because Evaluate was handed policy.DefaultConfig(): a target
+// declaring a 5% floor or a narrower guardrail list was judged by 3% and the
+// default guardrails instead. The manifest is the contract, so its values win
+// and the defaults only fill in what it leaves out.
+func policyConfigFromManifest(m manifest.Manifest) policy.Config {
+	config := policy.DefaultConfig()
+	performance := m.Performance
+	if performance.PrimaryMetric != "" {
+		config.PrimaryMetric = performance.PrimaryMetric
 	}
-	result := policy.Evaluate(policy.DefaultConfig(), policy.Evidence{
+	if performance.MinimumImprovementPercent > 0 {
+		config.MinimumImprovementPercent = performance.MinimumImprovementPercent
+	}
+	if performance.MaximumGuardrailRegressionPercent > 0 {
+		config.MaximumGuardrailRegressionPercent = performance.MaximumGuardrailRegressionPercent
+	}
+	if performance.StatisticalSupportRequired != nil {
+		config.StatisticalSupportRequired = *performance.StatisticalSupportRequired
+	}
+	if len(performance.Guardrails) > 0 {
+		config.Guardrails = make([]policy.Guardrail, 0, len(performance.Guardrails))
+		for _, guardrail := range performance.Guardrails {
+			config.Guardrails = append(config.Guardrails, policy.Guardrail{Name: guardrail.Name, MaximumRegressionPercent: guardrail.MaximumRegressionPercent, Required: guardrail.Required})
+		}
+	}
+	return config
+}
+
+func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput) (domain.Evaluation, error) {
+	config := policyConfigFromManifest(s.engine.state.Manifest)
+	comparisons := make([]policy.Comparison, 0, len(input.Evidence.Comparisons))
+	eligible := make([]policy.Comparison, 0, len(input.Evidence.Comparisons))
+	for _, c := range input.Evidence.Comparisons {
+		converted := policy.Comparison{Name: c.Name, Unit: c.Unit, Baseline: c.Baseline, Candidate: c.Candidate, StatisticallySupported: c.StatisticallyFit}
+		comparisons = append(comparisons, converted)
+		if eligiblePrimaryName(c.Name, config.PrimaryMetric) {
+			eligible = append(eligible, converted)
+		}
+	}
+	result := policy.Evaluate(config, policy.Evidence{
 		BehaviorMatches:        input.Evidence.BehaviorMatches,
 		FailureSummary:         input.Evidence.Summary,
 		SafetyChecksPassed:     input.Evidence.SafetyChecksPassed,
 		RepresentativeEvidence: input.Evidence.RepresentativeEvidence,
 		Comparisons:            comparisons,
+		PrimaryComparisons:     eligible,
 	})
 	converted := make([]domain.MetricComparison, 0, len(result.Comparisons))
 	for _, c := range result.Comparisons {
