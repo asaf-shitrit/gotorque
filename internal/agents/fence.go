@@ -146,15 +146,14 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 
 // runAttempt runs one ladder attempt under its own deadline.
 //
-// The bound exists because the client timeout bounds one HTTP exchange, not
-// one attempt: the inner model may stack its own retries beneath the ladder,
-// so an attempt can cost a multiple of requestTimeout. Observed: a single
-// explorer attempt ran 12m1s against a 4m client timeout, which consumed the
-// orchestrator's 20m per-node deadline and aborted the whole campaign before
-// it evaluated a single candidate. Bounding the attempt keeps the ladder's
-// worst case (attempts×attemptTimeout + backoff) inside the node deadline, so
-// every attempt actually gets to run instead of the node being killed
-// mid-ladder. A non-positive attemptTimeout leaves the attempt unbounded.
+// The bound exists to keep the ladder inside the node deadline: the
+// orchestrator allows 20m per agent node, and four attempts plus backoff have
+// to fit, or a stalled provider kills the node mid-ladder and takes the
+// campaign with it. Observed: a single explorer attempt ran 12m1s and
+// consumed the whole per-node deadline before the campaign had evaluated a
+// single candidate. Silence inside an attempt is now caught far sooner by
+// streamIdleTimeout, so this bound is the backstop rather than the first line
+// of defence. A non-positive attemptTimeout leaves the attempt unbounded.
 func (m fenceStrippingModel) runAttempt(ctx context.Context, req *model.LLMRequest, stream bool, yield func(*model.LLMResponse, error) bool, run *generateRun) bool {
 	if m.attemptTimeout <= 0 {
 		return m.streamAttempt(ctx, req, stream, yield, run)

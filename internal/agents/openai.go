@@ -64,43 +64,39 @@ func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, err
 	if err != nil {
 		return nil, err
 	}
-	return NewFenceStrippingModel(inner, string(role), p.Usage, p.Observer), nil
+	// Streaming sits inside the fence so the fence still sees one response per
+	// attempt, and the endpoint still sends bytes while the model works.
+	return NewFenceStrippingModel(newStreamedModel(inner), string(role), p.Usage, p.Observer), nil
 }
 
-// requestTimeout bounds one model call. ADK runs these non-streaming (it
-// streams only in SSE mode), so the endpoint sends nothing until generation
-// finishes and a whole-request timeout is the only bound that fits: there is
-// no byte flow to measure idleness against.
+// attemptTimeout bounds one attempt of the retry ladder in fence.go. It is the
+// per-attempt deadline, and it must leave room for the whole ladder inside the
+// orchestrator's per-node agent deadline (attempts×attemptTimeout + backoff <
+// AgentTimeout), otherwise a stalled provider kills the node mid-ladder and
+// takes the campaign with it.
 //
-// It is sized against the orchestrator's per-role agent deadline. fence.go
-// retries a failed call up to four times with 15s/30s/60s backoff, so the
-// timeout must leave room for those attempts inside that deadline. Observed
-// role calls finish in seconds to about two minutes.
-const requestTimeout = 4 * time.Minute
+// Stalls themselves are caught much sooner than this by streamIdleTimeout:
+// streaming makes idleness measurable, so a call that goes quiet fails in two
+// minutes instead of consuming the whole attempt.
+const attemptTimeout = 4 * time.Minute
 
-// attemptTimeout bounds one attempt of the retry ladder in fence.go, which is
-// not the same thing as requestTimeout: the client timeout bounds a single
-// HTTP exchange, while one ladder attempt may stack several of them. The
-// ladder's worst case must fit inside the orchestrator's per-node agent
-// deadline (attempts×attemptTimeout + backoff < AgentTimeout), otherwise a
-// stalled provider kills the node mid-ladder and takes the campaign with it.
-const attemptTimeout = requestTimeout
-
-// httpClient returns the transport model calls use. Without one the SDK
-// supplies a client with no timeout at all, so a request the endpoint never
-// completes hangs until the orchestrator's agent deadline expires, consuming
-// the whole budget for that role and failing the campaign with nothing but
-// "context deadline exceeded". The retry logic in fence.go cannot help,
-// because a stalled request never produces an error to retry.
+// httpClient returns the transport model calls use.
+//
+// It carries no whole-request timeout on purpose. That bound was the old
+// instrument for a non-streaming call, where silence is the only observable,
+// and it could not tell a slow generation from a dead connection: it cut
+// calls that were still working at four minutes and reported them as stalls.
+// The stream now reports progress, so streamIdleTimeout bounds silence and the
+// attempt deadline in fence.go bounds the call.
 func (p OpenAIProvider) httpClient() *http.Client {
 	if p.Client != nil {
 		return p.Client
 	}
 	return &http.Client{
-		Timeout: requestTimeout,
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
 			ExpectContinueTimeout: 5 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 		},

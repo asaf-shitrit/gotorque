@@ -41,11 +41,18 @@ func TestOpenAIProviderEndpointDefaultsToOpenRouter(t *testing.T) {
 }
 
 func TestOpenAIProviderSuppliesBoundedHTTPClient(t *testing.T) {
-	// A nil client would leave the SDK with an unbounded one, so a stalled
-	// endpoint would burn the whole agent deadline instead of erroring.
+	// The client must be supplied so the SDK never falls back to its own, and it
+	// must carry no whole-request timeout: with streaming, silence is what
+	// streamIdleTimeout bounds, and a total-duration bound cut calls that were
+	// still producing. The header timeout keeps a dead endpoint from hanging
+	// before any byte arrives.
 	client := OpenAIProvider{}.httpClient()
 	require.NotNil(t, client)
-	require.Equal(t, requestTimeout, client.Timeout)
+	require.Zero(t, client.Timeout, "a whole-request timeout cuts working generations")
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotZero(t, transport.ResponseHeaderTimeout)
+	require.NotZero(t, transport.TLSHandshakeTimeout)
 
 	supplied := &http.Client{}
 	require.Same(t, supplied, OpenAIProvider{Client: supplied}.httpClient())
@@ -56,7 +63,18 @@ func TestOpenAIProviderSuppliesBoundedHTTPClient(t *testing.T) {
 func TestRequestTimeoutFitsInsideAgentDeadline(t *testing.T) {
 	const attempts = 4
 	const backoff = 15*time.Second + 30*time.Second + 60*time.Second
-	if worst := attempts*requestTimeout + backoff; worst > 20*time.Minute {
+	if worst := attempts*attemptTimeout + backoff; worst > 20*time.Minute {
 		t.Errorf("worst-case role call = %s, want <= the 20m agent deadline", worst)
+	}
+}
+
+// A stall now costs a fraction of an attempt: the idle bound is what fails a
+// silent stream, and it has to leave room for the rest of the ladder.
+func TestStreamIdleTimeoutLeavesRoomForTheLadder(t *testing.T) {
+	if streamIdleTimeout >= attemptTimeout {
+		t.Fatalf("idle bound %s must be shorter than the %s attempt", streamIdleTimeout, attemptTimeout)
+	}
+	if attempts := 4; time.Duration(attempts)*streamIdleTimeout > 20*time.Minute {
+		t.Fatalf("a fully stalled ladder would exceed the 20m agent deadline")
 	}
 }

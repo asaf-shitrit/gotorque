@@ -385,17 +385,36 @@ the OpenAI SDK silently targets `api.openai.com`, which sends the OpenRouter
 key to the wrong provider and fails with HTTP 401 only after a preflight that
 already passed against OpenRouter.
 
-One model call is bounded by a four-minute whole-request timeout. ADK issues
-these non-streaming (it streams only in SSE mode), so the endpoint sends
-nothing until generation finishes and there is no byte flow to measure
-idleness against, which makes a header or idle timeout the wrong instrument.
-Without any client timeout the SDK supplies a client with none, so a request
-the endpoint never completes hangs until the orchestrator's per-role agent
-deadline expires, consuming that role's whole budget and failing the campaign
-with nothing but `context deadline exceeded`; the retry ladder cannot help,
-because a stalled request never produces an error to retry. Four minutes
-leaves room for the ladder's attempts inside the agent deadline, against
-observed role calls of seconds to about two minutes.
+One model call is bounded by silence, not by total duration. ADK issues these
+non-streaming (it streams only in SSE mode), so the provider decorates every
+call with `internal/agents/stream.go`: it asks the endpoint to stream anyway,
+rebuilds the single response a non-streaming call would have produced, and
+fails the call when no chunk arrives for two minutes. The distinction is the
+whole point. A whole-request timeout cannot tell a slow model from a dead
+connection, and the four-minute one that used to bound these calls cut
+generations that were still working: every campaign round logged two to eight
+`error reading response body: context deadline exceeded` failures while
+legitimate calls ran up to three minutes, and each stalled attempt consumed
+its entire slot in the retry ladder. Streaming makes idleness measurable, so a
+quiet call is abandoned in two minutes and retried while a producing one keeps
+its time. The client therefore carries no total timeout at all; a header
+timeout still fails a dead endpoint before any byte arrives.
+
+Rebuilding the response is not a pass-through. ADK's streaming path yields the
+answer as deltas and then, as its final item, an aggregated response that
+repeats the answer with any reasoning text beside it; taking that last item
+verbatim produced `{"ok":true}{"ok":true}` on a live OpenRouter call and mixed
+deliberation into the payload the decoder parses. The decorator accumulates the
+non-thought deltas instead and holds the last item back until another arrives,
+so the answer is delivered once; usage metadata still comes from that last item,
+which is where the endpoint reports it.
+
+Per-role token accounting survives the change: verified against the live
+endpoint, one call yields exactly one response with its usage attached.
+
+The attempt deadline in `fence.go` (four minutes per ladder attempt) remains as
+the backstop, sized so attempts×timeout + backoff fits the orchestrator's
+twenty-minute per-node agent deadline.
 
 Role output shape is not enforced by the endpoint. Each role's instruction
 states strict JSON rules, and `internal/agents/decode.go` repairs the defects
