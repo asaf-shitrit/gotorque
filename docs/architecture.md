@@ -136,7 +136,7 @@ produced here or in policy.
 
 ### What a verdict rests on
 
-Acceptance is decided over the set of **acceptance-eligible workloads**: the
+Acceptance is decided over the set of **acceptance-eligible readings**: the
 pooled primary metric plus one comparison per representative-tier seed (only
 those seeds are measured, so every per-workload primary comparison is eligible
 by construction). A candidate passes when any member of that set improves by
@@ -145,6 +145,18 @@ support, and no member regresses past `maximum_guardrail_regression_percent`;
 the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as
 before. The reason names the workload the verdict rests on.
+
+Eligibility is encoded in the comparison, not in its name. A
+`domain.MetricComparison` carries the canonical `metric` plus the `workload` it
+was measured on, where an empty workload *is* the pooled reading. That replaced
+a string convention — `<workloadID>/<metric>` for a single workload, the bare
+metric for the pool — which the engine built, the campaign re-parsed to decide
+eligibility, and the policy parsed again to name the workload in its reason.
+Three packages had to agree on one format, and the workload it printed was the
+derived run identifier rather than the seed id an operator writes in the
+manifest. Comparisons and sample rows now carry the manifest seed id, so a
+verdict reads `workload "flatten-users" improved by 4.40%`; policy still holds
+every decision and still touches no filesystem, process, or network.
 
 The pooled figure alone was the wrong instrument. A seed whose measured run is
 mostly process startup cannot be improved by any patch, so pooling it dilutes

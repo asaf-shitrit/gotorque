@@ -198,7 +198,7 @@ func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrato
 }
 
 func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons *[]domain.MetricComparison, pooled *pooledSamples) bool {
-	baseReq, wid := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
+	baseReq := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
 	candReq := baseReq
 	candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
 	candReq.Workload.Command.Path = candidateBinary
@@ -217,7 +217,7 @@ func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload,
 	if !recordBehaviorMatch(ab, deterministicOutput, seed.ID, evidence, *comparisons) {
 		return false
 	}
-	e.recordSeedMetrics(ctx, seed.ID, wid, ab, evidence, comparisons, pooled)
+	e.recordSeedMetrics(ctx, seed.ID, ab, evidence, comparisons, pooled)
 	return true
 }
 
@@ -258,12 +258,12 @@ func recordBehaviorMatch(ab runner.ABResult, deterministicOutput bool, seedID st
 	return true
 }
 
-func (e *Engine) recordSeedMetrics(ctx context.Context, seedID, wid string, ab runner.ABResult, evidence *orchestrator.CandidateEvidence, comparisons *[]domain.MetricComparison, pooled *pooledSamples) {
-	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, wid, ab.Baseline, ab.Candidate)
+func (e *Engine) recordSeedMetrics(ctx context.Context, seedID string, ab runner.ABResult, evidence *orchestrator.CandidateEvidence, comparisons *[]domain.MetricComparison, pooled *pooledSamples) {
+	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, seedID, ab.Baseline, ab.Candidate)
 	*comparisons = append(*comparisons, wallComparisons...)
 	baseSamples := metricValues(ab.Baseline, wallTime)
 	candSamples := metricValues(ab.Candidate, wallTime)
-	evidence.RepSamples = append(evidence.RepSamples, domain.WorkloadSamples{WorkloadID: wid, BaselineNs: baseSamples, CandidateNs: candSamples})
+	evidence.RepSamples = append(evidence.RepSamples, domain.WorkloadSamples{Workload: seedID, BaselineNs: baseSamples, CandidateNs: candSamples})
 	if wallBenchstat != "" {
 		if evidence.BenchstatOutput != "" {
 			evidence.BenchstatOutput += "\n\n"
@@ -305,7 +305,7 @@ func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orches
 	comparisons = append(comparisons, compareMetric("", "peak_memory_bytes", "bytes",
 		pooledAsRuns(maxPerRepetition(pooled.memBase), "peak_memory_bytes"), pooledAsRuns(maxPerRepetition(pooled.memCand), "peak_memory_bytes"), peakMemory)...)
 	if sizeErr == nil {
-		comparisons = append(comparisons, domain.MetricComparison{Name: "binary_size_bytes", Unit: "bytes", Baseline: float64(baselineSize), Candidate: float64(candSize), DeltaPercent: percentDelta(float64(baselineSize), float64(candSize)), StatisticallyFit: true})
+		comparisons = append(comparisons, domain.MetricComparison{Metric: "binary_size_bytes", Unit: "bytes", Baseline: float64(baselineSize), Candidate: float64(candSize), DeltaPercent: percentDelta(float64(baselineSize), float64(candSize)), StatisticallyFit: true})
 	}
 	evidence.BehaviorMatches = true
 	evidence.SafetyChecksPassed = true
@@ -318,7 +318,11 @@ func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orches
 // seedMeasurementRequest builds the measurement runner request for one seed
 // workload against a specific binary. The workload ID is deterministic per
 // campaign and seed so baseline and variant runs share it.
-func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, binaryPath string) (runner.RunRequest, string) {
+// seedMeasurementRequest builds the measurement request for one seed. The
+// workload id it embeds is the derived run identifier the artifacts are keyed
+// by; comparisons and reports name the workload by the seed id instead, so
+// callers no longer need it back.
+func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, binaryPath string) runner.RunRequest {
 	fixtures := make(map[string][]byte, len(seed.Files))
 	for _, f := range seed.Files {
 		fixtures[f.Path] = []byte(f.Content)
@@ -337,7 +341,7 @@ func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, bin
 		Fixtures:      fixtures,
 		AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"},
 	}
-	return req, wid
+	return req
 }
 
 // runPgoLane is the informational profile-guided-optimization lane. It never
@@ -467,7 +471,7 @@ func (e *Engine) measurePgoWorkloads(ctx context.Context, evidence *orchestrator
 		if seed.Tier != domain.TierRepresentative {
 			continue
 		}
-		baseReq, wid := e.seedMeasurementRequest(seed, candidateID+"-baseline-pgo", baselinePgo)
+		baseReq := e.seedMeasurementRequest(seed, candidateID+"-baseline-pgo", baselinePgo)
 		candReq := baseReq
 		candReq.Build = runner.Build{ID: candidateID + "-candidate-pgo", BinaryPath: candidatePgo}
 		candReq.Workload.Command.Path = candidatePgo
@@ -480,9 +484,9 @@ func (e *Engine) measurePgoWorkloads(ctx context.Context, evidence *orchestrator
 			e.skipPgoLane(evidence, fmt.Sprintf("PGO-built binaries diverged on workload %q at repetition %d", seed.ID, rep))
 			return nil, 0, false
 		}
-		comparisons = append(comparisons, compareMetric(wid, "wall_time_ns", "ns", ab.Baseline, ab.Candidate, wallTime)...)
-		comparisons = append(comparisons, compareMetric(wid, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...)
-		comparisons = append(comparisons, compareMetric(wid, "peak_memory_bytes", "bytes", ab.Baseline, ab.Candidate, peakMemory)...)
+		comparisons = append(comparisons, compareMetric(seed.ID, "wall_time_ns", "ns", ab.Baseline, ab.Candidate, wallTime)...)
+		comparisons = append(comparisons, compareMetric(seed.ID, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...)
+		comparisons = append(comparisons, compareMetric(seed.ID, "peak_memory_bytes", "bytes", ab.Baseline, ab.Candidate, peakMemory)...)
 		measured++
 	}
 	return comparisons, measured, true
@@ -601,14 +605,10 @@ func peakMemory(r domain.RunResult) (float64, bool) {
 // with a conservative two-sample t-test for statistical support. The
 // comparison name carries the workload so guardrails can be evaluated per
 // workload; policy treats any regressed guardrail as a rejection.
-func compareMetric(workloadID, metric, unit string, baseline, candidateRuns []domain.RunResult, selector metricSelector) []domain.MetricComparison {
+func compareMetric(workload, metric, unit string, baseline, candidateRuns []domain.RunResult, selector metricSelector) []domain.MetricComparison {
 	baseVals := collectMetric(baseline, selector)
 	candVals := collectMetric(candidateRuns, selector)
-	name := metric
-	if workloadID != "" {
-		name = workloadID + "/" + metric
-	}
-	result := domain.MetricComparison{Name: name, Unit: unit}
+	result := domain.MetricComparison{Metric: metric, Workload: workload, Unit: unit}
 	meanBase, okBase := mean(baseVals)
 	meanCand, okCand := mean(candVals)
 	if !okBase || !okCand {

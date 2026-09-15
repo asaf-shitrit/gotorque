@@ -238,14 +238,6 @@ func (s adkServices) PromoteCandidate(_ context.Context, candidate domain.Candid
 	return s.engine.saveEvent("candidate_accepted", "policy accepted candidate "+candidate.ID, candidate)
 }
 
-// eligiblePrimaryName reports whether a comparison may carry acceptance: the
-// pooled primary metric itself, or a per-workload reading of it. The engine
-// measures only representative-tier seeds, so every per-workload primary
-// comparison it records is acceptance-eligible.
-func eligiblePrimaryName(name, primaryMetric string) bool {
-	return name == primaryMetric || strings.HasSuffix(name, "/"+primaryMetric)
-}
-
 // policyConfigFromManifest builds the acceptance policy from the target's own
 // manifest. The performance block used to be loaded, validated, and then
 // ignored, because Evaluate was handed policy.DefaultConfig(): a target
@@ -278,13 +270,14 @@ func policyConfigFromManifest(m manifest.Manifest) policy.Config {
 
 func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput) (domain.Evaluation, error) {
 	config := policyConfigFromManifest(s.engine.state.Manifest)
-	comparisons := make([]policy.Comparison, 0, len(input.Evidence.Comparisons))
-	eligible := make([]policy.Comparison, 0, len(input.Evidence.Comparisons))
+	// Eligibility is structural now: every reading of the primary metric may
+	// carry the verdict, and a reading without a workload is the pooled one.
+	// This used to be re-derived here from the comparison's name, a convention
+	// the engine, this function and the policy all had to agree on.
+	var eligible []domain.MetricComparison
 	for _, c := range input.Evidence.Comparisons {
-		converted := policy.Comparison{Name: c.Name, Unit: c.Unit, Baseline: c.Baseline, Candidate: c.Candidate, StatisticallySupported: c.StatisticallyFit}
-		comparisons = append(comparisons, converted)
-		if eligiblePrimaryName(c.Name, config.PrimaryMetric) {
-			eligible = append(eligible, converted)
+		if c.Metric == config.PrimaryMetric {
+			eligible = append(eligible, c)
 		}
 	}
 	result := policy.Evaluate(config, policy.Evidence{
@@ -292,13 +285,9 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		FailureSummary:         input.Evidence.Summary,
 		SafetyChecksPassed:     input.Evidence.SafetyChecksPassed,
 		RepresentativeEvidence: input.Evidence.RepresentativeEvidence,
-		Comparisons:            comparisons,
-		PrimaryComparisons:     eligible,
+		Comparisons:            input.Evidence.Comparisons,
+		Primary:                eligible,
 	})
-	converted := make([]domain.MetricComparison, 0, len(result.Comparisons))
-	for _, c := range result.Comparisons {
-		converted = append(converted, domain.MetricComparison{Name: c.Name, Unit: c.Unit, Baseline: c.Baseline, Candidate: c.Candidate, DeltaPercent: c.DeltaPercent, StatisticallyFit: c.StatisticallySupported})
-	}
 	// Persist the full verdict so reports can explain every decision.
 	record := CandidateRecord{
 		Attempt:         len(s.engine.state.CandidateRecords) + 1,
@@ -308,7 +297,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		Summary:         input.Evidence.Summary,
 		Decision:        result.Decision,
 		Reasons:         result.Reasons,
-		Comparisons:     converted,
+		Comparisons:     result.Comparisons,
 		BenchstatOutput: input.Evidence.BenchstatOutput,
 		Samples:         input.Evidence.RepSamples,
 		PgoComparisons:  input.Evidence.PgoComparisons,
@@ -322,5 +311,5 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	// the only artifact an operator can read while the run is in flight.
 	// Snapshot it per verdict rather than only at completion.
 	s.engine.snapshotReports()
-	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: converted, Reasons: result.Reasons}, nil
+	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: result.Comparisons, Reasons: result.Reasons}, nil
 }

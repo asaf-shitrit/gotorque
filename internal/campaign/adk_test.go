@@ -159,12 +159,43 @@ func TestPolicyConfigFallsBackToDefaults(t *testing.T) {
 	require.Equal(t, policy.DefaultConfig(), config)
 }
 
-func TestEligiblePrimaryNameSelectsPooledAndPerWorkloadReadings(t *testing.T) {
-	require.True(t, eligiblePrimaryName("wall_time_ns", "wall_time_ns"))
-	require.True(t, eligiblePrimaryName("8a7a59da4a397c0cf4b4c5b5/wall_time_ns", "wall_time_ns"))
-	require.False(t, eligiblePrimaryName("cpu_time_ns", "wall_time_ns"))
-	require.False(t, eligiblePrimaryName("8a7a59da4a397c0cf4b4c5b5/cpu_time_ns", "wall_time_ns"))
-	require.False(t, eligiblePrimaryName("wall_time_ns_suffix", "wall_time_ns"))
+// Eligibility is structural now, so the seam is where it gets tested: the
+// campaign hands the policy every reading of the primary metric, a supported
+// win on one eligible workload carries acceptance even when the pooled figure
+// is below the threshold, and the reason names that workload by its manifest
+// seed id rather than the derived run identifier it used to print.
+func TestEvaluateAcceptsAPerWorkloadWinAndNamesIt(t *testing.T) {
+	support := true
+	engine := pgoLaneTestEngine(t)
+	engine.state.Manifest.Performance = manifest.PerformancePolicy{
+		PrimaryMetric:                     "wall_time_ns",
+		MinimumImprovementPercent:         3,
+		MaximumGuardrailRegressionPercent: 2,
+		StatisticalSupportRequired:        &support,
+		Guardrails:                        []manifest.Guardrail{{Name: "cpu_time_ns", MaximumRegressionPercent: 2, Required: true}},
+	}
+	services := adkServices{engine: engine}
+
+	evaluation, err := services.Evaluate(context.Background(), orchestrator.PolicyInput{
+		Evidence: orchestrator.CandidateEvidence{
+			Candidate:              domain.Candidate{ID: "candidate-1"},
+			BehaviorMatches:        true,
+			SafetyChecksPassed:     true,
+			RepresentativeEvidence: true,
+			Comparisons: []domain.MetricComparison{
+				// The pool over both representative workloads is only 2% better,
+				// which the threshold refuses on its own.
+				{Metric: "wall_time_ns", Unit: "ns", Baseline: 1_000_000, Candidate: 980_000, StatisticallyFit: true},
+				// One eligible workload improved 5% with support.
+				{Metric: "wall_time_ns", Workload: "flatten-users", Unit: "ns", Baseline: 600_000, Candidate: 570_000, StatisticallyFit: true},
+				{Metric: "cpu_time_ns", Unit: "ns", Baseline: 500_000, Candidate: 500_000, StatisticallyFit: true},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, domain.DecisionAccepted, evaluation.Decision, "reasons: %v", evaluation.Reasons)
+	require.Contains(t, evaluation.Reasons[0], `workload "flatten-users"`)
+	require.NotContains(t, evaluation.Reasons[0], "/wall_time_ns", "a verdict must not print the derived run identifier")
 }
 
 // An operator reading a live report after an accept should see which patch

@@ -41,12 +41,16 @@ type Evidence struct {
 	FailureSummary         string
 	SafetyChecksPassed     bool
 	RepresentativeEvidence bool
-	Comparisons            []Comparison
-	// PrimaryComparisons lists the comparisons that may carry the acceptance
-	// decision: the pooled primary metric plus one entry per
-	// acceptance-eligible workload. The engine measures only
-	// representative-tier seeds, so every per-workload primary comparison it
-	// supplies is eligible by construction.
+	// Comparisons are the measured comparisons behind a verdict: the pooled
+	// reading of every metric plus one per-workload reading of the primary
+	// metric. They are the same value type the campaign stores, so nothing has
+	// to be translated on the way in or out.
+	Comparisons []domain.MetricComparison
+	// Primary lists the comparisons a verdict may rest on: every reading of the
+	// primary metric — the pooled one (Workload empty) and one per
+	// acceptance-eligible workload. The engine measures only representative-tier
+	// seeds, so every per-workload entry it supplies is eligible by
+	// construction.
 	//
 	// The set exists because pooling is a poor fit for a seed whose run is
 	// dominated by process startup: on gron a candidate improved its
@@ -54,30 +58,13 @@ type Evidence struct {
 	// 41-byte seed, whose measured time is mostly exec and runtime init, sat
 	// at -0.81% unsupported and pulled the pooled figure to -2.53% against a
 	// 3% bar. An empty set means "judge the pooled primary metric alone".
-	PrimaryComparisons []Comparison
-}
-
-type Comparison struct {
-	Name                   string
-	Unit                   string
-	Baseline               float64
-	Candidate              float64
-	StatisticallySupported bool
+	Primary []domain.MetricComparison
 }
 
 type Result struct {
 	Decision    domain.Decision
-	Comparisons []ComparisonResult
+	Comparisons []domain.MetricComparison
 	Reasons     []string
-}
-
-type ComparisonResult struct {
-	Name                   string
-	Unit                   string
-	Baseline               float64
-	Candidate              float64
-	DeltaPercent           float64
-	StatisticallySupported bool
 }
 
 func DefaultConfig() Config {
@@ -121,15 +108,15 @@ func Evaluate(config Config, evidence Evidence) Result {
 // eligiblePrimary resolves the comparisons that may carry acceptance. A caller
 // that supplies no per-workload breakdown keeps the pooled-only behavior,
 // reasons included.
-func eligiblePrimary(config Config, evidence Evidence, result Result) ([]ComparisonResult, Result, bool) {
-	if len(evidence.PrimaryComparisons) == 0 {
+func eligiblePrimary(config Config, evidence Evidence, result Result) ([]domain.MetricComparison, Result, bool) {
+	if len(evidence.Primary) == 0 {
 		primary, updated, ok := lookupPrimary(config, indexComparisons(result.Comparisons), result)
 		if !ok {
 			return nil, updated, false
 		}
-		return []ComparisonResult{primary}, updated, true
+		return []domain.MetricComparison{primary}, updated, true
 	}
-	eligible := comparisonResults(evidence.PrimaryComparisons)
+	eligible := comparisonResults(evidence.Primary)
 	if len(eligible) == 0 {
 		return nil, inconclusive(result, fmt.Sprintf("primary metric %q is missing", config.PrimaryMetric)), false
 	}
@@ -139,13 +126,13 @@ func eligiblePrimary(config Config, evidence Evidence, result Result) ([]Compari
 // checkEligibleRegressions refuses a candidate that bought its win on one
 // workload by hurting another acceptance-eligible one past the manifest's
 // ceiling: the eligible set is a set of representative workloads, not a menu.
-func checkEligibleRegressions(config Config, eligible []ComparisonResult, result Result) (Result, bool) {
+func checkEligibleRegressions(config Config, eligible []domain.MetricComparison, result Result) (Result, bool) {
 	for _, comparison := range eligible {
 		if !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
-			return inconclusive(result, fmt.Sprintf("primary metric %q has invalid measurements", comparison.Name)), true
+			return inconclusive(result, fmt.Sprintf("primary metric %q has invalid measurements", comparisonLabel(comparison))), true
 		}
 		if comparison.DeltaPercent > config.MaximumGuardrailRegressionPercent {
-			return reject(result, fmt.Sprintf("workload %q regressed by %+.2f%%, over the %.2f%% limit", comparison.Name, comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent)), true
+			return reject(result, fmt.Sprintf("workload %q regressed by %+.2f%%, over the %.2f%% limit", comparisonLabel(comparison), comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent)), true
 		}
 	}
 	return result, false
@@ -154,7 +141,7 @@ func checkEligibleRegressions(config Config, eligible []ComparisonResult, result
 // decideOnImprovement accepts on the best supported win in the eligible set.
 // The best unsupported improvement still shapes the reason, so an operator can
 // see how close an unsupported candidate came.
-func decideOnImprovement(config Config, eligible []ComparisonResult, result Result) Result {
+func decideOnImprovement(config Config, eligible []domain.MetricComparison, result Result) Result {
 	best, supported := bestImprovement(eligible)
 	if !supported {
 		return inconclusive(result, fmt.Sprintf("no acceptance-eligible workload has a statistically supported %q improvement (best %.2f%%)", config.PrimaryMetric, -best.DeltaPercent))
@@ -163,7 +150,7 @@ func decideOnImprovement(config Config, eligible []ComparisonResult, result Resu
 		return inconclusive(result, fmt.Sprintf("best acceptance-eligible workload improved by %.2f%%, below the %.2f%% threshold", -best.DeltaPercent, config.MinimumImprovementPercent))
 	}
 	result.Decision = domain.DecisionAccepted
-	result.Reasons = []string{fmt.Sprintf("%s improved by %.2f%% with required evidence and no guardrail regression", acceptanceSubject(best.Name, config.PrimaryMetric), -best.DeltaPercent)}
+	result.Reasons = []string{fmt.Sprintf("%s improved by %.2f%% with required evidence and no guardrail regression", acceptanceSubject(best), -best.DeltaPercent)}
 	return result
 }
 
@@ -171,25 +158,36 @@ func decideOnImprovement(config Config, eligible []ComparisonResult, result Resu
 // with whether that comparison carried statistical support. The supported
 // comparison wins when one exists, because that is the one acceptance rests
 // on.
-func bestImprovement(eligible []ComparisonResult) (ComparisonResult, bool) {
+func bestImprovement(eligible []domain.MetricComparison) (domain.MetricComparison, bool) {
 	best := eligible[0]
-	supported := best.StatisticallySupported
+	supported := best.StatisticallyFit
 	for _, comparison := range eligible[1:] {
 		better := comparison.DeltaPercent < best.DeltaPercent
-		if better || (comparison.StatisticallySupported && !supported) {
-			best, supported = comparison, comparison.StatisticallySupported
+		if better || (comparison.StatisticallyFit && !supported) {
+			best, supported = comparison, comparison.StatisticallyFit
 		}
 	}
 	return best, supported
 }
 
 // acceptanceSubject names what a verdict rests on: the pooled metric keeps its
-// original wording, a per-workload win names the workload.
-func acceptanceSubject(name, primaryMetric string) string {
-	if name == primaryMetric {
+// original wording, a per-workload win names the workload by its manifest seed
+// id — the name the operator writes in the target manifest — rather than the
+// derived run identifier the comparison is keyed by internally.
+func acceptanceSubject(comparison domain.MetricComparison) string {
+	if comparison.Workload == "" {
 		return "primary metric"
 	}
-	return fmt.Sprintf("workload %q", name)
+	return fmt.Sprintf("workload %q", comparison.Workload)
+}
+
+// comparisonLabel names a comparison in a policy reason: the workload when one
+// was measured, the metric otherwise.
+func comparisonLabel(comparison domain.MetricComparison) string {
+	if comparison.Workload != "" {
+		return comparison.Workload
+	}
+	return comparison.Metric
 }
 
 func evidenceGates(result Result, evidence Evidence) (Result, bool) {
@@ -208,20 +206,27 @@ func evidenceGates(result Result, evidence Evidence) (Result, bool) {
 	return result, false
 }
 
-func indexComparisons(comparisons []ComparisonResult) map[string]ComparisonResult {
-	byName := make(map[string]ComparisonResult, len(comparisons))
+// indexComparisons keys the pooled readings by metric name. Only pooled
+// entries participate: the primary metric and the guardrails are aggregates
+// over every eligible workload, while per-workload readings are judged
+// through the eligible set supplied as Evidence.Primary.
+func indexComparisons(comparisons []domain.MetricComparison) map[string]domain.MetricComparison {
+	byName := make(map[string]domain.MetricComparison, len(comparisons))
 	for _, comparison := range comparisons {
-		byName[comparison.Name] = comparison
+		if comparison.Workload != "" {
+			continue
+		}
+		byName[comparison.Metric] = comparison
 	}
 	return byName
 }
 
-func lookupPrimary(config Config, byName map[string]ComparisonResult, result Result) (ComparisonResult, Result, bool) {
+func lookupPrimary(config Config, byName map[string]domain.MetricComparison, result Result) (domain.MetricComparison, Result, bool) {
 	primary, ok := byName[config.PrimaryMetric]
 	if !ok {
 		return primary, inconclusive(result, fmt.Sprintf("primary metric %q is missing", config.PrimaryMetric)), false
 	}
-	if config.StatisticalSupportRequired && !primary.StatisticallySupported {
+	if config.StatisticalSupportRequired && !primary.StatisticallyFit {
 		return primary, inconclusive(result, fmt.Sprintf("primary metric %q is not statistically supported", config.PrimaryMetric)), false
 	}
 	if !finitePositive(primary.Baseline) || !finite(primary.Candidate) {
@@ -230,7 +235,7 @@ func lookupPrimary(config Config, byName map[string]ComparisonResult, result Res
 	return primary, result, true
 }
 
-func checkGuardrails(config Config, byName map[string]ComparisonResult, result Result) (Result, bool) {
+func checkGuardrails(config Config, byName map[string]domain.MetricComparison, result Result) (Result, bool) {
 	for _, guardrail := range config.Guardrails {
 		if early, done := checkOneGuardrail(config, guardrail, byName, result); done {
 			return early, true
@@ -239,7 +244,7 @@ func checkGuardrails(config Config, byName map[string]ComparisonResult, result R
 	return result, false
 }
 
-func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]ComparisonResult, result Result) (Result, bool) {
+func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]domain.MetricComparison, result Result) (Result, bool) {
 	comparison, found := byName[guardrail.Name]
 	if !found {
 		if guardrail.Required {
@@ -285,20 +290,22 @@ func withDefaults(config Config) Config {
 	return config
 }
 
-func comparisonResults(comparisons []Comparison) []ComparisonResult {
-	result := make([]ComparisonResult, 0, len(comparisons))
+func comparisonResults(comparisons []domain.MetricComparison) []domain.MetricComparison {
+	result := make([]domain.MetricComparison, 0, len(comparisons))
 	for _, comparison := range comparisons {
 		delta := math.NaN()
 		if comparison.Baseline > 0 && finite(comparison.Baseline) && finite(comparison.Candidate) {
 			delta = (comparison.Candidate - comparison.Baseline) / comparison.Baseline * 100
 		}
-		result = append(result, ComparisonResult{
-			Name: comparison.Name, Unit: comparison.Unit, Baseline: comparison.Baseline,
-			Candidate: comparison.Candidate, DeltaPercent: delta,
-			StatisticallySupported: comparison.StatisticallySupported,
-		})
+		comparison.DeltaPercent = delta
+		result = append(result, comparison)
 	}
-	sort.SliceStable(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Metric != result[j].Metric {
+			return result[i].Metric < result[j].Metric
+		}
+		return result[i].Workload < result[j].Workload
+	})
 	return result
 }
 

@@ -109,11 +109,15 @@ func (s benchstatSummary) supported() bool {
 // invocation failure, unparseable output — leaves the t-test path unchanged.
 // The second return value is trimmed raw benchstat output for reporting, or
 // empty when benchstat did not contribute.
-func (e *Engine) compareWallTimeMetric(ctx context.Context, workloadID string, baselineRuns, candidateRuns []domain.RunResult) ([]domain.MetricComparison, string) {
-	comparisons := compareMetric(workloadID, "wall_time_ns", "ns", baselineRuns, candidateRuns, wallTime)
+// compareWallTimeMetric builds the wall_time_ns comparison for one workload,
+// which is the manifest's seed id so the comparison, the benchstat sample files
+// and the verdict all speak in the same name the operator writes in the
+// target manifest. Pass an empty workload for the pooled reading.
+func (e *Engine) compareWallTimeMetric(ctx context.Context, workload string, baselineRuns, candidateRuns []domain.RunResult) ([]domain.MetricComparison, string) {
+	comparisons := compareMetric(workload, "wall_time_ns", "ns", baselineRuns, candidateRuns, wallTime)
 	baseVals := collectMetric(baselineRuns, wallTime)
 	candVals := collectMetric(candidateRuns, wallTime)
-	output, summary, ok := e.runBenchstat(ctx, workloadID, baseVals, candVals)
+	output, summary, ok := e.runBenchstat(ctx, workload, baseVals, candVals)
 	if !ok || len(comparisons) == 0 {
 		return comparisons, ""
 	}
@@ -124,9 +128,6 @@ func (e *Engine) compareWallTimeMetric(ctx context.Context, workloadID string, b
 		// A parseable but insignificant p-value withdraws support that the
 		// coarse t-test heuristic may have granted on these few samples.
 		c.StatisticallyFit = false
-	}
-	if summary.HasPValue {
-		c.Confidence = 1 - summary.PValue
 	}
 	return comparisons, output
 }

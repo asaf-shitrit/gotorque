@@ -241,7 +241,7 @@ func testCompareMetricMissingBaseline(t *testing.T) {
 		t.Fatalf("len = %d, want 1", len(got))
 	}
 	c := got[0]
-	if c.Name != "wl/wall_time_ns" || c.Unit != "ns" || c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || c.StatisticallyFit {
+	if (c.Metric != "wall_time_ns" || c.Workload != "wl") || c.Unit != "ns" || c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || c.StatisticallyFit {
 		t.Fatalf("unexpected comparison %+v", c)
 	}
 }
@@ -266,7 +266,7 @@ func testCompareMetricImprovement(t *testing.T) {
 		t.Fatalf("len = %d", len(got))
 	}
 	c := got[0]
-	if c.Name != "wid/wall_time_ns" || c.Unit != "ns" {
+	if (c.Metric != "wall_time_ns" || c.Workload != "wid") || c.Unit != "ns" {
 		t.Fatalf("unexpected name/unit %+v", c)
 	}
 	if math.Abs(c.Baseline-701.0/7) > 1e-9 || math.Abs(c.Candidate-351.0/7) > 1e-9 {
@@ -394,7 +394,7 @@ func behaviorRun(exitCode int, stdout, sorted string) domain.RunResult {
 }
 
 func TestRecordBehaviorMatch(t *testing.T) {
-	comparisons := []domain.MetricComparison{{Name: "wl/wall_time_ns", Unit: "ns", Baseline: 1, Candidate: 1}}
+	comparisons := []domain.MetricComparison{{Metric: "wall_time_ns", Workload: "wl", Unit: "ns", Baseline: 1, Candidate: 1}}
 
 	t.Run("no repetitions passes without touching evidence", func(t *testing.T) {
 		checkBehaviorNoRepetitions(t, comparisons)
@@ -463,7 +463,7 @@ func checkBehaviorDigestMismatch(t *testing.T, comparisons []domain.MetricCompar
 	if !evidence.SafetyChecksPassed {
 		t.Fatal("mismatch must flag safety checks passed")
 	}
-	if len(evidence.Comparisons) != 1 || evidence.Comparisons[0].Name != "wl/wall_time_ns" {
+	if len(evidence.Comparisons) != 1 || (evidence.Comparisons[0].Metric != "wall_time_ns" || evidence.Comparisons[0].Workload != "wl") {
 		t.Fatalf("comparisons not attached: %+v", evidence.Comparisons)
 	}
 }

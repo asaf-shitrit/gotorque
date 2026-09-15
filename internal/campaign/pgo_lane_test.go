@@ -165,7 +165,7 @@ func TestPgoEvidenceFlowsIntoCandidateRecord(t *testing.T) {
 	e := pgoLaneTestEngine(t)
 	services := adkServices{engine: e}
 	pgo := []domain.MetricComparison{{
-		Name: "wl/wall_time_ns", Unit: "ns",
+		Metric: "wall_time_ns", Workload: "wl", Unit: "ns",
 		Baseline: 100, Candidate: 90, DeltaPercent: -10, StatisticallyFit: true,
 	}}
 	input := orchestrator.PolicyInput{
@@ -185,7 +185,7 @@ func TestPgoEvidenceFlowsIntoCandidateRecord(t *testing.T) {
 		t.Fatalf("records = %d, want 1", len(e.state.CandidateRecords))
 	}
 	record := e.state.CandidateRecords[0]
-	if len(record.PgoComparisons) != 1 || record.PgoComparisons[0].Name != "wl/wall_time_ns" {
+	if len(record.PgoComparisons) != 1 || (record.PgoComparisons[0].Metric != "wall_time_ns" || record.PgoComparisons[0].Workload != "wl") {
 		t.Fatalf("PgoComparisons did not flow into the record: %+v", record.PgoComparisons)
 	}
 	if record.PgoNote != input.Evidence.PgoNote {
@@ -203,7 +203,7 @@ func TestReportRendersPgoLaneSection(t *testing.T) {
 		CandidateRecords: []CandidateRecord{{
 			Attempt: 1, CandidateID: "abc", Decision: domain.DecisionAccepted,
 			PgoComparisons: []domain.MetricComparison{{
-				Name: "wl/wall_time_ns", Unit: "ns",
+				Metric: "wall_time_ns", Workload: "wl", Unit: "ns",
 				Baseline: 100, Candidate: 90, DeltaPercent: -10, StatisticallyFit: true,
 			}},
 			PgoNote: "informational PGO comparison over 1 representative workload(s)",

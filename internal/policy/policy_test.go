@@ -11,11 +11,11 @@ import (
 func TestEvaluateAccepted(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 95, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 101, StatisticallySupported: true},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 95, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 101, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionAccepted {
@@ -33,11 +33,11 @@ func TestEvaluateRejectsBehaviorChangeBeforePerformance(t *testing.T) {
 func TestEvaluateRejectsGuardrailRegression(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 90, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 103, StatisticallySupported: true},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 90, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 103, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionRejected {
@@ -54,11 +54,11 @@ func TestEvaluateRejectsGuardrailRegression(t *testing.T) {
 func TestEvaluateAcceptsWithinLimitUnsupportedGuardrail(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 85.62, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 14811000, Candidate: 14835000, StatisticallySupported: false},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 84.37, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 85.62, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 14811000, Candidate: 14835000, StatisticallyFit: false},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 84.37, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionAccepted {
@@ -71,11 +71,11 @@ func TestEvaluateAcceptsWithinLimitUnsupportedGuardrail(t *testing.T) {
 func TestEvaluateRejectsUnsupportedGuardrailOverLimit(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 85, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 106, StatisticallySupported: false},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 85, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 106, StatisticallyFit: false},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionRejected {
@@ -86,11 +86,11 @@ func TestEvaluateRejectsUnsupportedGuardrailOverLimit(t *testing.T) {
 func TestEvaluateInconclusiveBelowThreshold(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 98, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 98, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionInconclusive {
@@ -108,8 +108,8 @@ func TestEvaluateInconclusiveWithoutRepresentativeEvidence(t *testing.T) {
 func TestEvaluateInconclusiveWithoutStatisticalSupport(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 90, StatisticallySupported: false},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 90, StatisticallyFit: false},
 		},
 	})
 	if result.Decision != domain.DecisionInconclusive {
@@ -127,8 +127,8 @@ func TestEvaluateRejectsFailedSafety(t *testing.T) {
 func TestComparisonResultsAreSortedAndInvalidValuesAreInconclusive(t *testing.T) {
 	result := Evaluate(Config{PrimaryMetric: "wall_time_ns", Guardrails: []Guardrail{}}, Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: math.NaN(), Candidate: 1, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: math.NaN(), Candidate: 1, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionInconclusive || len(result.Comparisons) != 1 {
@@ -168,24 +168,24 @@ func TestEvaluateFallsBackToBehaviorMismatchReason(t *testing.T) {
 func TestEvaluateAcceptsOnOneEligibleWorkload(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 97.47, StatisticallySupported: true},
-			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 39.68, StatisticallySupported: false},
-			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 57.99, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 98, StatisticallySupported: true},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 98, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 97.47, StatisticallyFit: true},
+			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 39.68, StatisticallyFit: false},
+			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 57.99, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 98, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 98, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
-		PrimaryComparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 97.47, StatisticallySupported: true},
-			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 39.68, StatisticallySupported: false},
-			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 57.99, StatisticallySupported: true},
+		Primary: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 97.47, StatisticallyFit: true},
+			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 39.68, StatisticallyFit: false},
+			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 57.99, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionAccepted {
 		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
 	}
-	if len(result.Reasons) == 0 || !strings.Contains(result.Reasons[0], `workload "big/wall_time_ns"`) {
+	if len(result.Reasons) == 0 || !strings.Contains(result.Reasons[0], `workload "big"`) {
 		t.Fatalf("reasons should name the workload the verdict rests on: %v", result.Reasons)
 	}
 }
@@ -193,16 +193,16 @@ func TestEvaluateAcceptsOnOneEligibleWorkload(t *testing.T) {
 func TestEvaluateRefusesWhenNoEligibleWorkloadClearsTheThreshold(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 98, StatisticallySupported: true},
-			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 39.8, StatisticallySupported: true},
-			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 58.56, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 98, StatisticallyFit: true},
+			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 39.8, StatisticallyFit: true},
+			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 58.56, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
-		PrimaryComparisons: []Comparison{
-			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 58.56, StatisticallySupported: true},
+		Primary: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 58.56, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionInconclusive {
@@ -218,16 +218,16 @@ func TestEvaluateRefusesWhenNoEligibleWorkloadClearsTheThreshold(t *testing.T) {
 func TestEvaluateRejectsRegressionOnAnotherEligibleWorkload(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 57, StatisticallySupported: true},
-			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 41, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 57, StatisticallyFit: true},
+			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 41, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
-		PrimaryComparisons: []Comparison{
-			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 57, StatisticallySupported: true},
-			{Name: "small/wall_time_ns", Baseline: 40, Candidate: 41, StatisticallySupported: true},
+		Primary: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 57, StatisticallyFit: true},
+			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 41, StatisticallyFit: true},
 		},
 	})
 	if result.Decision != domain.DecisionRejected {
@@ -243,14 +243,14 @@ func TestEvaluateRejectsRegressionOnAnotherEligibleWorkload(t *testing.T) {
 func TestEvaluateWillNotAcceptAnUnsupportedWorkloadWin(t *testing.T) {
 	result := Evaluate(DefaultConfig(), Evidence{
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []Comparison{
-			{Name: "wall_time_ns", Baseline: 100, Candidate: 99.7, StatisticallySupported: true},
-			{Name: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallySupported: true},
-			{Name: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallySupported: true},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 99.7, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
-		PrimaryComparisons: []Comparison{
-			{Name: "big/wall_time_ns", Baseline: 60, Candidate: 56.4, StatisticallySupported: false},
+		Primary: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 56.4, StatisticallyFit: false},
 		},
 	})
 	if result.Decision != domain.DecisionInconclusive {

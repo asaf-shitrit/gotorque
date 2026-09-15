@@ -28,8 +28,8 @@ func TestCandidateEventSummaryNamesPrimaryMetricAndReason(t *testing.T) {
 		Attempt:  3,
 		Decision: domain.DecisionRejected,
 		Comparisons: []domain.MetricComparison{
-			{Name: "cpu_time_ns", DeltaPercent: -4.5},
-			{Name: manifest.DefaultPrimaryMetric, DeltaPercent: -1.254},
+			{Metric: "cpu_time_ns", DeltaPercent: -4.5},
+			{Metric: manifest.DefaultPrimaryMetric, DeltaPercent: -1.254},
 		},
 		Reasons: []string{"wall_time_ns improved 1.25% but\nneeds 3.00%"},
 	}
@@ -44,7 +44,7 @@ func TestCandidateEventSummaryFallsBackToFirstComparison(t *testing.T) {
 	record := CandidateRecord{
 		Attempt:     1,
 		Decision:    domain.DecisionAccepted,
-		Comparisons: []domain.MetricComparison{{Name: "peak_memory_bytes", DeltaPercent: 0.5, StatisticallyFit: true}},
+		Comparisons: []domain.MetricComparison{{Metric: "peak_memory_bytes", DeltaPercent: 0.5, StatisticallyFit: true}},
 	}
 	got := candidateEventSummary(record)
 	if !strings.HasPrefix(got, "attempt 1: accepted — peak_memory_bytes +0.50% (supported)") {

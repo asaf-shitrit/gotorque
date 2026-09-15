@@ -45,7 +45,9 @@ const maxEventReasonChars = 200
 func primaryComparisonSummary(comparisons []domain.MetricComparison) string {
 	chosen := -1
 	for i, c := range comparisons {
-		if c.Name == manifest.DefaultPrimaryMetric {
+		// The pooled reading is the headline number when it is present; a
+		// per-workload reading is the fallback, never the preference.
+		if c.Metric == manifest.DefaultPrimaryMetric && c.Workload == "" {
 			chosen = i
 			break
 		}
@@ -61,7 +63,36 @@ func primaryComparisonSummary(comparisons []domain.MetricComparison) string {
 	if c.StatisticallyFit {
 		support = "supported"
 	}
-	return fmt.Sprintf("%s %+.2f%% (%s)", c.Name, c.DeltaPercent, support)
+	return fmt.Sprintf("%s %+.2f%% (%s)", comparisonLabel(c), c.DeltaPercent, support)
+}
+
+// comparisonLabel names a comparison the way a verdict does: the workload it
+// was measured on, or the metric when the reading is the pooled one. A record
+// written before comparisons carried their workload keeps the old shape and
+// reports that it has no label rather than an empty cell.
+func comparisonLabel(comparison domain.MetricComparison) string {
+	if comparison.Workload != "" {
+		return comparison.Workload
+	}
+	return metricLabel(comparison)
+}
+
+// tableLabel names a comparison inside the metric tables, where the metric is
+// not a column of its own and therefore has to be part of the label.
+func tableLabel(comparison domain.MetricComparison) string {
+	if comparison.Workload != "" && comparison.Metric != "" {
+		return comparison.Workload + "/" + comparison.Metric
+	}
+	return metricLabel(comparison)
+}
+
+// metricLabel falls back to the metric name, and to a placeholder for records
+// that predate structured comparisons and therefore carry neither field.
+func metricLabel(comparison domain.MetricComparison) string {
+	if comparison.Metric == "" {
+		return "unlabelled"
+	}
+	return comparison.Metric
 }
 
 // oneLine collapses a reason's line structure so it cannot break the
@@ -179,7 +210,11 @@ func writeCandidateSamples(b *strings.Builder, record CandidateRecord) {
 	}
 	b.WriteString("\nPer-repetition wall times (ns):\n\n")
 	for _, s := range record.Samples {
-		fmt.Fprintf(b, "- `%s` baseline %v / candidate %v\n", s.WorkloadID, fmtFloats(s.BaselineNs), fmtFloats(s.CandidateNs))
+		workload := s.Workload
+		if workload == "" {
+			workload = "unlabelled"
+		}
+		fmt.Fprintf(b, "- `%s` baseline %v / candidate %v\n", workload, fmtFloats(s.BaselineNs), fmtFloats(s.CandidateNs))
 	}
 	b.WriteString("\n")
 }
@@ -212,7 +247,7 @@ func writeCandidatePGO(b *strings.Builder, record CandidateRecord) {
 func writeMetricTable(b *strings.Builder, header string, comparisons []domain.MetricComparison) {
 	b.WriteString(header)
 	for _, c := range comparisons {
-		fmt.Fprintf(b, "| `%s` | %.4g | %.4g | %s | %s |\n", c.Name, c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), fitLabel(c.StatisticallyFit))
+		fmt.Fprintf(b, "| `%s` | %.4g | %.4g | %s | %s |\n", tableLabel(c), c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), fitLabel(c.StatisticallyFit))
 	}
 	b.WriteString("\n")
 }

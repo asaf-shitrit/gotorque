@@ -99,18 +99,30 @@ type Candidate struct {
 // series so regressions can be diagnosed from distributions instead of
 // aggregate means alone.
 type WorkloadSamples struct {
-	WorkloadID  string    `json:"workload_id"`
+	// Workload is the manifest seed id the samples were measured on, the same
+	// label a comparison carries, so the report names workloads rather than the
+	// derived run identifier.
+	Workload    string    `json:"workload"`
 	BaselineNs  []float64 `json:"baseline_ns"`
 	CandidateNs []float64 `json:"candidate_ns"`
 }
 
 type MetricComparison struct {
-	Name             string  `json:"name"`
+	// Metric is the canonical metric name ("wall_time_ns"), which is how the
+	// policy finds the primary metric and its guardrails.
+	Metric string `json:"metric"`
+	// Workload names the manifest seed this comparison was measured on, using
+	// the seed's own id; empty means the pooled comparison over every
+	// acceptance-eligible workload. Eligibility is therefore structural: a
+	// comparison is eligible for a verdict when its Metric is the primary one,
+	// and it is the aggregate rather than a single workload when Workload is
+	// empty. Both used to be encoded in one string name ("<id>/<metric>"),
+	// which three packages had to agree on.
+	Workload         string  `json:"workload,omitempty"`
 	Unit             string  `json:"unit"`
 	Baseline         float64 `json:"baseline"`
 	Candidate        float64 `json:"candidate"`
 	DeltaPercent     float64 `json:"delta_percent"`
-	Confidence       float64 `json:"confidence,omitempty"`
 	StatisticallyFit bool    `json:"statistically_supported"`
 }
 

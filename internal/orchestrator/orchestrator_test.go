@@ -419,15 +419,22 @@ func TestNewRejectsMissingDeterministicDependency(t *testing.T) {
 type defaultConfigPolicy struct{}
 
 func (defaultConfigPolicy) Evaluate(_ context.Context, input PolicyInput) (domain.Evaluation, error) {
-	comparisons := make([]policy.Comparison, 0, len(input.Evidence.Comparisons))
+	// Eligibility is structural: every reading of the primary metric may carry
+	// the verdict. The adapter used to translate between two identical
+	// comparison types and re-derive eligibility from a name suffix.
+	primary := policy.DefaultConfig().PrimaryMetric
+	eligible := make([]domain.MetricComparison, 0, len(input.Evidence.Comparisons))
 	for _, c := range input.Evidence.Comparisons {
-		comparisons = append(comparisons, policy.Comparison{Name: c.Name, Unit: c.Unit, Baseline: c.Baseline, Candidate: c.Candidate, StatisticallySupported: c.StatisticallyFit})
+		if c.Metric == primary {
+			eligible = append(eligible, c)
+		}
 	}
 	result := policy.Evaluate(policy.DefaultConfig(), policy.Evidence{
 		BehaviorMatches:        input.Evidence.BehaviorMatches,
 		SafetyChecksPassed:     input.Evidence.SafetyChecksPassed,
 		RepresentativeEvidence: input.Evidence.RepresentativeEvidence,
-		Comparisons:            comparisons,
+		Comparisons:            input.Evidence.Comparisons,
+		Primary:                eligible,
 	})
 	return domain.Evaluation{
 		CandidateID:     input.Evidence.Candidate.ID,
@@ -453,10 +460,10 @@ func (a *acceptingRunnerService) EvaluateCandidate(ctx context.Context, req Cand
 	ev.SafetyChecksPassed = true
 	ev.RepresentativeEvidence = true
 	ev.Comparisons = []domain.MetricComparison{
-		{Name: "wall_time_ns", Unit: "ns", Baseline: 1000000, Candidate: 950000, DeltaPercent: -5, StatisticallyFit: true},
-		{Name: "cpu_time_ns", Unit: "ns", Baseline: 800000, Candidate: 800000, DeltaPercent: 0, StatisticallyFit: true},
-		{Name: "peak_memory_bytes", Unit: "bytes", Baseline: 1024, Candidate: 1024, DeltaPercent: 0, StatisticallyFit: true},
-		{Name: "binary_size_bytes", Unit: "bytes", Baseline: 4096, Candidate: 4100, DeltaPercent: 0.09765625, StatisticallyFit: true},
+		{Metric: "wall_time_ns", Unit: "ns", Baseline: 1000000, Candidate: 950000, DeltaPercent: -5, StatisticallyFit: true},
+		{Metric: "cpu_time_ns", Unit: "ns", Baseline: 800000, Candidate: 800000, DeltaPercent: 0, StatisticallyFit: true},
+		{Metric: "peak_memory_bytes", Unit: "bytes", Baseline: 1024, Candidate: 1024, DeltaPercent: 0, StatisticallyFit: true},
+		{Metric: "binary_size_bytes", Unit: "bytes", Baseline: 4096, Candidate: 4100, DeltaPercent: 0.09765625, StatisticallyFit: true},
 	}
 	return ev, nil
 }

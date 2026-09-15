@@ -156,11 +156,8 @@ func TestCompareWallTimeMetricWithBenchstat(t *testing.T) {
 		t.Fatalf("comparisons = %d, want 1", len(comparisons))
 	}
 	c := comparisons[0]
-	if c.Name != "wid/wall_time_ns" || !c.StatisticallyFit {
+	if (c.Metric != "wall_time_ns" || c.Workload != "wid") || !c.StatisticallyFit {
 		t.Fatalf("expected supported comparison, got %+v", c)
-	}
-	if c.Confidence <= 0 || c.Confidence >= 1 {
-		t.Fatalf("confidence = %v, want 1-p", c.Confidence)
 	}
 	if fake.calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", fake.calls)
@@ -294,7 +291,7 @@ func TestCompareWallTimeMetricFallsBackOnUnparseableOutput(t *testing.T) {
 	cand := wallRuns(50, 51, 49, 50, 52, 48, 51)
 	comparisons, output := e.compareWallTimeMetric(context.Background(), "wid", base, cand)
 
-	if output != "" || comparisons[0].Confidence != 0 {
+	if output != "" {
 		t.Fatalf("unparseable output must leave comparison untouched: %+v out=%q", comparisons[0], output)
 	}
 	if !comparisons[0].StatisticallyFit {
