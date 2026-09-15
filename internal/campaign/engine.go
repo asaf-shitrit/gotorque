@@ -488,6 +488,12 @@ func (e *Engine) captureRunFailure(ctx context.Context, err *error) {
 		e.state.Status = StatusFailed
 	}
 	_ = e.saveEvent("campaign_stopped", e.state.Error, nil)
+	// The terminal state has to reach the report files too. finishCampaign is
+	// what normally writes them, and a campaign that stopped here never got
+	// there, so the last thing on disk was a mid-run snapshot: gron-9 spent its
+	// full ninety minutes and its report still said "running" with no stop
+	// reason, while the database held `max_duration 1h30m0s spent`.
+	e.snapshotReports()
 }
 
 func (e *Engine) runBaselineSteps(ctx context.Context) error {

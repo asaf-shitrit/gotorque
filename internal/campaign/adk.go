@@ -28,6 +28,13 @@ import (
 // artifact store used by the CLI path; they do not provide shell access to
 // agents. A caller may inject OpenAI-backed or static agents.
 func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrator.Config) (orchestrator.CampaignResult, error) {
+	// Token usage is accounting, not a verdict, so it is recorded on the way out
+	// whatever happened. A campaign cut short by its budget, or by a provider
+	// that stalled until the deadline, spent real money, and this per-role table
+	// is the only place that reports it: snapshotting it only after a clean ADK
+	// result meant a budget-spent campaign — exactly the outcome the patch
+	// budget is meant to reach — reported no cost at all.
+	defer e.recordTokenUsage(roleSet)
 	adk, message, err := e.prepareADK(roleSet, cfg)
 	if err != nil {
 		return orchestrator.CampaignResult{}, err
@@ -39,11 +46,16 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	if result.CampaignID == "" {
 		return orchestrator.CampaignResult{}, errors.New("ADK completed without a campaign result")
 	}
-	if roleSet.Usage != nil {
-		e.state.TokenUsage = snapshotTokenUsage(roleSet.Usage.Snapshot())
-	}
 	_ = e.saveEvent("adk_completed", result.StopReason, result)
 	return result, nil
+}
+
+// recordTokenUsage snapshots the per-role totals collected so far.
+func (e *Engine) recordTokenUsage(roleSet agents.Set) {
+	if roleSet.Usage == nil {
+		return
+	}
+	e.state.TokenUsage = snapshotTokenUsage(roleSet.Usage.Snapshot())
 }
 
 func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkrunner.Runner, *genai.Content, error) {
