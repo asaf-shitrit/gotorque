@@ -53,8 +53,13 @@ type Command struct {
 }
 
 type Workload struct {
-	ID          string        `json:"id"`
-	Name        string        `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Seed is the manifest seed id this workload was built from. Name carries
+	// the manifest's human description of it; reports and comparisons label a
+	// workload with Seed, because that is what an operator writes in the
+	// target manifest and edits by.
+	Seed        string        `json:"seed,omitempty"`
 	Tier        WorkloadTier  `json:"tier"`
 	Weight      float64       `json:"weight"`
 	Command     Command       `json:"command"`
@@ -71,9 +76,15 @@ type Metric struct {
 }
 
 type RunResult struct {
-	ID                string            `json:"id"`
-	BuildID           string            `json:"build_id"`
-	WorkloadID        string            `json:"workload_id"`
+	ID         string `json:"id"`
+	BuildID    string `json:"build_id"`
+	WorkloadID string `json:"workload_id"`
+	// Workload is the manifest seed the run measured, copied from the request
+	// so a report can name a workload the way an operator writes it in the
+	// target manifest. WorkloadID stays the derived identifier the artifacts
+	// are keyed by; empty means the label is unknown (a run recorded before
+	// runs carried one).
+	Workload          string            `json:"workload,omitempty"`
 	Mode              RunMode           `json:"mode"`
 	StartedAt         time.Time         `json:"started_at"`
 	Duration          time.Duration     `json:"duration"`

@@ -129,10 +129,10 @@ func eligiblePrimary(config Config, evidence Evidence, result Result) ([]domain.
 func checkEligibleRegressions(config Config, eligible []domain.MetricComparison, result Result) (Result, bool) {
 	for _, comparison := range eligible {
 		if !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
-			return inconclusive(result, fmt.Sprintf("primary metric %q has invalid measurements", comparisonLabel(comparison))), true
+			return inconclusive(result, readingSubject(comparison)+" has invalid measurements"), true
 		}
 		if comparison.DeltaPercent > config.MaximumGuardrailRegressionPercent {
-			return reject(result, fmt.Sprintf("workload %q regressed by %+.2f%%, over the %.2f%% limit", comparisonLabel(comparison), comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent)), true
+			return reject(result, fmt.Sprintf("%s regressed by %+.2f%%, over the %.2f%% limit", readingSubject(comparison), comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent)), true
 		}
 	}
 	return result, false
@@ -144,10 +144,10 @@ func checkEligibleRegressions(config Config, eligible []domain.MetricComparison,
 func decideOnImprovement(config Config, eligible []domain.MetricComparison, result Result) Result {
 	best, supported := bestImprovement(eligible)
 	if !supported {
-		return inconclusive(result, fmt.Sprintf("no acceptance-eligible workload has a statistically supported %q improvement (best %.2f%%)", config.PrimaryMetric, -best.DeltaPercent))
+		return inconclusive(result, fmt.Sprintf("no acceptance-eligible measurement has a statistically supported %q improvement (best %.2f%%)", config.PrimaryMetric, -best.DeltaPercent))
 	}
 	if -best.DeltaPercent < config.MinimumImprovementPercent {
-		return inconclusive(result, fmt.Sprintf("best acceptance-eligible workload improved by %.2f%%, below the %.2f%% threshold", -best.DeltaPercent, config.MinimumImprovementPercent))
+		return inconclusive(result, fmt.Sprintf("best acceptance-eligible measurement improved by %.2f%%, below the %.2f%% threshold", -best.DeltaPercent, config.MinimumImprovementPercent))
 	}
 	result.Decision = domain.DecisionAccepted
 	result.Reasons = []string{fmt.Sprintf("%s improved by %.2f%% with required evidence and no guardrail regression", acceptanceSubject(best), -best.DeltaPercent)}
@@ -181,13 +181,15 @@ func acceptanceSubject(comparison domain.MetricComparison) string {
 	return fmt.Sprintf("workload %q", comparison.Workload)
 }
 
-// comparisonLabel names a comparison in a policy reason: the workload when one
-// was measured, the metric otherwise.
-func comparisonLabel(comparison domain.MetricComparison) string {
+// readingSubject names one comparison inside a policy sentence: the workload
+// when the reading is per-workload, the pooled metric when it is the
+// aggregate. Falling back to the bare metric name in the workload's slot
+// produced `workload "wall_time_ns" regressed by +2.28%` in a live campaign.
+func readingSubject(comparison domain.MetricComparison) string {
 	if comparison.Workload != "" {
-		return comparison.Workload
+		return fmt.Sprintf("workload %q", comparison.Workload)
 	}
-	return comparison.Metric
+	return "the pooled " + comparison.Metric
 }
 
 func evidenceGates(result Result, evidence Evidence) (Result, bool) {

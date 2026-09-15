@@ -179,7 +179,7 @@ func maybeIsolate(ctx context.Context, localIsolation bool, sandbox *Sandbox, ne
 
 func buildRunResult(req RunRequest, started time.Time, commandResult toolchain.Result, runErr error) domain.RunResult {
 	result := domain.RunResult{
-		ID: runID(req.Build.ID, req.Workload.ID, started), BuildID: req.Build.ID, WorkloadID: req.Workload.ID,
+		ID: runID(req.Build.ID, req.Workload.ID, started), BuildID: req.Build.ID, WorkloadID: req.Workload.ID, Workload: req.Workload.Seed,
 		Mode: req.Mode, StartedAt: started, Duration: commandResult.Duration, ExitCode: commandResult.ExitCode,
 		StdoutDigest: Digest(commandResult.Stdout), StderrDigest: Digest(commandResult.Stderr),
 		// Order-insensitive digest: identical multiset of output lines

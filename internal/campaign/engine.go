@@ -635,7 +635,7 @@ func (e *Engine) runSeed(ctx context.Context, seed manifest.SeedWorkload) error 
 		timeout = e.state.Manifest.Campaign.MinimumCommandTimeout.Duration()
 	}
 	wid := stableID("workload", e.state.ID, seed.ID)
-	workload := domain.Workload{ID: wid, Name: seed.Name, Tier: seed.Tier, Command: domain.Command{Path: e.state.DiscoveryBinaryPath, Args: append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...)}, Timeout: timeout, Provenance: seed.Provenance, Description: seed.Description}
+	workload := domain.Workload{ID: wid, Name: seed.Name, Seed: seed.ID, Tier: seed.Tier, Command: domain.Command{Path: e.state.DiscoveryBinaryPath, Args: append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...)}, Timeout: timeout, Provenance: seed.Provenance, Description: seed.Description}
 	result, runErr := e.runner.Run(ctx, runner.RunRequest{Build: runner.Build{ID: e.state.DiscoveryBuildID, BinaryPath: e.state.DiscoveryBinaryPath}, Workload: workload, Mode: domain.RunModeDiscovery, NetworkAllowed: !e.state.LocalIsolation, FilesystemAllowed: !e.state.LocalIsolation, AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"}, Stdin: []byte(seed.Stdin), Fixtures: fixtures})
 	result.ID = stableID("run", e.state.DiscoveryBuildID, wid, "baseline")
 	e.state.Runs = append(e.state.Runs, result)

@@ -90,7 +90,7 @@ func tableLabel(comparison domain.MetricComparison) string {
 // that predate structured comparisons and therefore carry neither field.
 func metricLabel(comparison domain.MetricComparison) string {
 	if comparison.Metric == "" {
-		return "unlabelled"
+		return unlabelledWorkload
 	}
 	return comparison.Metric
 }
@@ -120,6 +120,7 @@ func WriteReports(dir string, state State) error {
 func RenderMarkdown(state State) string {
 	var b strings.Builder
 	writeReportHeader(&b, state)
+	writeLegacyNotice(&b, state)
 	writeInventory(&b, state)
 	writeBehaviorGate(&b, state)
 	writeBaselineWorkloads(&b, state)
@@ -133,6 +134,32 @@ func writeReportHeader(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "# Go optimization campaign `%s`\n\n", state.ID)
 	fmt.Fprintf(b, "**%s evidence** (%s/%s)\n\n", strings.ToUpper(state.Environment.Authority), state.Environment.OS, state.Environment.Architecture)
 	fmt.Fprintf(b, "- Status: `%s`\n- Stop reason: %s\n- Repository: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n\n", state.Status, state.StopReason, state.Repository, state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
+}
+
+// writeLegacyNotice explains a report whose comparisons predate structured
+// workload identities. A campaign directory outlives the build that wrote it,
+// so an operator can open one from before the change; those rows carry neither
+// a metric nor a workload and render as `unlabelled`, which is honest but
+// opaque without this line.
+func writeLegacyNotice(b *strings.Builder, state State) {
+	legacy := 0
+	for _, record := range state.CandidateRecords {
+		legacy += unlabelledComparisons(record.Comparisons) + unlabelledComparisons(record.PgoComparisons)
+	}
+	if legacy == 0 {
+		return
+	}
+	fmt.Fprintf(b, "> %d comparison row(s) in this report were recorded before comparisons carried structured workload identities, so they cannot name the workload they measured and appear as `%s`. Re-run the campaign to label them.\n\n", legacy, unlabelledWorkload)
+}
+
+func unlabelledComparisons(comparisons []domain.MetricComparison) int {
+	count := 0
+	for _, comparison := range comparisons {
+		if comparison.Metric == "" {
+			count++
+		}
+	}
+	return count
 }
 
 func writeInventory(b *strings.Builder, state State) {
@@ -156,10 +183,24 @@ func writeBehaviorGate(b *strings.Builder, state State) {
 	}
 }
 
+// unlabelledWorkload is what a report prints where a workload label is missing,
+// which means a record written before runs and comparisons carried one.
+// Printing nothing would read as a rendering fault, and printing the derived
+// run identifier would name something no operator can act on.
+const unlabelledWorkload = "unlabelled"
+
+// labelOrUnlabelled renders a workload label, falling back to the placeholder.
+func labelOrUnlabelled(label string) string {
+	if label == "" {
+		return unlabelledWorkload
+	}
+	return label
+}
+
 func writeBaselineWorkloads(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "\n## Baseline workloads\n\n| Workload | Exit | Wall time | Evidence |\n|---|---:|---:|---|\n")
 	for _, run := range state.Runs {
-		fmt.Fprintf(b, "| `%s` | %d | %s | `%s` |\n", run.WorkloadID, run.ExitCode, run.Duration, run.ID)
+		fmt.Fprintf(b, "| `%s` | %d | %s | `%s` |\n", labelOrUnlabelled(run.Workload), run.ExitCode, run.Duration, run.ID)
 	}
 }
 
@@ -210,11 +251,7 @@ func writeCandidateSamples(b *strings.Builder, record CandidateRecord) {
 	}
 	b.WriteString("\nPer-repetition wall times (ns):\n\n")
 	for _, s := range record.Samples {
-		workload := s.Workload
-		if workload == "" {
-			workload = "unlabelled"
-		}
-		fmt.Fprintf(b, "- `%s` baseline %v / candidate %v\n", workload, fmtFloats(s.BaselineNs), fmtFloats(s.CandidateNs))
+		fmt.Fprintf(b, "- `%s` baseline %v / candidate %v\n", labelOrUnlabelled(s.Workload), fmtFloats(s.BaselineNs), fmtFloats(s.CandidateNs))
 	}
 	b.WriteString("\n")
 }
