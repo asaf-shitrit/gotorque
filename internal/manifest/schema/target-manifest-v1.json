@@ -204,6 +204,7 @@
         "max_candidate_patches": {"type": "integer", "minimum": 1},
         "max_concurrent_candidates": {"const": 1},
         "stop_after_failures": {"type": "integer", "minimum": 1},
+        "stop_after_inconclusive": {"type": "integer", "minimum": 1},
         "discovery_stall_timeout": {"type": "string", "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"},
         "per_command_timeout_multiple": {"type": "number", "exclusiveMinimum": 0},
         "minimum_command_timeout": {"type": "string", "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"}

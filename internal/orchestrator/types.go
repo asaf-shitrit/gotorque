@@ -24,6 +24,10 @@ type CampaignRequest struct {
 	// MaxConsecutiveFailures tally at zero and the bound would hold only
 	// within a single process rather than over the whole campaign.
 	PriorConsecutiveFailures int `json:"prior_consecutive_failures,omitempty"`
+	// PriorConsecutiveInconclusive carries the campaign-wide run of
+	// inconclusive verdicts, for the same reason: a campaign that configures
+	// its own inconclusive bound must have that streak survive a resume too.
+	PriorConsecutiveInconclusive int `json:"prior_consecutive_inconclusive,omitempty"`
 }
 
 // Inspection is deterministic repository and target inventory.
@@ -126,9 +130,14 @@ type CampaignState struct {
 	PriorCandidates     []PriorCandidate         `json:"prior_candidates,omitempty"`
 	CandidatesTried     int                      `json:"candidates_tried"`
 	ConsecutiveFailures int                      `json:"consecutive_failures"`
-	AcceptedCandidates  []string                 `json:"accepted_candidates,omitempty"`
-	StartedAt           time.Time                `json:"started_at"`
-	StopReason          string                   `json:"stop_reason,omitempty"`
+	// ConsecutiveInconclusive counts the run of inconclusive verdicts. It is
+	// only consulted when the campaign configures stop_after_inconclusive;
+	// otherwise an inconclusive verdict extends ConsecutiveFailures, as it
+	// always has.
+	ConsecutiveInconclusive int       `json:"consecutive_inconclusive,omitempty"`
+	AcceptedCandidates      []string  `json:"accepted_candidates,omitempty"`
+	StartedAt               time.Time `json:"started_at"`
+	StopReason              string    `json:"stop_reason,omitempty"`
 
 	// SourceExcerpts is best-effort enrichment: real code around hot paths
 	// so the optimizer can write patch context lines that git apply accepts.
@@ -145,10 +154,11 @@ type SourceExcerpt struct {
 
 // CampaignProgress is persisted after each deterministic policy decision.
 type CampaignProgress struct {
-	CandidatesTried     int             `json:"candidates_tried"`
-	ConsecutiveFailures int             `json:"consecutive_failures"`
-	LastDecision        domain.Decision `json:"last_decision"`
-	CandidateID         string          `json:"candidate_id"`
+	CandidatesTried         int             `json:"candidates_tried"`
+	ConsecutiveFailures     int             `json:"consecutive_failures"`
+	ConsecutiveInconclusive int             `json:"consecutive_inconclusive,omitempty"`
+	LastDecision            domain.Decision `json:"last_decision"`
+	CandidateID             string          `json:"candidate_id"`
 }
 
 // CampaignResult is the graph's single terminal output.

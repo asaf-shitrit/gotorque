@@ -447,6 +447,17 @@ wall clock every 250 ms against a fixed deadline and cancels the context when
 it passes, so whichever clock runs out first ends the run. The goroutine owns
 no engine state beyond the clock and exits with the context.
 
+`stop_after_failures` bounds a run of rejected candidates. By default an
+inconclusive verdict — one whose measurement did not resolve either way —
+counts toward the same streak, which is why every campaign in this
+repository stopped at four attempts of its twelve. A manifest can set
+`stop_after_inconclusive` to give unresolved verdicts their own streak
+instead; the campaign then stops on whichever of the two consecutive bounds it
+reaches first, and the stop reason names the bound rather than the pair. Both
+streaks are persisted (`consecutive_failures`, `consecutive_inconclusive`) and
+carried into the next process the same way, because the graph rebuilds its
+`CampaignState` on every entry.
+
 A spent budget otherwise surfaces as whatever call happened to be in flight,
 a git status, a model request, an ADK graph that drained without producing a
 result, naming an innocent bystander instead of the bound that stopped the

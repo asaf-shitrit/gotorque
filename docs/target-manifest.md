@@ -123,6 +123,18 @@ at a time, four consecutive rejected/inconclusive candidates before stopping,
 a 20-minute discovery stall timeout, a 2x baseline runtime command timeout,
 and a 30-second minimum command timeout.
 
+`campaign.stop_after_inconclusive` is optional and defaults to unset, which
+keeps the historical behavior: an inconclusive verdict counts toward
+`stop_after_failures`, so a run of unresolved candidates ends the campaign. Set
+it to give unresolved verdicts their own bound. A campaign then stops when
+consecutive *rejections* reach `stop_after_failures` or consecutive
+*inconclusive* results reach `stop_after_inconclusive`, whichever comes first;
+an accepted candidate clears both, and a rejection breaks the unresolved run.
+This is the dial for spending the patch budget when the model keeps proposing
+candidates whose measurements simply do not resolve — every campaign run in
+this repository's own target set stopped at four attempts of its twelve for
+that reason.
+
 The deterministic policy returns:
 
 - `accepted` only for behavior-preserving candidates with safety checks passed,

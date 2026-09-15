@@ -24,6 +24,10 @@ const (
 
 	stopReasonMaxCandidates       = "maximum candidate count reached"
 	stopReasonConsecutiveFailures = "consecutive rejection/inconclusive limit reached"
+	// stopReasonConsecutiveInconclusive is reported only when the campaign
+	// configures stop_after_inconclusive, which bounds unresolved verdicts
+	// separately from failures.
+	stopReasonConsecutiveInconclusive = "consecutive inconclusive limit reached"
 )
 
 // Dependencies are intentionally narrow so deterministic execution, policy,
@@ -221,14 +225,14 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	}
 	// Seeding the tally rather than starting at zero is what makes
 	// MaxConsecutiveFailures a campaign bound instead of a per-process one.
-	state := CampaignState{Request: req, Job: job, StartedAt: time.Now(), ConsecutiveFailures: req.PriorConsecutiveFailures}
+	state := CampaignState{Request: req, Job: job, StartedAt: time.Now(), ConsecutiveFailures: req.PriorConsecutiveFailures, ConsecutiveInconclusive: req.PriorConsecutiveInconclusive}
 	// The route node only runs after a decision, so a campaign that resumes
 	// already at its failure bound would spend one more candidate proving what
 	// the carried-in tally already says. Finishing from here keeps the bound
 	// exact instead of off by the resumed process's first candidate.
 	next := routeContinue
-	if state.ConsecutiveFailures >= g.cfg.MaxConsecutiveFailures {
-		state.StopReason = stopReasonConsecutiveFailures
+	if reason, hit := g.consecutiveBound(state); hit {
+		state.StopReason = reason
 		next = routeFinish
 	}
 	ev := stateEvent(ctx, state)
@@ -393,14 +397,15 @@ func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Eve
 	if err != nil {
 		return nil, err
 	}
-	if err := applyDecision(ctx, g.deps.Runner, &state, evaluation); err != nil {
+	if err := applyDecision(ctx, g.deps.Runner, &state, evaluation, g.cfg.MaxConsecutiveInconclusive > 0); err != nil {
 		return nil, err
 	}
 	progress := CampaignProgress{
-		CandidatesTried:     state.CandidatesTried,
-		ConsecutiveFailures: state.ConsecutiveFailures,
-		LastDecision:        evaluation.Decision,
-		CandidateID:         evaluation.CandidateID,
+		CandidatesTried:         state.CandidatesTried,
+		ConsecutiveFailures:     state.ConsecutiveFailures,
+		ConsecutiveInconclusive: state.ConsecutiveInconclusive,
+		LastDecision:            evaluation.Decision,
+		CandidateID:             evaluation.CandidateID,
 	}
 	if err := g.deps.Jobs.RecordProgress(ctx, state.Job, progress); err != nil {
 		return nil, fmt.Errorf("record campaign progress: %w", err)
@@ -421,7 +426,21 @@ func bindEvaluation(state CampaignState, evaluation domain.Evaluation) (domain.E
 	return evaluation, nil
 }
 
-func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignState, evaluation domain.Evaluation) error {
+// consecutiveBound reports which consecutive-verdict bound a campaign has
+// reached, if any. A campaign that configured stop_after_inconclusive tracks
+// unresolved verdicts on their own; otherwise they extend the failure streak,
+// which is the historical behavior.
+func (g *campaignGraph) consecutiveBound(state CampaignState) (string, bool) {
+	if g.cfg.MaxConsecutiveInconclusive > 0 && state.ConsecutiveInconclusive >= g.cfg.MaxConsecutiveInconclusive {
+		return stopReasonConsecutiveInconclusive, true
+	}
+	if state.ConsecutiveFailures >= g.cfg.MaxConsecutiveFailures {
+		return stopReasonConsecutiveFailures, true
+	}
+	return "", false
+}
+
+func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignState, evaluation domain.Evaluation, separateInconclusiveBound bool) error {
 	state.Evaluation = evaluation
 	state.CandidatesTried++
 	state.PriorCandidates = append(state.PriorCandidates, PriorCandidate{
@@ -431,33 +450,60 @@ func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignSt
 		Reasons:       evaluation.Reasons,
 		FailureDetail: state.Candidate.FailureDetail,
 	})
+	countDecision(state, evaluation.Decision, separateInconclusiveBound)
 	if evaluation.Decision != domain.DecisionAccepted {
-		state.ConsecutiveFailures++
 		return nil
 	}
 	if err := runner.PromoteCandidate(ctx, state.Candidate.Candidate); err != nil {
 		return fmt.Errorf("promote candidate: %w", err)
 	}
-	state.ConsecutiveFailures = 0
 	state.AcceptedCandidates = append(state.AcceptedCandidates, evaluation.CandidateID)
 	return nil
 }
 
-func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
-	ev := stateEvent(ctx, state)
-	switch {
-	case state.CandidatesTried >= g.cfg.MaxCandidates:
-		state.StopReason = stopReasonMaxCandidates
-		ev = stateEvent(ctx, state)
-		ev.Routes = []string{routeFinish}
-	case state.ConsecutiveFailures >= g.cfg.MaxConsecutiveFailures:
-		state.StopReason = stopReasonConsecutiveFailures
-		ev = stateEvent(ctx, state)
-		ev.Routes = []string{routeFinish}
-	default:
-		ev.Routes = []string{routeContinue}
+// countDecision keeps the two streaks. An accepted candidate clears both. A
+// rejection counts as a failure and breaks any run of unresolved verdicts. An
+// inconclusive verdict counts on its own streak when the campaign configured
+// one, and otherwise counts as a failure, which is the default behavior.
+func countDecision(state *CampaignState, decision domain.Decision, separateInconclusiveBound bool) {
+	switch decision {
+	case domain.DecisionAccepted:
+		state.ConsecutiveFailures, state.ConsecutiveInconclusive = 0, 0
+	case domain.DecisionRejected:
+		state.ConsecutiveFailures++
+		state.ConsecutiveInconclusive = 0
+	case domain.DecisionInconclusive:
+		state.ConsecutiveInconclusive++
+		if !separateInconclusiveBound {
+			state.ConsecutiveFailures++
+		}
 	}
+}
+
+func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
+	if reason := g.stopReason(state); reason != "" {
+		state.StopReason = reason
+		ev := stateEvent(ctx, state)
+		ev.Routes = []string{routeFinish}
+		return ev, nil
+	}
+	ev := stateEvent(ctx, state)
+	ev.Routes = []string{routeContinue}
 	return ev, nil
+}
+
+// stopReason reports why the campaign should finish instead of trying another
+// candidate, or an empty string to continue. The candidate budget is checked
+// first so a campaign that used its last patch reports that rather than a
+// streak bound it also happens to meet.
+func (g *campaignGraph) stopReason(state CampaignState) string {
+	if state.CandidatesTried >= g.cfg.MaxCandidates {
+		return stopReasonMaxCandidates
+	}
+	if reason, hit := g.consecutiveBound(state); hit {
+		return reason
+	}
+	return ""
 }
 
 func (g *campaignGraph) finalize(ctx adkagent.Context, state CampaignState) (CampaignResult, error) {
@@ -510,6 +556,9 @@ func normalizeRequest(req CampaignRequest) (CampaignRequest, error) {
 	// than clamped: the bound is not negotiable by request content.
 	if req.PriorConsecutiveFailures < 0 {
 		return CampaignRequest{}, errors.New("prior consecutive failures cannot be negative")
+	}
+	if req.PriorConsecutiveInconclusive < 0 {
+		return CampaignRequest{}, errors.New("prior consecutive inconclusive cannot be negative")
 	}
 	if req.OptimizationMode == "" {
 		req.OptimizationMode = domain.PolicyIdiomatic

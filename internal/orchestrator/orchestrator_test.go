@@ -605,3 +605,101 @@ func TestInitializeRejectsNegativePriorConsecutiveFailures(t *testing.T) {
 		t.Fatalf("run error = %v, want negative prior failure rejection", err)
 	}
 }
+
+// With a separate inconclusive bound, an unresolved verdict no longer extends
+// the failure streak, and a rejection breaks the run of unresolved verdicts.
+func TestCountDecisionTracksBothStreaks(t *testing.T) {
+	state := CampaignState{}
+	countDecision(&state, domain.DecisionRejected, true)
+	countDecision(&state, domain.DecisionRejected, true)
+	if state.ConsecutiveFailures != 2 {
+		t.Fatalf("failures = %d, want 2", state.ConsecutiveFailures)
+	}
+
+	countDecision(&state, domain.DecisionInconclusive, true)
+	if state.ConsecutiveInconclusive != 1 {
+		t.Fatalf("inconclusive = %d, want 1", state.ConsecutiveInconclusive)
+	}
+	if state.ConsecutiveFailures != 2 {
+		t.Fatalf("failures = %d, want 2: a separate bound must not extend the failure streak", state.ConsecutiveFailures)
+	}
+
+	countDecision(&state, domain.DecisionRejected, true)
+	if state.ConsecutiveFailures != 3 || state.ConsecutiveInconclusive != 0 {
+		t.Fatalf("failures/inconclusive = %d/%d, want 3/0: a rejection breaks the unresolved run", state.ConsecutiveFailures, state.ConsecutiveInconclusive)
+	}
+
+	countDecision(&state, domain.DecisionAccepted, true)
+	if state.ConsecutiveFailures != 0 || state.ConsecutiveInconclusive != 0 {
+		t.Fatalf("an accepted candidate must clear both streaks: %d/%d", state.ConsecutiveFailures, state.ConsecutiveInconclusive)
+	}
+}
+
+// The default (no separate bound) keeps the historical behavior exactly: an
+// inconclusive verdict counts as a failure.
+func TestCountDecisionKeepsTheCombinedBoundByDefault(t *testing.T) {
+	state := CampaignState{}
+	countDecision(&state, domain.DecisionInconclusive, false)
+	countDecision(&state, domain.DecisionInconclusive, false)
+	if state.ConsecutiveFailures != 2 {
+		t.Fatalf("failures = %d, want 2", state.ConsecutiveFailures)
+	}
+}
+
+// The bound the evidence called for: the same stream of unresolved verdicts
+// that ends a default campaign at stop_after_failures keeps going when the
+// manifest configures stop_after_inconclusive, so the patch budget gets spent.
+func TestInconclusiveBoundRunsSeparatelyFromFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		maxInconclusive int
+		wantTried       int
+		wantStopReason  string
+	}{
+		{name: "default combines unresolved verdicts with failures", maxInconclusive: 0, wantTried: 2, wantStopReason: "consecutive rejection/inconclusive limit reached"},
+		{name: "separate bound keeps evaluating", maxInconclusive: 4, wantTried: 4, wantStopReason: "consecutive inconclusive limit reached"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var coordinatorCalls, explorerCalls, analystCalls, optimizerCalls, reviewerCalls int
+			roleSet := agents.Set{
+				Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "find a measured hot path", NextExperiment: "profile scan"}, &coordinatorCalls),
+				Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}, WorkloadStrategies: []string{"size sweep"}}, &explorerCalls),
+				Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}, &analystCalls),
+				Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &optimizerCalls),
+				Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true, BehaviorArgument: "outputs unchanged"}, &reviewerCalls),
+			}
+			// Every verdict is unresolved: nothing was accepted and nothing was
+			// definitively rejected either.
+			seq := &sequencePolicy{decisions: []domain.Decision{domain.DecisionInconclusive}}
+			orch := mustNew(t, Dependencies{
+				Runner: &fakeRunnerService{},
+				Policy: seq,
+				Jobs:   &fakeJobService{},
+				Agents: roleSet,
+			}, Config{
+				MaxCandidates:              8,
+				MaxConsecutiveFailures:     2,
+				MaxConsecutiveInconclusive: tc.maxInconclusive,
+				DeterministicTimeout:       time.Second,
+				AgentTimeout:               time.Second,
+				MaxConcurrency:             1,
+			})
+			req := CampaignRequest{
+				CampaignID:       "campaign-inconclusive",
+				Repository:       "/repo",
+				BaseRevision:     "abc123",
+				BuildTarget:      "./cmd/tool",
+				CommandArgs:      []string{"scan"},
+				OptimizationMode: domain.PolicyIdiomatic,
+			}
+			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-1", req, "finalize_campaign")
+
+			if result.CandidatesTried != tc.wantTried {
+				t.Fatalf("candidates tried = %d, want %d", result.CandidatesTried, tc.wantTried)
+			}
+			if result.StopReason != tc.wantStopReason {
+				t.Fatalf("stop reason = %q, want %q", result.StopReason, tc.wantStopReason)
+			}
+		})
+	}
+}

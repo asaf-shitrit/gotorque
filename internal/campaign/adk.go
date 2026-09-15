@@ -59,7 +59,7 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 	if err != nil {
 		return nil, nil, err
 	}
-	req := orchestrator.CampaignRequest{CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision, BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...), OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures}
+	req := orchestrator.CampaignRequest{CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision, BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...), OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures, PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, nil, err
@@ -149,9 +149,10 @@ func (s adkServices) StartCampaign(_ context.Context, req orchestrator.CampaignR
 	return job, nil
 }
 func (s adkServices) RecordProgress(_ context.Context, _ domain.Job, progress orchestrator.CampaignProgress) error {
-	// The orchestrator owns the tally; persisting it at every decision is what
-	// lets a later process resume the bound instead of restarting it.
+	// The orchestrator owns the tallies; persisting them at every decision is
+	// what lets a later process resume the bounds instead of restarting them.
 	s.engine.state.ConsecutiveFailures = progress.ConsecutiveFailures
+	s.engine.state.ConsecutiveInconclusive = progress.ConsecutiveInconclusive
 	return s.engine.saveEvent("adk_progress", "ADK policy decision", progress)
 }
 func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result orchestrator.CampaignResult) (domain.Job, error) {

@@ -16,9 +16,17 @@ type Config struct {
 	WorkflowName           string
 	MaxCandidates          int
 	MaxConsecutiveFailures int
-	DeterministicTimeout   time.Duration
-	AgentTimeout           time.Duration
-	MaxConcurrency         int
+	// MaxConsecutiveInconclusive bounds a run of inconclusive verdicts on its
+	// own. Zero keeps the historical behavior, where an inconclusive result
+	// counts toward MaxConsecutiveFailures; a positive value gives the
+	// campaign a separate bound, so a model that keeps producing measurable
+	// but unresolved candidates spends the patch budget instead of ending the
+	// campaign. It is deliberately not defaulted: zero is the meaningful
+	// "combined bound" setting, not a missing one.
+	MaxConsecutiveInconclusive int
+	DeterministicTimeout       time.Duration
+	AgentTimeout               time.Duration
+	MaxConcurrency             int
 }
 
 // DefaultConfig matches the version-one campaign limits in the plan. The
@@ -72,6 +80,9 @@ func (c Config) validate() error {
 	}
 	if c.MaxConsecutiveFailures < 1 {
 		return errors.New("max consecutive failures must be positive")
+	}
+	if c.MaxConsecutiveInconclusive < 0 {
+		return errors.New("max consecutive inconclusive cannot be negative")
 	}
 	if c.DeterministicTimeout < 0 || c.AgentTimeout < 0 {
 		return errors.New("node timeouts cannot be negative")

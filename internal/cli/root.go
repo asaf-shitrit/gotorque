@@ -191,6 +191,11 @@ func configureADK(ctx context.Context, out io.Writer, manifestPath string) (*age
 	config := orchestrator.DefaultConfig()
 	config.MaxCandidates = m.Campaign.MaxCandidatePatches
 	config.MaxConsecutiveFailures = m.Campaign.StopAfterFailures
+	// Zero leaves the historical behavior, where an inconclusive verdict
+	// counts toward stop_after_failures instead of a bound of its own. A
+	// manifest that wants its patch budget spent on unresolved candidates
+	// sets stop_after_inconclusive.
+	config.MaxConsecutiveInconclusive = m.Campaign.StopAfterInconclusive
 	config.DeterministicTimeout = m.Campaign.MinimumCommandTimeout.Duration()
 	return &roles, &config, nil
 }

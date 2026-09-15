@@ -112,12 +112,17 @@ type State struct {
 	// time it is entered, so without a persisted tally each resume would
 	// restart the manifest's stop_after_failures bound at zero and the bound
 	// would only ever hold inside one process.
-	ConsecutiveFailures int               `json:"consecutive_failures,omitempty"`
-	Manifest            manifest.Manifest `json:"manifest"`
-	Status              Status            `json:"status"`
-	StartedAt           time.Time         `json:"started_at"`
-	UpdatedAt           time.Time         `json:"updated_at"`
-	CompletedAt         *time.Time        `json:"completed_at,omitempty"`
+	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
+	// ConsecutiveInconclusive mirrors the orchestrator's separate run of
+	// inconclusive verdicts, used only when the manifest configures
+	// stop_after_inconclusive. It is persisted for the same reason as the
+	// failure tally: a resumed campaign must not restart the bound at zero.
+	ConsecutiveInconclusive int               `json:"consecutive_inconclusive,omitempty"`
+	Manifest                manifest.Manifest `json:"manifest"`
+	Status                  Status            `json:"status"`
+	StartedAt               time.Time         `json:"started_at"`
+	UpdatedAt               time.Time         `json:"updated_at"`
+	CompletedAt             *time.Time        `json:"completed_at,omitempty"`
 	// ElapsedRunTime is the wall time this campaign has spent actually
 	// running, summed over every process that has worked on it. StartedAt
 	// cannot stand in for it: a campaign is idle between an interruption and

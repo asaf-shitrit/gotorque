@@ -166,10 +166,17 @@ type Guardrail struct {
 }
 
 type CampaignLimits struct {
-	MaxDuration               Duration `json:"max_duration"`
-	MaxCandidatePatches       int      `json:"max_candidate_patches"`
-	MaxConcurrentCandidates   int      `json:"max_concurrent_candidates"`
-	StopAfterFailures         int      `json:"stop_after_failures"`
+	MaxDuration             Duration `json:"max_duration"`
+	MaxCandidatePatches     int      `json:"max_candidate_patches"`
+	MaxConcurrentCandidates int      `json:"max_concurrent_candidates"`
+	StopAfterFailures       int      `json:"stop_after_failures"`
+	// StopAfterInconclusive bounds consecutive inconclusive verdicts on their
+	// own. Unset, an inconclusive result counts toward StopAfterFailures,
+	// which is the historical behavior; set, a campaign stops on whichever
+	// bound it reaches first, so a model that keeps producing measurable but
+	// unresolved candidates spends the patch budget instead of ending the
+	// campaign at the failure bound.
+	StopAfterInconclusive     int      `json:"stop_after_inconclusive,omitempty"`
 	DiscoveryStallTimeout     Duration `json:"discovery_stall_timeout"`
 	PerCommandTimeoutMultiple float64  `json:"per_command_timeout_multiple"`
 	MinimumCommandTimeout     Duration `json:"minimum_command_timeout"`
@@ -345,6 +352,11 @@ func (m Manifest) validatePerformanceAndPolicy() []string {
 func (m Manifest) validateCampaign() []string {
 	if m.Campaign.MaxDuration <= 0 || m.Campaign.MaxCandidatePatches <= 0 || m.Campaign.MaxConcurrentCandidates != 1 || m.Campaign.StopAfterFailures <= 0 || m.Campaign.PerCommandTimeoutMultiple <= 0 || m.Campaign.MinimumCommandTimeout <= 0 {
 		return []string{"campaign limits must be positive and max_concurrent_candidates must be 1"}
+	}
+	// Zero means "unset" for this bound, so it cannot join the positivity
+	// check above; the schema already rejects an explicit zero.
+	if m.Campaign.StopAfterInconclusive < 0 {
+		return []string{"stop_after_inconclusive must not be negative"}
 	}
 	return nil
 }
