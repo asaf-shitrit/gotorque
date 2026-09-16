@@ -67,6 +67,25 @@ Without an endpoint, `--adk-stub` runs the full pipeline with deterministic
 stub agents, which makes it usable in CI. Resume an interrupted campaign
 with `optimize --resume <dir> --adk`.
 
+Any OpenRouter slug works for a role, free ones included: the routing variables
+take whatever the endpoint advertises, and a campaign's preflight asks the
+endpoint's catalogue before it spends any repository work, so a typo fails with
+`configured model "..." for <role> is not advertised by endpoint` rather than a
+confusing decode error later. Free and stealth models generally retain prompts
+for the provider's own purposes, and a campaign sends source excerpts and
+candidate patches, so route a role to one only for targets you are happy to
+share. To check a model answers in the shape the roles require before spending
+a campaign on it:
+
+```sh
+GOTORQUE_LIVE_MODEL=stealth/union-alpha \
+  go test ./internal/agents -run TestLiveModelAnswersARolePrompt -v
+```
+
+That test calls the model through the same path a campaign uses — streaming,
+the retry ladder, fence stripping, JSON decoding and per-role usage accounting —
+and skips when the variable or the credential is absent, so CI needs no secret.
+
 `report` also works while a campaign is running. A live campaign holds its
 database's exclusive lock, so the report reads the snapshot the engine writes
 at startup, after baseline discovery, and after every verdict: expect the
