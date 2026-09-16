@@ -117,12 +117,17 @@ type State struct {
 	// inconclusive verdicts, used only when the manifest configures
 	// stop_after_inconclusive. It is persisted for the same reason as the
 	// failure tally: a resumed campaign must not restart the bound at zero.
-	ConsecutiveInconclusive int               `json:"consecutive_inconclusive,omitempty"`
-	Manifest                manifest.Manifest `json:"manifest"`
-	Status                  Status            `json:"status"`
-	StartedAt               time.Time         `json:"started_at"`
-	UpdatedAt               time.Time         `json:"updated_at"`
-	CompletedAt             *time.Time        `json:"completed_at,omitempty"`
+	ConsecutiveInconclusive int `json:"consecutive_inconclusive,omitempty"`
+	// DegradedRoles records agent nodes whose model call failed and were
+	// absorbed: the campaign continued with an empty result, so a candidate may
+	// be missing that role's output. Without this the cause lived only on the
+	// process's stderr, where no report and no API consumer could read it.
+	DegradedRoles []RoleDegradation `json:"degraded_roles,omitempty"`
+	Manifest      manifest.Manifest `json:"manifest"`
+	Status        Status            `json:"status"`
+	StartedAt     time.Time         `json:"started_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
 	// ElapsedRunTime is the wall time this campaign has spent actually
 	// running, summed over every process that has worked on it. StartedAt
 	// cannot stand in for it: a campaign is idle between an interruption and

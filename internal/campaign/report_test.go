@@ -133,3 +133,14 @@ func TestRenderMarkdownLabelsBaselineWorkloads(t *testing.T) {
 	require.NotContains(t, report, "5995c3425253fee0f8a7d340", "a report must not print a derived run identifier as a workload")
 	require.Contains(t, report, "`"+unlabelledWorkload+"`", "a run recorded before labels must say so")
 }
+
+// A campaign in which an agent node failed must say so in its report: the
+// candidate that degradation left empty is otherwise explained only as
+// "patch is empty", which names the symptom and not the cause.
+func TestRenderMarkdownListsDegradedRoles(t *testing.T) {
+	report := RenderMarkdown(State{DegradedRoles: []RoleDegradation{{Role: "optimizer", Cause: "model stream stalled: no chunk for 2m0s"}}})
+	require.Contains(t, report, "## Degraded roles")
+	require.Contains(t, report, "`optimizer`: model stream stalled: no chunk for 2m0s")
+
+	require.NotContains(t, RenderMarkdown(State{}), "Degraded roles", "a clean campaign must not carry the section")
+}

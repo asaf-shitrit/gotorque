@@ -78,9 +78,25 @@ func (p *sequencePolicy) Evaluate(_ context.Context, input PolicyInput) (domain.
 	}, nil
 }
 
+// degradedRole is one absorbed role failure, as the graph reported it.
+type degradedRole struct {
+	role  string
+	cause string
+}
+
 type fakeJobService struct {
 	progress []CampaignProgress
 	complete int
+	degraded []degradedRole
+}
+
+func (f *fakeJobService) RecordRoleDegraded(_ context.Context, role string, cause error) error {
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	f.degraded = append(f.degraded, degradedRole{role: role, cause: message})
+	return nil
 }
 
 func (*fakeJobService) StartCampaign(_ context.Context, req CampaignRequest) (domain.Job, error) {
@@ -192,6 +208,18 @@ func TestCampaignSurvivesRoleFailures(t *testing.T) {
 	}
 	if explorerCalls == 0 || optimizerCalls == 0 {
 		t.Errorf("failed roles were never called: explorer=%d optimizer=%d", explorerCalls, optimizerCalls)
+	}
+	// A degraded role used to report its cause to the process's stderr, where no
+	// report could read it; the campaign now records it.
+	seen := map[string]int{}
+	for _, degraded := range jobs.degraded {
+		seen[degraded.role]++
+		if !strings.Contains(degraded.cause, "provider stalled past the retry ladder") {
+			t.Errorf("degraded %s cause = %q, want the agent's error", degraded.role, degraded.cause)
+		}
+	}
+	if seen["explorer"] == 0 || seen["optimizer"] == 0 {
+		t.Errorf("degraded roles recorded = %v, want both explorer and optimizer", seen)
 	}
 }
 

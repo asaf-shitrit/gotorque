@@ -36,4 +36,10 @@ type JobService interface {
 	StartCampaign(ctx context.Context, req CampaignRequest) (domain.Job, error)
 	RecordProgress(ctx context.Context, job domain.Job, progress CampaignProgress) error
 	CompleteCampaign(ctx context.Context, job domain.Job, result CampaignResult) (domain.Job, error)
+	// RecordRoleDegraded reports a role whose model call failed in a way the
+	// graph absorbed: the node continues with an empty result rather than
+	// ending the campaign. Without it the cause exists only on the process's
+	// stderr, where no report and no API consumer can read it, and a candidate
+	// that arrived empty is explained as "patch is empty".
+	RecordRoleDegraded(ctx context.Context, role string, cause error) error
 }

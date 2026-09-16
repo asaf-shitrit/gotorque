@@ -160,6 +160,13 @@ func (s adkServices) StartCampaign(_ context.Context, req orchestrator.CampaignR
 	_ = s.engine.saveEvent("adk_started", "ADK workflow started", req)
 	return job, nil
 }
+
+// RoleDegradation records one agent node that failed and was absorbed.
+type RoleDegradation struct {
+	Role  string `json:"role"`
+	Cause string `json:"cause"`
+}
+
 func (s adkServices) RecordProgress(_ context.Context, _ domain.Job, progress orchestrator.CampaignProgress) error {
 	// The orchestrator owns the tallies; persisting them at every decision is
 	// what lets a later process resume the bounds instead of restarting them.
@@ -167,6 +174,23 @@ func (s adkServices) RecordProgress(_ context.Context, _ domain.Job, progress or
 	s.engine.state.ConsecutiveInconclusive = progress.ConsecutiveInconclusive
 	return s.engine.saveEvent("adk_progress", "ADK policy decision", progress)
 }
+
+// RecordRoleDegraded persists a role whose model call failed while the graph
+// absorbed the failure: the node continued with an empty result, so a candidate
+// may be missing that role's output. Without this the cause reached only the
+// process's stderr, which no report and no API consumer can read, and an
+// operator saw a candidate explained as "patch is empty". The event also puts
+// the cause on the campaign's progress stream, which is the writer the campaign
+// was given rather than the one the process happens to have.
+func (s adkServices) RecordRoleDegraded(_ context.Context, role string, cause error) error {
+	reason := "unknown cause"
+	if cause != nil {
+		reason = cause.Error()
+	}
+	s.engine.state.DegradedRoles = append(s.engine.state.DegradedRoles, RoleDegradation{Role: role, Cause: reason})
+	return s.engine.saveEvent("role_degraded", fmt.Sprintf("%s node failed, continuing with an empty result: %s", role, reason), nil)
+}
+
 func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result orchestrator.CampaignResult) (domain.Job, error) {
 	job.Status = domain.JobSucceeded
 	job.UpdatedAt = time.Now().UTC()

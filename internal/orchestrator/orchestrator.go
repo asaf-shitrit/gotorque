@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -108,35 +107,35 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 		route:            workflow.NewFunctionNode("route_campaign", g.route, det),
 		finalize:         workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
 	}
-	return n, n.setAgents(g.deps.Agents, agt)
+	return n, n.setAgents(g.deps.Agents, agt, g.deps.Jobs)
 }
 
-func (n *graphNodes) setAgents(roleSet agents.Set, agt workflow.NodeConfig) error {
+func (n *graphNodes) setAgents(roleSet agents.Set, agt workflow.NodeConfig, jobs JobService) error {
 	var err error
-	if n.coordinator, err = agentNode(roleSet.Coordinator, agt, "coordinator"); err != nil {
+	if n.coordinator, err = agentNode(roleSet.Coordinator, agt, "coordinator", jobs); err != nil {
 		return err
 	}
-	if n.explorer, err = agentNode(roleSet.Explorer, agt, "explorer"); err != nil {
+	if n.explorer, err = agentNode(roleSet.Explorer, agt, "explorer", jobs); err != nil {
 		return err
 	}
-	if n.analyst, err = agentNode(roleSet.Analyst, agt, "analyst"); err != nil {
+	if n.analyst, err = agentNode(roleSet.Analyst, agt, "analyst", jobs); err != nil {
 		return err
 	}
-	if n.optimizer, err = agentNode(roleSet.Optimizer, agt, "optimizer"); err != nil {
+	if n.optimizer, err = agentNode(roleSet.Optimizer, agt, "optimizer", jobs); err != nil {
 		return err
 	}
-	if n.reviewer, err = agentNode(roleSet.Reviewer, agt, "reviewer"); err != nil {
+	if n.reviewer, err = agentNode(roleSet.Reviewer, agt, "reviewer", jobs); err != nil {
 		return err
 	}
 	return nil
 }
 
-func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string) (workflow.Node, error) {
+func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string, jobs JobService) (workflow.Node, error) {
 	n, err := workflow.NewAgentNode(a, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("%s node: %w", role, err)
 	}
-	return degradeNode(n, role), nil
+	return degradeNode(n, role, jobs), nil
 }
 
 // emptyRoleResult is the degraded output every role decodes into a zero value.
@@ -156,10 +155,11 @@ const emptyRoleResult = "{}"
 type degradingNode struct {
 	workflow.Node
 	role string
+	jobs JobService
 }
 
-func degradeNode(inner workflow.Node, role string) workflow.Node {
-	return degradingNode{Node: inner, role: role}
+func degradeNode(inner workflow.Node, role string, jobs JobService) workflow.Node {
+	return degradingNode{Node: inner, role: role, jobs: jobs}
 }
 
 func (n degradingNode) Run(ctx adkagent.Context, input any) iter.Seq2[*session.Event, error] {
@@ -167,7 +167,7 @@ func (n degradingNode) Run(ctx adkagent.Context, input any) iter.Seq2[*session.E
 		delivered := false
 		for event, err := range n.Node.Run(ctx, input) {
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[role_degraded] %s node failed, continuing with an empty result: %v\n", n.role, err)
+				n.reportDegraded(ctx, err)
 				break
 			}
 			if event != nil && event.Output != nil {
@@ -184,6 +184,17 @@ func (n degradingNode) Run(ctx adkagent.Context, input any) iter.Seq2[*session.E
 		event.Output = emptyRoleResult
 		yield(event, nil)
 	}
+}
+
+// reportDegraded records the cause of an absorbed role failure. The node
+// continues with an empty result either way, so an operator reading the report
+// learns why a candidate looks empty rather than merely that it does. A wrapper
+// built without a job service simply absorbs the failure.
+func (n degradingNode) reportDegraded(ctx adkagent.Context, cause error) {
+	if n.jobs == nil {
+		return
+	}
+	_ = n.jobs.RecordRoleDegraded(ctx, n.role, cause)
 }
 
 func (n graphNodes) edges() []workflow.Edge {

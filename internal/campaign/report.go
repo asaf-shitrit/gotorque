@@ -124,6 +124,7 @@ func RenderMarkdown(state State) string {
 	writeInventory(&b, state)
 	writeBehaviorGate(&b, state)
 	writeBaselineWorkloads(&b, state)
+	writeDegradedRoles(&b, state)
 	writeCandidateExperiments(&b, state)
 	writeTokenUsage(&b, state)
 	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q\n```\n", state.Repository, state.ManifestPath)
@@ -202,6 +203,21 @@ func writeBaselineWorkloads(b *strings.Builder, state State) {
 	for _, run := range state.Runs {
 		fmt.Fprintf(b, "| `%s` | %d | %s | `%s` |\n", labelOrUnlabelled(run.Workload), run.ExitCode, run.Duration, run.ID)
 	}
+}
+
+// writeDegradedRoles explains a campaign in which an agent node failed and the
+// graph carried on: the roles are listed immediately above the candidates they
+// may have left empty, so `patch is empty` is read next to its cause rather
+// than as a mystery.
+func writeDegradedRoles(b *strings.Builder, state State) {
+	if len(state.DegradedRoles) == 0 {
+		return
+	}
+	b.WriteString("\n## Degraded roles\n\nA role whose model call failed is absorbed rather than fatal: the campaign continues with an empty result, so a candidate below may be missing that role's output.\n\n")
+	for _, degraded := range state.DegradedRoles {
+		fmt.Fprintf(b, "- `%s`: %s\n", degraded.Role, degraded.Cause)
+	}
+	b.WriteString("\n")
 }
 
 func writeCandidateExperiments(b *strings.Builder, state State) {
