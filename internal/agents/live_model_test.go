@@ -20,7 +20,7 @@ import (
 //
 // Any OpenRouter model id works, free ones included:
 //
-//	GOTORQUE_LIVE_MODEL=stealth/union-alpha go test ./internal/agents -run TestLiveModelAnswersARolePrompt -v
+//	GOTORQUE_LIVE_MODEL=deepseek/deepseek-v4.1-flash go test ./internal/agents -run TestLiveModelAnswersARolePrompt -v
 //
 // Without the variable, or without a credential, the test skips, so CI stays
 // offline and needs no secret.

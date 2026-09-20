@@ -67,20 +67,25 @@ Without an endpoint, `--adk-stub` runs the full pipeline with deterministic
 stub agents, which makes it usable in CI. Resume an interrupted campaign
 with `optimize --resume <dir> --adk`.
 
-Any OpenRouter slug works for a role, free ones included: the routing variables
-take whatever the endpoint advertises, and a campaign's preflight asks the
-endpoint's catalogue before it spends any repository work, so a typo fails with
-`configured model "..." for <role> is not advertised by endpoint` rather than a
-confusing decode error later. Free and stealth models generally retain prompts
-for the provider's own purposes, and a campaign sends source excerpts and
-candidate patches, so route a role to one only for targets you are happy to
-share. To check a model answers in the shape the roles require before spending
-a campaign on it:
+Any OpenRouter slug works for a role: the routing variables take whatever the
+endpoint advertises, and a campaign's preflight asks the endpoint's catalogue
+before it spends any repository work, so a typo fails with `configured model
+"..." for <role> is not advertised by endpoint` rather than a confusing decode
+error later. To check a model actually answers in the shape the roles require
+before spending a campaign on it:
 
 ```sh
-GOTORQUE_LIVE_MODEL=stealth/union-alpha \
+GOTORQUE_LIVE_MODEL=deepseek/deepseek-v4.1-flash \
   go test ./internal/agents -run TestLiveModelAnswersARolePrompt -v
 ```
+
+Free and stealth slugs (`...:free`, `stealth/...`) are worth checking with that
+test before trusting them with a campaign, for two reasons. They generally
+retain prompts for the provider's own purposes, and a campaign sends source
+excerpts and candidate patches, so route a role to one only for targets you are
+happy to share. They are also temporary: `stealth/union-alpha` answered role
+prompts at zero cost and was retired mid-flight, leaving a campaign that stalled
+on ten of thirteen attempts and a later 404 naming its paid successor.
 
 That test calls the model through the same path a campaign uses — streaming,
 the retry ladder, fence stripping, JSON decoding and per-role usage accounting —
