@@ -105,7 +105,21 @@ func oneLine(text string, limit int) string {
 	return collapsed[:limit] + "…"
 }
 
+// ReportSchemaVersion stamps the shape of a written report. It exists so a
+// campaign directory carries the shape it was written in: the previous
+// structural change (comparisons gaining a metric and a workload instead of one
+// name) was detectable only by classifying existing directories by hand, and a
+// reader could not tell an old artifact from a broken one.
+//
+// Bump it when a field a reader depends on changes meaning or disappears, and
+// note in docs/adr what the new number covers. A report without the field
+// predates versioning and is reported as such rather than silently rendered.
+const ReportSchemaVersion = 1
+
 func WriteReports(dir string, state State) error {
+	// The stamp belongs to the artifact, not to the engine's internal state, so
+	// it is applied to the copy being written.
+	state.SchemaVersion = ReportSchemaVersion
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -135,6 +149,19 @@ func writeReportHeader(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "# Go optimization campaign `%s`\n\n", state.ID)
 	fmt.Fprintf(b, "**%s evidence** (%s/%s)\n\n", strings.ToUpper(state.Environment.Authority), state.Environment.OS, state.Environment.Architecture)
 	fmt.Fprintf(b, "- Status: `%s`\n- Stop reason: %s\n- Repository: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n\n", state.Status, state.StopReason, state.Repository, state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
+	writeSchemaNotice(b, state)
+}
+
+// writeSchemaNotice says which shape a report is in. A directory written before
+// reports carried a version cannot promise the fields a current reader expects,
+// and saying so is the difference between an old artifact and a broken one.
+func writeSchemaNotice(b *strings.Builder, state State) {
+	if state.SchemaVersion == ReportSchemaVersion {
+		fmt.Fprintf(b, "- Report schema: `%d`\n\n", state.SchemaVersion)
+		return
+	}
+	fmt.Fprintf(b, "- Report schema: unversioned (current is `%d`)\n\n", ReportSchemaVersion)
+	fmt.Fprintf(b, "> This report was written before reports carried a schema version, so fields added since — structured workload identity among them — may be missing or blank in the sections below. Re-run the campaign to produce a current report.\n\n")
 }
 
 // writeLegacyNotice explains a report whose comparisons predate structured

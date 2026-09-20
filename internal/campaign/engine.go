@@ -105,6 +105,10 @@ type State struct {
 	Repository   string `json:"repository"`
 	ManifestPath string `json:"manifest_path"`
 	ADKMode      string `json:"adk_mode,omitempty"`
+	// SchemaVersion is stamped by WriteReports onto the artifact it writes, so a
+	// report carries the shape it was written in. It stays zero for state that
+	// predates versioning, which readers report rather than assume.
+	SchemaVersion int `json:"schema_version,omitempty"`
 
 	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
 	// ConsecutiveFailures mirrors the orchestrator's run of rejected or

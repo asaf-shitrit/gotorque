@@ -1,6 +1,8 @@
 package campaign
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -143,4 +145,38 @@ func TestRenderMarkdownListsDegradedRoles(t *testing.T) {
 	require.Contains(t, report, "`optimizer`: model stream stalled: no chunk for 2m0s")
 
 	require.NotContains(t, RenderMarkdown(State{}), "Degraded roles", "a clean campaign must not carry the section")
+}
+
+// A written report carries the shape it was written in, so a reader can tell an
+// old artifact from a broken one. The previous structural change was detectable
+// only by classifying existing directories by hand.
+func TestWriteReportsStampsTheSchemaVersion(t *testing.T) {
+	dir := t.TempDir()
+	// The artifact is read back through the manifest's duration type, which
+	// rejects a non-positive value, so the fixture needs the positive durations
+	// a real campaign always has. That coupling between an operator artifact and
+	// an engine invariant is the reason the report would rather be its own view.
+	state := State{ID: "campaign-1", SchemaVersion: 0, Manifest: manifest.Manifest{Campaign: manifest.CampaignLimits{
+		MaxDuration:           manifest.Duration(time.Minute),
+		DiscoveryStallTimeout: manifest.Duration(time.Minute),
+		MinimumCommandTimeout: manifest.Duration(time.Second),
+	}}}
+	require.NoError(t, WriteReports(dir, state))
+
+	data, err := os.ReadFile(filepath.Join(dir, ReportJSONName))
+	require.NoError(t, err)
+	var written State
+	require.NoError(t, json.Unmarshal(data, &written))
+	require.Equal(t, ReportSchemaVersion, written.SchemaVersion, "the artifact must carry its shape")
+
+	markdown, err := os.ReadFile(filepath.Join(dir, ReportMarkdownName))
+	require.NoError(t, err)
+	require.Contains(t, string(markdown), "- Report schema: `1`")
+	require.NotContains(t, string(markdown), "unversioned")
+}
+
+func TestRenderMarkdownMarksAnUnversionedReport(t *testing.T) {
+	legacy := RenderMarkdown(State{ID: "campaign-old"})
+	require.Contains(t, legacy, "Report schema: unversioned")
+	require.Contains(t, legacy, "written before reports carried a schema version")
 }
