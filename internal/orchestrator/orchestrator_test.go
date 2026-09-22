@@ -84,10 +84,22 @@ type degradedRole struct {
 	cause string
 }
 
+// repairedRole is one role output the decoder had to repair, as reported.
+type repairedRole struct {
+	role   string
+	repair agents.Repair
+}
+
 type fakeJobService struct {
 	progress []CampaignProgress
 	complete int
 	degraded []degradedRole
+	repaired []repairedRole
+}
+
+func (f *fakeJobService) RecordRoleRepaired(_ context.Context, role string, repair agents.Repair) error {
+	f.repaired = append(f.repaired, repairedRole{role: role, repair: repair})
+	return nil
 }
 
 func (f *fakeJobService) RecordRoleDegraded(_ context.Context, role string, cause error) error {

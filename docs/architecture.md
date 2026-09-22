@@ -383,6 +383,17 @@ only removes parse failures of otherwise usable recommendations.
   merely failed to parse as JSON is still yielded, because downstream decoding
   names the offending text. At most one complete response escapes a call, by
   construction rather than by trusting the inner iterator.
+- Repair recording: when a payload parses only after a repair that can
+  change its meaning (escaped control characters or quotes, completed
+  closers, a dropped stray quote, a string closed where the output was cut
+  off), `DecodeResultWithRepair` names the repair. Fence unwrapping and
+  trailing-comma removal are not counted. Workflow nodes record a
+  `role_repaired` event, and the optimizer's repair lands on its candidate
+  record as `proposal_repair` ("Proposal salvaged" in the report). Before
+  this, a patch cut off at the output-token cap was closed by the decoder,
+  had its hunk counts recomputed by normalization, and read in every record
+  like one the model meant. The repaired value is still judged normally, and
+  policy never reads the field.
 - Retry and usage decoration: the OpenAI-compatible provider wraps every
   role model in a decorator that transparently retries up to four attempts
   with 15, 30, then 60 second backoff while a call fails before producing

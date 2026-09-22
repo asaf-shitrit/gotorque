@@ -94,6 +94,13 @@ type CandidateEvidence struct {
 	// it never changes accept/reject decisions.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
+	// ProposalRepair names the rewrite the optimizer's output needed before it
+	// parsed, or is empty when it parsed as sent. A patch cut off at the
+	// output-token cap is closed by the decoder and has its hunk counts
+	// recomputed by normalization, after which nothing else distinguishes it
+	// from a patch the model meant to send. It is a note for the record; policy
+	// never reads it.
+	ProposalRepair agents.Repair `json:"proposal_repair,omitempty"`
 }
 
 // PolicyInput contains all evidence needed for a deterministic decision.

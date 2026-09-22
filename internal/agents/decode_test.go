@@ -345,29 +345,34 @@ func TestEscapeRawControlChars(t *testing.T) {
 // or the whole cycle before the repairs below existed.
 func TestDecodeOptimizerMalformations(t *testing.T) {
 	tests := []struct {
-		name      string
-		raw       string
-		wantPatch string
+		name       string
+		raw        string
+		wantPatch  string
+		wantRepair Repair
 	}{
 		{
-			name:      "diff pasted verbatim with raw newlines",
-			raw:       "{\"hypothesis\":\"h\",\"patch\":\"--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n\",\"expected_effect\":\"e\"}",
-			wantPatch: "--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+			name:       "diff pasted verbatim with raw newlines",
+			raw:        "{\"hypothesis\":\"h\",\"patch\":\"--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n\",\"expected_effect\":\"e\"}",
+			wantPatch:  "--- a/m.go\n+++ b/m.go\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+			wantRepair: RepairEscapedControlChars,
 		},
 		{
-			name:      "unescaped quotes inside a line element",
-			raw:       `{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go","@@ -1,2 +1,2 @@","-    s := "old"","+    s := "new""],"expected_effect":"e"}`,
-			wantPatch: "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := \"old\"\n+    s := \"new\"\n",
+			name:       "unescaped quotes inside a line element",
+			raw:        `{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go","@@ -1,2 +1,2 @@","-    s := "old"","+    s := "new""],"expected_effect":"e"}`,
+			wantPatch:  "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := \"old\"\n+    s := \"new\"\n",
+			wantRepair: RepairEscapedQuotes,
 		},
 		{
-			name:      "unescaped quotes inside a string-form patch",
-			raw:       `{"hypothesis":"h","patch":"--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := "old"\n+    s := "new"\n","expected_effect":"e"}`,
-			wantPatch: "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := \"old\"\n+    s := \"new\"\n",
+			name:       "unescaped quotes inside a string-form patch",
+			raw:        `{"hypothesis":"h","patch":"--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := "old"\n+    s := "new"\n","expected_effect":"e"}`,
+			wantPatch:  "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    s := \"old\"\n+    s := \"new\"\n",
+			wantRepair: RepairEscapedQuotes,
 		},
 		{
-			name:      "response cut off at the output token cap",
-			raw:       `{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go","@@ -1,2 +1,2 @@","-    a()","+    b(`,
-			wantPatch: "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    a()\n+    b(\n",
+			name:       "response cut off at the output token cap",
+			raw:        `{"hypothesis":"h","patch":["--- a/m.go","+++ b/m.go","@@ -1,2 +1,2 @@","-    a()","+    b(`,
+			wantPatch:  "--- a/m.go\n+++ b/m.go\n@@ -1,2 +1,2 @@\n-    a()\n+    b(\n",
+			wantRepair: RepairTerminatedString,
 		},
 	}
 	for _, tc := range tests {
@@ -379,6 +384,68 @@ func TestDecodeOptimizerMalformations(t *testing.T) {
 			if got.Patch != tc.wantPatch {
 				t.Fatalf("patch = %q, want %q", got.Patch, tc.wantPatch)
 			}
+			// The salvaged value must be the one DecodeResult returns; the
+			// variant only adds the name of the repair that produced it.
+			reported, repair, err := DecodeResultWithRepair[OptimizerResult](tc.raw)
+			if err != nil || reported.Patch != got.Patch {
+				t.Fatalf("DecodeResultWithRepair = %q, %v; want the same patch as DecodeResult", reported.Patch, err)
+			}
+			if repair != tc.wantRepair {
+				t.Fatalf("repair = %q, want %q", repair, tc.wantRepair)
+			}
 		})
+	}
+}
+
+// A payload that parses as sent, after only the tolerances that cannot change
+// what the model said, must report no repair; one the decoder had to rewrite
+// must say which rewrite it was, so a salvaged answer is not recorded as an
+// intended one.
+func TestDecodeResultWithRepairNamesTheRepair(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        any
+		wantRepair Repair
+	}{
+		{name: "clean object", raw: `{"objective":"o","next_experiment":"n"}`},
+		{name: "fenced object", raw: "```json\n{\"objective\":\"o\",\"next_experiment\":\"n\"}\n```"},
+		{name: "trailing comma", raw: `{"objective":"o","next_experiment":"n",}`},
+		{name: "already decoded value", raw: map[string]any{"objective": "o", "next_experiment": "n"}},
+		{name: "degraded empty result", raw: "{}"},
+		{name: "missing closer", raw: `{"objective":"o","next_experiment":"n"`, wantRepair: RepairAddedClosers},
+		{name: "stray quote after a bare value", raw: `{"objective":"o","attempt":1"`, wantRepair: RepairDroppedStrayQuote},
+		{name: "cut off mid-string", raw: `{"objective":"o","next_experiment":"profile the par`, wantRepair: RepairTerminatedString},
+		{
+			name:       "raw newline and embedded quotes together",
+			raw:        "{\"objective\":\"say \"hi\"\nthen stop\",\"next_experiment\":\"n\"}",
+			wantRepair: joinRepairs(RepairEscapedControlChars, RepairEscapedQuotes),
+		},
+		{
+			name:       "raw newline in a truncated string",
+			raw:        "{\"objective\":\"o\",\"next_experiment\":\"line one\nline tw",
+			wantRepair: joinRepairs(RepairEscapedControlChars, RepairTerminatedString),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, repair, err := DecodeResultWithRepair[CoordinatorResult](tc.raw)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Objective == "" && tc.name != "degraded empty result" {
+				t.Fatalf("decoded %+v, want the objective", got)
+			}
+			if repair != tc.wantRepair {
+				t.Fatalf("repair = %q, want %q", repair, tc.wantRepair)
+			}
+		})
+	}
+}
+
+func TestDecodeResultWithRepairReportsNoRepairOnFailure(t *testing.T) {
+	for _, raw := range []any{nil, (*genai.Content)(nil), "not json at all", make(chan int), 42} {
+		if _, repair, err := DecodeResultWithRepair[CoordinatorResult](raw); err == nil || repair != "" {
+			t.Fatalf("DecodeResultWithRepair(%T) = repair %q, err %v; want an error and no repair", raw, repair, err)
+		}
 	}
 }

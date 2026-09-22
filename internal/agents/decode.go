@@ -17,47 +17,89 @@ import (
 // deterministic policy layer still validates everything downstream, so
 // accepting these shapes here only removes brittle rejections of otherwise
 // usable recommendations.
+//
+// A caller that must be able to tell a salvaged payload from the one the model
+// sent uses DecodeResultWithRepair instead.
 func DecodeResult[T any](raw any) (T, error) {
+	out, _, err := DecodeResultWithRepair[T](raw)
+	return out, err
+}
+
+// Repair names the rewrite that made a malformed payload parse. The empty
+// Repair means the payload parsed as sent, after only the shape tolerances that
+// cannot change what the model said: fence and prose unwrapping and trailing
+// comma removal.
+type Repair string
+
+// The repairs, from the narrowest rewrite to the most speculative. A repair that
+// needed two rewrites names both, joined by repairJoin.
+const (
+	RepairEscapedControlChars Repair = "escaped raw control characters inside a string"
+	RepairEscapedQuotes       Repair = "escaped unescaped quotes inside a string"
+	RepairAddedClosers        Repair = "added missing closing brackets"
+	RepairDroppedStrayQuote   Repair = "dropped a stray trailing quote"
+	RepairTerminatedString    Repair = "closed a string cut off mid-value (truncated output)"
+
+	repairJoin = ", then "
+)
+
+// DecodeResultWithRepair is DecodeResult that also reports which repair, if any,
+// the payload needed before it parsed.
+//
+// The repairs are deliberate: each turns a lost cycle into an answer the
+// deterministic half still judges. But a repaired value used to be
+// indistinguishable from an intended one. An optimizer patch cut off at the
+// output-token cap came through terminateOpenString, NormalizeUnifiedDiff then
+// recomputed its hunk counts, and the candidate record read exactly like a
+// patch the model meant to send. Reporting the repair lets the campaign record
+// the difference; it never changes the decoded value or any verdict.
+func DecodeResultWithRepair[T any](raw any) (T, Repair, error) {
 	var out T
 	switch value := raw.(type) {
 	case nil:
-		return out, errors.New("decode agent output: no output")
+		return out, "", errors.New("decode agent output: no output")
 	case string:
 		return decodeText[T](value)
 	case *genai.Content:
 		if value == nil {
-			return out, errors.New("decode agent output: empty content")
+			return out, "", errors.New("decode agent output: empty content")
 		}
 		return decodeText[T](contentText(value))
 	default:
 		data, err := json.Marshal(raw)
 		if err != nil {
-			return out, fmt.Errorf("decode agent output %T: %w", raw, err)
+			return out, "", fmt.Errorf("decode agent output %T: %w", raw, err)
 		}
 		if err := json.Unmarshal(data, &out); err != nil {
-			return out, fmt.Errorf("decode agent output: %w", err)
+			return out, "", fmt.Errorf("decode agent output: %w", err)
 		}
-		return out, nil
+		return out, "", nil
 	}
 }
 
-func decodeText[T any](text string) (T, error) {
+func decodeText[T any](text string) (T, Repair, error) {
 	var out T
 	cleaned := RepairCommonMalformations(UnwrapJSONFence(text))
 	err := json.Unmarshal([]byte(cleaned), &out)
 	if err == nil {
-		return out, nil
+		return out, "", nil
 	}
 	// Each repair below has exactly one sane reading of a mistake models
 	// actually make. A failed attempt can leave partial data behind, so every
 	// candidate decodes into a fresh value and the first one that parses wins.
-	for _, repaired := range repairAttempts(cleaned) {
-		var attempt T
-		if json.Unmarshal([]byte(repaired), &attempt) == nil {
-			return attempt, nil
+	for _, attempt := range repairAttempts(cleaned) {
+		var repaired T
+		if json.Unmarshal([]byte(attempt.text), &repaired) == nil {
+			return repaired, attempt.repair, nil
 		}
 	}
-	return out, fmt.Errorf("decode agent output: %w (payload excerpt: %q)", err, excerptAround(cleaned, err))
+	return out, "", fmt.Errorf("decode agent output: %w (payload excerpt: %q)", err, excerptAround(cleaned, err))
+}
+
+// repairAttempt is one repaired form of a payload and the rewrite that made it.
+type repairAttempt struct {
+	text   string
+	repair Repair
 }
 
 // repairAttempts returns repaired forms of a payload that failed to parse,
@@ -65,35 +107,47 @@ func decodeText[T any](text string) (T, error) {
 // model is not the alternative to repairing here: the retry loop that wraps the
 // model has already spent its attempts by the time this code runs, so a payload
 // left unrepaired costs the whole campaign cycle, not one more request.
-func repairAttempts(cleaned string) []string {
-	var attempts []string
-	appendIf := func(text string, changed bool) {
+func repairAttempts(cleaned string) []repairAttempt {
+	var attempts []repairAttempt
+	appendIf := func(text string, changed bool, repair Repair) {
 		if changed {
-			attempts = append(attempts, RepairCommonMalformations(text))
+			attempts = append(attempts, repairAttempt{text: RepairCommonMalformations(text), repair: repair})
 		}
 	}
 	controls, controlsChanged := EscapeRawControlChars(cleaned)
-	appendIf(controls, controlsChanged)
+	appendIf(controls, controlsChanged, RepairEscapedControlChars)
 	quoted, quotedChanged := EscapeEmbeddedQuotes(cleaned)
-	appendIf(quoted, quotedChanged)
+	appendIf(quoted, quotedChanged, RepairEscapedQuotes)
 	if controlsChanged {
 		// Pasting a diff verbatim breaks the newlines and the quotes at once;
 		// neither single repair parses on its own.
-		appendIf(EscapeEmbeddedQuotes(controls))
+		both, bothChanged := EscapeEmbeddedQuotes(controls)
+		appendIf(both, bothChanged, joinRepairs(RepairEscapedControlChars, RepairEscapedQuotes))
 	}
-	attempts = append(attempts, structuralRepairs(cleaned)...)
+	attempts = append(attempts, structuralRepairs(cleaned, "")...)
 	if controlsChanged {
-		attempts = append(attempts, structuralRepairs(controls)...)
+		attempts = append(attempts, structuralRepairs(controls, RepairEscapedControlChars)...)
 	}
 	return attempts
 }
 
-func structuralRepairs(text string) []string {
-	repaired := RepairCandidates(text)
-	for i, candidate := range repaired {
-		repaired[i] = RepairCommonMalformations(candidate)
+// structuralRepairs returns the closer and truncation repairs of text, each
+// named after prior, the rewrite text already carries.
+func structuralRepairs(text string, prior Repair) []repairAttempt {
+	repaired := repairCandidates(text)
+	for i := range repaired {
+		repaired[i].text = RepairCommonMalformations(repaired[i].text)
+		repaired[i].repair = joinRepairs(prior, repaired[i].repair)
 	}
 	return repaired
+}
+
+// joinRepairs names a repair applied on top of another one.
+func joinRepairs(first, then Repair) Repair {
+	if first == "" {
+		return then
+	}
+	return first + repairJoin + then
 }
 
 func isJSONSpace(c byte) bool {
@@ -512,17 +566,25 @@ func trimSpaceBytes(data []byte) []byte {
 // an unterminated string, a variant that drops that stray opening quote
 // before completing closers. Callers try each until one parses.
 func RepairCandidates(text string) []string {
-	var candidates []string
+	attempts := repairCandidates(text)
+	candidates := make([]string, len(attempts))
+	for i, attempt := range attempts {
+		candidates[i] = attempt.text
+	}
+	return candidates
+}
+
+// repairCandidates is RepairCandidates with each candidate named by the repair
+// that produced it.
+func repairCandidates(text string) []repairAttempt {
 	first, _ := RepairMissingClosers(text)
-	candidates = append(candidates, first)
+	candidates := []repairAttempt{{text: first, repair: RepairAddedClosers}}
 	// A quote that opens a string running to end of input is usually a
 	// stray character the model appended after a bare value; dropping it
 	// lets the structural closers apply.
-	last := strings.LastIndex(text, "\"")
-	if last >= 0 {
-		withoutQuote := text[:last] + text[last+1:]
-		again, _ := RepairMissingClosers(withoutQuote)
-		candidates = append(candidates, again)
+	if last := strings.LastIndex(text, "\""); last >= 0 {
+		again, _ := RepairMissingClosers(text[:last] + text[last+1:])
+		candidates = append(candidates, repairAttempt{text: again, repair: RepairDroppedStrayQuote})
 	}
 	// A response cut off at the output-token cap ends in the middle of a
 	// string value, which blocks the closer completion above. Terminating that
@@ -530,7 +592,7 @@ func RepairCandidates(text string) []string {
 	// validation and the build gate still get to judge on its merits.
 	if terminated, ok := terminateOpenString(text); ok {
 		closed, _ := RepairMissingClosers(terminated)
-		candidates = append(candidates, closed)
+		candidates = append(candidates, repairAttempt{text: closed, repair: RepairTerminatedString})
 	}
 	return candidates
 }

@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -260,8 +261,28 @@ func (g *campaignGraph) inspect(ctx adkagent.Context, state CampaignState) (*ses
 	return stateEvent(ctx, state), nil
 }
 
+// decodeRole decodes one role's output and records the repair it needed, if
+// any. The repaired value is still the role's answer; the record exists so an
+// answer the decoder salvaged is not mistaken for the one the model sent.
+func decodeRole[T any](ctx context.Context, jobs JobService, role agents.Role, raw any) (T, agents.Repair, error) {
+	result, repair, err := agents.DecodeResultWithRepair[T](raw)
+	if err == nil {
+		recordRepair(ctx, jobs, role, repair)
+	}
+	return result, repair, err
+}
+
+// recordRepair reports a repaired role output. Like a degraded role, a failed
+// record is not a reason to stop the campaign.
+func recordRepair(ctx context.Context, jobs JobService, role agents.Role, repair agents.Repair) {
+	if repair == "" {
+		return
+	}
+	_ = jobs.RecordRoleRepaired(ctx, string(role), repair)
+}
+
 func (g *campaignGraph) mergeCoordinator(ctx adkagent.Context, raw any) (*session.Event, error) {
-	result, err := agents.DecodeResult[agents.CoordinatorResult](raw)
+	result, _, err := decodeRole[agents.CoordinatorResult](ctx, g.deps.Jobs, agents.RoleCoordinator, raw)
 	if err != nil {
 		return nil, fmt.Errorf("coordinator output: %w", err)
 	}
@@ -274,7 +295,7 @@ func (g *campaignGraph) mergeCoordinator(ctx adkagent.Context, raw any) (*sessio
 }
 
 func (g *campaignGraph) discover(ctx adkagent.Context, raw any) (*session.Event, error) {
-	result, err := agents.DecodeResult[agents.ExplorerResult](raw)
+	result, _, err := decodeRole[agents.ExplorerResult](ctx, g.deps.Jobs, agents.RoleExplorer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("explorer output: %w", err)
 	}
@@ -297,10 +318,11 @@ func (g *campaignGraph) discover(ctx adkagent.Context, raw any) (*session.Event,
 }
 
 func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.Event, error) {
-	result, err := salvageAnalystResult(raw)
+	result, repair, err := salvageAnalystResult(raw)
 	if err != nil {
 		return nil, fmt.Errorf("analyst output: %w", err)
 	}
+	recordRepair(ctx, g.deps.Jobs, agents.RoleAnalyst, repair)
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
@@ -310,14 +332,17 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	return stateEvent(ctx, state), nil
 }
 
-func salvageAnalystResult(raw any) (agents.AnalystResult, error) {
-	result, err := agents.DecodeResult[agents.AnalystResult](raw)
+// salvageAnalystResult decodes the analyst's output, falling back to an
+// analysis carried in the input. The repair it reports belongs to the value it
+// returns: the carried-in analysis is already decoded and never repaired.
+func salvageAnalystResult(raw any) (agents.AnalystResult, agents.Repair, error) {
+	result, repair, err := agents.DecodeResultWithRepair[agents.AnalystResult](raw)
 	if err != nil || len(result.HotPaths) == 0 {
 		if prior, ok := priorAnalystResult(raw); ok && len(prior.HotPaths) > len(result.HotPaths) {
-			return prior, nil
+			return prior, "", nil
 		}
 	}
-	return result, err
+	return result, repair, err
 }
 
 func priorAnalystResult(raw any) (agents.AnalystResult, bool) {
@@ -361,7 +386,7 @@ func discoveryHotPaths(fns []string) []agents.HotPath {
 }
 
 func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event, error) {
-	proposal, err := agents.DecodeResult[agents.OptimizerResult](raw)
+	proposal, repair, err := decodeRole[agents.OptimizerResult](ctx, g.deps.Jobs, agents.RoleOptimizer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("optimizer output: %w", err)
 	}
@@ -382,12 +407,15 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 	if evidence.Candidate.ID == "" {
 		return nil, errors.New("evaluate candidate: empty candidate ID")
 	}
+	// Stamped after the runner returns so no step of the evaluation can see
+	// it: the note rides to the candidate's record and nowhere else.
+	evidence.ProposalRepair = repair
 	state.Candidate = evidence
 	return stateEvent(ctx, state), nil
 }
 
 func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Event, error) {
-	review, err := agents.DecodeResult[agents.ReviewerResult](raw)
+	review, _, err := decodeRole[agents.ReviewerResult](ctx, g.deps.Jobs, agents.RoleReviewer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("reviewer output: %w", err)
 	}

@@ -280,6 +280,11 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	if record.PatchPath != "" {
 		fmt.Fprintf(b, "- Patch: `%s`%s\n", record.PatchPath, acceptedMarker(record.Accepted))
 	}
+	if record.ProposalRepair != "" {
+		// A salvaged proposal is judged like any other; this line only keeps
+		// it from reading as the one the model sent.
+		fmt.Fprintf(b, "- Proposal salvaged: the optimizer's output parsed only after the decoder %s, so the patch may not be the one the model intended\n", record.ProposalRepair)
+	}
 	if record.Summary != "" {
 		fmt.Fprintf(b, "- Evidence: %s\n", record.Summary)
 	}

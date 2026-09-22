@@ -191,6 +191,25 @@ func (s adkServices) RecordRoleDegraded(_ context.Context, role string, cause er
 	return s.engine.saveEvent("role_degraded", fmt.Sprintf("%s node failed, continuing with an empty result: %s", role, reason), nil)
 }
 
+// RoleRepair records one role output that parsed only after the decoder
+// rewrote it.
+type RoleRepair struct {
+	Role   string `json:"role"`
+	Repair string `json:"repair"`
+}
+
+// RecordRoleRepaired persists a role whose output parsed only after a repair.
+// The repaired value is used as the role's answer, which is the point of the
+// repair, but it used to leave no trace: an optimizer patch cut off at the
+// output-token cap was closed by the decoder, had its hunk counts recomputed by
+// normalization, and read in every record like a patch the model meant. The
+// event marks it on the progress stream; the optimizer's repair also reaches
+// its candidate record through the evidence.
+func (s adkServices) RecordRoleRepaired(_ context.Context, role string, repair agents.Repair) error {
+	message := fmt.Sprintf("%s output parsed only after the decoder %s", role, repair)
+	return s.engine.saveEvent("role_repaired", message, RoleRepair{Role: role, Repair: string(repair)})
+}
+
 func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result orchestrator.CampaignResult) (domain.Job, error) {
 	job.Status = domain.JobSucceeded
 	job.UpdatedAt = time.Now().UTC()
@@ -326,6 +345,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		Samples:         input.Evidence.RepSamples,
 		PgoComparisons:  input.Evidence.PgoComparisons,
 		PgoNote:         input.Evidence.PgoNote,
+		ProposalRepair:  string(input.Evidence.ProposalRepair),
 	}
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	// Persist immediately: an ADK failure later in the run must not lose

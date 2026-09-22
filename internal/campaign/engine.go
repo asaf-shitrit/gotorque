@@ -88,6 +88,11 @@ type CandidateRecord struct {
 	// the recorded decision; see runPgoLane.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
+	// ProposalRepair names the rewrite the optimizer's output needed before it
+	// parsed, empty when it parsed as sent. A salvaged patch -- one cut off at
+	// the output-token cap above all -- otherwise reads exactly like an
+	// intended one. It never changes the recorded decision.
+	ProposalRepair string `json:"proposal_repair,omitempty"`
 }
 
 // RoleUsageSnapshot is persisted per-role model token usage for one ADK run.
