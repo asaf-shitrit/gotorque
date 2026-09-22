@@ -153,6 +153,9 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.Analyst == AnalystJev {
 		fmt.Fprintf(b, "- Analyst: Jev cause classification (`%s`), not a model role\n", jev.Model)
 	}
+	if state.Reviewer == ReviewerJev {
+		fmt.Fprintf(b, "- Reviewer: Jev behaviour-hazard checks (`%s`), not a model role\n", jev.Model)
+	}
 	b.WriteString("\n")
 	writeSchemaNotice(b, state)
 }
@@ -298,6 +301,9 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	}
 	for _, reason := range record.Reasons {
 		fmt.Fprintf(b, "- Policy: %s\n", reason)
+	}
+	for _, concern := range record.ReviewConcerns {
+		fmt.Fprintf(b, "- Review: %s\n", concern)
 	}
 }
 

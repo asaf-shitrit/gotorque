@@ -75,13 +75,16 @@ type CandidateRecord struct {
 	Hypothesis  string `json:"hypothesis"`
 	// Target is the function and cause code told the optimizer to attack, when
 	// the analyst ranked causes.
-	Target      *agents.Target            `json:"target,omitempty"`
-	PatchPath   string                    `json:"patch_path,omitempty"`
-	Summary     string                    `json:"summary,omitempty"`
-	Decision    domain.Decision           `json:"decision"`
-	Reasons     []string                  `json:"reasons,omitempty"`
-	Comparisons []domain.MetricComparison `json:"comparisons,omitempty"`
-	Accepted    bool                      `json:"accepted,omitempty"`
+	Target    *agents.Target `json:"target,omitempty"`
+	PatchPath string         `json:"patch_path,omitempty"`
+	// ReviewConcerns are the behaviour hazards the reviewer raised. They are
+	// recorded for the reader and the next cycle; the verdict never reads them.
+	ReviewConcerns []string                  `json:"review_concerns,omitempty"`
+	Summary        string                    `json:"summary,omitempty"`
+	Decision       domain.Decision           `json:"decision"`
+	Reasons        []string                  `json:"reasons,omitempty"`
+	Comparisons    []domain.MetricComparison `json:"comparisons,omitempty"`
+	Accepted       bool                      `json:"accepted,omitempty"`
 	// BenchstatOutput holds trimmed raw benchstat output for workloads where
 	// benchstat refined the wall-time comparison; empty when unavailable.
 	BenchstatOutput string                   `json:"benchstat_output,omitempty"`
@@ -117,6 +120,9 @@ type State struct {
 	// rather than a model, so a report says which kind of analysis its
 	// hypotheses came from and a resume can insist on the same one.
 	Analyst string `json:"analyst,omitempty"`
+	// Reviewer is ReviewerJev when the reviewer role was Jev behaviour-hazard
+	// checks rather than a model.
+	Reviewer string `json:"reviewer,omitempty"`
 	// SchemaVersion is stamped by WriteReports onto the artifact it writes, so a
 	// report carries the shape it was written in. It stays zero for state that
 	// predates versioning, which readers report rather than assume.
@@ -358,11 +364,17 @@ func attachADK(e *Engine, opts Options) {
 	e.noteAnalyst(opts.ADKAgents)
 }
 
-// noteAnalyst records a switch to Jev cause classification. It never clears
-// the mark: a campaign any part of which ran on Jev says so.
+// noteAnalyst records a switch of the analyst or reviewer to Jev. It never
+// clears a mark: a campaign any part of which ran on Jev says so.
 func (e *Engine) noteAnalyst(roleSet *agents.Set) {
-	if roleSet != nil && roleSet.CauseEvaluator != nil {
+	if roleSet == nil {
+		return
+	}
+	if roleSet.CauseEvaluator != nil {
 		e.state.Analyst = AnalystJev
+	}
+	if roleSet.ReviewEvaluator != nil {
+		e.state.Reviewer = ReviewerJev
 	}
 }
 

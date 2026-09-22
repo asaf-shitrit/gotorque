@@ -48,6 +48,9 @@ type Dependencies struct {
 	// Causes, when set, replaces the analyst agent with deterministic cause
 	// classification. Agents.Analyst is then built but never run.
 	Causes CauseAnalyst
+	// Review, when set, replaces the reviewer agent with deterministic
+	// behaviour-hazard checks. Agents.Reviewer is then built but never run.
+	Review ReviewAnalyst
 }
 
 // Orchestrator exposes both the ADK workflow and an Agent wrapper suitable for
@@ -133,7 +136,14 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 		// free-text plan steered the optimizer away from the top target.
 		n.coordinator = workflow.NewFunctionNode(string(agents.RoleCoordinator), planCoordinator, det)
 	}
+	if g.deps.Review != nil {
+		n.reviewer = degradeNode(workflow.NewFunctionNode(string(agents.RoleReviewer), g.reviewPatch, agt), string(agents.RoleReviewer), g.deps.Jobs)
+	}
 	return n, nil
+}
+
+func (g *campaignGraph) reviewPatch(ctx adkagent.Context, state CampaignState) (agents.ReviewerResult, error) {
+	return g.deps.Review.ReviewPatch(ctx, ReviewRequest{Campaign: state.Request, Target: state.Target, Proposal: state.Proposal, Candidate: state.Candidate})
 }
 
 // planCoordinator states the plan the coordinator model used to write. The
@@ -608,12 +618,13 @@ func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignSt
 	state.Evaluation = evaluation
 	state.CandidatesTried++
 	state.PriorCandidates = append(state.PriorCandidates, PriorCandidate{
-		Attempt:       state.CandidatesTried,
-		Hypothesis:    state.Proposal.Hypothesis,
-		Decision:      string(evaluation.Decision),
-		Reasons:       evaluation.Reasons,
-		FailureDetail: state.Candidate.FailureDetail,
-		Target:        state.Target,
+		Attempt:        state.CandidatesTried,
+		Hypothesis:     state.Proposal.Hypothesis,
+		Decision:       string(evaluation.Decision),
+		Reasons:        evaluation.Reasons,
+		FailureDetail:  state.Candidate.FailureDetail,
+		Target:         state.Target,
+		ReviewConcerns: state.Review.Concerns,
 	})
 	countDecision(state, evaluation.Decision, separateInconclusiveBound)
 	if evaluation.Decision != domain.DecisionAccepted {

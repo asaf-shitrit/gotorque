@@ -41,11 +41,11 @@ func New(deps Dependencies) *cobra.Command {
 type optimizeFlags struct {
 	repo, manifestPath, campaignDir, resume string
 	runADK, runADKStub                      bool
-	analyst                                 string
+	analyst, reviewer                       string
 }
 
-// Analyst backends for --analyst. llm is the analyst model role; jev replaces
-// it with TypeSafe Jev cause classification ranked in code.
+// Role backends for --analyst and --reviewer. llm is the model role; jev
+// replaces it with TypeSafe Jev judgments ranked in code.
 const (
 	analystLLM = "llm"
 	analystJev = "jev"
@@ -68,6 +68,7 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&f.runADK, "adk", false, "run the full ADK graph using the OpenAI-compatible endpoint")
 	cmd.Flags().BoolVar(&f.runADKStub, "adk-stub", false, "run the full ADK graph with deterministic stub agents")
 	cmd.Flags().StringVar(&f.analyst, "analyst", analystLLM, "analyst backend: llm (the analyst model role) or jev (TypeSafe Jev cause classification; needs "+jev.EnvAPIKey+" with --adk)")
+	cmd.Flags().StringVar(&f.reviewer, "reviewer", analystLLM, "reviewer backend: llm (the reviewer model role) or jev (TypeSafe Jev behaviour-hazard checks; needs "+jev.EnvAPIKey+" with --adk)")
 	return cmd
 }
 
@@ -75,7 +76,7 @@ func runOptimize(ctx context.Context, out io.Writer, f optimizeFlags) error {
 	if f.runADK && f.runADKStub {
 		return errors.New("--adk and --adk-stub are mutually exclusive")
 	}
-	if err := validateAnalyst(f); err != nil {
+	if err := validateJevRoles(f); err != nil {
 		return err
 	}
 	roleSet, adkConfig, err := configureOptimizeAgents(ctx, out, f)
@@ -100,7 +101,7 @@ func configureOptimizeAgents(ctx context.Context, out io.Writer, f optimizeFlags
 	if err != nil {
 		return nil, nil, err
 	}
-	return roles, config, selectAnalyst(ctx, out, roles, f)
+	return roles, config, selectJev(ctx, out, roles, f)
 }
 
 func configureFreshAgents(ctx context.Context, out io.Writer, f optimizeFlags) (*agents.Set, *orchestrator.Config, error) {
@@ -148,16 +149,14 @@ func attachResumeADK(ctx context.Context, out io.Writer, engine *campaign.Engine
 	if engine.State().ADKMode != "" && !f.runADK && !f.runADKStub {
 		return fmt.Errorf("campaign %s was started with model agents; pass --adk or --adk-stub to resume model-driven work", f.resume)
 	}
-	// Same rule as --adk: a resumed campaign must not quietly change where
-	// its hypotheses come from halfway through.
-	if engine.State().Analyst == campaign.AnalystJev && f.analyst != analystJev {
-		return fmt.Errorf("campaign %s was started with --analyst jev; pass it again to resume with the same analyst", f.resume)
+	if err := requireSameJevRoles(engine.State(), f); err != nil {
+		return err
 	}
 	roles, config, err := resumeRoles(ctx, out, engine, f, roleSet, adkConfig)
 	if err != nil || roles == nil {
 		return err
 	}
-	if err := selectAnalyst(ctx, out, roles, f); err != nil {
+	if err := selectJev(ctx, out, roles, f); err != nil {
 		return err
 	}
 	engine.SetADK(roles, config)
@@ -179,39 +178,75 @@ func resumeRoles(ctx context.Context, out io.Writer, engine *campaign.Engine, f 
 	return deterministicAgents() //nolint:contextcheck // static stub set: no I/O, nothing to cancel
 }
 
-func validateAnalyst(f optimizeFlags) error {
-	switch f.analyst {
+// requireSameJevRoles applies the --adk rule to the Jev roles: a resumed
+// campaign must not quietly change where its hypotheses or reviews come from
+// halfway through.
+func requireSameJevRoles(state campaign.State, f optimizeFlags) error {
+	if state.Analyst == campaign.AnalystJev && f.analyst != analystJev {
+		return fmt.Errorf("campaign %s was started with --analyst jev; pass it again to resume with the same analyst", f.resume)
+	}
+	if state.Reviewer == campaign.ReviewerJev && f.reviewer != analystJev {
+		return fmt.Errorf("campaign %s was started with --reviewer jev; pass it again to resume with the same reviewer", f.resume)
+	}
+	return nil
+}
+
+func validateJevRoles(f optimizeFlags) error {
+	if err := validateBackend("--analyst", f.analyst, f); err != nil {
+		return err
+	}
+	return validateBackend("--reviewer", f.reviewer, f)
+}
+
+func validateBackend(flag, value string, f optimizeFlags) error {
+	switch value {
 	case "", analystLLM:
 		return nil
 	case analystJev:
 		if !f.runADK && !f.runADKStub {
-			return errors.New("--analyst jev needs --adk or --adk-stub: it replaces a role of the agent graph")
+			return fmt.Errorf("%s jev needs --adk or --adk-stub: it replaces a role of the agent graph", flag)
 		}
 		return nil
 	}
-	return fmt.Errorf("unknown --analyst %q: want %s or %s", f.analyst, analystLLM, analystJev)
+	return fmt.Errorf("unknown %s %q: want %s or %s", flag, value, analystLLM, analystJev)
 }
 
-// selectAnalyst swaps the analyst role for Jev cause classification when
-// --analyst jev asks for it. Under --adk-stub it uses the no-network stub; under
+// selectJev swaps the analyst and reviewer roles for Jev when --analyst jev or
+// --reviewer jev asks for it. Under --adk-stub it uses the no-network stub; under
 // --adk it spends one request proving the key and billing work, because a
-// gateway account without a card on file refuses every request and the
-// analyst node is reached only after the baseline has been built.
-func selectAnalyst(ctx context.Context, out io.Writer, roles *agents.Set, f optimizeFlags) error {
-	if f.analyst != analystJev || roles == nil {
+// gateway account without a card on file refuses every request and those
+// roles are reached only after the baseline has been built.
+func selectJev(ctx context.Context, out io.Writer, roles *agents.Set, f optimizeFlags) error {
+	analyst, reviewer := f.analyst == analystJev, f.reviewer == analystJev
+	if roles == nil || (!analyst && !reviewer) {
 		return nil
 	}
+	evaluator, err := jevEvaluator(ctx, f)
+	if err != nil {
+		return err
+	}
+	if analyst {
+		roles.CauseEvaluator = evaluator
+		if _, err := fmt.Fprintf(out, "analyst: Jev cause classification (%s)\n", jev.Model); err != nil {
+			return err
+		}
+	}
+	if reviewer {
+		roles.ReviewEvaluator = evaluator
+		_, err = fmt.Fprintf(out, "reviewer: Jev behaviour-hazard checks (%s)\n", jev.Model)
+	}
+	return err
+}
+
+func jevEvaluator(ctx context.Context, f optimizeFlags) (jev.Evaluator, error) {
 	if f.runADKStub {
-		roles.CauseEvaluator = jev.Stub{}
-		return nil
+		return jev.Stub{}, nil
 	}
 	client := jev.NewClientFromEnvironment()
 	if err := client.Preflight(ctx); err != nil {
-		return err
+		return nil, err
 	}
-	roles.CauseEvaluator = client
-	_, err := fmt.Fprintf(out, "analyst: Jev cause classification (%s)\n", jev.Model)
-	return err
+	return client, nil
 }
 
 func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) (err error) {

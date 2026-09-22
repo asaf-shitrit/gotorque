@@ -28,7 +28,7 @@ func TestAnalystFlagValidation(t *testing.T) {
 		{name: "unknown", flags: optimizeFlags{analyst: "gpt"}, want: `unknown --analyst "gpt"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateAnalyst(tc.flags)
+			err := validateJevRoles(tc.flags)
 			if tc.want == "" {
 				require.NoError(t, err)
 				return
@@ -66,7 +66,7 @@ func TestSelectAnalystPreflightsTheGateway(t *testing.T) {
 	t.Setenv(jev.EnvBaseURL, srv.URL)
 	var out bytes.Buffer
 	roles := &agents.Set{}
-	require.NoError(t, selectAnalyst(context.Background(), &out, roles, optimizeFlags{runADK: true, analyst: analystJev}))
+	require.NoError(t, selectJev(context.Background(), &out, roles, optimizeFlags{runADK: true, analyst: analystJev}))
 	require.IsType(t, jev.Client{}, roles.CauseEvaluator)
 	require.Contains(t, out.String(), "analyst: Jev cause classification (typesafe-ai/jev)")
 }
@@ -74,7 +74,7 @@ func TestSelectAnalystPreflightsTheGateway(t *testing.T) {
 func TestSelectAnalystStopsOnAFailedPreflight(t *testing.T) {
 	t.Setenv(jev.EnvAPIKey, "")
 	roles := &agents.Set{}
-	err := selectAnalyst(context.Background(), io.Discard, roles, optimizeFlags{runADK: true, analyst: analystJev})
+	err := selectJev(context.Background(), io.Discard, roles, optimizeFlags{runADK: true, analyst: analystJev})
 	require.ErrorContains(t, err, jev.EnvAPIKey)
 	require.Nil(t, roles.CauseEvaluator)
 }
@@ -86,4 +86,31 @@ func TestAttachResumeADKRequiresTheAnalystAJevCampaignStartedWith(t *testing.T) 
 
 	require.NoError(t, attachResumeADK(context.Background(), io.Discard, engine, optimizeFlags{resume: "campaign-dir", runADKStub: true, analyst: analystJev}, nil, nil))
 	require.Equal(t, campaign.AnalystJev, engine.State().Analyst)
+}
+
+func TestReviewerFlagFollowsTheAnalystRules(t *testing.T) {
+	require.NoError(t, validateJevRoles(optimizeFlags{reviewer: analystJev, runADKStub: true}))
+	require.ErrorContains(t, validateJevRoles(optimizeFlags{reviewer: analystJev}), "--reviewer jev needs --adk or --adk-stub")
+	require.ErrorContains(t, validateJevRoles(optimizeFlags{reviewer: "gpt"}), `unknown --reviewer "gpt"`)
+}
+
+func TestSelectJevCanReplaceBothRolesWithOneClient(t *testing.T) {
+	roles := &agents.Set{}
+	var out bytes.Buffer
+	require.NoError(t, selectJev(context.Background(), &out, roles, optimizeFlags{runADKStub: true, analyst: analystJev, reviewer: analystJev}))
+	require.Equal(t, jev.Stub{}, roles.CauseEvaluator)
+	require.Equal(t, jev.Stub{}, roles.ReviewEvaluator)
+	require.Contains(t, out.String(), "reviewer: Jev behaviour-hazard checks")
+
+	reviewerOnly := &agents.Set{}
+	require.NoError(t, selectJev(context.Background(), io.Discard, reviewerOnly, optimizeFlags{runADKStub: true, reviewer: analystJev}))
+	require.Nil(t, reviewerOnly.CauseEvaluator)
+	require.NotNil(t, reviewerOnly.ReviewEvaluator)
+}
+
+func TestAttachResumeADKRequiresTheReviewerAJevCampaignStartedWith(t *testing.T) {
+	engine := resumeEngine(t, campaign.State{ID: "campaign-test", ADKMode: "live", Reviewer: campaign.ReviewerJev})
+	err := attachResumeADK(context.Background(), io.Discard, engine, optimizeFlags{resume: "campaign-dir", runADKStub: true}, nil, nil)
+	require.ErrorContains(t, err, "started with --reviewer jev")
+	require.NoError(t, attachResumeADK(context.Background(), io.Discard, engine, optimizeFlags{resume: "campaign-dir", runADKStub: true, reviewer: analystJev}, nil, nil))
 }

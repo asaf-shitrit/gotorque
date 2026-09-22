@@ -117,6 +117,9 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 	if roleSet.CauseEvaluator != nil {
 		deps.Causes = causeAnalyst{engine: e, evaluator: roleSet.CauseEvaluator, usage: roleSet.Usage}
 	}
+	if roleSet.ReviewEvaluator != nil {
+		deps.Review = reviewAnalyst{engine: e, evaluator: roleSet.ReviewEvaluator, usage: roleSet.Usage}
+	}
 	orch, err := orchestrator.New(deps, cfg)
 	if err != nil {
 		return nil, nil, err
@@ -408,6 +411,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		CandidateID:     input.Evidence.Candidate.ID,
 		Hypothesis:      input.Evidence.Candidate.Hypothesis,
 		Target:          input.Target,
+		ReviewConcerns:  input.Review.Concerns,
 		PatchPath:       input.Evidence.Candidate.PatchPath,
 		Summary:         input.Evidence.Summary,
 		Decision:        result.Decision,

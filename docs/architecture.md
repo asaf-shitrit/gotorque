@@ -358,6 +358,35 @@ standard-library frame that is dropped rather than attributed to its caller,
 so the analyst is never asked about it; asked directly, it flags unbuffered
 I/O at +3.3 sd.
 
+## Jev reviewer
+
+`--reviewer jev` (with `--adk` or `--adk-stub`) replaces the reviewer model role
+the same way (ADR 0014): `Dependencies.Review` swaps in a function node named
+`reviewer` that calls `internal/campaign/review.go`, which asks Jev one yes/no
+question per behaviour hazard about the patch: output order that depends on map
+iteration or scheduling, changed errors or exit status, a dropped error from a
+call that can fail, an effect skipped on some path, reused-buffer aliasing, new
+concurrency, changed number formatting, and a diff wider than its hypothesis.
+The state is the hypothesis, the diff, and the patched function's source at the
+base revision, found from the diff's first hunk; nothing else.
+
+A hazard is raised when Jev answers yes (probability at least one half) and the
+answer is at least two standard deviations above its usual answer to that
+question on 93 real, merged performance patches (`internal/jev/review_baseline.go`,
+digest-guarded like the cause baseline). On the reviewer benchmark that caught
+every injected hazard whose label was right, and raised a concern on 14% of the
+real patches, most of them genuine: GitHub bufio fixes that discard the flush
+error, and both gron patches gotorque itself accepted, which `defer` the flush.
+With the measured baseline a yes on any question is already that unusual, so
+today the floor decides and z orders the concerns; a test fails if a new
+baseline breaks that.
+
+Until this, the reviewer's answer reached a policy input the policy ignores and
+nothing kept it. Its concerns are now recorded with the verdict, printed in the
+report under the candidate, and carried into the next cycle's
+`prior_candidates`, whichever reviewer ran. They remain advice: the policy
+never reads them.
+
 ## Discovery benchmark profiling
 
 Before the model phase, the engine runs one best-effort profiling pass

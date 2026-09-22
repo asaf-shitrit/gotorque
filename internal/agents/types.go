@@ -74,6 +74,11 @@ type Set struct {
 	// about each measured hot function and ranks the answers in code. The
 	// Analyst agent is still built but never run.
 	CauseEvaluator jev.Evaluator
+
+	// ReviewEvaluator, when set, replaces the reviewer role with Jev
+	// behaviour-hazard checks (--reviewer jev). The Reviewer agent is still
+	// built but never run.
+	ReviewEvaluator jev.Evaluator
 }
 
 // All returns the role agents in a stable order.

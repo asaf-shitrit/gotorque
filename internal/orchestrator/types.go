@@ -72,6 +72,15 @@ type CauseRequest struct {
 	Discovery DiscoveryEvidence `json:"discovery"`
 }
 
+// ReviewRequest carries what a ReviewAnalyst needs: the repository at the base
+// revision, the patch and its hypothesis, and the target it was told to attack.
+type ReviewRequest struct {
+	Campaign  CampaignRequest        `json:"campaign"`
+	Target    *agents.Target         `json:"target,omitempty"`
+	Proposal  agents.OptimizerResult `json:"proposal"`
+	Candidate CandidateEvidence      `json:"candidate"`
+}
+
 // CandidateRequest asks the deterministic runner to create an isolated
 // candidate, build it, validate behavior, and collect comparable evidence.
 type CandidateRequest struct {
@@ -135,6 +144,9 @@ type PriorCandidate struct {
 	// Target is the (function, cause) this candidate was told to attack, so
 	// later cycles move on to the next one.
 	Target *agents.Target `json:"target,omitempty"`
+	// ReviewConcerns are the behaviour hazards the review raised, so the next
+	// patch can avoid repeating them.
+	ReviewConcerns []string `json:"review_concerns,omitempty"`
 }
 
 // RoleFailure is one role call the graph absorbed instead of failing on.

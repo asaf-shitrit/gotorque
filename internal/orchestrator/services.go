@@ -33,6 +33,14 @@ type CauseAnalyst interface {
 	AnalyzeCauses(ctx context.Context, req CauseRequest) (agents.AnalystResult, error)
 }
 
+// ReviewAnalyst is an optional deterministic replacement for the reviewer
+// agent. When Dependencies.Review is set the reviewer node calls it instead of a
+// model and records the same ReviewerResult. Like the agent's, its answer is
+// advice: the policy never reads it.
+type ReviewAnalyst interface {
+	ReviewPatch(ctx context.Context, req ReviewRequest) (agents.ReviewerResult, error)
+}
+
 // PolicyService is deterministic. Implementations compute accepted, rejected,
 // or inconclusive from measurements and behavior gates; an agent cannot
 // override the result.

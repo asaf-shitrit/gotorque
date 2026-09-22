@@ -119,3 +119,64 @@ func causeIdent(c Cause) string {
 	names := map[Cause]string{CauseAlloc: "CauseAlloc", CauseUnbufferedIO: "CauseUnbufferedIO", CauseStringBuild: "CauseStringBuild", CauseFastPath: "CauseFastPath", CauseSuperlinear: "CauseSuperlinear", CausePrealloc: "CausePrealloc", CauseRedundant: "CauseRedundant"}
 	return names[c]
 }
+
+// TestLiveReviewBaseline measures the review baseline in review_baseline.go:
+//
+//	AI_GATEWAY_API_KEY=... GOTORQUE_JEV_REVIEW_CASES=patches.jsonl \
+//	  go test ./internal/jev -run TestLiveReviewBaseline -v
+//
+// Each input line is {"id", "hypothesis", "function", "source", "patch"}: a real
+// performance patch and its function's source before it.
+func TestLiveReviewBaseline(t *testing.T) {
+	casesPath := os.Getenv("GOTORQUE_JEV_REVIEW_CASES")
+	client := NewClientFromEnvironment()
+	if casesPath == "" || client.APIKey == "" {
+		t.Skip("set GOTORQUE_JEV_REVIEW_CASES and " + EnvAPIKey + " to measure the review baseline")
+	}
+	client.Backoff = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second, 60 * time.Second}
+	patches := readReviewPatches(t, casesPath)
+	samples := map[Hazard][]float64{}
+	for _, p := range patches {
+		resp, err := client.Evaluate(context.Background(), Request{State: ReviewState(p.Hypothesis, p.Function, p.Source, p.Patch), Questions: ReviewQuestions()})
+		if err != nil {
+			t.Fatalf("%s: %v", p.ID, err)
+		}
+		for _, h := range Hazards {
+			samples[h] = append(samples[h], resp.Answers[string(h)].Probability)
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "// measured over %d patches\nvar reviewBaseline = map[Hazard]stats{\n", len(patches))
+	for _, h := range Hazards {
+		mean, std := meanStd(samples[h])
+		fmt.Fprintf(&b, "\t%q: {mean: %.4f, std: %.4f},\n", h, mean, std)
+	}
+	fmt.Fprintf(&b, "}\n\nconst reviewBaselineDigest = %q\n", reviewDigest())
+	t.Log("\n" + b.String())
+}
+
+type reviewPatch struct {
+	ID         string `json:"id"`
+	Hypothesis string `json:"hypothesis"`
+	Function   string `json:"function"`
+	Source     string `json:"source"`
+	Patch      string `json:"patch"`
+}
+
+func readReviewPatches(t *testing.T, path string) []reviewPatch {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	patches := make([]reviewPatch, 0, len(lines))
+	for _, line := range lines {
+		var p reviewPatch
+		if err := json.Unmarshal([]byte(line), &p); err != nil {
+			t.Fatal(err)
+		}
+		patches = append(patches, p)
+	}
+	return patches
+}
