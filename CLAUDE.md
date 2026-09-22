@@ -36,6 +36,7 @@ CLI surface (`internal/cli/root.go`):
 ```sh
 gotorque manifest validate targets/gojq/manifest.json
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk-stub
+gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --analyst jev
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
 ```
@@ -123,6 +124,9 @@ Package map:
 - `internal/agents`: role definitions, OpenAI-compatible provider, model
   routing, and the model-boundary leniency layer (`fence.go`, `decode.go`,
   `types.go`). This layer only removes parse failures; it never relaxes policy.
+- `internal/jev`: TypeSafe Jev client (Vercel AI Gateway `/v1/evaluate`), the
+  seven cause questions, their measured baseline, and the pure ranking used by
+  `--analyst jev` (`internal/campaign/causes.go` is the analyst node itself).
 - `internal/policy`: pure acceptance decision. No filesystem, process, or
   network access; keep it that way.
 - `internal/candidate`: unified-diff normalization, validation, worktrees.
@@ -163,6 +167,11 @@ Package map:
   is not `minimum_command_timeout` (a per-command floor).
 - Profiled source positions must be rewritten repository-relative; the excerpt
   collector rejects absolute paths.
+- Jev baseline (`internal/jev/baseline.go`): valid only for the exact question
+  text and state template. `TestBaselineMatchesQuestions` fails on any edit;
+  re-measure with `TestLiveBaseline` rather than pasting a new digest. Never
+  add the profile to Jev's state: it drags every answer toward what the
+  profile is dominated by.
 
 ## Target manifests
 
@@ -188,7 +197,9 @@ OpenRouter (`internal/agents/routing.go`). `OPENROUTER_BASE_URL` overrides the
 endpoint.
 Optional `GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}`
 (`low|medium|high`) sets per-role `reasoning.effort`. Unset sends nothing,
-and an invalid value fails the preflight.
+and an invalid value fails the preflight. `--analyst jev` replaces the analyst
+role with Jev cause classification, which needs `AI_GATEWAY_API_KEY` instead
+(ADR 0012).
 Credentials are never persisted into campaign state.
 
 ## Commit messages

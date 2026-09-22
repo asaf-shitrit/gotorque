@@ -36,7 +36,8 @@ initialize_campaign
   -> coordinator (choose next experiment)
   -> explorer (propose workload strategies)
   -> run_discovery (deterministic; validates each proposal)
-  -> analyst (interpret profile and coverage evidence)
+  -> analyst (interpret profile and coverage evidence; with --analyst jev,
+             deterministic Jev cause classification instead of a model)
   -> merge_analysis (deterministic; attach source excerpts)
   -> optimizer (one focused patch)
   -> evaluate_candidate (deterministic; see below)
@@ -254,6 +255,92 @@ yielded nothing even when later ones resolved cleanly. The excerpts travel in ca
 both coordinator and optimizer instructions direct the optimizer to anchor
 diff context lines to excerpt text rather than guessing, which is what keeps
 strict `git apply` viable on model-generated patches.
+
+## Jev cause analyst
+
+`--analyst jev` (with `--adk` or `--adk-stub`) replaces the analyst model role
+with cause classification ranked in code (ADR 0012). The orchestrator swaps the
+analyst agent node for a function node of the same name that calls
+`Dependencies.Causes`; `internal/campaign/causes.go` implements it and
+`internal/jev` holds the gateway client, the questions, their baseline, and the
+ranking. The node returns the same `AnalystResult`, so `merge_analysis`,
+excerpts, and the optimizer are unchanged, and a failure degrades like a failed
+model call: an empty result, a `role_degraded` record against `analyst`, and
+discovery's hot paths as the fallback. Only a cycle in which no function could
+be classified fails the node; a single function that fails is listed in
+`additional_checks` instead.
+
+Jev (TypeSafe, reached through the Vercel AI Gateway's native `/v1/evaluate`,
+which the OpenAI-compatible API does not serve) answers typed questions about a
+state with calibrated probabilities and generates no text. For each of up to
+twelve discovery hot functions with a source position, one per function, the
+node sends the whole declaration with its doc comment and seven yes/no
+questions, one per cause: avoidable allocation, unbuffered I/O, string
+building, a missing fast path, superlinear work, missing preallocation,
+repeated work. Three choices come from a benchmark of 93 real single-function
+performance fixes, each asked about before and after the fix:
+
+- The state is the function and its file, never the profile. With the gron
+  benchmark profile beside the source, Jev labelled an unbuffered `Fprintln`
+  loop and a per-call `bytes.Buffer` as lookup cost, because that profile was
+  dominated by unicode-table lookups; without it both were named correctly.
+  The profile has already done its job by choosing which functions to ask
+  about.
+- One yes/no question per cause rather than one "which cause" choice. The
+  choice question was the weakest way to name a cause and the only format a
+  misleading profile derailed; per-cause Scores on a shared scale lost the
+  ability to tell fixed code from unfixed.
+- Answers are compared against Jev's usual answer to each question, not raw.
+  Its mean yes runs from 0.10 (unbuffered I/O) to 0.53 (allocation), so the
+  highest raw answer named the right cause 36% of the time; in baseline
+  standard deviations it named it 50% of the time and put it in the top two
+  69% of the time (chance is 14%). A cause is flagged at +0.5 sd, two at most
+  per function, which flagged the fixing commit's cause on 59% of unfixed
+  functions and on 23% of the fixed versions.
+- Each question names the state field it judges (`` `source` ``), as
+  TypeSafe's guidance asks because Jev reads literally; that measured neutral.
+  Three questions judge a relationship rather than one fact (allocates per
+  call *and* could avoid it; general path *and* cheap check possible; grows
+  *and* size known). Splitting them into one fact per question, as the Noul
+  guidance suggests for independent conditions, cut fix detection from 0.49
+  to 0.38: each part describes something that survives the fix, so only the
+  relationship separates broken code from fixed code. Structured criteria
+  with examples gave no net gain.
+
+`internal/jev/baseline.go` holds that baseline, measured over the benchmark's
+186 functions with no labels involved. It is valid only for the exact question
+text and state template: `TestBaselineMatchesQuestions` compares a digest of
+both and fails on any edit, and `TestLiveBaseline` re-measures it (opt-in, one
+request per function). It is also valid only for the model version it was
+measured on, and nothing can check that: TypeSafe advises pinning a version
+once thresholds are tuned against it, but the gateway serves only the alias
+`typesafe-ai/jev` (pinned IDs such as `jev-1.13.0` return 404) and reports no
+version in its responses. The baseline was measured on Jev 1.13; re-run
+`TestLiveBaseline` when TypeSafe ships a release.
+
+Each flagged cause becomes a one-sentence remedy in `candidate_hypotheses`,
+every function's first cause in hotness order before any second cause, and a
+function with nothing flagged is named in `additional_checks` rather than
+guessed at. Hot paths keep discovery's `path:line` verbatim, which the model
+analyst used to reformat. Per-function scores are persisted with a
+`cause_analysis` event, Jev's token usage is recorded under the analyst role,
+and the report header names the analyst. None of it reaches `apply_policy`.
+
+`AI_GATEWAY_API_KEY` (and optionally `AI_GATEWAY_BASE_URL`) configure the
+client. `--adk` spends one preflight request before repository work, because a
+gateway account without a card on file refuses every request and the analyst
+node is reached only after the baseline is built. Calls are sequential and
+retry HTTP 429 and 5xx with 1-16 s backoff: the provider throttled 36% of
+attempts at twelve in flight, and even sequential calls met a 429 that
+outlasted a 15 s ladder. `--adk-stub --analyst jev` uses a no-network stub,
+and a resumed campaign that started with `--analyst jev` must be given it
+again, the same rule as `--adk`.
+
+Jev only classifies what discovery lists. On gron the output loop behind the
+accepted `bufio` patch appears in discovery only as `fmt.(*pp).doPrintln`, a
+standard-library frame that is dropped rather than attributed to its caller,
+so the analyst is never asked about it; asked directly, it flags unbuffered
+I/O at +3.3 sd.
 
 ## Discovery benchmark profiling
 
@@ -516,6 +603,11 @@ endpoint, one call yields exactly one response with its usage attached.
 The attempt deadline in `fence.go` (four minutes per ladder attempt) remains as
 the backstop, sized so attempts×timeout + backoff fits the orchestrator's
 twenty-minute per-node agent deadline.
+
+`--analyst jev` takes the analyst off this path entirely: it calls the Vercel
+AI Gateway with `AI_GATEWAY_API_KEY` instead of OpenRouter (see Jev cause
+analyst). The analyst's routed model is still validated and built, but never
+called.
 
 Role output shape is not enforced by the endpoint. Each role's instruction
 states strict JSON rules, and `internal/agents/decode.go` repairs the defects
