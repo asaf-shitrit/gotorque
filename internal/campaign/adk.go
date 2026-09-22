@@ -50,12 +50,62 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	return result, nil
 }
 
-// recordTokenUsage snapshots the per-role totals collected so far.
+// recordTokenUsage folds the collector's cumulative per-role totals for this
+// process on top of whatever was persisted before this process's ADK work
+// began. Collectors are created per process (NewOpenAIProviderFromEnvironment
+// -> NewUsageCollector), so roleSet.Usage.Snapshot alone only ever reports
+// this process's spend; a resumed campaign that already carried TokenUsage
+// from an earlier process would otherwise have it overwritten by whatever the
+// new process spent, silently discarding the old numbers.
+//
+// tokenUsageBaseline is captured once, lazily, from state.TokenUsage as it
+// stood the first time this runs in the process -- before this process has
+// written anything of its own. Every later call (RunADK's deferred call, or
+// the refresh saveEvent makes while an ADK run is active) recomputes the same
+// baseline+snapshot sum from scratch rather than adding a delta, so calling
+// it any number of times, in any order, across any number of RunADK calls in
+// one process, never double-counts: the collector's Snapshot is already
+// cumulative since the collector was created.
 func (e *Engine) recordTokenUsage(roleSet agents.Set) {
 	if roleSet.Usage == nil {
 		return
 	}
-	e.state.TokenUsage = snapshotTokenUsage(roleSet.Usage.Snapshot())
+	if e.tokenUsageBaseline == nil {
+		e.tokenUsageBaseline = cloneTokenUsage(e.state.TokenUsage)
+	}
+	e.state.TokenUsage = mergeTokenUsage(e.tokenUsageBaseline, snapshotTokenUsage(roleSet.Usage.Snapshot()))
+}
+
+// cloneTokenUsage copies a persisted usage snapshot so later mutation of
+// state.TokenUsage cannot reach back and change the baseline it was computed
+// from. It always returns a non-nil map so callers can use nilness as "no
+// baseline captured yet" without confusing it with "captured an empty one".
+func cloneTokenUsage(usage map[string]RoleUsageSnapshot) map[string]RoleUsageSnapshot {
+	clone := make(map[string]RoleUsageSnapshot, len(usage))
+	for role, u := range usage {
+		clone[role] = u
+	}
+	return clone
+}
+
+// mergeTokenUsage adds this process's cumulative-so-far usage on top of the
+// baseline persisted before that process started, per role. processTotal is
+// itself cumulative since the collector was created, not an increment, which
+// is what makes calling this repeatedly with a fixed base idempotent.
+func mergeTokenUsage(base, processTotal map[string]RoleUsageSnapshot) map[string]RoleUsageSnapshot {
+	merged := make(map[string]RoleUsageSnapshot, len(base)+len(processTotal))
+	for role, u := range base {
+		merged[role] = u
+	}
+	for role, p := range processTotal {
+		u := merged[role]
+		u.Requests += p.Requests
+		u.PromptTokens += p.PromptTokens
+		u.CompletionTokens += p.CompletionTokens
+		u.TotalTokens += p.TotalTokens
+		merged[role] = u
+	}
+	return merged
 }
 
 func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkrunner.Runner, *genai.Content, error) {

@@ -205,6 +205,10 @@ type Engine struct {
 	now       func() time.Time
 	adkAgents *agents.Set
 	adkConfig orchestrator.Config
+	// tokenUsageBaseline anchors this process's contribution to
+	// State.TokenUsage, the same way runStartedAt/elapsedBefore anchor its
+	// contribution to State.ElapsedRunTime. See recordTokenUsage in adk.go.
+	tokenUsageBaseline map[string]RoleUsageSnapshot
 	// runStartedAt and elapsedBefore anchor this process's contribution to
 	// State.ElapsedRunTime; runStartedAt stays zero until Run begins so that
 	// engines driven straight through RunADK never advance the clock.
@@ -1263,6 +1267,13 @@ func (e *Engine) saveEvent(kind, message string, data any) error {
 	// abrupt kill can hand back: at most the work since the previous event,
 	// rather than everything this process had already spent.
 	e.state.ElapsedRunTime = e.elapsedRunTime(now)
+	if e.adkAgents != nil {
+		// Refresh the persisted token spend on every event while an ADK run is
+		// active, not only when RunADK returns via its deferred call: a
+		// SIGKILLed process never runs that defer, and without this a killed
+		// campaign's spend never reaches bbolt at all.
+		e.recordTokenUsage(*e.adkAgents)
+	}
 	if err := e.store.Save(e.state); err != nil {
 		return err
 	}

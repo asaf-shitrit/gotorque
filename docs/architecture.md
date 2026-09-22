@@ -600,6 +600,24 @@ restarts at zero on every resume and the bound holds only within one process.
 `ConsecutiveFailures` is therefore persisted at every policy decision and fed
 back as `PriorConsecutiveFailures` when the graph is re-entered.
 
+Token usage is campaign-wide too. Provider usage collectors are created per
+process, and `TokenUsage` used to be overwritten with the current process's
+totals when `RunADK` returned. A resumed campaign reported only its last
+process's spend, and a killed process's spend never reached bbolt.
+`recordTokenUsage` now adds the process's cumulative collector snapshot to a
+baseline captured before the process wrote anything. `saveEvent` refreshes it
+on every event while an ADK run is active. Each refresh recomputes baseline
+plus snapshot rather than adding a delta, so repeated calls never
+double-count.
+
+bbolt's exclusive lock is the liveness signal. A second process that tries to
+open a campaign another one is running is told so, instead of receiving
+bbolt's bare `timeout`. `gotorque report` falls back to the `report.json`
+snapshot while the lock is held, so the campaign really is live. When the
+report can open the database and the stored status still says `running`, the
+owning process died without recording a stop. The report shows it as
+`interrupted` with that stop reason and writes nothing back.
+
 `MaxCandidates` is a known exception: `CandidatesTried` is not persisted, so
 `max_candidate_patches` still binds per process and a campaign resumed enough
 times can exceed it.

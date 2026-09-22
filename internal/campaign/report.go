@@ -393,7 +393,31 @@ func LoadReport(dir string) (State, error) {
 	}
 	// Read-only load; a Close error carries no data-loss meaning.
 	defer func() { _ = store.Close() }()
-	return store.Load()
+	state, err := store.Load()
+	if err != nil {
+		return State{}, err
+	}
+	return markStaleRunning(state), nil
+}
+
+// markStaleRunning reports a campaign whose persisted Status is still
+// "running" as interrupted instead. OpenStore only returns a live *Store when
+// it can take bbolt's exclusive lock, and no live campaign process ever
+// releases that lock voluntarily -- it holds it until the run stops and
+// records a terminal status. Reaching this line with Status still "running"
+// therefore means the process that would have kept it "running" is gone
+// without recording why, most likely SIGKILLed, not that the campaign is
+// live. LoadReport never writes back: the correction only affects what this
+// call returns, so a campaign a resumed process is genuinely still running
+// keeps reporting "running" in its own state and to a caller who takes the
+// lock.
+func markStaleRunning(state State) State {
+	if state.Status != StatusRunning {
+		return state
+	}
+	state.Status = StatusInterrupted
+	state.StopReason = "process exited without recording a stop (no process holds the campaign database lock)"
+	return state
 }
 
 func loadReportSnapshot(path string) (State, error) {

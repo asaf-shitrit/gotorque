@@ -9,6 +9,7 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 var (
@@ -28,6 +29,14 @@ func OpenStore(path string) (*Store, error) {
 	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
+		// bbolt reports a lock it could not acquire within Options.Timeout as a
+		// bare "timeout", which reads like a filesystem or disk fault. The only
+		// thing that holds this file's exclusive lock is another gotorque
+		// process working the same campaign directory, so say that instead of
+		// leaving an operator to guess.
+		if errors.Is(err, bolterrors.ErrTimeout) {
+			return nil, fmt.Errorf("another gotorque process holds the campaign database %s: %w", path, err)
+		}
 		return nil, err
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
