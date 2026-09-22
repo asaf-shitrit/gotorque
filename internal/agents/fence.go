@@ -3,12 +3,15 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/openai/openai-go/v3"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
@@ -158,7 +161,14 @@ func (m fenceStrippingModel) runAttempt(ctx context.Context, req *model.LLMReque
 	if m.attemptTimeout <= 0 {
 		return m.streamAttempt(ctx, req, stream, yield, run)
 	}
-	attemptCtx, cancel := context.WithTimeout(ctx, m.attemptTimeout)
+	// WithTimeoutCause, not WithTimeout: a bare context.DeadlineExceeded names
+	// neither which budget ran out nor its size, so the observer log and the
+	// degraded-role record could not distinguish this bound from the caller's
+	// own cancellation (Ctrl-C, campaign max_duration). drain in stream.go
+	// reports context.Cause(ctx), which carries this cause through unless a
+	// parent context was cancelled first.
+	cause := fmt.Errorf("model call attempt exceeded its %s budget", m.attemptTimeout)
+	attemptCtx, cancel := context.WithTimeoutCause(ctx, m.attemptTimeout, cause)
 	defer cancel()
 	return m.streamAttempt(attemptCtx, req, stream, yield, run)
 }
@@ -204,6 +214,34 @@ func (r *generateRun) yieldExhausted(yield func(*model.LLMResponse, error) bool,
 	yield(nil, fmt.Errorf("%s model call produced no answer in %d attempts: every response was reasoning-only or empty", role, attempts))
 }
 
+// nonRetryableStatus is the set of HTTP statuses the ladder must not retry:
+// each one describes the request or credential, not a transient endpoint
+// condition, so every attempt would fail identically. 408, 409, 429 and 5xx
+// are deliberately absent — those are the transient cases the ladder exists
+// for.
+var nonRetryableStatus = map[int]bool{
+	http.StatusBadRequest:          true, // 400: malformed request
+	http.StatusUnauthorized:        true, // 401: bad or revoked credential
+	http.StatusForbidden:           true, // 403: credential lacks access
+	http.StatusNotFound:            true, // 404: no such model or endpoint
+	http.StatusUnprocessableEntity: true, // 422: request rejected by validation
+}
+
+// permanentStatusError reports whether err carries an openai-go API error
+// (openai.Error, populated from the HTTP response by the SDK's transport
+// layer) with a status the ladder cannot fix by retrying, and if so returns
+// it wrapped with the role and a note that it was not retried. ADK's
+// non-streaming path wraps this in "openai: call failed: %w" and its
+// streaming path yields stream.Err() raw, so errors.As is used rather than
+// assuming either shape.
+func permanentStatusError(role string, err error) (bool, error) {
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) || !nonRetryableStatus[apiErr.StatusCode] {
+		return false, nil
+	}
+	return true, fmt.Errorf("%s model call failed with HTTP %d, not retried: %w", role, apiErr.StatusCode, err)
+}
+
 func waitBackoff(ctx context.Context, backoff time.Duration) error {
 	if backoff <= 0 {
 		return nil
@@ -214,6 +252,27 @@ func waitBackoff(ctx context.Context, backoff time.Duration) error {
 	case <-time.After(backoff):
 		return nil
 	}
+}
+
+// handleAttemptErr responds to one error from the inner model, reporting done
+// exactly as streamAttempt does. Split out of streamAttempt to keep that
+// loop's cognitive complexity within the repo's gate.
+func (m fenceStrippingModel) handleAttemptErr(resp *model.LLMResponse, err error, yield func(*model.LLMResponse, error) bool, run *generateRun) bool {
+	if ok, permanent := permanentStatusError(m.role, err); ok {
+		// A 401 on attempt one is a 401 on attempt four: retrying burns the
+		// whole 15s/30s/60s ladder for a key or request that will never
+		// succeed, and with a revoked key every role then pays that toll
+		// before degrading anyway.
+		run.recordErr(permanent)
+		yield(nil, permanent)
+		return true
+	}
+	run.recordErr(err)
+	if !run.partial {
+		return false
+	}
+	yield(resp, err)
+	return true
 }
 
 // usableAnswer reports whether a complete response is one the campaign can
@@ -253,12 +312,7 @@ func hasAnswerPart(resp *model.LLMResponse) bool {
 func (m fenceStrippingModel) streamAttempt(ctx context.Context, req *model.LLMRequest, stream bool, yield func(*model.LLMResponse, error) bool, run *generateRun) bool {
 	for resp, err := range m.inner.GenerateContent(ctx, req, stream) {
 		if err != nil {
-			run.recordErr(err)
-			if !run.partial {
-				return false
-			}
-			yield(resp, err)
-			return true
+			return m.handleAttemptErr(resp, err, yield, run)
 		}
 		rewriteResponse(resp)
 		m.usage.Record(m.role, resp.UsageMetadata)

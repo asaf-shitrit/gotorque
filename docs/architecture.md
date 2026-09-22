@@ -388,7 +388,16 @@ only removes parse failures of otherwise usable recommendations.
   with 15, 30, then 60 second backoff while a call fails before producing
   any content (shared-pool rate limits otherwise abort multi-hour campaigns),
   and records per-role token usage into a collector persisted with campaign
-  state. Endpoint credentials and API keys are never persisted.
+  state. Endpoint credentials and API keys are never persisted. HTTP 400,
+  401, 403, 404 and 422 end the ladder on the first attempt: they describe
+  the request or the credential, so a revoked key used to spend the whole
+  ladder on every role before degrading anyway. They are recognized with
+  `errors.As` against openai-go's `*openai.Error`, which ADK yields raw on the
+  streaming path. 408, 409, 429, 5xx, transport errors and stalls still
+  retry. The per-attempt deadline is a
+  `context.WithTimeoutCause` that names its budget, and `stream.go` reports
+  `context.Cause`, so a timed-out attempt no longer reads as a bare
+  `context deadline exceeded` indistinguishable from Ctrl-C or `max_duration`.
 - Per-attempt call logging (`internal/agents/observer.go`): a `CallObserver`
   receives one `CallInfo` per attempt (role, attempt number, duration, error,
   and whether a retry follows), and `--adk` wires `LogCalls` to the command's
