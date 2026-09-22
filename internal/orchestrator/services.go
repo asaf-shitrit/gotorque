@@ -23,6 +23,16 @@ type ExcerptCollector interface {
 	CollectExcerpts(ctx context.Context, analysis agents.AnalystResult) ([]SourceExcerpt, error)
 }
 
+// CauseAnalyst is an optional deterministic replacement for the analyst agent.
+// When Dependencies.Causes is set the analyst node calls it instead of a model:
+// it classifies discovery's measured hot functions and returns the same
+// AnalystResult the agent would, so merge_analysis and every later node are
+// unchanged. Its output is advice to the optimizer like the agent's; it never
+// reaches the policy decision.
+type CauseAnalyst interface {
+	AnalyzeCauses(ctx context.Context, req CauseRequest) (agents.AnalystResult, error)
+}
+
 // PolicyService is deterministic. Implementations compute accepted, rejected,
 // or inconclusive from measurements and behavior gates; an agent cannot
 // override the result.

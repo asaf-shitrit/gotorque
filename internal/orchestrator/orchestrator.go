@@ -45,6 +45,9 @@ type Dependencies struct {
 	Policy PolicyService
 	Jobs   JobService
 	Agents agents.Set
+	// Causes, when set, replaces the analyst agent with deterministic cause
+	// classification. Agents.Analyst is then built but never run.
+	Causes CauseAnalyst
 }
 
 // Orchestrator exposes both the ADK workflow and an Agent wrapper suitable for
@@ -116,7 +119,20 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 		route:            workflow.NewFunctionNode("route_campaign", g.route, det),
 		finalize:         workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
 	}
-	return n, n.setAgents(g.deps.Agents, agt, g.deps.Jobs)
+	if err := n.setAgents(g.deps.Agents, agt, g.deps.Jobs); err != nil {
+		return n, err
+	}
+	if g.deps.Causes != nil {
+		// The node keeps the role's name, so a degraded classification is
+		// reported against "analyst" exactly as a failed model call would be,
+		// and falls back to discovery's hot paths the same way.
+		n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Jobs)
+	}
+	return n, nil
+}
+
+func (g *campaignGraph) analyzeCauses(ctx adkagent.Context, state CampaignState) (agents.AnalystResult, error) {
+	return g.deps.Causes.AnalyzeCauses(ctx, CauseRequest{Campaign: state.Request, Discovery: state.Discovery})
 }
 
 func (n *graphNodes) setAgents(roleSet agents.Set, agt workflow.NodeConfig, jobs JobService) error {

@@ -61,6 +61,13 @@ type DiscoveryEvidence struct {
 	Metadata           map[string]string `json:"metadata,omitempty"`
 }
 
+// CauseRequest carries what a CauseAnalyst needs: the repository to read source
+// from and the hot functions discovery measured.
+type CauseRequest struct {
+	Campaign  CampaignRequest   `json:"campaign"`
+	Discovery DiscoveryEvidence `json:"discovery"`
+}
+
 // CandidateRequest asks the deterministic runner to create an isolated
 // candidate, build it, validate behavior, and collect comparable evidence.
 type CandidateRequest struct {
