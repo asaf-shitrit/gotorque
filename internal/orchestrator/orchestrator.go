@@ -45,6 +45,12 @@ type Dependencies struct {
 	Policy PolicyService
 	Jobs   JobService
 	Agents agents.Set
+	// Causes, when set, replaces the analyst agent with deterministic cause
+	// classification. Agents.Analyst is then built but never run.
+	Causes CauseAnalyst
+	// Review, when set, replaces the reviewer agent with deterministic
+	// behaviour-hazard checks. Agents.Reviewer is then built but never run.
+	Review ReviewAnalyst
 }
 
 // Orchestrator exposes both the ADK workflow and an Agent wrapper suitable for
@@ -116,7 +122,43 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 		route:            workflow.NewFunctionNode("route_campaign", g.route, det),
 		finalize:         workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
 	}
-	return n, n.setAgents(g.deps.Agents, agt, g.deps.Jobs)
+	if err := n.setAgents(g.deps.Agents, agt, g.deps.Jobs); err != nil {
+		return n, err
+	}
+	if g.deps.Causes != nil {
+		// The node keeps the role's name, so a degraded classification is
+		// reported against "analyst" exactly as a failed model call would be,
+		// and falls back to discovery's hot paths the same way.
+		n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Jobs)
+		// With causes ranked, code chooses each cycle's target after the
+		// analysis (planTarget), so the coordinator model has nothing to
+		// decide: on a live gron campaign it took up to 2m40s a cycle and its
+		// free-text plan steered the optimizer away from the top target.
+		n.coordinator = workflow.NewFunctionNode(string(agents.RoleCoordinator), planCoordinator, det)
+	}
+	if g.deps.Review != nil {
+		n.reviewer = degradeNode(workflow.NewFunctionNode(string(agents.RoleReviewer), g.reviewPatch, agt), string(agents.RoleReviewer), g.deps.Jobs)
+	}
+	return n, nil
+}
+
+func (g *campaignGraph) reviewPatch(ctx adkagent.Context, state CampaignState) (agents.ReviewerResult, error) {
+	return g.deps.Review.ReviewPatch(ctx, ReviewRequest{Campaign: state.Request, Target: state.Target, Proposal: state.Proposal, Candidate: state.Candidate})
+}
+
+// planCoordinator states the plan the coordinator model used to write. The
+// concrete experiment is filled in by planTarget once the analysis exists.
+func planCoordinator(_ adkagent.Context, _ CampaignState) (agents.CoordinatorResult, error) {
+	return agents.CoordinatorResult{
+		Objective:      targetObjective,
+		NextExperiment: "chosen by code after cause analysis",
+	}, nil
+}
+
+const targetObjective = "patch the highest-ranked cause the analysis flagged that no earlier candidate has tried"
+
+func (g *campaignGraph) analyzeCauses(ctx adkagent.Context, state CampaignState) (agents.AnalystResult, error) {
+	return g.deps.Causes.AnalyzeCauses(ctx, CauseRequest{Campaign: state.Request, Discovery: state.Discovery})
 }
 
 func (n *graphNodes) setAgents(roleSet agents.Set, agt workflow.NodeConfig, jobs JobService) error {
@@ -361,7 +403,67 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	}
 	state.Analysis = result
 	attachExcerpts(ctx, g.deps.Runner, &state, result)
+	planTarget(&state)
 	return stateEvent(ctx, state), nil
+}
+
+// planTarget lets code choose what the optimizer attacks whenever the analysis
+// ranks causes: the first target no earlier candidate tried. The optimizer then
+// sees only that function's source, and its instruction forbids patching any
+// other. Left to choose from a ranked list, the optimizer on a live gron
+// campaign ignored the top target, the output loop whose bufio fix was once
+// accepted at -11.8%, and micro-optimized validIdentifier instead. A model
+// analyst ranks nothing, so this leaves its path exactly as it was.
+func planTarget(state *CampaignState) {
+	state.Target = nil
+	tried := triedTargets(*state)
+	target, ok := nextTarget(state.Analysis.Targets, tried)
+	if !ok {
+		return
+	}
+	state.Target = &target
+	state.Coordinator = agents.CoordinatorResult{
+		Objective:      targetObjective,
+		NextExperiment: target.Remedy,
+		Rationale:      []string{fmt.Sprintf("the analysis flagged %s in %s at %+.1f sd; %d target(s) already tried", target.Cause, target.Function, target.Z, len(tried))},
+	}
+	if excerpts := excerptsAt(state.SourceExcerpts, target.Location); len(excerpts) > 0 {
+		state.SourceExcerpts = excerpts
+	}
+}
+
+func triedTargets(state CampaignState) map[string]bool {
+	tried := map[string]bool{}
+	for _, t := range state.Request.PriorTargets {
+		tried[targetKey(t)] = true
+	}
+	for _, prior := range state.PriorCandidates {
+		if prior.Target != nil {
+			tried[targetKey(*prior.Target)] = true
+		}
+	}
+	return tried
+}
+
+func targetKey(t agents.Target) string { return t.Location + "\x00" + t.Cause }
+
+func nextTarget(targets []agents.Target, tried map[string]bool) (agents.Target, bool) {
+	for _, t := range targets {
+		if !tried[targetKey(t)] {
+			return t, true
+		}
+	}
+	return agents.Target{}, false
+}
+
+func excerptsAt(excerpts []SourceExcerpt, location string) []SourceExcerpt {
+	var kept []SourceExcerpt
+	for _, e := range excerpts {
+		if e.HotPath == location {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 // salvageAnalystResult decodes the analyst's output, falling back to an
@@ -460,6 +562,7 @@ func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Eve
 		Campaign: state.Request,
 		Evidence: state.Candidate,
 		Review:   review,
+		Target:   state.Target,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("evaluate policy: %w", err)
@@ -515,11 +618,13 @@ func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignSt
 	state.Evaluation = evaluation
 	state.CandidatesTried++
 	state.PriorCandidates = append(state.PriorCandidates, PriorCandidate{
-		Attempt:       state.CandidatesTried,
-		Hypothesis:    state.Proposal.Hypothesis,
-		Decision:      string(evaluation.Decision),
-		Reasons:       evaluation.Reasons,
-		FailureDetail: state.Candidate.FailureDetail,
+		Attempt:        state.CandidatesTried,
+		Hypothesis:     state.Proposal.Hypothesis,
+		Decision:       string(evaluation.Decision),
+		Reasons:        evaluation.Reasons,
+		FailureDetail:  state.Candidate.FailureDetail,
+		Target:         state.Target,
+		ReviewConcerns: state.Review.Concerns,
 	})
 	countDecision(state, evaluation.Decision, separateInconclusiveBound)
 	if evaluation.Decision != domain.DecisionAccepted {
@@ -573,17 +678,36 @@ func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*sessi
 	return ev, nil
 }
 
-// modelRoles are the roles whose answers come from the model provider, which
-// today is every role. A role served by anything else must be left out: its
-// failures say nothing about the provider the others share, and counting it
-// would keep a campaign running whose other roles all failed while it kept
-// answering.
-func (*campaignGraph) modelRoles() []string {
+// modelRoles are the roles whose answers come from the model provider. A role
+// Jev serves is not one of them: with a cause analyst (--analyst jev), neither
+// the analyst nor the coordinator, which becomes a deterministic plan that
+// never calls a model; with a review analyst (--reviewer jev), not the
+// reviewer; with an explore evaluator (--explorer jev), not the explorer, a
+// stub that reports the variants discovery sampled. Jev is served by a different gateway on a different key, so
+// counting any of them would keep a campaign running whose other roles all
+// failed, because none of them can fail the same way.
+func (g *campaignGraph) modelRoles() []string {
 	roles := make([]string, 0, len(agents.AllRoles))
 	for _, role := range agents.AllRoles {
-		roles = append(roles, string(role))
+		if !g.servedByJev(role) {
+			roles = append(roles, string(role))
+		}
 	}
 	return roles
+}
+
+func (g *campaignGraph) servedByJev(role agents.Role) bool {
+	switch role {
+	case agents.RoleAnalyst, agents.RoleCoordinator:
+		return g.deps.Causes != nil
+	case agents.RoleReviewer:
+		return g.deps.Review != nil
+	case agents.RoleExplorer:
+		return g.deps.Agents.ExploreEvaluator != nil
+	case agents.RoleOptimizer:
+		return false
+	}
+	return false
 }
 
 // providerFailure reports the cycle's last failure when every model role failed

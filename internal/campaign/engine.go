@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,15 +71,21 @@ type Inventory struct {
 // CandidateRecord persists one evaluated model proposal with the policy
 // verdict and measurement evidence, so reports can explain every decision.
 type CandidateRecord struct {
-	Attempt     int                       `json:"attempt"`
-	CandidateID string                    `json:"candidate_id"`
-	Hypothesis  string                    `json:"hypothesis"`
-	PatchPath   string                    `json:"patch_path,omitempty"`
-	Summary     string                    `json:"summary,omitempty"`
-	Decision    domain.Decision           `json:"decision"`
-	Reasons     []string                  `json:"reasons,omitempty"`
-	Comparisons []domain.MetricComparison `json:"comparisons,omitempty"`
-	Accepted    bool                      `json:"accepted,omitempty"`
+	Attempt     int    `json:"attempt"`
+	CandidateID string `json:"candidate_id"`
+	Hypothesis  string `json:"hypothesis"`
+	// Target is the function and cause code told the optimizer to attack, when
+	// the analyst ranked causes.
+	Target    *agents.Target `json:"target,omitempty"`
+	PatchPath string         `json:"patch_path,omitempty"`
+	// ReviewConcerns are the behaviour hazards the reviewer raised. They are
+	// recorded for the reader and the next cycle; the verdict never reads them.
+	ReviewConcerns []string                  `json:"review_concerns,omitempty"`
+	Summary        string                    `json:"summary,omitempty"`
+	Decision       domain.Decision           `json:"decision"`
+	Reasons        []string                  `json:"reasons,omitempty"`
+	Comparisons    []domain.MetricComparison `json:"comparisons,omitempty"`
+	Accepted       bool                      `json:"accepted,omitempty"`
 	// BenchstatOutput holds trimmed raw benchstat output for workloads where
 	// benchstat refined the wall-time comparison; empty when unavailable.
 	BenchstatOutput string                   `json:"benchstat_output,omitempty"`
@@ -110,6 +117,16 @@ type State struct {
 	Repository   string `json:"repository"`
 	ManifestPath string `json:"manifest_path"`
 	ADKMode      string `json:"adk_mode,omitempty"`
+	// Analyst is AnalystJev when the analyst role was Jev cause classification
+	// rather than a model, so a report says which kind of analysis its
+	// hypotheses came from and a resume can insist on the same one.
+	Analyst string `json:"analyst,omitempty"`
+	// Reviewer is ReviewerJev when the reviewer role was Jev behaviour-hazard
+	// checks rather than a model.
+	Reviewer string `json:"reviewer,omitempty"`
+	// Explorer is ExplorerJev when discovery's extra workloads were generated
+	// by code and judged by Jev instead of proposed by the explorer model.
+	Explorer string `json:"explorer,omitempty"`
 	// SchemaVersion is stamped by WriteReports onto the artifact it writes, so a
 	// report carries the shape it was written in. It stays zero for state that
 	// predates versioning, which readers report rather than assume.
@@ -142,15 +159,18 @@ type State struct {
 	// cannot stand in for it: a campaign is idle between an interruption and
 	// its resume, and charging that idle time against max_duration would
 	// expire any campaign resumed the next day.
-	ElapsedRunTime              time.Duration `json:"elapsed_run_time,omitempty"`
-	Environment                 Environment   `json:"environment"`
-	Inventory                   Inventory     `json:"inventory"`
-	BuildID                     string        `json:"build_id,omitempty"`
-	BinaryPath                  string        `json:"binary_path,omitempty"`
-	DiscoveryBuildID            string        `json:"discovery_build_id,omitempty"`
-	DiscoveryBinaryPath         string        `json:"discovery_binary_path,omitempty"`
-	DiscoveryHotFunctions       []string      `json:"discovery_hot_functions,omitempty"`
-	DiscoveryProfileSummaryPath string        `json:"discovery_profile_summary_path,omitempty"`
+	ElapsedRunTime        time.Duration `json:"elapsed_run_time,omitempty"`
+	Environment           Environment   `json:"environment"`
+	Inventory             Inventory     `json:"inventory"`
+	BuildID               string        `json:"build_id,omitempty"`
+	BinaryPath            string        `json:"binary_path,omitempty"`
+	DiscoveryBuildID      string        `json:"discovery_build_id,omitempty"`
+	DiscoveryBinaryPath   string        `json:"discovery_binary_path,omitempty"`
+	DiscoveryHotFunctions []string      `json:"discovery_hot_functions,omitempty"`
+	// DiscoveryWorkloads names the option variants discovery sampled next to
+	// the first seed, with Jev's processing-mode judgment of each.
+	DiscoveryWorkloads          []string `json:"discovery_workloads,omitempty"`
+	DiscoveryProfileSummaryPath string   `json:"discovery_profile_summary_path,omitempty"`
 	// PGOProfilePath points at the raw pprof-format CPU profile produced by
 	// benchmark-based discovery (profiles/bench-cpu.pb.gz), or is empty when
 	// only a non-pprof sampler report exists. Only this file may seed the
@@ -347,6 +367,24 @@ func attachADK(e *Engine, opts Options) {
 	}
 	if opts.ADKAgents != nil {
 		e.state.ADKMode = "live"
+	}
+	e.noteAnalyst(opts.ADKAgents)
+}
+
+// noteAnalyst records a switch of the analyst, reviewer, or explorer to Jev. It never
+// clears a mark: a campaign any part of which ran on Jev says so.
+func (e *Engine) noteAnalyst(roleSet *agents.Set) {
+	if roleSet == nil {
+		return
+	}
+	if roleSet.CauseEvaluator != nil {
+		e.state.Analyst = AnalystJev
+	}
+	if roleSet.ReviewEvaluator != nil {
+		e.state.Reviewer = ReviewerJev
+	}
+	if roleSet.ExploreEvaluator != nil {
+		e.state.Explorer = ExplorerJev
 	}
 }
 
@@ -734,25 +772,114 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 		return errors.New("manifest defines no seed workloads to sample")
 	}
 	seed := e.state.Manifest.Workloads.Seeds[0]
+	result, err := e.sampleSeed(ctx, seed, "sample-report.txt")
+	if err != nil {
+		return err
+	}
+	results := append([]profile.SampleResult{result}, e.sampleExplored(ctx, seed)...)
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", e.sampledHotNames(results...))
+	e.state.DiscoveryProfileSummaryPath = result.RawReport
+	return nil
+}
+
+// sampleSeed samples one workload under the platform sampler, with its input
+// amplified so the target outlives the sampling window.
+func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
+	return e.sampleWith(ctx, seed, amplifyStdin([]byte(seed.Stdin)), reportName)
+}
+
+// sampleWith samples one workload on the given input.
+func (e *Engine) sampleWith(ctx context.Context, seed manifest.SeedWorkload, stdin []byte, reportName string) (profile.SampleResult, error) {
 	fixtures := make(map[string][]byte, len(seed.Files))
 	for _, f := range seed.Files {
 		fixtures[f.Path] = []byte(f.Content)
 	}
-	outDir := filepath.Join(e.dir, "profile-sample")
-	result, err := profile.SampleTargetProfile(ctx, profile.SampleTarget{
+	return profile.SampleTargetProfile(ctx, profile.SampleTarget{
 		BinaryPath: e.state.BinaryPath,
 		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),
-		Stdin:      amplifyStdin([]byte(seed.Stdin)),
+		Stdin:      stdin,
 		Fixtures:   fixtures,
 		Duration:   4 * time.Second,
-		OutputPath: filepath.Join(outDir, "sample-report.txt"),
+		OutputPath: filepath.Join(e.dir, "profile-sample", reportName),
 	})
-	if err != nil {
-		return err
+}
+
+// sampledHotNames ranks the target's own functions by the samples spent on
+// their behalf, then fills any budget left with the sampler's top-of-stack
+// frames, which is all discovery used to list.
+//
+// Top of stack alone says which frames were executing, not for whom. A Go CLI
+// that spends its time printing is executing fmt and write, so its hot list
+// was standard-library names no patch can touch, and the function doing the
+// printing had almost no self time: gron's per-statement Fprintln loop, whose
+// bufio fix was the only patch ever accepted on it, never appeared, so no
+// analyst was ever asked about it. Credited with the calls it makes, it ranks
+// first.
+//
+// It returns up to twice the budget, because resolveHotLocations folds symbols
+// that share a declaration and keeps resolving until the budget is filled.
+//
+// With explored workloads there are several samples; mergeAttributed weighs
+// each as a whole, so a mode only a variant reaches ranks by its share of that
+// variant's time rather than disappearing behind the seed.
+func (e *Engine) sampledHotNames(results ...profile.SampleResult) []string {
+	limit := 2 * hotFunctionBudget
+	names := hotFunctionNames(mergeAttributed(results, e.ownSymbol), limit)
+	for _, result := range results {
+		for _, name := range hotFunctionNames(result.Functions, limit) {
+			if len(names) < limit && !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
 	}
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", hotFunctionNames(result.Functions, hotFunctionBudget))
-	e.state.DiscoveryProfileSummaryPath = result.RawReport
-	return nil
+	return names
+}
+
+// mergeAttributed sums each sample's attributed weights as fractions of that
+// sample's total, so every sampled workload counts equally whatever its length.
+func mergeAttributed(results []profile.SampleResult, own func(string) bool) []profile.Function {
+	weights := map[string]float64{}
+	for _, result := range results {
+		attributed := profile.AttributeToOwn(result.Stacks, own)
+		total := 0.0
+		for _, fn := range attributed {
+			total += float64(atoiOrZero(fn.Flat))
+		}
+		if total == 0 {
+			continue
+		}
+		for _, fn := range attributed {
+			weights[fn.Name] += float64(atoiOrZero(fn.Flat)) / total
+		}
+	}
+	names := make([]string, 0, len(weights))
+	for name := range weights {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if weights[names[i]] != weights[names[j]] {
+			return weights[names[i]] > weights[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	merged := make([]profile.Function, 0, len(names))
+	for _, name := range names {
+		merged = append(merged, profile.Function{Name: name, Flat: strconv.Itoa(int(weights[name] * 10000))})
+	}
+	return merged
+}
+
+func atoiOrZero(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
+}
+
+// ownSymbol reports whether a sampled frame belongs to the target: its package
+// is one of the module's, or main, which is how a command's own functions are
+// named in its binary whatever its import path.
+func (e *Engine) ownSymbol(symbol string) bool {
+	pkg := profile.SymbolPackage(symbol)
+	return pkg == "main" || (pkg != "" && slices.Contains(e.state.Inventory.Packages, pkg))
 }
 
 // amplifyStdin grows a seed input so a short-lived target stays alive for the
@@ -875,6 +1002,12 @@ func widest(a, b jsonSpan) jsonSpan {
 
 // repeatStdin is the format-agnostic fallback: it lengthens the input for any
 // target that consumes all of stdin.
+// repeatLines repeats the input one copy per line, the shape a line-oriented
+// mode reads as many documents.
+func repeatLines(stdin []byte) []byte {
+	return repeatStdin(append(bytes.TrimRight(stdin, "\n"), '\n'))
+}
+
 func repeatStdin(stdin []byte) []byte {
 	amplified := make([]byte, 0, maxAmplifiedStdin)
 	for len(amplified) < amplificationTarget {
@@ -964,19 +1097,29 @@ func benchmarkPackageOrder(repository, targetPackage string) []string {
 // repository for the declaration. Unresolvable functions keep their bare
 // names so downstream consumers never lose entries.
 func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, names []string) []string {
-	locations := make([]string, 0, len(names))
+	locations := make([]string, 0, hotFunctionBudget)
 	for _, name := range names {
-		if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
-			locations = append(locations, loc)
-			continue
+		if len(locations) == hotFunctionBudget {
+			break
 		}
-		if loc, ok := e.hotLocationFromRepo(name); ok {
+		// A value method and the pointer wrapper Go generates for it are two
+		// symbols with one declaration: gron's hot list named statements.go:312
+		// twice, spending a slot of the budget on a repeat.
+		if loc := e.hotLocation(ctx, cpuProfile, name); !slices.Contains(locations, loc) {
 			locations = append(locations, loc)
-			continue
 		}
-		locations = append(locations, name)
 	}
 	return locations
+}
+
+func (e *Engine) hotLocation(ctx context.Context, cpuProfile, name string) string {
+	if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
+		return loc
+	}
+	if loc, ok := e.hotLocationFromRepo(name); ok {
+		return loc
+	}
+	return name
 }
 
 func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile string) (string, bool) {
@@ -1344,4 +1487,5 @@ func (e *Engine) SetADK(roleSet *agents.Set, cfg *orchestrator.Config) {
 	if cfg != nil {
 		e.adkConfig = *cfg
 	}
+	e.noteAnalyst(roleSet)
 }

@@ -73,6 +73,8 @@ PATCH TRANSPORT: patch is a JSON ARRAY OF STRINGS, one diff line per element, in
 
 VALIDATION: validation_plan must reference the target's own tests plus the exact workload behaviors at risk. List honest risks — every optimization that touches shared state, caching, or laziness carries one.
 
+TARGET: When the state carries a target, the campaign's code has already chosen what this patch attacks. Implement target.remedy in target.function at target.location, addressing target.cause, using only the supplied source_excerpts. Do not patch any other function, even one that looks hotter or easier; a different site means the attempt measures nothing the campaign asked about.
+
 An empty patch wastes the campaign attempt and is never acceptable: even without profile data or excerpts you must propose one small idiomatic patch on a plausible site from the repository inventory. Return only JSON with hypothesis, patch (the array of diff lines), expected_effect, risks, and validation_plan fields. STRICT JSON RULES: Output raw JSON only: no Markdown fences, no commentary. Escape every double quote and backslash inside string values (\\\" and \\\\). Keep stdin and fixture content under 500 characters. Include exactly the listed fields and no others.`,
 	},
 	{

@@ -34,9 +34,11 @@ actual node sequence built by `internal/orchestrator` is:
 initialize_campaign
   -> inspect_repository
   -> coordinator (choose next experiment)
-  -> explorer (propose workload strategies)
+  -> explorer (propose workload strategies; with --explorer jev, a stub that
+              reports the variants discovery already sampled)
   -> run_discovery (deterministic; validates each proposal)
-  -> analyst (interpret profile and coverage evidence)
+  -> analyst (interpret profile and coverage evidence; with --analyst jev,
+             deterministic Jev cause classification instead of a model)
   -> merge_analysis (deterministic; attach source excerpts)
   -> optimizer (one focused patch)
   -> evaluate_candidate (deterministic; see below)
@@ -63,7 +65,12 @@ checks it before any bound. When every model role failed in the same cycle,
 the campaign stops with a stop reason naming the last failure, and
 `finishCampaign` returns `ErrProviderUnavailable`, so it ends `failed` and can
 be resumed once the provider answers. The record is cleared every cycle, so
-roles that fail in different cycles never add up to an outage.
+roles that fail in different cycles never add up to an outage. A role Jev
+serves is not counted: with `--analyst jev` neither the analyst nor the
+coordinator, which becomes a deterministic plan that never calls a model, with
+`--reviewer jev` not the reviewer, and with `--explorer jev` not the explorer,
+a stub that reports the variants discovery sampled. Jev is served by a different gateway,
+so a role it answers would otherwise keep the breaker from ever tripping.
 
 The final acceptance transition is
 always produced by deterministic policy (`internal/policy`); agent output,
@@ -255,6 +262,195 @@ both coordinator and optimizer instructions direct the optimizer to anchor
 diff context lines to excerpt text rather than guessing, which is what keeps
 strict `git apply` viable on model-generated patches.
 
+## Jev cause analyst
+
+`--analyst jev` (with `--adk` or `--adk-stub`) replaces the analyst model role
+with cause classification ranked in code (ADR 0012). The orchestrator swaps the
+analyst agent node for a function node of the same name that calls
+`Dependencies.Causes`; `internal/campaign/causes.go` implements it and
+`internal/jev` holds the gateway client, the questions, their baseline, and the
+ranking. The node returns the same `AnalystResult`, so `merge_analysis`,
+excerpts, and the optimizer are unchanged, and a failure degrades like a failed
+model call: an empty result, a `role_degraded` record against `analyst`, and
+discovery's hot paths as the fallback. Only a cycle in which no function could
+be classified fails the node; a single function that fails is listed in
+`additional_checks` instead.
+
+Jev (TypeSafe, reached through the Vercel AI Gateway's native `/v1/evaluate`,
+which the OpenAI-compatible API does not serve) answers typed questions about a
+state with calibrated probabilities and generates no text. For each of up to
+twelve discovery hot functions with a source position, one per function, the
+node sends the whole declaration with its doc comment and seven yes/no
+questions, one per cause: avoidable allocation, unbuffered I/O, string
+building, a missing fast path, superlinear work, missing preallocation,
+repeated work. Three choices come from a benchmark of 93 real single-function
+performance fixes, each asked about before and after the fix:
+
+- The state is the function and its file, never the profile. With the gron
+  benchmark profile beside the source, Jev labelled an unbuffered `Fprintln`
+  loop and a per-call `bytes.Buffer` as lookup cost, because that profile was
+  dominated by unicode-table lookups; without it both were named correctly.
+  The profile has already done its job by choosing which functions to ask
+  about.
+- One yes/no question per cause rather than one "which cause" choice. The
+  choice question was the weakest way to name a cause and the only format a
+  misleading profile derailed; per-cause Scores on a shared scale lost the
+  ability to tell fixed code from unfixed.
+- Answers are compared against Jev's usual answer to each question, not raw.
+  Its mean yes runs from 0.10 (unbuffered I/O) to 0.53 (allocation), so the
+  highest raw answer named the right cause 36% of the time; in baseline
+  standard deviations it named it 50% of the time and put it in the top two
+  69% of the time (chance is 14%). A cause is flagged at +0.5 sd, two at most
+  per function, which flagged the fixing commit's cause on 59% of unfixed
+  functions and on 23% of the fixed versions.
+- Each question names the state field it judges (`` `source` ``), as
+  TypeSafe's guidance asks because Jev reads literally; that measured neutral.
+  Three questions judge a relationship rather than one fact (allocates per
+  call *and* could avoid it; general path *and* cheap check possible; grows
+  *and* size known). Splitting them into one fact per question, as the Noul
+  guidance suggests for independent conditions, cut fix detection from 0.49
+  to 0.38: each part describes something that survives the fix, so only the
+  relationship separates broken code from fixed code. Structured criteria
+  with examples gave no net gain.
+
+`internal/jev/baseline.go` holds that baseline, measured over the benchmark's
+186 functions with no labels involved. It is valid only for the exact question
+text and state template: `TestBaselineMatchesQuestions` compares a digest of
+both and fails on any edit, and `TestLiveBaseline` re-measures it (opt-in, one
+request per function). It is also valid only for the model version it was
+measured on, and nothing can check that: TypeSafe advises pinning a version
+once thresholds are tuned against it, but the gateway serves only the alias
+`typesafe-ai/jev` (pinned IDs such as `jev-1.13.0` return 404) and reports no
+version in its responses. The baseline was measured on Jev 1.13; re-run
+`TestLiveBaseline` when TypeSafe ships a release.
+
+Each flagged cause becomes a one-sentence remedy in `candidate_hypotheses`,
+every function's first cause in hotness order before any second cause, and a
+function with nothing flagged is named in `additional_checks` rather than
+guessed at. Hot paths keep discovery's `path:line` verbatim, which the model
+analyst used to reformat. Per-function scores are persisted with a
+`cause_analysis` event, Jev's token usage is recorded under the analyst role,
+and the report header names the analyst. None of it reaches `apply_policy`.
+
+With causes ranked, code rather than a model chooses what each candidate
+attacks (ADR 0013). The analysis carries its flags as structured `targets`
+(function, location, cause, remedy) in the order above, and `merge_analysis`
+picks the first one no earlier candidate tried (`planTarget`), writes its remedy
+as the coordinator's experiment, and cuts the source excerpts down to that
+function; the optimizer's instruction forbids patching any other. Tried targets
+are recorded with each verdict and handed back on resume, so no target is
+attacked twice, and once every flagged target has been tried the optimizer
+chooses freely again. The coordinator model is not called in this mode, because
+nothing is left for it to decide. On a live gron campaign it took up to 2m40s a
+cycle, and left with a ranked list the optimizer ignored the top target and
+micro-optimized `validIdentifier` (inconclusive, -0.85%) before taking the top
+target on its second attempt: the bufio writer around the output loop, accepted
+at -15.1% wall time. A model analyst ranks nothing, so none of this changes its
+path.
+
+`AI_GATEWAY_API_KEY` (and optionally `AI_GATEWAY_BASE_URL`) configure the
+client. `--adk` spends one preflight request before repository work, because a
+gateway account without a card on file refuses every request and the analyst
+node is reached only after the baseline is built. Calls are sequential and
+retry HTTP 429 and 5xx with 1-16 s backoff: the provider throttled 36% of
+attempts at twelve in flight, and even sequential calls met a 429 that
+outlasted a 15 s ladder. `--adk-stub --analyst jev` uses a no-network stub,
+and a resumed campaign that started with `--analyst jev` must be given it
+again, the same rule as `--adk`.
+
+Jev only classifies what discovery lists. On gron the output loop behind the
+accepted `bufio` patch appears in discovery only as `fmt.(*pp).doPrintln`, a
+standard-library frame that is dropped rather than attributed to its caller,
+so the analyst is never asked about it; asked directly, it flags unbuffered
+I/O at +3.3 sd.
+
+## Jev reviewer
+
+`--reviewer jev` (with `--adk` or `--adk-stub`) replaces the reviewer model role
+the same way (ADR 0014): `Dependencies.Review` swaps in a function node named
+`reviewer` that calls `internal/campaign/review.go`, which asks Jev one yes/no
+question per behaviour hazard about the patch: output order that depends on map
+iteration or scheduling, changed errors or exit status, a dropped error from a
+call that can fail, an effect skipped on some path, reused-buffer aliasing, new
+concurrency, changed number formatting, and a diff wider than its hypothesis.
+The state is the hypothesis, the diff, and the patched function's source at the
+base revision, found from the diff's first hunk; nothing else.
+
+A hazard is raised when Jev answers yes (probability at least one half) and the
+answer is at least two standard deviations above its usual answer to that
+question on 93 real, merged performance patches (`internal/jev/review_baseline.go`,
+digest-guarded like the cause baseline). On the reviewer benchmark that caught
+every injected hazard whose label was right, and raised a concern on 14% of the
+real patches, most of them genuine: GitHub bufio fixes that discard the flush
+error, and both gron patches gotorque itself accepted, which `defer` the flush.
+With the measured baseline a yes on any question is already that unusual, so
+today the floor decides and z orders the concerns; a test fails if a new
+baseline breaks that.
+
+Until this, the reviewer's answer reached a policy input the policy ignores and
+nothing kept it. Its concerns are now recorded with the verdict, printed in the
+report under the candidate, and carried into the next cycle's
+`prior_candidates`, whichever reviewer ran. They remain advice: the policy
+never reads them.
+
+## Jev explorer
+
+`--explorer jev` (with `--adk` or `--adk-stub`) replaces the explorer model role
+(ADR 0015). The model's proposals were validated by `run_discovery` and counted,
+but never run, so discovery only ever sampled the manifest's first seed and a
+CLI's other modes were invisible to it: gron's `--stream` runs `gronStream`,
+which the seed never reaches. With the flag, the variants are chosen before
+discovery samples anything (`internal/campaign/explore.go`), and the explorer
+node answers at once with that plan (`agents.PlannedExplorer`):
+
+1. Code lists the boolean options the target declares
+   (`internal/workload.BoolFlags`): standard `flag` and pflag/cobra `Bool`,
+   `BoolVar`, `BoolP` and `BoolVarP` calls on any receiver, and go-flags
+   `long:` tags on bool fields. Spellings bound to one variable are one option
+   (gron's `-s` and `--stream`). They are read from the build package or, when
+   it declares none (gojq's live in `./cli`), from the module package that
+   declares the most. Options the seed already passes are skipped.
+2. Code runs the target's `--help` in the sandbox and keeps what it printed on
+   either stream, whatever the exit status.
+3. Jev answers, in one request whose state is the command and its help text,
+   one yes/no question per option: does it change how the program processes
+   its input or formats its output. An option is a processing mode at
+   probability one half or more (`jev.ModeFloor`); each option is judged on its
+   own, so no baseline is needed. On gron and gojq the modes answered 0.89 to
+   0.98, while `--help`, `--version`, `--insecure` and `--exit-status` answered
+   0.09 to 0.15, and gojq's `--from-file` 0.49. An earlier wording that asked
+   whether a typical user passes the option put nearly everything below one
+   half.
+4. Code runs each mode once on the seed input, likeliest first, with the option
+   placed before the seed's arguments (the standard flag package stops at the
+   first positional argument), and keeps those that exit 0 with output
+   different from the seed's: an option that fails on this input or changes
+   nothing reaches no new code. At most three are kept
+   (`maxExploredWorkloads`), since each costs a sampling window.
+5. Discovery samples each kept variant after the seed, on the seed's amplified
+   input and, if the target exits before the sampler attaches, on the seed
+   input repeated one copy per line. gron's `--stream` reads one document per
+   line of at most 1 MiB and exits at once on the 16 MiB single-line document,
+   while its default mode would finish the line-repeated input in 10 ms, so
+   neither shape serves both. A variant that cannot be sampled either way is
+   recorded (`workload_sample_skipped`) and left out.
+6. The samples are merged by share (`mergeAttributed`): each sample's
+   attributed weights become fractions of that sample before they are summed,
+   so a mode only one variant reaches ranks by its share of that variant's time
+   instead of disappearing behind the seed's.
+
+On gron the variants were `--stream` (0.97), `--json` (0.95) and `--no-sort`
+(0.93). `gronStream` entered the hot list third and the `--json` path
+(`jsonify`, `statementsFromJSON`) entered it too, while `strconv.Atoi` and
+`strings.Join`, which had filled its tail, dropped out.
+
+Jev decides nothing here. Code finds the options, runs them, and decides which
+reach the profile, and Jev only orders and filters which ones are worth a run.
+The variants only widen discovery: they are never measured workloads, and no
+verdict reads them. The chosen variants are kept in campaign state
+(`discovery_workloads`), in the discovery step's metadata
+(`explored_workloads`), and in the report header.
+
 ## Discovery benchmark profiling
 
 Before the model phase, the engine runs one best-effort profiling pass
@@ -286,6 +482,30 @@ finished a 16 MiB concatenation of its 84 KiB seed in 21 ms, exactly as fast
 as the unamplified seed, and the sampler could never attach. Safer frames are
 annotated with source positions through the same repository search the
 benchmark path uses, because sampler frames name a symbol but no position.
+
+The sampled hot list ranks the target's own functions by the samples spent on
+their behalf, not by self time. The sampler's top-of-stack section says which
+frames were executing but not for whom, and a Go CLI that spends its time
+printing is executing `fmt` and `write`: gron's per-statement `Fprintln` loop,
+whose `bufio` fix was the only patch ever accepted on it, had almost no self
+time and never appeared, so no analyst was ever asked about it.
+`internal/profile/stacks.go` rebuilds weighted call paths from the report's
+call graph (each node's own weight is its inclusive count minus its
+children's; `perf script` already lists whole stacks) and credits every sample
+to the innermost frame whose package is `main` or one of the module's
+(`AttributeToOwn`), so a function carries the library and system calls it
+makes. One gap needs an estimate: a Go system call switches to the system stack
+through `runtime.asmcgocall`, and macOS `sample` cannot unwind back across it,
+so on gron 141 samples spent in `write` sat under `asmcgocall` with no Go frame
+above them, while only three were caught with the whole path from the output
+loop down to `syscall.write`. Such orphaned samples are shared among the own
+functions observed calling the matching Go wrapper (`syscall.write` for
+`write`), in proportion to how often each was seen; a call with no observed
+caller, such as a thread parked in `__psynch_cvwait`, stays unattributed. On
+gron the output loop moved from absent to second of fifteen, behind the sort
+comparator, which now also carries the `strconv.Atoi` calls its natural sort
+makes. The top-of-stack names still fill any budget attribution leaves, so a
+report whose call paths do not parse lists what it listed before.
 
 When sampling succeeds the benchmark profile is still collected if the module
 declares benchmarks, because the informational PGO lane is built from it. That
@@ -335,7 +555,11 @@ source window could be read from. Positions are rewritten
 repository-relative, and frames in the standard library or module cache are
 dropped outright rather than kept as bare paths, since no patch this campaign
 may write can reach them and they would otherwise occupy the excerpt budget.
-Unresolvable functions keep their bare names so no entry is lost.
+Unresolvable functions keep their bare names so no entry is lost. Names that
+resolve to a location already listed are folded into it: a value method and
+the pointer wrapper Go generates for it are two symbols with one declaration,
+and gron's list named `statements.go:312` twice. Resolution continues through
+further candidates until the budget holds fifteen distinct entries.
 
 The annotated locations are stored in campaign state as
 `discovery_hot_functions` along with the raw summary artifact, and surface to
@@ -516,6 +740,11 @@ endpoint, one call yields exactly one response with its usage attached.
 The attempt deadline in `fence.go` (four minutes per ladder attempt) remains as
 the backstop, sized so attempts×timeout + backoff fits the orchestrator's
 twenty-minute per-node agent deadline.
+
+`--analyst jev` takes the analyst off this path entirely: it calls the Vercel
+AI Gateway with `AI_GATEWAY_API_KEY` instead of OpenRouter (see Jev cause
+analyst). The analyst's routed model is still validated and built, but never
+called.
 
 Role output shape is not enforced by the endpoint. Each role's instruction
 states strict JSON rules, and `internal/agents/decode.go` repairs the defects

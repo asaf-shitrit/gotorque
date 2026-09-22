@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/jev"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 )
@@ -67,6 +68,23 @@ type Set struct {
 	// Usage reports cumulative per-role token usage collected by decorated
 	// models during a run; nil when the provider does not track usage.
 	Usage *UsageCollector
+
+	// CauseEvaluator, when set, replaces the analyst role with Jev cause
+	// classification (--analyst jev): the campaign asks it typed questions
+	// about each measured hot function and ranks the answers in code. The
+	// Analyst agent is still built but never run.
+	CauseEvaluator jev.Evaluator
+
+	// ReviewEvaluator, when set, replaces the reviewer role with Jev
+	// behaviour-hazard checks (--reviewer jev). The Reviewer agent is still
+	// built but never run.
+	ReviewEvaluator jev.Evaluator
+
+	// ExploreEvaluator, when set, replaces the explorer role (--explorer jev):
+	// before discovery, code finds the target's options, Jev judges which
+	// select a processing mode, and discovery samples those variants. Explorer
+	// is then a stub that states this plan instead of a model call.
+	ExploreEvaluator jev.Evaluator
 }
 
 // All returns the role agents in a stable order.
@@ -130,6 +148,19 @@ type AnalystResult struct {
 	LikelyCauses        []string  `json:"likely_causes,omitempty"`
 	CandidateHypotheses []string  `json:"candidate_hypotheses"`
 	AdditionalChecks    []string  `json:"additional_checks,omitempty"`
+	// Targets are the ranked (function, cause) pairs the Jev analyst flagged,
+	// in the order a campaign should attack them. A model analyst leaves them
+	// empty; when present, code picks the optimizer's target from them.
+	Targets []Target `json:"targets,omitempty"`
+}
+
+// Target is one function and one cause the optimizer is told to address.
+type Target struct {
+	Location string  `json:"location"`
+	Function string  `json:"function"`
+	Cause    string  `json:"cause"`
+	Remedy   string  `json:"remedy"`
+	Z        float64 `json:"z"`
 }
 
 // OptimizerResult is one focused, reversible source candidate. Patch holds a

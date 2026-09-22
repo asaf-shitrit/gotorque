@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/jev"
 	"example.com/gotorque/internal/manifest"
 )
 
@@ -148,7 +149,17 @@ func RenderMarkdown(state State) string {
 func writeReportHeader(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "# Go optimization campaign `%s`\n\n", state.ID)
 	fmt.Fprintf(b, "**%s evidence** (%s/%s)\n\n", strings.ToUpper(state.Environment.Authority), state.Environment.OS, state.Environment.Architecture)
-	fmt.Fprintf(b, "- Status: `%s`\n- Stop reason: %s\n- Repository: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n\n", state.Status, state.StopReason, state.Repository, state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
+	fmt.Fprintf(b, "- Status: `%s`\n- Stop reason: %s\n- Repository: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n", state.Status, state.StopReason, state.Repository, state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
+	if state.Analyst == AnalystJev {
+		fmt.Fprintf(b, "- Analyst: Jev cause classification (`%s`), not a model role\n", jev.Model)
+	}
+	if state.Reviewer == ReviewerJev {
+		fmt.Fprintf(b, "- Reviewer: Jev behaviour-hazard checks (`%s`), not a model role\n", jev.Model)
+	}
+	if state.Explorer == ExplorerJev {
+		fmt.Fprintf(b, "- Explorer: the target's own options, judged by Jev (`%s`); discovery also sampled: %s\n", jev.Model, orNone(strings.Join(state.DiscoveryWorkloads, "; ")))
+	}
+	b.WriteString("\n")
 	writeSchemaNotice(b, state)
 }
 
@@ -274,6 +285,9 @@ func writeCandidateRecord(b *strings.Builder, record CandidateRecord) {
 }
 
 func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
+	if t := record.Target; t != nil {
+		fmt.Fprintf(b, "- Target: `%s` at `%s`, %s (%+.1f sd)\n", t.Function, t.Location, t.Cause, t.Z)
+	}
 	if record.Hypothesis != "" {
 		fmt.Fprintf(b, "- Hypothesis: %s\n", record.Hypothesis)
 	}
@@ -290,6 +304,9 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	}
 	for _, reason := range record.Reasons {
 		fmt.Fprintf(b, "- Policy: %s\n", reason)
+	}
+	for _, concern := range record.ReviewConcerns {
+		fmt.Fprintf(b, "- Review: %s\n", concern)
 	}
 }
 
@@ -438,4 +455,11 @@ func fmtFloats(values []float64) string {
 		parts = append(parts, strconv.FormatInt(int64(v), 10))
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }
