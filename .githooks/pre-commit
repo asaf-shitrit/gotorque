@@ -9,6 +9,17 @@
 # Deliberate bypass for one commit: git commit --no-verify
 set -e
 
+# git exports GIT_INDEX_FILE to this hook, and GIT_DIR too when the commit is
+# made in a linked worktree. The suite builds fixture repositories with git in
+# temporary directories, and an inherited value points those calls at the
+# repository being committed: from a worktree they once made it bare, wrote a
+# test identity into its config, and committed fixture trees onto the branch.
+# Each test package clears these in TestMain as well; this list matches
+# toolchain.GitScopingEnv.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR \
+	GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE \
+	GIT_CEILING_DIRECTORIES
+
 echo "pre-commit: complexity lint (golangci-lint: gocyclo, gocognit, gofmt)"
 make lint
 
