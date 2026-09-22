@@ -162,7 +162,14 @@ produced here or in policy.
    stdout digests, the workload is treated as nondeterministic and behavior
    comparison switches to an order-insensitive sorted-lines digest, so
    cosmetic row ordering cannot reject a behavior-preserving patch.
-   Exit codes must match in all cases.
+   Exit codes must match in all cases. When an eligible reading (below)
+   regresses past the limit without significance, every representative
+   workload is measured over a second series of twenty-five pairs, held to
+   the same behavior check, and every comparison is derived again from both
+   series (`confirmRegressions`, ADR 0016). All workloads are extended, not
+   only the one that read high, because the pooled reading folds them per
+   repetition. The second series has no budget of its own: it costs what
+   the first did, and the campaign deadline bounds both.
 6. **Statistics.** Each metric gets a two-sample Welch t-test against a
    conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
    sample sizes); support is never reported from fewer than four samples per
@@ -171,7 +178,11 @@ produced here or in policy.
    workload and benchstat refines the result: a parseable p-value below 0.05
    grants support, a parseable but insignificant p-value withdraws support
    the coarse t-test may have granted, and delta-only legacy output is
-   informational and can never grant support by itself. Trimmed benchstat
+   informational and can never grant support by itself. Each comparison
+   also records `significant`: benchstat's p below 0.05 when it ran,
+   otherwise `|t| > 2.2`. That is not the same as support, which is also
+   granted to a flat reading whose interval rules out a 2% regression, and
+   it is what a regression is judged on. Trimmed benchstat
    output is kept in the candidate record for reports. Representative
    workloads are folded per repetition before the pooled comparison: the
    mean across workloads for wall and CPU time, the maximum for peak memory,
@@ -188,7 +199,8 @@ pooled primary metric plus one comparison per representative-tier seed (only
 those seeds are measured, so every per-workload primary comparison is eligible
 by construction). A candidate passes when any member of that set improves by
 at least the manifest's `minimum_improvement_percent` with statistical
-support, and no member regresses past `maximum_guardrail_regression_percent`;
+support, and no member regresses significantly past
+`maximum_guardrail_regression_percent`;
 the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as
 before. The reason names the workload the verdict rests on.
@@ -204,6 +216,22 @@ derived run identifier rather than the seed id an operator writes in the
 manifest. Comparisons and sample rows now carry the manifest seed id, so a
 verdict reads `workload "flatten-users" improved by 4.40%`; policy still holds
 every decision and still touches no filesystem, process, or network.
+
+A regression over the limit rejects only when it is significant, if the
+manifest asks for statistical support (ADR 0016). On the point estimate
+alone, a no-op patch measured against itself on gron was rejected in 12 of
+30 trials: bursts of slow runs moved a 25-pair mean past 2% on a seed whose
+median had not moved, and a live campaign lost a -20.4% supported win to a
+small-doc reading of +4.01% benchstat did not find significant. Before a
+reading reaches the policy unresolved, the engine measures again (step 5),
+so a real regression 25 pairs could not resolve still has more samples to
+show up in. Under this rule the same 30 trials rejected one, on a reading
+benchstat called significant, and accepted none. A reading that stays over
+the limit without significance does not reject, and the verdict names it
+(`workload "small-doc" read +4.01%, over the 2.00% limit, but the difference
+is not statistically significant`). `policy.UnconfirmedRegressions` is the
+rule both the engine and the verdict use, so what the engine measures again
+is exactly what the policy would otherwise wave through.
 
 The pooled figure alone was the wrong instrument. A seed whose measured run is
 mostly process startup cannot be improved by any patch, so pooling it dilutes
@@ -226,7 +254,8 @@ out.
    and safety failures are hard rejections; missing evidence or a primary
    metric that is not statistically supported or improves less than 3 percent
    is inconclusive; any guardrail (CPU time, peak memory, binary size)
-   regressing more than 2 percent rejects. Statistical support is required of
+   regressing more than 2 percent rejects, and so does an eligible reading
+   that regresses past the limit significantly. Statistical support is required of
    the primary metric, where it protects the win itself; a required guardrail
    is judged against its own `maximum_regression_percent` limit, because
    demanding proof of the absence of a regression from a jittery high-water

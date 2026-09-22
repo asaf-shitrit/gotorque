@@ -719,3 +719,17 @@ func TestEvaluateCandidateRefusesATestFileEditBeforeBuild(t *testing.T) {
 	require.Contains(t, evidence.FailureDetail, `test file "main_test.go" is off-limits`)
 	require.Len(t, evidence.ArtifactURIs, 1, "nothing was built")
 }
+
+// TestSignificanceIsNotSupport: support is also granted to a flat reading whose
+// interval rules out a regression, so a regression is judged on significance,
+// which only a difference earns.
+func TestSignificanceIsNotSupport(t *testing.T) {
+	shifted := compareMetric("w", "wall_time_ns", "ns", metricRuns("wall_time_ns", 100, 102, 99, 101, 100, 98, 101), metricRuns("wall_time_ns", 50, 51, 49, 50, 52, 48, 51), wallTime)[0]
+	if !shifted.StatisticallyFit || !shifted.Significant {
+		t.Fatalf("a clear shift is supported and significant: %+v", shifted)
+	}
+	flat := compareMetric("w", "wall_time_ns", "ns", metricRuns("wall_time_ns", 100, 100.4, 99.6, 100.2, 99.8, 100.1, 99.9), metricRuns("wall_time_ns", 100.1, 99.7, 100.3, 99.9, 100.2, 99.8, 100), wallTime)[0]
+	if !flat.StatisticallyFit || flat.Significant {
+		t.Fatalf("a confidently flat reading is supported but not significant: %+v", flat)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/orchestrator"
+	"example.com/gotorque/internal/policy"
 	"example.com/gotorque/internal/runner"
 	"example.com/gotorque/internal/toolchain"
 )
@@ -164,59 +165,151 @@ type pooledSamples struct {
 	memBase, memCand   [][]float64
 }
 
-func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
-	baselineSize, candSize, sizeErr := binarySizes(e.state.BinaryPath, candidateBinary)
-	comparisons := make([]domain.MetricComparison, 0, 4)
-	var pooled pooledSamples
-	measured, ok := e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, &comparisons, &pooled)
-	if !ok {
-		return false
-	}
-	if measured == 0 {
-		evidence.Summary = "no representative seed workloads available for measurement"
-		evidence.Comparisons = comparisons
-		return false
-	}
-	e.finalizeCandidateEvidence(ctx, evidence, comparisons, pooled, sizeErr, baselineSize, candSize, measured)
-	return true
+// measurement is what a candidate's interleaved series produce. The raw runs
+// are kept per seed so a confirmation series can extend them and every
+// comparison can be derived again from both.
+type measurement struct {
+	seeds                  []seedRuns
+	comparisons            []domain.MetricComparison
+	pooled                 pooledSamples
+	sizeErr                error
+	baselineSize, candSize int64
 }
 
-func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, comparisons *[]domain.MetricComparison, pooled *pooledSamples) (int, bool) {
-	measured := 0
+// seedRuns is one representative seed's interleaved runs so far.
+type seedRuns struct {
+	seed          manifest.SeedWorkload
+	deterministic bool
+	ab            runner.ABResult
+}
+
+func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
+	m := measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
+	m.baselineSize, m.candSize, m.sizeErr = binarySizes(e.state.BinaryPath, candidateBinary)
+	if !e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, &m) {
+		return false
+	}
+	if len(m.seeds) == 0 {
+		evidence.Summary = "no representative seed workloads available for measurement"
+		evidence.Comparisons = m.comparisons
+		return false
+	}
+	e.finalizeCandidateEvidence(ctx, evidence, &m)
+	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
+	return e.confirmRegressions(ctx, evidence, id, candidateBinary, &m)
+}
+
+func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
 		if seed.Tier != domain.TierRepresentative {
 			continue
 		}
-		if !e.measureOneSeed(ctx, seed, id, candidateBinary, evidence, comparisons, pooled) {
-			return measured, false
+		if !e.measureOneSeed(ctx, seed, id, candidateBinary, evidence, m) {
+			return false
 		}
-		measured++
 	}
-	return measured, true
+	return true
 }
 
-func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons *[]domain.MetricComparison, pooled *pooledSamples) bool {
-	baseReq := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
-	candReq := baseReq
-	candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
-	candReq.Workload.Command.Path = candidateBinary
+func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, m *measurement) bool {
+	baseReq, candReq := e.abRequests(seed, id, candidateBinary)
 	// First-execution warm-up: a freshly built binary pays a one-time OS
 	// cost on its first exec (Gatekeeper scan, page-in) that otherwise
 	// poisons repetition 0 of the candidate leg — observed as ~470ms vs
 	// ~9ms steady state. Discarded, errors ignored.
 	_, _ = e.runner.Run(ctx, candReq)
-	deterministicOutput := e.outputIsDeterministic(ctx, baseReq)
+	runs := seedRuns{seed: seed, deterministic: e.outputIsDeterministic(ctx, baseReq)}
+	if !e.runSeries(ctx, &runs, id, candidateBinary, evidence, m.comparisons) {
+		return false
+	}
+	m.seeds = append(m.seeds, runs)
+	e.recordSeedMetrics(ctx, seed.ID, runs.ab, evidence, m)
+	return true
+}
+
+func (e *Engine) abRequests(seed manifest.SeedWorkload, id, candidateBinary string) (runner.RunRequest, runner.RunRequest) {
+	baseReq := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
+	candReq := baseReq
+	candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
+	candReq.Workload.Command.Path = candidateBinary
+	return baseReq, candReq
+}
+
+// runSeries runs one series of interleaved pairs on a seed, holds it to the
+// seed's behaviour, and appends its runs to the ones already measured. A
+// series that fails leaves the behaviour unverified even when an earlier one
+// passed, so a confirmation series that fails rejects the candidate as a first
+// series would.
+func (e *Engine) runSeries(ctx context.Context, runs *seedRuns, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
+	baseReq, candReq := e.abRequests(runs.seed, id, candidateBinary)
 	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
 	if err != nil {
-		evidence.Summary = fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err)
-		evidence.Comparisons = *comparisons
+		evidence.BehaviorMatches = false
+		evidence.Summary = fmt.Sprintf("measurement failed on workload %q: %v", runs.seed.ID, err)
+		evidence.Comparisons = comparisons
 		return false
 	}
-	if !recordBehaviorMatch(ab, deterministicOutput, seed.ID, evidence, *comparisons) {
+	if !recordBehaviorMatch(ab, runs.deterministic, runs.seed.ID, evidence, comparisons) {
+		evidence.BehaviorMatches = false
 		return false
 	}
-	e.recordSeedMetrics(ctx, seed.ID, ab, evidence, comparisons, pooled)
+	runs.ab.Baseline = append(runs.ab.Baseline, ab.Baseline...)
+	runs.ab.Candidate = append(runs.ab.Candidate, ab.Candidate...)
 	return true
+}
+
+// confirmRegressions measures every representative seed again when an
+// eligible reading regressed past the limit without significance, then derives
+// every comparison from both series. The policy does not reject on such a
+// reading, so without more samples a real regression that twenty-five pairs
+// could not resolve would pass unnoticed. With them it either becomes
+// significant and rejects, or stays insignificant and is named in the
+// verdict's reasons. Every seed is extended, not only the one that read high,
+// because the pooled reading folds the seeds per repetition and needs series
+// of one length.
+//
+// The second series is part of measurement, so it has no budget of its own:
+// it costs what the first did, seconds for a short CLI, and the campaign's
+// deadline bounds it as it bounds the first.
+func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	config := policyConfigFromManifest(e.state.Manifest)
+	unconfirmed := policy.UnconfirmedRegressions(config, eligibleReadings(config, evidence.Comparisons))
+	if len(unconfirmed) == 0 {
+		return true
+	}
+	for i := range m.seeds {
+		if !e.runSeries(ctx, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
+			return false
+		}
+	}
+	e.rederive(ctx, evidence, m)
+	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent)
+	evidence.Summary += "; " + note
+	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
+	_ = e.saveEvent("measurement_confirmed", note, nil)
+	return true
+}
+
+// rederive computes every comparison again from the runs measured so far.
+func (e *Engine) rederive(ctx context.Context, evidence *orchestrator.CandidateEvidence, m *measurement) {
+	evidence.RepSamples, evidence.BenchstatOutput = nil, ""
+	m.comparisons, m.pooled = nil, pooledSamples{}
+	for _, runs := range m.seeds {
+		e.recordSeedMetrics(ctx, runs.seed.ID, runs.ab, evidence, m)
+	}
+	e.finalizeCandidateEvidence(ctx, evidence, m)
+}
+
+func confirmationNote(unconfirmed []domain.MetricComparison, limit float64) string {
+	readings := make([]string, 0, len(unconfirmed))
+	for _, c := range unconfirmed {
+		name := "pooled"
+		if c.Workload != "" {
+			name = c.Workload
+		}
+		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
+	}
+	return fmt.Sprintf("%s over the %.2f%% limit without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), limit, measurementRepetitions, measurementRepetitions)
 }
 
 func (e *Engine) outputIsDeterministic(ctx context.Context, baseReq runner.RunRequest) bool {
@@ -256,9 +349,9 @@ func recordBehaviorMatch(ab runner.ABResult, deterministicOutput bool, seedID st
 	return true
 }
 
-func (e *Engine) recordSeedMetrics(ctx context.Context, seedID string, ab runner.ABResult, evidence *orchestrator.CandidateEvidence, comparisons *[]domain.MetricComparison, pooled *pooledSamples) {
+func (e *Engine) recordSeedMetrics(ctx context.Context, seedID string, ab runner.ABResult, evidence *orchestrator.CandidateEvidence, m *measurement) {
 	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, seedID, ab.Baseline, ab.Candidate)
-	*comparisons = append(*comparisons, wallComparisons...)
+	m.comparisons = append(m.comparisons, wallComparisons...)
 	baseSamples := metricValues(ab.Baseline, wallTime)
 	candSamples := metricValues(ab.Candidate, wallTime)
 	evidence.RepSamples = append(evidence.RepSamples, domain.WorkloadSamples{Workload: seedID, BaselineNs: baseSamples, CandidateNs: candSamples})
@@ -268,6 +361,7 @@ func (e *Engine) recordSeedMetrics(ctx context.Context, seedID string, ab runner
 		}
 		evidence.BenchstatOutput += fmt.Sprintf("workload %s:\n%s", seedID, wallBenchstat)
 	}
+	pooled := &m.pooled
 	pooled.cpuBase = append(pooled.cpuBase, metricValues(ab.Baseline, cpuTime))
 	pooled.memBase = append(pooled.memBase, metricValues(ab.Baseline, peakMemory))
 	pooled.cpuCand = append(pooled.cpuCand, metricValues(ab.Candidate, cpuTime))
@@ -286,7 +380,8 @@ func metricValues(runs []domain.RunResult, sel metricSelector) []float64 {
 	return values
 }
 
-func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison, pooled pooledSamples, sizeErr error, baselineSize, candSize int64, measured int) {
+func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orchestrator.CandidateEvidence, m *measurement) {
+	comparisons, pooled := append([]domain.MetricComparison{}, m.comparisons...), m.pooled
 	// Policy looks up canonical metric names ("wall_time_ns" primary plus
 	// required guardrails), so the representative workloads are folded into
 	// one comparison per metric. Folding happens per repetition, not by
@@ -302,15 +397,14 @@ func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orches
 		pooledAsRuns(meanPerRepetition(pooled.cpuBase), "cpu_time_ns"), pooledAsRuns(meanPerRepetition(pooled.cpuCand), "cpu_time_ns"), cpuTime)...)
 	comparisons = append(comparisons, compareMetric("", "peak_memory_bytes", "bytes",
 		pooledAsRuns(maxPerRepetition(pooled.memBase), "peak_memory_bytes"), pooledAsRuns(maxPerRepetition(pooled.memCand), "peak_memory_bytes"), peakMemory)...)
-	if sizeErr == nil {
-		comparisons = append(comparisons, domain.MetricComparison{Metric: "binary_size_bytes", Unit: "bytes", Baseline: float64(baselineSize), Candidate: float64(candSize), DeltaPercent: percentDelta(float64(baselineSize), float64(candSize)), StatisticallyFit: true})
+	if m.sizeErr == nil {
+		comparisons = append(comparisons, domain.MetricComparison{Metric: "binary_size_bytes", Unit: "bytes", Baseline: float64(m.baselineSize), Candidate: float64(m.candSize), DeltaPercent: percentDelta(float64(m.baselineSize), float64(m.candSize)), StatisticallyFit: true, Significant: m.baselineSize != m.candSize})
 	}
 	evidence.BehaviorMatches = true
 	evidence.SafetyChecksPassed = true
-	evidence.RepresentativeEvidence = measured > 0
+	evidence.RepresentativeEvidence = len(m.seeds) > 0
 	evidence.Comparisons = comparisons
-	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d representative workload(s) measured over %d A/B pairs each", measured, measurementRepetitions)
+	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d representative workload(s) measured over %d A/B pairs each", len(m.seeds), len(m.seeds[0].ab.Baseline))
 }
 
 // seedMeasurementRequest builds the measurement runner request for one seed
@@ -338,6 +432,11 @@ func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, bin
 		Stdin:         []byte(seed.Stdin),
 		Fixtures:      fixtures,
 		AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"},
+		// Isolated campaigns grant neither. Without local isolation
+		// (TestingUnsafeDisableIsolation) there is no guard to enforce either
+		// restriction, so the request grants both, as discovery's does.
+		NetworkAllowed:    !e.state.LocalIsolation,
+		FilesystemAllowed: !e.state.LocalIsolation,
 	}
 	return req
 }
@@ -618,6 +717,7 @@ func compareMetric(workload, metric, unit string, baseline, candidateRuns []doma
 		result.DeltaPercent = percentDelta(meanBase, meanCand)
 	}
 	result.StatisticallyFit = metricSupport(baseVals, candVals, result.Baseline, result.DeltaPercent)
+	result.Significant = statisticallySupported(baseVals, candVals)
 	return []domain.MetricComparison{result}
 }
 

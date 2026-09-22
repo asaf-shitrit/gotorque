@@ -102,7 +102,11 @@ func Evaluate(config Config, evidence Evidence) Result {
 	if early, done := checkEligibleRegressions(config, eligible, result); done {
 		return early
 	}
-	return decideOnImprovement(config, eligible, result)
+	result = decideOnImprovement(config, eligible, result)
+	for _, comparison := range unconfirmed(config, eligible) {
+		result.Reasons = append(result.Reasons, fmt.Sprintf("%s read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", readingSubject(comparison), comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent))
+	}
+	return result
 }
 
 // eligiblePrimary resolves the comparisons that may carry acceptance. A caller
@@ -126,16 +130,54 @@ func eligiblePrimary(config Config, evidence Evidence, result Result) ([]domain.
 // checkEligibleRegressions refuses a candidate that bought its win on one
 // workload by hurting another acceptance-eligible one past the manifest's
 // ceiling: the eligible set is a set of representative workloads, not a menu.
+//
+// A reading over the ceiling rejects only when the difference is significant,
+// whenever the manifest asks for statistical support. On the point estimate
+// alone, a no-op patch measured against itself on gron was rejected in 4 of 30
+// trials: a burst of slow runs moved a 25-pair mean by up to 10% while the
+// medians stayed within 1%, and none of those readings was significant. A
+// live campaign lost a -20.4% supported win that way to a small-doc reading of
+// +4.01% with p above 0.05. The engine measures again before a reading gets
+// here unconfirmed (UnconfirmedRegressions), so a real regression the first
+// series could not resolve still has more samples to show up in; one that
+// stays insignificant is named in the verdict's reasons instead.
 func checkEligibleRegressions(config Config, eligible []domain.MetricComparison, result Result) (Result, bool) {
 	for _, comparison := range eligible {
 		if !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
 			return inconclusive(result, readingSubject(comparison)+" has invalid measurements"), true
 		}
-		if comparison.DeltaPercent > config.MaximumGuardrailRegressionPercent {
+		if overLimit(config, comparison) && (comparison.Significant || !config.StatisticalSupportRequired) {
 			return reject(result, fmt.Sprintf("%s regressed by %+.2f%%, over the %.2f%% limit", readingSubject(comparison), comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent)), true
 		}
 	}
 	return result, false
+}
+
+// UnconfirmedRegressions returns the eligible readings over the regression
+// limit whose difference is not significant: the ones Evaluate will not
+// reject on. The engine measures again when there are any, so the rule it
+// uses to decide that is the one the verdict applies. It is empty when the
+// manifest does not ask for statistical support, since the point estimate
+// then decides alone.
+func UnconfirmedRegressions(config Config, eligible []domain.MetricComparison) []domain.MetricComparison {
+	return unconfirmed(withDefaults(config), comparisonResults(eligible))
+}
+
+func unconfirmed(config Config, eligible []domain.MetricComparison) []domain.MetricComparison {
+	if !config.StatisticalSupportRequired {
+		return nil
+	}
+	var readings []domain.MetricComparison
+	for _, comparison := range eligible {
+		if overLimit(config, comparison) && !comparison.Significant {
+			readings = append(readings, comparison)
+		}
+	}
+	return readings
+}
+
+func overLimit(config Config, comparison domain.MetricComparison) bool {
+	return comparison.DeltaPercent > config.MaximumGuardrailRegressionPercent
 }
 
 // decideOnImprovement accepts on the best supported win in the eligible set.

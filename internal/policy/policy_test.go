@@ -220,14 +220,14 @@ func TestEvaluateRejectsRegressionOnAnotherEligibleWorkload(t *testing.T) {
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
 		Comparisons: []domain.MetricComparison{
 			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 57, StatisticallyFit: true},
-			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 41, StatisticallyFit: true},
+			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 41, StatisticallyFit: true, Significant: true},
 			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
 		Primary: []domain.MetricComparison{
 			{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 57, StatisticallyFit: true},
-			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 41, StatisticallyFit: true},
+			{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 41, StatisticallyFit: true, Significant: true},
 		},
 	})
 	if result.Decision != domain.DecisionRejected {
@@ -258,5 +258,72 @@ func TestEvaluateWillNotAcceptAnUnsupportedWorkloadWin(t *testing.T) {
 	}
 	if !strings.Contains(result.Reasons[0], "statistically supported") {
 		t.Fatalf("reason = %v", result.Reasons)
+	}
+}
+
+// liveCampaignEvidence is gron campaign #4's first candidate: the output loop
+// buffered, flatten-users -20.41% with support, small-doc +4.01% at p above
+// 0.05. The candidate was rejected on the small-doc point estimate.
+func liveCampaignEvidence(smallDoc domain.MetricComparison) Evidence {
+	flatten := domain.MetricComparison{Metric: "wall_time_ns", Workload: "flatten-users", Baseline: 27.33, Candidate: 21.75, StatisticallyFit: true, Significant: true}
+	pooled := domain.MetricComparison{Metric: "wall_time_ns", Baseline: 20.81, Candidate: 18.31, StatisticallyFit: true, Significant: true}
+	return Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []domain.MetricComparison{
+			pooled, flatten, smallDoc,
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100.26, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 88.17, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		},
+		Primary: []domain.MetricComparison{pooled, flatten, smallDoc},
+	}
+}
+
+func TestEvaluateDoesNotRejectOnAnInsignificantRegression(t *testing.T) {
+	smallDoc := domain.MetricComparison{Metric: "wall_time_ns", Workload: "small-doc", Baseline: 14.29, Candidate: 14.8631, StatisticallyFit: false}
+	result := Evaluate(DefaultConfig(), liveCampaignEvidence(smallDoc))
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if len(result.Reasons) != 2 || !strings.Contains(result.Reasons[0], `workload "flatten-users" improved by 20.42%`) {
+		t.Fatalf("the verdict should rest on flatten-users: %v", result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[1], `workload "small-doc" read +4.01%, over the 2.00% limit, but the difference is not statistically significant`) {
+		t.Fatalf("the unconfirmed regression should be named: %v", result.Reasons)
+	}
+}
+
+func TestEvaluateRejectsASignificantRegression(t *testing.T) {
+	smallDoc := domain.MetricComparison{Metric: "wall_time_ns", Workload: "small-doc", Baseline: 13.34, Candidate: 14.123, Significant: true}
+	result := Evaluate(DefaultConfig(), liveCampaignEvidence(smallDoc))
+	if result.Decision != domain.DecisionRejected || !strings.Contains(result.Reasons[0], `workload "small-doc" regressed by +5.87%`) {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+}
+
+// A manifest that does not ask for statistical support keeps the point
+// estimate as the whole rule, for regressions as for wins.
+func TestEvaluateRejectsOnThePointEstimateWithoutRequiredSupport(t *testing.T) {
+	config := DefaultConfig()
+	config.StatisticalSupportRequired = false
+	smallDoc := domain.MetricComparison{Metric: "wall_time_ns", Workload: "small-doc", Baseline: 14.29, Candidate: 14.8631}
+	if result := Evaluate(config, liveCampaignEvidence(smallDoc)); result.Decision != domain.DecisionRejected {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if got := UnconfirmedRegressions(config, liveCampaignEvidence(smallDoc).Primary); len(got) != 0 {
+		t.Fatalf("nothing to confirm when the point estimate decides: %v", got)
+	}
+}
+
+func TestUnconfirmedRegressionsAreOverTheLimitAndInsignificant(t *testing.T) {
+	primary := []domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 103},
+		{Metric: "wall_time_ns", Workload: "big", Baseline: 60, Candidate: 57, Significant: true},
+		{Metric: "wall_time_ns", Workload: "small", Baseline: 40, Candidate: 42, Significant: true},
+		{Metric: "wall_time_ns", Workload: "tiny", Baseline: 10, Candidate: 10.1},
+	}
+	got := UnconfirmedRegressions(Config{StatisticalSupportRequired: true}, primary)
+	if len(got) != 1 || got[0].Workload != "" || math.Abs(got[0].DeltaPercent-3) > 1e-9 {
+		t.Fatalf("UnconfirmedRegressions = %+v, want only the pooled +3%% reading", got)
 	}
 }

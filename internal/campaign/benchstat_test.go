@@ -365,3 +365,18 @@ func TestReportOmitsEmptyModelUsageTable(t *testing.T) {
 		t.Fatal("model usage section rendered without usage data")
 	}
 }
+
+// TestBenchstatPValueDecidesSignificance: when benchstat reports a p-value, it
+// decides significance whatever the t-test found.
+func TestBenchstatPValueDecidesSignificance(t *testing.T) {
+	base := wallRuns(100, 101, 99, 100, 100, 101, 99)
+	cand := wallRuns(104, 105, 103, 104, 104, 105, 103)
+	insignificant := benchstatEnabledEngine(t, &cannedBenchstatExecutor{stdout: "Work-8  100ns ± 1%  104ns ± 1%  +4.00% (p=0.200 n=7)"}, installFakeBenchstat(t))
+	if c, _ := insignificant.compareWallTimeMetric(context.Background(), "wid", base, cand); c[0].Significant {
+		t.Fatalf("p=0.200 is not significant: %+v", c[0])
+	}
+	significant := benchstatEnabledEngine(t, &cannedBenchstatExecutor{stdout: modernBenchstatOutput}, installFakeBenchstat(t))
+	if c, _ := significant.compareWallTimeMetric(context.Background(), "wid", base, cand); !c[0].Significant {
+		t.Fatalf("p=0.001 is significant: %+v", c[0])
+	}
+}
