@@ -611,15 +611,16 @@ func (e *erroringLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ 
 	}
 }
 
-// A 400/401/403/404/422 describes the request or credential, not the
-// endpoint's mood: retrying it burns the whole backoff ladder (15s+30s+60s)
-// on a call that will fail identically every time, and with a revoked key
-// every subsequent role pays that toll too before degrading anyway. Both
-// wrapping shapes are covered because ADK's two call paths disagree: the
-// non-streaming path wraps with "openai: call failed: %w" (openai.go
-// m.generate) while the streaming path yields stream.Err() raw.
+// A 400/401/402/403/404/422 describes the request, credential or account, not
+// the endpoint's mood: retrying it burns the whole backoff ladder
+// (15s+30s+60s) on a call that will fail identically every time, and with a
+// revoked key or an empty balance every subsequent role pays that toll too
+// before degrading anyway. Both wrapping shapes are covered because ADK's two
+// call paths disagree: the non-streaming path wraps with "openai: call
+// failed: %w" (openai.go m.generate) while the streaming path yields
+// stream.Err() raw.
 func TestFenceStrippingModelDoesNotRetryPermanentHTTPStatus(t *testing.T) {
-	statuses := []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity}
+	statuses := []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity}
 	for _, status := range statuses {
 		for _, name := range []string{"wrapped", "raw"} {
 			t.Run(fmt.Sprintf("status %d %s", status, name), func(t *testing.T) {

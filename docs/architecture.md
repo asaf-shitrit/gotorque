@@ -415,11 +415,12 @@ only removes parse failures of otherwise usable recommendations.
   any content (shared-pool rate limits otherwise abort multi-hour campaigns),
   and records per-role token usage into a collector persisted with campaign
   state. Endpoint credentials and API keys are never persisted. HTTP 400,
-  401, 403, 404 and 422 end the ladder on the first attempt: they describe
-  the request or the credential, so a revoked key used to spend the whole
-  ladder on every role before degrading anyway. They are recognized with
-  `errors.As` against openai-go's `*openai.Error`, which ADK yields raw on the
-  streaming path. 408, 409, 429, 5xx, transport errors, stalls and
+  401, 402, 403, 404 and 422 end the ladder on the first attempt: they
+  describe the request, the credential or the account, so a revoked key or
+  an OpenRouter balance too low for the request (402 Payment Required) used
+  to spend the whole ladder on every role before degrading anyway. They are
+  recognized with `errors.As` against openai-go's `*openai.Error`, which ADK
+  yields raw on the streaming path. 408, 409, 429, 5xx, transport errors, stalls and
   incomplete streams still retry. The per-attempt deadline is a
   `context.WithTimeoutCause` that names its budget, and `stream.go` reports
   `context.Cause`, so a timed-out attempt no longer reads as a bare

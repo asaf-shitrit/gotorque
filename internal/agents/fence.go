@@ -215,13 +215,19 @@ func (r *generateRun) yieldExhausted(yield func(*model.LLMResponse, error) bool,
 }
 
 // nonRetryableStatus is the set of HTTP statuses the ladder must not retry:
-// each one describes the request or credential, not a transient endpoint
-// condition, so every attempt would fail identically. 408, 409, 429 and 5xx
-// are deliberately absent — those are the transient cases the ladder exists
-// for.
+// each one describes the request, the credential or the account, not a
+// transient endpoint condition, so every attempt would fail identically. 408,
+// 409, 429 and 5xx are deliberately absent — those are the transient cases the
+// ladder exists for.
+//
+// 402 joined the set after a live call against OpenRouter: an account whose
+// balance could not cover the requested max_output_tokens answered 402
+// Payment Required on every attempt, and the ladder spent 105 seconds proving
+// it four times. Nothing changes until someone adds credits.
 var nonRetryableStatus = map[int]bool{
 	http.StatusBadRequest:          true, // 400: malformed request
 	http.StatusUnauthorized:        true, // 401: bad or revoked credential
+	http.StatusPaymentRequired:     true, // 402: account cannot pay for the request
 	http.StatusForbidden:           true, // 403: credential lacks access
 	http.StatusNotFound:            true, // 404: no such model or endpoint
 	http.StatusUnprocessableEntity: true, // 422: request rejected by validation
