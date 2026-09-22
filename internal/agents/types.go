@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/jev"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 )
@@ -67,6 +68,12 @@ type Set struct {
 	// Usage reports cumulative per-role token usage collected by decorated
 	// models during a run; nil when the provider does not track usage.
 	Usage *UsageCollector
+
+	// CauseEvaluator, when set, replaces the analyst role with Jev cause
+	// classification (--analyst jev): the campaign asks it typed questions
+	// about each measured hot function and ranks the answers in code. The
+	// Analyst agent is still built but never run.
+	CauseEvaluator jev.Evaluator
 }
 
 // All returns the role agents in a stable order.

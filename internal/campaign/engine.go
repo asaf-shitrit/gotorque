@@ -110,6 +110,10 @@ type State struct {
 	Repository   string `json:"repository"`
 	ManifestPath string `json:"manifest_path"`
 	ADKMode      string `json:"adk_mode,omitempty"`
+	// Analyst is AnalystJev when the analyst role was Jev cause classification
+	// rather than a model, so a report says which kind of analysis its
+	// hypotheses came from and a resume can insist on the same one.
+	Analyst string `json:"analyst,omitempty"`
 	// SchemaVersion is stamped by WriteReports onto the artifact it writes, so a
 	// report carries the shape it was written in. It stays zero for state that
 	// predates versioning, which readers report rather than assume.
@@ -347,6 +351,15 @@ func attachADK(e *Engine, opts Options) {
 	}
 	if opts.ADKAgents != nil {
 		e.state.ADKMode = "live"
+	}
+	e.noteAnalyst(opts.ADKAgents)
+}
+
+// noteAnalyst records a switch to Jev cause classification. It never clears
+// the mark: a campaign any part of which ran on Jev says so.
+func (e *Engine) noteAnalyst(roleSet *agents.Set) {
+	if roleSet != nil && roleSet.CauseEvaluator != nil {
+		e.state.Analyst = AnalystJev
 	}
 }
 
@@ -1344,4 +1357,5 @@ func (e *Engine) SetADK(roleSet *agents.Set, cfg *orchestrator.Config) {
 	if cfg != nil {
 		e.adkConfig = *cfg
 	}
+	e.noteAnalyst(roleSet)
 }

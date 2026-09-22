@@ -113,7 +113,11 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 		return nil, nil, fmt.Errorf("campaign must be running or baseline-completed before ADK: %s", e.state.Status)
 	}
 	services := adkServices{engine: e}
-	orch, err := orchestrator.New(orchestrator.Dependencies{Runner: services, Policy: services, Jobs: services, Agents: roleSet}, cfg)
+	deps := orchestrator.Dependencies{Runner: services, Policy: services, Jobs: services, Agents: roleSet}
+	if roleSet.CauseEvaluator != nil {
+		deps.Causes = causeAnalyst{engine: e, evaluator: roleSet.CauseEvaluator, usage: roleSet.Usage}
+	}
+	orch, err := orchestrator.New(deps, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
