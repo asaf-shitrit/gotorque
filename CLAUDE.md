@@ -88,6 +88,15 @@ failure; `--no-verify` is the escape hatch. The hook is local config, so CI
 stays the enforcement point for anyone who has not run `make hooks`, so do not
 treat a green local commit as proof CI will pass.
 
+Inside the hook, git exports `GIT_INDEX_FILE`, and `GIT_DIR` too when the
+commit is made in a linked worktree. A test that runs git directly inherits
+them and writes into the repository being committed. From a worktree, this
+once made the repository bare, set a test identity in its config, and
+committed fixtures onto the branch. The hook unsets them, and every test
+package that builds fixture repositories clears `toolchain.GitScopingEnv()`
+in its `TestMain`. A new package that shells out to git needs the same
+`TestMain`.
+
 ## Architecture
 
 Read `docs/architecture.md` before non-trivial engine work; it is detailed and
