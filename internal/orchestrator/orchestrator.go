@@ -682,7 +682,8 @@ func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*sessi
 // Jev serves is not one of them: with a cause analyst (--analyst jev), neither
 // the analyst nor the coordinator, which becomes a deterministic plan that
 // never calls a model; with a review analyst (--reviewer jev), not the
-// reviewer. Jev is served by a different gateway on a different key, so
+// reviewer; with an explore evaluator (--explorer jev), not the explorer, a
+// stub that reports the variants discovery sampled. Jev is served by a different gateway on a different key, so
 // counting any of them would keep a campaign running whose other roles all
 // failed, because none of them can fail the same way.
 func (g *campaignGraph) modelRoles() []string {
@@ -701,7 +702,9 @@ func (g *campaignGraph) servedByJev(role agents.Role) bool {
 		return g.deps.Causes != nil
 	case agents.RoleReviewer:
 		return g.deps.Review != nil
-	case agents.RoleExplorer, agents.RoleOptimizer:
+	case agents.RoleExplorer:
+		return g.deps.Agents.ExploreEvaluator != nil
+	case agents.RoleOptimizer:
 		return false
 	}
 	return false

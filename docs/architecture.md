@@ -67,8 +67,9 @@ the campaign stops with a stop reason naming the last failure, and
 be resumed once the provider answers. The record is cleared every cycle, so
 roles that fail in different cycles never add up to an outage. A role Jev
 serves is not counted: with `--analyst jev` neither the analyst nor the
-coordinator, which becomes a deterministic plan that never calls a model, and
-with `--reviewer jev` not the reviewer. Jev is served by a different gateway,
+coordinator, which becomes a deterministic plan that never calls a model, with
+`--reviewer jev` not the reviewer, and with `--explorer jev` not the explorer,
+a stub that reports the variants discovery sampled. Jev is served by a different gateway,
 so a role it answers would otherwise keep the breaker from ever tripping.
 
 The final acceptance transition is

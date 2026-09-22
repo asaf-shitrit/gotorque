@@ -11,6 +11,7 @@ import (
 
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/jev"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
 )
@@ -173,20 +174,26 @@ func TestPartialRoleFailuresKeepTheCampaignRunning(t *testing.T) {
 	}
 }
 
-// TestProviderOutageDoesNotWaitForJevRoles: with --analyst jev and --reviewer
-// jev the analyst and reviewer are served by a different gateway on a
-// different key, and the coordinator by code, so a model provider outage must
-// trip the breaker even while all three keep answering. The analysis ranks
-// targets, as Jev's always does, so the cycle runs the path a Jev campaign
-// takes.
+// TestProviderOutageDoesNotWaitForJevRoles: with --analyst jev, --reviewer
+// jev and --explorer jev the analyst and reviewer are served by a different
+// gateway on a different key, and the coordinator and explorer by code, so a
+// model provider outage must trip the breaker even while all four keep
+// answering. The analysis ranks targets, as Jev's always does, so the cycle
+// runs the path a Jev campaign takes.
 func TestProviderOutageDoesNotWaitForJevRoles(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
+	roles := scriptedRoleSet(t, everyRole(1, 2, 3, 4))
+	planned, err := agents.PlannedExplorer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles.Explorer, roles.ExploreEvaluator = planned, jev.Stub{}
 	orch := mustNew(t, Dependencies{
 		Runner: &hotRunner{},
 		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
 		Jobs:   &fakeJobService{},
-		Agents: scriptedRoleSet(t, everyRole(1, 2, 3, 4)),
+		Agents: roles,
 		Causes: analyst,
 		Review: review,
 	}, Config{MaxCandidates: 4, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
@@ -216,6 +223,10 @@ func TestModelRolesLeaveOutJevRoles(t *testing.T) {
 	both := []string{"explorer", "optimizer"}
 	if got := (&campaignGraph{deps: Dependencies{Causes: &fakeCauseAnalyst{}, Review: &fakeReviewAnalyst{}}}).modelRoles(); !slices.Equal(got, both) {
 		t.Errorf("model roles with both = %v, want %v", got, both)
+	}
+	everyJevRole := Dependencies{Causes: &fakeCauseAnalyst{}, Review: &fakeReviewAnalyst{}, Agents: agents.Set{ExploreEvaluator: jev.Stub{}}}
+	if got := (&campaignGraph{deps: everyJevRole}).modelRoles(); !slices.Equal(got, []string{"optimizer"}) {
+		t.Errorf("model roles with every Jev role = %v, want [optimizer]", got)
 	}
 }
 
