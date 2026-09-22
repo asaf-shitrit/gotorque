@@ -279,6 +279,9 @@ func writeCandidateRecord(b *strings.Builder, record CandidateRecord) {
 }
 
 func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
+	if t := record.Target; t != nil {
+		fmt.Fprintf(b, "- Target: `%s` at `%s`, %s (%+.1f sd)\n", t.Function, t.Location, t.Cause, t.Z)
+	}
 	if record.Hypothesis != "" {
 		fmt.Fprintf(b, "- Hypothesis: %s\n", record.Hypothesis)
 	}

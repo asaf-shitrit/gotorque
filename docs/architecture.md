@@ -326,6 +326,22 @@ analyst used to reformat. Per-function scores are persisted with a
 `cause_analysis` event, Jev's token usage is recorded under the analyst role,
 and the report header names the analyst. None of it reaches `apply_policy`.
 
+With causes ranked, code rather than a model chooses what each candidate
+attacks (ADR 0013). The analysis carries its flags as structured `targets`
+(function, location, cause, remedy) in the order above, and `merge_analysis`
+picks the first one no earlier candidate tried (`planTarget`), writes its remedy
+as the coordinator's experiment, and cuts the source excerpts down to that
+function; the optimizer's instruction forbids patching any other. Tried targets
+are recorded with each verdict and handed back on resume, so no target is
+attacked twice, and once every flagged target has been tried the optimizer
+chooses freely again. The coordinator model is not called in this mode, because
+nothing is left for it to decide. On a live gron campaign it took up to 2m40s a
+cycle, and left with a ranked list the optimizer ignored the top target and
+micro-optimized `validIdentifier` (inconclusive, -0.85%) before taking the top
+target on its second attempt: the bufio writer around the output loop, accepted
+at -15.1% wall time. A model analyst ranks nothing, so none of this changes its
+path.
+
 `AI_GATEWAY_API_KEY` (and optionally `AI_GATEWAY_BASE_URL`) configure the
 client. `--adk` spends one preflight request before repository work, because a
 gateway account without a card on file refuses every request and the analyst

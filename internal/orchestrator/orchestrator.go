@@ -127,9 +127,25 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 		// reported against "analyst" exactly as a failed model call would be,
 		// and falls back to discovery's hot paths the same way.
 		n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Jobs)
+		// With causes ranked, code chooses each cycle's target after the
+		// analysis (planTarget), so the coordinator model has nothing to
+		// decide: on a live gron campaign it took up to 2m40s a cycle and its
+		// free-text plan steered the optimizer away from the top target.
+		n.coordinator = workflow.NewFunctionNode(string(agents.RoleCoordinator), planCoordinator, det)
 	}
 	return n, nil
 }
+
+// planCoordinator states the plan the coordinator model used to write. The
+// concrete experiment is filled in by planTarget once the analysis exists.
+func planCoordinator(_ adkagent.Context, _ CampaignState) (agents.CoordinatorResult, error) {
+	return agents.CoordinatorResult{
+		Objective:      targetObjective,
+		NextExperiment: "chosen by code after cause analysis",
+	}, nil
+}
+
+const targetObjective = "patch the highest-ranked cause the analysis flagged that no earlier candidate has tried"
 
 func (g *campaignGraph) analyzeCauses(ctx adkagent.Context, state CampaignState) (agents.AnalystResult, error) {
 	return g.deps.Causes.AnalyzeCauses(ctx, CauseRequest{Campaign: state.Request, Discovery: state.Discovery})
@@ -377,7 +393,67 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	}
 	state.Analysis = result
 	attachExcerpts(ctx, g.deps.Runner, &state, result)
+	planTarget(&state)
 	return stateEvent(ctx, state), nil
+}
+
+// planTarget lets code choose what the optimizer attacks whenever the analysis
+// ranks causes: the first target no earlier candidate tried. The optimizer then
+// sees only that function's source, and its instruction forbids patching any
+// other. Left to choose from a ranked list, the optimizer on a live gron
+// campaign ignored the top target, the output loop whose bufio fix was once
+// accepted at -11.8%, and micro-optimized validIdentifier instead. A model
+// analyst ranks nothing, so this leaves its path exactly as it was.
+func planTarget(state *CampaignState) {
+	state.Target = nil
+	tried := triedTargets(*state)
+	target, ok := nextTarget(state.Analysis.Targets, tried)
+	if !ok {
+		return
+	}
+	state.Target = &target
+	state.Coordinator = agents.CoordinatorResult{
+		Objective:      targetObjective,
+		NextExperiment: target.Remedy,
+		Rationale:      []string{fmt.Sprintf("the analysis flagged %s in %s at %+.1f sd; %d target(s) already tried", target.Cause, target.Function, target.Z, len(tried))},
+	}
+	if excerpts := excerptsAt(state.SourceExcerpts, target.Location); len(excerpts) > 0 {
+		state.SourceExcerpts = excerpts
+	}
+}
+
+func triedTargets(state CampaignState) map[string]bool {
+	tried := map[string]bool{}
+	for _, t := range state.Request.PriorTargets {
+		tried[targetKey(t)] = true
+	}
+	for _, prior := range state.PriorCandidates {
+		if prior.Target != nil {
+			tried[targetKey(*prior.Target)] = true
+		}
+	}
+	return tried
+}
+
+func targetKey(t agents.Target) string { return t.Location + "\x00" + t.Cause }
+
+func nextTarget(targets []agents.Target, tried map[string]bool) (agents.Target, bool) {
+	for _, t := range targets {
+		if !tried[targetKey(t)] {
+			return t, true
+		}
+	}
+	return agents.Target{}, false
+}
+
+func excerptsAt(excerpts []SourceExcerpt, location string) []SourceExcerpt {
+	var kept []SourceExcerpt
+	for _, e := range excerpts {
+		if e.HotPath == location {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 // salvageAnalystResult decodes the analyst's output, falling back to an
@@ -476,6 +552,7 @@ func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Eve
 		Campaign: state.Request,
 		Evidence: state.Candidate,
 		Review:   review,
+		Target:   state.Target,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("evaluate policy: %w", err)
@@ -536,6 +613,7 @@ func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignSt
 		Decision:      string(evaluation.Decision),
 		Reasons:       evaluation.Reasons,
 		FailureDetail: state.Candidate.FailureDetail,
+		Target:        state.Target,
 	})
 	countDecision(state, evaluation.Decision, separateInconclusiveBound)
 	if evaluation.Decision != domain.DecisionAccepted {

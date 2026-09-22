@@ -223,19 +223,24 @@ func analystResult(verdicts []siteVerdict) agents.AnalystResult {
 			result.LikelyCauses = append(result.LikelyCauses, fmt.Sprintf("%s: %s (Jev yes %.2f, %+.1f sd from its usual answer)", site, s.Cause.Summary(), s.Probability, s.Z))
 		}
 	}
-	result.CandidateHypotheses = hypotheses(verdicts)
+	result.Targets = targets(verdicts)
+	for _, t := range result.Targets {
+		result.CandidateHypotheses = append(result.CandidateHypotheses, t.Remedy)
+	}
 	return result
 }
 
-// hypotheses lists every flagged cause as a remedy, first causes of every site
-// in hotness order before any site's second cause: the hottest function's
-// best-supported cause is the likeliest to move the measured wall time.
-func hypotheses(verdicts []siteVerdict) []string {
-	var out []string
+// targets lists every flagged cause as a target, first causes of every site in
+// hotness order before any site's second cause: the hottest function's
+// best-supported cause is the likeliest to move the measured wall time. The
+// orchestrator attacks them in this order, one per candidate.
+func targets(verdicts []siteVerdict) []agents.Target {
+	var out []agents.Target
 	for rank := range jev.MaxFlagged {
 		for _, v := range verdicts {
 			if rank < len(v.Flagged) {
-				out = append(out, v.Flagged[rank].Cause.Remedy(v.Site.Name, v.Site.Location))
+				s := v.Flagged[rank]
+				out = append(out, agents.Target{Location: v.Site.Location, Function: v.Site.Name, Cause: string(s.Cause), Remedy: s.Cause.Remedy(v.Site.Name, v.Site.Location), Z: s.Z})
 			}
 		}
 	}

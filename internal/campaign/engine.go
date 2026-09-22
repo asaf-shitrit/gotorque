@@ -70,9 +70,12 @@ type Inventory struct {
 // CandidateRecord persists one evaluated model proposal with the policy
 // verdict and measurement evidence, so reports can explain every decision.
 type CandidateRecord struct {
-	Attempt     int                       `json:"attempt"`
-	CandidateID string                    `json:"candidate_id"`
-	Hypothesis  string                    `json:"hypothesis"`
+	Attempt     int    `json:"attempt"`
+	CandidateID string `json:"candidate_id"`
+	Hypothesis  string `json:"hypothesis"`
+	// Target is the function and cause code told the optimizer to attack, when
+	// the analyst ranked causes.
+	Target      *agents.Target            `json:"target,omitempty"`
 	PatchPath   string                    `json:"patch_path,omitempty"`
 	Summary     string                    `json:"summary,omitempty"`
 	Decision    domain.Decision           `json:"decision"`

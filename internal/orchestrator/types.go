@@ -24,6 +24,10 @@ type CampaignRequest struct {
 	// MaxConsecutiveFailures tally at zero and the bound would hold only
 	// within a single process rather than over the whole campaign.
 	PriorConsecutiveFailures int `json:"prior_consecutive_failures,omitempty"`
+	// PriorTargets are the targets earlier candidates of this campaign tried,
+	// carried in for the same reason: a resumed campaign must not attack them
+	// again.
+	PriorTargets []agents.Target `json:"prior_targets,omitempty"`
 	// PriorConsecutiveInconclusive carries the campaign-wide run of
 	// inconclusive verdicts, for the same reason: a campaign that configures
 	// its own inconclusive bound must have that streak survive a resume too.
@@ -115,6 +119,9 @@ type PolicyInput struct {
 	Campaign CampaignRequest       `json:"campaign"`
 	Evidence CandidateEvidence     `json:"evidence"`
 	Review   agents.ReviewerResult `json:"review"`
+	// Target is what code told the optimizer to attack, recorded with the
+	// verdict; it never changes the verdict.
+	Target *agents.Target `json:"target,omitempty"`
 }
 
 // PriorCandidate records one already-evaluated proposal so later cycles
@@ -125,6 +132,9 @@ type PriorCandidate struct {
 	Decision      string   `json:"decision"`
 	Reasons       []string `json:"reasons,omitempty"`
 	FailureDetail string   `json:"failure_detail,omitempty"`
+	// Target is the (function, cause) this candidate was told to attack, so
+	// later cycles move on to the next one.
+	Target *agents.Target `json:"target,omitempty"`
 }
 
 // RoleFailure is one role call the graph absorbed instead of failing on.
@@ -138,20 +148,23 @@ type RoleFailure struct {
 // nodes, and the degrading wrapper, which records a failed role call in
 // CycleFailures without ever reading the model output it failed to get.
 type CampaignState struct {
-	Request             CampaignRequest          `json:"request"`
-	Job                 domain.Job               `json:"job"`
-	Inspection          Inspection               `json:"inspection"`
-	Coordinator         agents.CoordinatorResult `json:"coordinator"`
-	Explorer            agents.ExplorerResult    `json:"explorer"`
-	Discovery           DiscoveryEvidence        `json:"discovery"`
-	Analysis            agents.AnalystResult     `json:"analysis"`
-	Proposal            agents.OptimizerResult   `json:"proposal"`
-	Candidate           CandidateEvidence        `json:"candidate"`
-	Review              agents.ReviewerResult    `json:"review"`
-	Evaluation          domain.Evaluation        `json:"evaluation"`
-	PriorCandidates     []PriorCandidate         `json:"prior_candidates,omitempty"`
-	CandidatesTried     int                      `json:"candidates_tried"`
-	ConsecutiveFailures int                      `json:"consecutive_failures"`
+	Request     CampaignRequest          `json:"request"`
+	Job         domain.Job               `json:"job"`
+	Inspection  Inspection               `json:"inspection"`
+	Coordinator agents.CoordinatorResult `json:"coordinator"`
+	Explorer    agents.ExplorerResult    `json:"explorer"`
+	Discovery   DiscoveryEvidence        `json:"discovery"`
+	Analysis    agents.AnalystResult     `json:"analysis"`
+	// Target is the function and cause code chose for this cycle's patch, or
+	// nil when the analysis ranks no causes and the optimizer chooses.
+	Target              *agents.Target         `json:"target,omitempty"`
+	Proposal            agents.OptimizerResult `json:"proposal"`
+	Candidate           CandidateEvidence      `json:"candidate"`
+	Review              agents.ReviewerResult  `json:"review"`
+	Evaluation          domain.Evaluation      `json:"evaluation"`
+	PriorCandidates     []PriorCandidate       `json:"prior_candidates,omitempty"`
+	CandidatesTried     int                    `json:"candidates_tried"`
+	ConsecutiveFailures int                    `json:"consecutive_failures"`
 	// ConsecutiveInconclusive counts the run of inconclusive verdicts. It is
 	// only consulted when the campaign configures stop_after_inconclusive;
 	// otherwise an inconclusive verdict extends ConsecutiveFailures, as it

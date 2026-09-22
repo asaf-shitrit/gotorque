@@ -137,6 +137,19 @@ type AnalystResult struct {
 	LikelyCauses        []string  `json:"likely_causes,omitempty"`
 	CandidateHypotheses []string  `json:"candidate_hypotheses"`
 	AdditionalChecks    []string  `json:"additional_checks,omitempty"`
+	// Targets are the ranked (function, cause) pairs the Jev analyst flagged,
+	// in the order a campaign should attack them. A model analyst leaves them
+	// empty; when present, code picks the optimizer's target from them.
+	Targets []Target `json:"targets,omitempty"`
+}
+
+// Target is one function and one cause the optimizer is told to address.
+type Target struct {
+	Location string  `json:"location"`
+	Function string  `json:"function"`
+	Cause    string  `json:"cause"`
+	Remedy   string  `json:"remedy"`
+	Z        float64 `json:"z"`
 }
 
 // OptimizerResult is one focused, reversible source candidate. Patch holds a

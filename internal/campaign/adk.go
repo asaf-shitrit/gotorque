@@ -125,12 +125,24 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 	if err != nil {
 		return nil, nil, err
 	}
-	req := orchestrator.CampaignRequest{CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision, BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...), OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures, PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive}
+	req := orchestrator.CampaignRequest{CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision, BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...), OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures, PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive, PriorTargets: e.priorTargets()}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, nil, err
 	}
 	return adk, &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}, nil
+}
+
+// priorTargets are the targets earlier candidates tried, read back from the
+// persisted records, so a resumed campaign moves on instead of retrying them.
+func (e *Engine) priorTargets() []agents.Target {
+	var out []agents.Target
+	for _, record := range e.state.CandidateRecords {
+		if record.Target != nil {
+			out = append(out, *record.Target)
+		}
+	}
+	return out
 }
 
 func collectADKResult(ctx context.Context, adk *adkrunner.Runner, sessionID string, message *genai.Content) (orchestrator.CampaignResult, error) {
@@ -395,6 +407,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		Attempt:         len(s.engine.state.CandidateRecords) + 1,
 		CandidateID:     input.Evidence.Candidate.ID,
 		Hypothesis:      input.Evidence.Candidate.Hypothesis,
+		Target:          input.Target,
 		PatchPath:       input.Evidence.Candidate.PatchPath,
 		Summary:         input.Evidence.Summary,
 		Decision:        result.Decision,
