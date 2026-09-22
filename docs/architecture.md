@@ -423,6 +423,30 @@ as the unamplified seed, and the sampler could never attach. Safer frames are
 annotated with source positions through the same repository search the
 benchmark path uses, because sampler frames name a symbol but no position.
 
+The sampled hot list ranks the target's own functions by the samples spent on
+their behalf, not by self time. The sampler's top-of-stack section says which
+frames were executing but not for whom, and a Go CLI that spends its time
+printing is executing `fmt` and `write`: gron's per-statement `Fprintln` loop,
+whose `bufio` fix was the only patch ever accepted on it, had almost no self
+time and never appeared, so no analyst was ever asked about it.
+`internal/profile/stacks.go` rebuilds weighted call paths from the report's
+call graph (each node's own weight is its inclusive count minus its
+children's; `perf script` already lists whole stacks) and credits every sample
+to the innermost frame whose package is `main` or one of the module's
+(`AttributeToOwn`), so a function carries the library and system calls it
+makes. One gap needs an estimate: a Go system call switches to the system stack
+through `runtime.asmcgocall`, and macOS `sample` cannot unwind back across it,
+so on gron 141 samples spent in `write` sat under `asmcgocall` with no Go frame
+above them, while only three were caught with the whole path from the output
+loop down to `syscall.write`. Such orphaned samples are shared among the own
+functions observed calling the matching Go wrapper (`syscall.write` for
+`write`), in proportion to how often each was seen; a call with no observed
+caller, such as a thread parked in `__psynch_cvwait`, stays unattributed. On
+gron the output loop moved from absent to second of fifteen, behind the sort
+comparator, which now also carries the `strconv.Atoi` calls its natural sort
+makes. The top-of-stack names still fill any budget attribution leaves, so a
+report whose call paths do not parse lists what it listed before.
+
 When sampling succeeds the benchmark profile is still collected if the module
 declares benchmarks, because the informational PGO lane is built from it. That
 lane never changes a verdict, so it is bounded rather than trusted: each
@@ -471,7 +495,11 @@ source window could be read from. Positions are rewritten
 repository-relative, and frames in the standard library or module cache are
 dropped outright rather than kept as bare paths, since no patch this campaign
 may write can reach them and they would otherwise occupy the excerpt budget.
-Unresolvable functions keep their bare names so no entry is lost.
+Unresolvable functions keep their bare names so no entry is lost. Names that
+resolve to a location already listed are folded into it: a value method and
+the pointer wrapper Go generates for it are two symbols with one declaration,
+and gron's list named `statements.go:312` twice. Resolution continues through
+further candidates until the budget holds fifteen distinct entries.
 
 The annotated locations are stored in campaign state as
 `discovery_hot_functions` along with the raw summary artifact, and surface to

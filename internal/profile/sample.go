@@ -50,6 +50,9 @@ type SampleTarget struct {
 type SampleResult struct {
 	Sampler   string
 	Functions []Function
+	// Stacks are the sampled call paths, leaf first, for attributing samples
+	// to the function that made the calls (AttributeToOwn).
+	Stacks    []Stack
 	RawReport string
 }
 
@@ -439,15 +442,16 @@ func finishSampleResult(sampler, outputPath, raw string) (SampleResult, error) {
 		return SampleResult{}, err
 	}
 	var functions []Function
+	var stacks []Stack
 	if sampler == "macos-sample" {
-		functions = ParseMacOSSample(limit)
+		functions, stacks = ParseMacOSSample(limit), MacOSSampleStacks(limit)
 	} else {
-		functions = ParsePerfScript(limit)
+		functions, stacks = ParsePerfScript(limit), PerfScriptStacks(limit)
 	}
 	if len(functions) == 0 {
 		return SampleResult{}, errors.New("no recognizable frames in sampler output")
 	}
-	return SampleResult{Sampler: sampler, Functions: functions, RawReport: outputPath}, nil
+	return SampleResult{Sampler: sampler, Functions: functions, Stacks: stacks, RawReport: outputPath}, nil
 }
 
 func truncateForError(output []byte) string {

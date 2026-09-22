@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -778,9 +779,45 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", hotFunctionNames(result.Functions, hotFunctionBudget))
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", e.sampledHotNames(result))
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
+}
+
+// sampledHotNames ranks the target's own functions by the samples spent on
+// their behalf, then fills any budget left with the sampler's top-of-stack
+// frames, which is all discovery used to list.
+//
+// Top of stack alone says which frames were executing, not for whom. A Go CLI
+// that spends its time printing is executing fmt and write, so its hot list
+// was standard-library names no patch can touch, and the function doing the
+// printing had almost no self time: gron's per-statement Fprintln loop, whose
+// bufio fix was the only patch ever accepted on it, never appeared, so no
+// analyst was ever asked about it. Credited with the calls it makes, it ranks
+// first.
+//
+// It returns up to twice the budget, because resolveHotLocations folds symbols
+// that share a declaration and keeps resolving until the budget is filled.
+func (e *Engine) sampledHotNames(result profile.SampleResult) []string {
+	limit := 2 * hotFunctionBudget
+	names := hotFunctionNames(profile.AttributeToOwn(result.Stacks, e.ownSymbol), limit)
+	for _, name := range hotFunctionNames(result.Functions, limit) {
+		if len(names) == limit {
+			break
+		}
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// ownSymbol reports whether a sampled frame belongs to the target: its package
+// is one of the module's, or main, which is how a command's own functions are
+// named in its binary whatever its import path.
+func (e *Engine) ownSymbol(symbol string) bool {
+	pkg := profile.SymbolPackage(symbol)
+	return pkg == "main" || (pkg != "" && slices.Contains(e.state.Inventory.Packages, pkg))
 }
 
 // amplifyStdin grows a seed input so a short-lived target stays alive for the
@@ -992,19 +1029,29 @@ func benchmarkPackageOrder(repository, targetPackage string) []string {
 // repository for the declaration. Unresolvable functions keep their bare
 // names so downstream consumers never lose entries.
 func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, names []string) []string {
-	locations := make([]string, 0, len(names))
+	locations := make([]string, 0, hotFunctionBudget)
 	for _, name := range names {
-		if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
-			locations = append(locations, loc)
-			continue
+		if len(locations) == hotFunctionBudget {
+			break
 		}
-		if loc, ok := e.hotLocationFromRepo(name); ok {
+		// A value method and the pointer wrapper Go generates for it are two
+		// symbols with one declaration: gron's hot list named statements.go:312
+		// twice, spending a slot of the budget on a repeat.
+		if loc := e.hotLocation(ctx, cpuProfile, name); !slices.Contains(locations, loc) {
 			locations = append(locations, loc)
-			continue
 		}
-		locations = append(locations, name)
 	}
 	return locations
+}
+
+func (e *Engine) hotLocation(ctx context.Context, cpuProfile, name string) string {
+	if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
+		return loc
+	}
+	if loc, ok := e.hotLocationFromRepo(name); ok {
+		return loc
+	}
+	return name
 }
 
 func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile string) (string, bool) {
