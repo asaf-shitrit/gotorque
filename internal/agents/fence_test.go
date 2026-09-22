@@ -3,11 +3,15 @@ package agents
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
+	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 
 	adkagent "google.golang.org/adk/v2/agent"
@@ -225,6 +229,28 @@ func TestFenceStrippingModelRetriesFirstFailure(t *testing.T) {
 	if inner.calls != 2 {
 		t.Fatalf("calls = %d, want 2 (one failure + one retry)", inner.calls)
 	}
+}
+
+// An attempt that answers records no error of its own, so a successful retry
+// used to be reported with the failure of the attempt before it. A live
+// campaign logged "explorer attempt 2 failed after 44.222s: model call attempt
+// exceeded its 4m0s budget" for an attempt that had answered.
+func TestFenceStrippingModelReportsASuccessfulRetryWithoutTheEarlierError(t *testing.T) {
+	inner := &flakyLLM{fail: true, resp: &model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"ok":1}`}}}}}
+	decorated := fastModel(inner, "explorer", nil)
+	var finished []CallInfo
+	decorated.observer = func(info CallInfo) {
+		if !info.Started {
+			finished = append(finished, info)
+		}
+	}
+	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		require.NoError(t, err)
+	}
+	require.Len(t, finished, 2)
+	require.Error(t, finished[0].Err, "the first attempt failed")
+	require.NoError(t, finished[1].Err, "the retry answered, so it must not carry the first attempt's error")
+	require.False(t, finished[1].Retrying)
 }
 
 func TestFenceStrippingModelRecordsUsage(t *testing.T) {
@@ -581,6 +607,144 @@ func completionsOnly(calls *[]CallInfo) CallObserver {
 		}
 		*calls = append(*calls, info)
 	}
+}
+
+// newAPIError builds an *openai.Error the way the SDK's transport layer does:
+// populated from an HTTP response, with StatusCode set. Request and Response
+// must be non-nil or Error() panics, since it formats both.
+func newAPIError(status int) *openai.Error {
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.invalid", http.NoBody)
+	return &openai.Error{StatusCode: status, Request: req, Response: &http.Response{StatusCode: status, Request: req}}
+}
+
+// erroringLLM always fails with the given error, so a test can drive the
+// ladder's response to one HTTP status without a real endpoint.
+type erroringLLM struct {
+	err   error
+	calls int
+}
+
+func (e *erroringLLM) Name() string { return "erroring" }
+
+func (e *erroringLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		e.calls++
+		yield(nil, e.err)
+	}
+}
+
+// A 400/401/402/403/404/422 describes the request, credential or account, not
+// the endpoint's mood: retrying it burns the whole backoff ladder
+// (15s+30s+60s) on a call that will fail identically every time, and with a
+// revoked key or an empty balance every subsequent role pays that toll too
+// before degrading anyway. Both wrapping shapes are covered because ADK's two
+// call paths disagree: the non-streaming path wraps with "openai: call
+// failed: %w" (openai.go m.generate) while the streaming path yields
+// stream.Err() raw.
+func TestFenceStrippingModelDoesNotRetryPermanentHTTPStatus(t *testing.T) {
+	statuses := []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity}
+	for _, status := range statuses {
+		for _, name := range []string{"wrapped", "raw"} {
+			t.Run(fmt.Sprintf("status %d %s", status, name), func(t *testing.T) {
+				apiErr := newAPIError(status)
+				var err error = apiErr
+				if name == "wrapped" {
+					err = fmt.Errorf("openai: call failed: %w", apiErr)
+				}
+				inner := &erroringLLM{err: err}
+				decorated := fastModel(inner, "optimizer", nil)
+				var got error
+				for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+					got = err
+				}
+				require.Error(t, got)
+				require.ErrorContains(t, got, "not retried")
+				require.ErrorContains(t, got, strconv.Itoa(status))
+				if inner.calls != 1 {
+					t.Fatalf("calls = %d, want 1: a permanent status must not be retried", inner.calls)
+				}
+			})
+		}
+	}
+}
+
+// 429 is the shared-pool rate limit the ladder exists for, so it must still
+// be retried to exhaustion rather than classified alongside 4xx statuses that
+// mean the request itself is wrong.
+func TestFenceStrippingModelStillRetriesTransientHTTPStatus(t *testing.T) {
+	inner := &erroringLLM{err: fmt.Errorf("openai: call failed: %w", newAPIError(http.StatusTooManyRequests))}
+	decorated := fastModel(inner, "optimizer", nil)
+	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		_ = err
+	}
+	if inner.calls != defaultGenerateAttempts {
+		t.Fatalf("calls = %d, want %d: a 429 must still be retried", inner.calls, defaultGenerateAttempts)
+	}
+}
+
+// The observer line for a non-retried permanent failure must read as failed,
+// not as a retry in progress, or a campaign log would say "retrying" about a
+// call that never runs again.
+func TestFenceStrippingModelReportsPermanentFailureAsNotRetrying(t *testing.T) {
+	inner := &erroringLLM{err: fmt.Errorf("openai: call failed: %w", newAPIError(http.StatusUnauthorized))}
+	var calls []CallInfo
+	decorated := fastModel(inner, "optimizer", nil)
+	decorated.observer = completionsOnly(&calls)
+	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		_ = err
+	}
+	if len(calls) != 1 {
+		t.Fatalf("observed %d attempts, want 1: no retry after a permanent status", len(calls))
+	}
+	if calls[0].Retrying {
+		t.Fatalf("call = %+v, want Retrying=false for a permanent failure", calls[0])
+	}
+	if calls[0].Err == nil {
+		t.Fatalf("call = %+v, want a non-nil Err naming the failure", calls[0])
+	}
+}
+
+// The per-attempt deadline (openai.go's attemptTimeout, 4 minutes in
+// production) used to surface as a bare "context deadline exceeded" once it
+// passed through drain in stream.go, which named neither the budget that ran
+// out nor its size. WithTimeoutCause plus context.Cause in drain fixes that;
+// this drives the real streamedModel to prove the cause survives the round
+// trip.
+func TestRunAttemptDeadlineNamesTheBudget(t *testing.T) {
+	inner := &scriptedStream{delay: time.Second, responses: []*model.LLMResponse{textResponse(`{"a":1}`)}}
+	m := &fenceStrippingModel{
+		inner: newStreamedModel(inner), role: "optimizer", attempts: 1,
+		baseBackoff: 0, attemptTimeout: 20 * time.Millisecond,
+	}
+	var got error
+	for _, err := range m.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		got = err
+	}
+	require.Error(t, got)
+	require.ErrorContains(t, got, "20ms")
+	require.ErrorContains(t, got, "budget")
+}
+
+// A caller cancellation (Ctrl-C, campaign max_duration) must still read as
+// itself and not be relabeled as the per-attempt budget: WithTimeoutCause's
+// cause only applies when the attempt's own deadline fires first.
+func TestRunAttemptPreservesCallerCancellationCause(t *testing.T) {
+	inner := &scriptedStream{delay: time.Second, responses: []*model.LLMResponse{textResponse(`{"a":1}`)}}
+	m := &fenceStrippingModel{
+		inner: newStreamedModel(inner), role: "optimizer", attempts: 1,
+		baseBackoff: 0, attemptTimeout: 10 * time.Second,
+	}
+	callerCause := errors.New("campaign max_duration exceeded")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	time.AfterFunc(20*time.Millisecond, func() { cancel(callerCause) })
+	defer cancel(nil)
+	var got error
+	for _, err := range m.GenerateContent(ctx, &model.LLMRequest{}, false) {
+		got = err
+	}
+	require.Error(t, got)
+	require.ErrorIs(t, got, callerCause)
+	require.NotContains(t, got.Error(), "budget")
 }
 
 func TestFenceStrippingModelAnnouncesAttemptsBeforeRunningThem(t *testing.T) {

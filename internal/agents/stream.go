@@ -131,7 +131,13 @@ func (m streamedModel) drain(ctx context.Context, chunks <-chan chunk, cancel co
 			cancel()
 			return nil, fmt.Errorf("model stream stalled: no chunk for %s", m.idle)
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// context.Cause, not ctx.Err(): fence.go's per-attempt bound now
+			// sets a cause naming the attempt budget, and this is the only
+			// path back to the observer log and the degraded-role record.
+			// Cause propagates a parent's cancellation (Ctrl-C, the
+			// campaign's max_duration) unchanged, so that reason still reads
+			// as itself rather than as this attempt's budget.
+			return nil, context.Cause(ctx)
 		}
 	}
 }
@@ -146,11 +152,17 @@ func complete(last *model.LLMResponse, text []string) *model.LLMResponse {
 		return last
 	}
 	role := "model"
-	var usage *genai.GenerateContentResponseUsageMetadata
-	metadata := map[string]any(nil)
-	turnComplete := false
+	var (
+		usage        *genai.GenerateContentResponseUsageMetadata
+		metadata     map[string]any
+		turnComplete bool
+		finishReason genai.FinishReason
+		errorCode    string
+		errorMessage string
+	)
 	if last != nil {
 		usage, metadata, turnComplete = last.UsageMetadata, last.CustomMetadata, last.TurnComplete
+		finishReason, errorCode, errorMessage = last.FinishReason, last.ErrorCode, last.ErrorMessage
 		if last.Content != nil && last.Content.Role != "" {
 			role = last.Content.Role
 		}
@@ -160,6 +172,9 @@ func complete(last *model.LLMResponse, text []string) *model.LLMResponse {
 		UsageMetadata:  usage,
 		CustomMetadata: metadata,
 		TurnComplete:   turnComplete,
+		FinishReason:   finishReason,
+		ErrorCode:      errorCode,
+		ErrorMessage:   errorMessage,
 	}
 }
 

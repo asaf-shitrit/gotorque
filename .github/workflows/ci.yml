@@ -25,8 +25,10 @@ jobs:
       - name: Complexity lint (cyclomatic + cognitive)
         run: make lint
 
+      # golang:*-bookworm ships gcc/libc6-dev, so cgo (which -race requires)
+      # is available without extra apt packages.
       - name: Unit tests
-        run: go test ./...
+        run: go test -race ./...
 
       # Blocking: the backlog is cleared, so a function above CRAP 30 now fails
       # the build instead of only annotating it.

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,53 @@ func (m *WorktreeManager) Prepare(ctx context.Context, revision, patchPath, hypo
 	if err := m.applyPreparedPatch(ctx, prepared, path, patchPath); err != nil {
 		return nil, err
 	}
+	if err := rejectProtectedChanges(ctx, m.Toolchain, path); err != nil {
+		_ = prepared.Close(context.WithoutCancel(ctx))
+		return nil, err
+	}
 	return prepared, nil
+}
+
+// rejectProtectedChanges judges the applied worktree, not the diff that
+// produced it. Header validation reads the patch text, and GNU patch, the
+// fuzzy fallback, picks its target by its own rules: handed `--- a/go.mod`
+// and `+++ b/other.go` it rewrote go.mod. Git's list of what actually changed
+// is the only record that does not depend on how a tool read the diff, so a
+// candidate that reached a protected path by any route stops here, before a
+// build or a test run could be judged against a gate it weakened.
+func rejectProtectedChanges(ctx context.Context, chain *toolchain.Toolchain, worktree string) error {
+	changed, err := chain.ChangedFiles(ctx, worktree)
+	if err != nil {
+		return fmt.Errorf("list files the patch changed: %w", err)
+	}
+	for _, name := range changed {
+		if err := rejectPatchPath(name); err != nil {
+			return fmt.Errorf("applied patch changed a protected path: %w", err)
+		}
+		if err := rejectSymlink(worktree, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectSymlink refuses a changed path that is now a symbolic link. Header
+// validation refuses symlink modes, but only in the headers it can read; a
+// link left in the tree would let the build or the test suite read a
+// protected file, or a file outside the worktree, under a harmless name.
+func rejectSymlink(worktree, name string) error {
+	info, err := os.Lstat(filepath.Join(worktree, filepath.FromSlash(name)))
+	if errors.Is(err, fs.ErrNotExist) {
+		// A deleted path has nothing left to follow.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect changed path %q: %w", name, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("applied patch left %q as a symbolic link; only regular files may be patched", name)
+	}
+	return nil
 }
 
 func (m *WorktreeManager) validatePrepare(patchPath string) error {
@@ -86,8 +133,8 @@ func (m *WorktreeManager) applyPreparedPatch(ctx context.Context, prepared *Prep
 	checkResult, checkErr := m.Toolchain.ApplyPatchCheck(ctx, path, patchPath)
 	if checkErr != nil {
 		// Model-generated diffs often carry approximate context. Fall back
-		// to GNU patch fuzz matching; the applied tree still faces the full
-		// test-suite behavior gate before any measurement.
+		// to GNU patch fuzz matching; Prepare then checks which files the
+		// fallback actually changed, since it may not be the ones validated.
 		if _, fuzzyErr := m.Toolchain.ApplyPatchFuzzy(ctx, path, patchPath); fuzzyErr != nil {
 			_ = prepared.Close(context.WithoutCancel(ctx))
 			return fmt.Errorf("git apply check: %w%s", checkErr, stderrSuffix(checkResult.Stderr))

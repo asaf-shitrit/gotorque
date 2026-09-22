@@ -240,7 +240,7 @@ func writeDegradedRoles(b *strings.Builder, state State) {
 	if len(state.DegradedRoles) == 0 {
 		return
 	}
-	b.WriteString("\n## Degraded roles\n\nA role whose model call failed is absorbed rather than fatal: the campaign continues with an empty result, so a candidate below may be missing that role's output.\n\n")
+	b.WriteString("\n## Degraded roles\n\nA role whose model call failed is absorbed rather than fatal: the campaign continues with an empty result, so a candidate below may be missing that role's output. A cycle in which every model role failed stops the campaign as `failed` instead, naming the provider; resume it once the provider answers.\n\n")
 	for _, degraded := range state.DegradedRoles {
 		fmt.Fprintf(b, "- `%s`: %s\n", degraded.Role, degraded.Cause)
 	}
@@ -279,6 +279,11 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	}
 	if record.PatchPath != "" {
 		fmt.Fprintf(b, "- Patch: `%s`%s\n", record.PatchPath, acceptedMarker(record.Accepted))
+	}
+	if record.ProposalRepair != "" {
+		// A salvaged proposal is judged like any other; this line only keeps
+		// it from reading as the one the model sent.
+		fmt.Fprintf(b, "- Proposal salvaged: the optimizer's output parsed only after the decoder %s, so the patch may not be the one the model intended\n", record.ProposalRepair)
 	}
 	if record.Summary != "" {
 		fmt.Fprintf(b, "- Evidence: %s\n", record.Summary)
@@ -388,7 +393,31 @@ func LoadReport(dir string) (State, error) {
 	}
 	// Read-only load; a Close error carries no data-loss meaning.
 	defer func() { _ = store.Close() }()
-	return store.Load()
+	state, err := store.Load()
+	if err != nil {
+		return State{}, err
+	}
+	return markStaleRunning(state), nil
+}
+
+// markStaleRunning reports a campaign whose persisted Status is still
+// "running" as interrupted instead. OpenStore only returns a live *Store when
+// it can take bbolt's exclusive lock, and no live campaign process ever
+// releases that lock voluntarily -- it holds it until the run stops and
+// records a terminal status. Reaching this line with Status still "running"
+// therefore means the process that would have kept it "running" is gone
+// without recording why, most likely SIGKILLed, not that the campaign is
+// live. LoadReport never writes back: the correction only affects what this
+// call returns, so a campaign a resumed process is genuinely still running
+// keeps reporting "running" in its own state and to a caller who takes the
+// lock.
+func markStaleRunning(state State) State {
+	if state.Status != StatusRunning {
+		return state
+	}
+	state.Status = StatusInterrupted
+	state.StopReason = "process exited without recording a stop (no process holds the campaign database lock)"
+	return state
 }
 
 func loadReportSnapshot(path string) (State, error) {

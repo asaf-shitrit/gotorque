@@ -1,12 +1,16 @@
 package campaign
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/runner"
@@ -690,4 +694,28 @@ func testPeakMemoryFoldsToHighWaterMark(t *testing.T) {
 	if len(maxPerRepetition(nil)) != 0 || len(meanPerRepetition(nil)) != 0 {
 		t.Fatal("folding no workloads must yield no samples")
 	}
+}
+
+// A patch that touches the gate is refused before any build, through the same
+// record every pre-build rejection uses, and its failure detail names the path
+// so the optimizer's next proposal can avoid it.
+func TestEvaluateCandidateRefusesATestFileEditBeforeBuild(t *testing.T) {
+	repo := repositoryWithTestFile(t, "package main\n\nimport \"testing\"\n\nfunc TestKept(t *testing.T) {}\n")
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+
+	patch := "--- a/main_test.go\n+++ b/main_test.go\n@@ -5 +5 @@\n-func TestKept(t *testing.T) {}\n+func TestKept(t *testing.T) { t.Skip() }\n"
+	evidence, err := engine.evaluateCandidate(context.Background(), orchestrator.CandidateRequest{
+		Campaign: orchestrator.CampaignRequest{BaseRevision: engine.State().Environment.Revision},
+		Attempt:  1,
+		Proposal: agents.OptimizerResult{Patch: patch},
+	})
+	require.NoError(t, err)
+	require.Contains(t, evidence.Summary, "candidate rejected before build")
+	require.Contains(t, evidence.FailureDetail, `test file "main_test.go" is off-limits`)
+	require.Len(t, evidence.ArtifactURIs, 1, "nothing was built")
 }

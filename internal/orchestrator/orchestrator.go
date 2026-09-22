@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,15 @@ const (
 	// configures stop_after_inconclusive, which bounds unresolved verdicts
 	// separately from failures.
 	stopReasonConsecutiveInconclusive = "consecutive inconclusive limit reached"
+	// stopReasonProviderFailure is followed by the last failure of the cycle
+	// that tripped it.
+	stopReasonProviderFailure = "model provider unavailable: every model role failed in the same cycle; last failure: "
 )
+
+// ErrProviderUnavailable marks a campaign the graph stopped because every model
+// role failed in one cycle. A caller that sees CampaignResult.ProviderFailure
+// wraps it, so the campaign ends as a failure rather than as completed.
+var ErrProviderUnavailable = errors.New("model provider unavailable")
 
 // Dependencies are intentionally narrow so deterministic execution, policy,
 // and job persistence can be local, remote, or fake implementations.
@@ -165,8 +174,10 @@ func degradeNode(inner workflow.Node, role string, jobs JobService) workflow.Nod
 func (n degradingNode) Run(ctx adkagent.Context, input any) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
 		delivered := false
+		var failure error
 		for event, err := range n.Node.Run(ctx, input) {
 			if err != nil {
+				failure = err
 				n.reportDegraded(ctx, err)
 				break
 			}
@@ -180,10 +191,32 @@ func (n degradingNode) Run(ctx adkagent.Context, input any) iter.Seq2[*session.E
 		if delivered {
 			return
 		}
-		event := session.NewEvent(ctx, ctx.InvocationID())
-		event.Output = emptyRoleResult
-		yield(event, nil)
+		yield(n.emptyResult(ctx, failure), nil)
 	}
+}
+
+// emptyResult is the degraded output, carrying the failure that caused it into
+// the cycle's CycleFailures.
+//
+// Absorbing every failure had a cost once the provider itself went down or the
+// key was revoked: every role degraded on every cycle, each after up to two
+// minutes of retries, the optimizer's empty patch was rejected as if it were a
+// bad patch, and the campaign ended "completed" at the consecutive-rejection
+// bound, blaming the patches for the provider. The route node can only stop
+// that if it sees which roles failed this cycle, and a node's output is all the
+// next node receives, so the record travels in the campaign state. A role that
+// delivered an answer before failing is not counted: the provider answered.
+func (n degradingNode) emptyResult(ctx adkagent.Context, failure error) *session.Event {
+	event := session.NewEvent(ctx, ctx.InvocationID())
+	event.Output = emptyRoleResult
+	if failure == nil {
+		return event
+	}
+	if state, err := loadState(ctx); err == nil {
+		state.CycleFailures = append(state.CycleFailures, RoleFailure{Role: n.role, Cause: failure.Error()})
+		event.Actions.StateDelta[stateKey] = state
+	}
+	return event
 }
 
 // reportDegraded records the cause of an absorbed role failure. The node
@@ -260,8 +293,28 @@ func (g *campaignGraph) inspect(ctx adkagent.Context, state CampaignState) (*ses
 	return stateEvent(ctx, state), nil
 }
 
+// decodeRole decodes one role's output and records the repair it needed, if
+// any. The repaired value is still the role's answer; the record exists so an
+// answer the decoder salvaged is not mistaken for the one the model sent.
+func decodeRole[T any](ctx context.Context, jobs JobService, role agents.Role, raw any) (T, agents.Repair, error) {
+	result, repair, err := agents.DecodeResultWithRepair[T](raw)
+	if err == nil {
+		recordRepair(ctx, jobs, role, repair)
+	}
+	return result, repair, err
+}
+
+// recordRepair reports a repaired role output. Like a degraded role, a failed
+// record is not a reason to stop the campaign.
+func recordRepair(ctx context.Context, jobs JobService, role agents.Role, repair agents.Repair) {
+	if repair == "" {
+		return
+	}
+	_ = jobs.RecordRoleRepaired(ctx, string(role), repair)
+}
+
 func (g *campaignGraph) mergeCoordinator(ctx adkagent.Context, raw any) (*session.Event, error) {
-	result, err := agents.DecodeResult[agents.CoordinatorResult](raw)
+	result, _, err := decodeRole[agents.CoordinatorResult](ctx, g.deps.Jobs, agents.RoleCoordinator, raw)
 	if err != nil {
 		return nil, fmt.Errorf("coordinator output: %w", err)
 	}
@@ -274,7 +327,7 @@ func (g *campaignGraph) mergeCoordinator(ctx adkagent.Context, raw any) (*sessio
 }
 
 func (g *campaignGraph) discover(ctx adkagent.Context, raw any) (*session.Event, error) {
-	result, err := agents.DecodeResult[agents.ExplorerResult](raw)
+	result, _, err := decodeRole[agents.ExplorerResult](ctx, g.deps.Jobs, agents.RoleExplorer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("explorer output: %w", err)
 	}
@@ -297,10 +350,11 @@ func (g *campaignGraph) discover(ctx adkagent.Context, raw any) (*session.Event,
 }
 
 func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.Event, error) {
-	result, err := salvageAnalystResult(raw)
+	result, repair, err := salvageAnalystResult(raw)
 	if err != nil {
 		return nil, fmt.Errorf("analyst output: %w", err)
 	}
+	recordRepair(ctx, g.deps.Jobs, agents.RoleAnalyst, repair)
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
@@ -310,14 +364,17 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	return stateEvent(ctx, state), nil
 }
 
-func salvageAnalystResult(raw any) (agents.AnalystResult, error) {
-	result, err := agents.DecodeResult[agents.AnalystResult](raw)
+// salvageAnalystResult decodes the analyst's output, falling back to an
+// analysis carried in the input. The repair it reports belongs to the value it
+// returns: the carried-in analysis is already decoded and never repaired.
+func salvageAnalystResult(raw any) (agents.AnalystResult, agents.Repair, error) {
+	result, repair, err := agents.DecodeResultWithRepair[agents.AnalystResult](raw)
 	if err != nil || len(result.HotPaths) == 0 {
 		if prior, ok := priorAnalystResult(raw); ok && len(prior.HotPaths) > len(result.HotPaths) {
-			return prior, nil
+			return prior, "", nil
 		}
 	}
-	return result, err
+	return result, repair, err
 }
 
 func priorAnalystResult(raw any) (agents.AnalystResult, bool) {
@@ -361,7 +418,7 @@ func discoveryHotPaths(fns []string) []agents.HotPath {
 }
 
 func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event, error) {
-	proposal, err := agents.DecodeResult[agents.OptimizerResult](raw)
+	proposal, repair, err := decodeRole[agents.OptimizerResult](ctx, g.deps.Jobs, agents.RoleOptimizer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("optimizer output: %w", err)
 	}
@@ -382,12 +439,15 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 	if evidence.Candidate.ID == "" {
 		return nil, errors.New("evaluate candidate: empty candidate ID")
 	}
+	// Stamped after the runner returns so no step of the evaluation can see
+	// it: the note rides to the candidate's record and nowhere else.
+	evidence.ProposalRepair = repair
 	state.Candidate = evidence
 	return stateEvent(ctx, state), nil
 }
 
 func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Event, error) {
-	review, err := agents.DecodeResult[agents.ReviewerResult](raw)
+	review, _, err := decodeRole[agents.ReviewerResult](ctx, g.deps.Jobs, agents.RoleReviewer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("reviewer output: %w", err)
 	}
@@ -491,16 +551,61 @@ func countDecision(state *CampaignState, decision domain.Decision, separateIncon
 	}
 }
 
+// route finishes the campaign or starts the next cycle. A cycle in which every
+// model role failed is checked before any bound: its candidate was rejected for
+// an empty patch no model wrote, so naming the candidate budget or the
+// rejection streak would blame the patches for the provider.
 func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
-	if reason := g.stopReason(state); reason != "" {
+	next := routeFinish
+	if failure, down := g.providerFailure(state); down {
+		state.ProviderFailure = failure
+		state.StopReason = stopReasonProviderFailure + failure
+	} else if reason := g.stopReason(state); reason != "" {
 		state.StopReason = reason
-		ev := stateEvent(ctx, state)
-		ev.Routes = []string{routeFinish}
-		return ev, nil
+	} else {
+		// Each cycle is judged on its own failures, so a role that failed
+		// once and recovered cannot add up to an outage across cycles.
+		state.CycleFailures = nil
+		next = routeContinue
 	}
 	ev := stateEvent(ctx, state)
-	ev.Routes = []string{routeContinue}
+	ev.Routes = []string{next}
 	return ev, nil
+}
+
+// modelRoles are the roles whose answers come from the model provider, which
+// today is every role. A role served by anything else must be left out: its
+// failures say nothing about the provider the others share, and counting it
+// would keep a campaign running whose other roles all failed while it kept
+// answering.
+func (*campaignGraph) modelRoles() []string {
+	roles := make([]string, 0, len(agents.AllRoles))
+	for _, role := range agents.AllRoles {
+		roles = append(roles, string(role))
+	}
+	return roles
+}
+
+// providerFailure reports the cycle's last failure when every model role failed
+// in it. One role failing, or several, is the transient case the degrading
+// wrapper exists for; every role failing in the same cycle is a provider that
+// is down or a key that was revoked, and another cycle would only spend the
+// same retries to reach the same empty patch.
+func (g *campaignGraph) providerFailure(state CampaignState) (string, bool) {
+	if len(state.CycleFailures) == 0 {
+		return "", false
+	}
+	failed := make(map[string]bool, len(state.CycleFailures))
+	for _, f := range state.CycleFailures {
+		failed[f.Role] = true
+	}
+	for _, role := range g.modelRoles() {
+		if !failed[role] {
+			return "", false
+		}
+	}
+	last := state.CycleFailures[len(state.CycleFailures)-1]
+	return last.Role + ": " + last.Cause, true
 }
 
 // stopReason reports why the campaign should finish instead of trying another
@@ -525,6 +630,7 @@ func (g *campaignGraph) finalize(ctx adkagent.Context, state CampaignState) (Cam
 		AcceptedCandidates: slices.Clone(state.AcceptedCandidates),
 		FinalEvaluation:    state.Evaluation,
 		StopReason:         state.StopReason,
+		ProviderFailure:    state.ProviderFailure,
 	}
 	job, err := g.deps.Jobs.CompleteCampaign(ctx, state.Job, result)
 	if err != nil {

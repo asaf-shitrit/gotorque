@@ -211,6 +211,32 @@ func TestStreamedModelFallsBackToTheFinalItemWhenDeltasAreReasoning(t *testing.T
 	require.JSONEq(t, `{"objective":"x"}`, textOf(responses[0]))
 }
 
+// complete() used to keep only UsageMetadata, CustomMetadata and TurnComplete
+// from the stream's last item, silently dropping FinishReason, ErrorCode and
+// ErrorMessage — the fields that say a turn ended for safety or content
+// filtering rather than completing normally.
+func TestStreamedModelPreservesFinishReasonAndErrorFields(t *testing.T) {
+	final := &model.LLMResponse{
+		Content:      &genai.Content{Role: "model", Parts: []*genai.Part{{Text: `{"ok":true}`}}},
+		FinishReason: genai.FinishReasonSafety,
+		ErrorCode:    "safety",
+		ErrorMessage: "blocked by safety filter",
+	}
+	inner := &scriptedStream{responses: []*model.LLMResponse{
+		textResponse(`{"ok":`),
+		textResponse(`true}`),
+		final,
+	}}
+	decorated := streamedModel{inner: inner, idle: time.Second}
+
+	responses, err := collect(decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false))
+	require.NoError(t, err)
+	require.Len(t, responses, 1)
+	require.Equal(t, genai.FinishReasonSafety, responses[0].FinishReason)
+	require.Equal(t, "safety", responses[0].ErrorCode)
+	require.Equal(t, "blocked by safety filter", responses[0].ErrorMessage)
+}
+
 // A provider that answers in one shot must survive the collapse unchanged.
 func TestStreamedModelPassesThroughASingleResponseStream(t *testing.T) {
 	inner := &scriptedStream{responses: []*model.LLMResponse{textResponse(`{"objective":"x"}`)}}

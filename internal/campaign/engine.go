@@ -88,6 +88,11 @@ type CandidateRecord struct {
 	// the recorded decision; see runPgoLane.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
+	// ProposalRepair names the rewrite the optimizer's output needed before it
+	// parsed, empty when it parsed as sent. A salvaged patch -- one cut off at
+	// the output-token cap above all -- otherwise reads exactly like an
+	// intended one. It never changes the recorded decision.
+	ProposalRepair string `json:"proposal_repair,omitempty"`
 }
 
 // RoleUsageSnapshot is persisted per-role model token usage for one ADK run.
@@ -161,6 +166,13 @@ type State struct {
 	// revision, keyed `package::Test`. The behavior gate only rejects a
 	// candidate for failures absent from this set.
 	BaselineTestFailures []string `json:"baseline_test_failures,omitempty"`
+	// BaselineTestPasses holds the tests, subtests included, that pass on the
+	// unpatched revision, keyed `package::Test`. A candidate must pass every
+	// one of them: comparing failures alone never noticed a test that the
+	// candidate made skip, or that stopped running at all. State written
+	// before this field existed has none, and the baseline test step re-runs
+	// to record them (CompletedSteps["baseline_test_passes"] marks the run).
+	BaselineTestPasses []string `json:"baseline_test_passes,omitempty"`
 	// TokenUsage holds per-role model token totals collected during ADK runs.
 	TokenUsage map[string]RoleUsageSnapshot `json:"token_usage,omitempty"`
 }
@@ -193,6 +205,10 @@ type Engine struct {
 	now       func() time.Time
 	adkAgents *agents.Set
 	adkConfig orchestrator.Config
+	// tokenUsageBaseline anchors this process's contribution to
+	// State.TokenUsage, the same way runStartedAt/elapsedBefore anchor its
+	// contribution to State.ElapsedRunTime. See recordTokenUsage in adk.go.
+	tokenUsageBaseline map[string]RoleUsageSnapshot
 	// runStartedAt and elapsedBefore anchor this process's contribution to
 	// State.ElapsedRunTime; runStartedAt stays zero until Run begins so that
 	// engines driven straight through RunADK never advance the clock.
@@ -575,6 +591,15 @@ func (e *Engine) finishCampaign(ctx context.Context) error {
 		result, err := e.RunADK(ctx, *e.adkAgents, e.adkConfig)
 		if err != nil {
 			return err
+		}
+		if result.ProviderFailure != "" {
+			// Every model role failed in one cycle: no bound was reached, so
+			// "completed" would misreport the campaign, and a completed campaign
+			// cannot be resumed once the provider answers again. Returning the
+			// failure lets captureRunFailure record it as failed with this stop
+			// reason, and the command exits non-zero.
+			e.state.StopReason = result.StopReason
+			return fmt.Errorf("%w: %s", orchestrator.ErrProviderUnavailable, result.ProviderFailure)
 		}
 		if strings.TrimSpace(result.StopReason) != "" {
 			stopReason = result.StopReason
@@ -1242,6 +1267,13 @@ func (e *Engine) saveEvent(kind, message string, data any) error {
 	// abrupt kill can hand back: at most the work since the previous event,
 	// rather than everything this process had already spent.
 	e.state.ElapsedRunTime = e.elapsedRunTime(now)
+	if e.adkAgents != nil {
+		// Refresh the persisted token spend on every event while an ADK run is
+		// active, not only when RunADK returns via its deferred call: a
+		// SIGKILLed process never runs that defer, and without this a killed
+		// campaign's spend never reaches bbolt at all.
+		e.recordTokenUsage(*e.adkAgents)
+	}
 	if err := e.store.Save(e.state); err != nil {
 		return err
 	}

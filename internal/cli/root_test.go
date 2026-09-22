@@ -7,10 +7,12 @@ import (
 	"io"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/campaign"
 	"example.com/gotorque/internal/manifest"
+	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/version"
 	"github.com/stretchr/testify/require"
 )
@@ -58,6 +60,25 @@ func TestResumeDoesNotRequireManifest(t *testing.T) {
 func TestFreshADKRunStillRequiresManifest(t *testing.T) {
 	_, _, err := configureOptimizeAgents(context.Background(), io.Discard, optimizeFlags{runADK: true})
 	require.ErrorContains(t, err, "--manifest is required")
+}
+
+// TestOrchestratorConfigFromManifestDoesNotBindDeadlineToCommandFloor guards
+// against DeterministicTimeout (the ADK scheduler's per-node deadline,
+// covering evaluate_candidate: build + go test + A/B measurement + PGO)
+// collapsing to minimum_command_timeout (a per-command floor, 30s in every
+// shipped manifest). Before this fix that binding meant every deterministic
+// node had 30s to finish, which a real evaluation blows through easily.
+func TestOrchestratorConfigFromManifestDoesNotBindDeadlineToCommandFloor(t *testing.T) {
+	m, err := manifest.LoadFile(filepath.Join("..", "..", "targets", "gojq", "manifest.json"))
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, m.Campaign.MinimumCommandTimeout.Duration(), "test assumes the shipped default; update the assertion below if this changes")
+
+	config := orchestratorConfigFromManifest(m)
+
+	require.NotEqual(t, m.Campaign.MinimumCommandTimeout.Duration(), config.DeterministicTimeout)
+	require.Equal(t, orchestrator.DefaultConfig().DeterministicTimeout, config.DeterministicTimeout)
+	require.Equal(t, m.Campaign.MaxCandidatePatches, config.MaxCandidates)
+	require.Equal(t, m.Campaign.StopAfterFailures, config.MaxConsecutiveFailures)
 }
 
 // writeCampaignDir persists minimal campaign state into a throwaway directory

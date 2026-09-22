@@ -63,7 +63,7 @@ Return only JSON with hot_paths, likely_causes, candidate_hypotheses, and additi
 		role:        RoleOptimizer,
 		name:        "optimizer",
 		description: "Proposes one focused behavior-preserving source optimization.",
-		instruction: `You produce ONE small, behavior-preserving, reversible Go optimization patch per turn. Behavior preservation is absolute: byte-exact stdout/stderr, exit codes, error messages, file formats, and public APIs unchanged. Never add or upgrade production dependencies, never introduce concurrency that can reorder output, never let map iteration order influence output, and never change float formatting or rounding.
+		instruction: `You produce ONE small, behavior-preserving, reversible Go optimization patch per turn. Behavior preservation is absolute: byte-exact stdout/stderr, exit codes, error messages, file formats, and public APIs unchanged. Never add or upgrade production dependencies, never introduce concurrency that can reorder output, never let map iteration order influence output, and never change float formatting or rounding. Never touch test files (*_test.go), anything under testdata/, go.mod, go.sum, go.work, default.pgo, or vendor/: they define the gate that judges your patch, and a diff that touches any of them is rejected before it is built. When a prior attempt broke a test, fix the source, not the test.
 
 MECHANISM PLAYBOOK (pick one per patch): preallocate slices and maps whose final size is knowable; replace string += accumulation in loops with strings.Builder; hoist loop-invariant computations and lookups out of loops; reuse buffers only when object lifetime is provably contained within one call chain (sync.Pool otherwise forbidden under the idiomatic policy); avoid []byte<->string conversions in hot loops; batch writes through bufio when output order is preserved; swap O(n) scans for maps or sorted structures when correctness allows. Match the target's optimization policy: idiomatic accepts only cleanups a Go reviewer would praise; specialized and native allow bolder mechanisms.
 
@@ -90,6 +90,13 @@ PATCH QUALITY: Flag diffs touching files outside the stated hypothesis, drive-by
 Return only JSON with proceed, behavior_argument, concerns, and required_checks fields. STRICT JSON RULES: Output raw JSON only: no Markdown fences, no commentary. Escape every double quote and backslash inside string values (\\\" and \\\\). Keep stdin and fixture content under 500 characters. Include exactly the listed fields and no others.`,
 	},
 }
+
+// MaxOutputTokens is the completion budget every role requests. Structured
+// JSON recommendations are long and the default model reasons before it
+// answers, so a small cap truncates the payload mid-object and makes it
+// impossible to recover the agent's recommendation. The connectivity
+// preflight checks each routed model's advertised ceiling against it.
+const MaxOutputTokens = 32768
 
 // NewSet constructs all judgment-heavy ADK single-turn agents using injected
 // models. It performs no environment lookup and requires no API key itself.
@@ -120,10 +127,7 @@ func NewSet(ctx context.Context, provider ModelProvider) (Set, error) {
 			Mode:                     llmagent.ModeSingleTurn,
 			DisallowTransferToParent: true,
 			DisallowTransferToPeers:  true,
-			// Structured JSON recommendations are long; a small default
-			// output cap truncates the payload mid-object and makes it
-			// impossible to recover the agent's recommendation.
-			GenerateContentConfig: &genai.GenerateContentConfig{MaxOutputTokens: 32768},
+			GenerateContentConfig:    &genai.GenerateContentConfig{MaxOutputTokens: MaxOutputTokens},
 		})
 		if err != nil {
 			return Set{}, fmt.Errorf("create %s agent: %w", spec.role, err)

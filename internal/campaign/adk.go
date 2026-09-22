@@ -50,12 +50,62 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	return result, nil
 }
 
-// recordTokenUsage snapshots the per-role totals collected so far.
+// recordTokenUsage folds the collector's cumulative per-role totals for this
+// process on top of whatever was persisted before this process's ADK work
+// began. Collectors are created per process (NewOpenAIProviderFromEnvironment
+// -> NewUsageCollector), so roleSet.Usage.Snapshot alone only ever reports
+// this process's spend; a resumed campaign that already carried TokenUsage
+// from an earlier process would otherwise have it overwritten by whatever the
+// new process spent, silently discarding the old numbers.
+//
+// tokenUsageBaseline is captured once, lazily, from state.TokenUsage as it
+// stood the first time this runs in the process -- before this process has
+// written anything of its own. Every later call (RunADK's deferred call, or
+// the refresh saveEvent makes while an ADK run is active) recomputes the same
+// baseline+snapshot sum from scratch rather than adding a delta, so calling
+// it any number of times, in any order, across any number of RunADK calls in
+// one process, never double-counts: the collector's Snapshot is already
+// cumulative since the collector was created.
 func (e *Engine) recordTokenUsage(roleSet agents.Set) {
 	if roleSet.Usage == nil {
 		return
 	}
-	e.state.TokenUsage = snapshotTokenUsage(roleSet.Usage.Snapshot())
+	if e.tokenUsageBaseline == nil {
+		e.tokenUsageBaseline = cloneTokenUsage(e.state.TokenUsage)
+	}
+	e.state.TokenUsage = mergeTokenUsage(e.tokenUsageBaseline, snapshotTokenUsage(roleSet.Usage.Snapshot()))
+}
+
+// cloneTokenUsage copies a persisted usage snapshot so later mutation of
+// state.TokenUsage cannot reach back and change the baseline it was computed
+// from. It always returns a non-nil map so callers can use nilness as "no
+// baseline captured yet" without confusing it with "captured an empty one".
+func cloneTokenUsage(usage map[string]RoleUsageSnapshot) map[string]RoleUsageSnapshot {
+	clone := make(map[string]RoleUsageSnapshot, len(usage))
+	for role, u := range usage {
+		clone[role] = u
+	}
+	return clone
+}
+
+// mergeTokenUsage adds this process's cumulative-so-far usage on top of the
+// baseline persisted before that process started, per role. processTotal is
+// itself cumulative since the collector was created, not an increment, which
+// is what makes calling this repeatedly with a fixed base idempotent.
+func mergeTokenUsage(base, processTotal map[string]RoleUsageSnapshot) map[string]RoleUsageSnapshot {
+	merged := make(map[string]RoleUsageSnapshot, len(base)+len(processTotal))
+	for role, u := range base {
+		merged[role] = u
+	}
+	for role, p := range processTotal {
+		u := merged[role]
+		u.Requests += p.Requests
+		u.PromptTokens += p.PromptTokens
+		u.CompletionTokens += p.CompletionTokens
+		u.TotalTokens += p.TotalTokens
+		merged[role] = u
+	}
+	return merged
 }
 
 func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkrunner.Runner, *genai.Content, error) {
@@ -191,8 +241,32 @@ func (s adkServices) RecordRoleDegraded(_ context.Context, role string, cause er
 	return s.engine.saveEvent("role_degraded", fmt.Sprintf("%s node failed, continuing with an empty result: %s", role, reason), nil)
 }
 
+// RoleRepair records one role output that parsed only after the decoder
+// rewrote it.
+type RoleRepair struct {
+	Role   string `json:"role"`
+	Repair string `json:"repair"`
+}
+
+// RecordRoleRepaired persists a role whose output parsed only after a repair.
+// The repaired value is used as the role's answer, which is the point of the
+// repair, but it used to leave no trace: an optimizer patch cut off at the
+// output-token cap was closed by the decoder, had its hunk counts recomputed by
+// normalization, and read in every record like a patch the model meant. The
+// event marks it on the progress stream; the optimizer's repair also reaches
+// its candidate record through the evidence.
+func (s adkServices) RecordRoleRepaired(_ context.Context, role string, repair agents.Repair) error {
+	message := fmt.Sprintf("%s output parsed only after the decoder %s", role, repair)
+	return s.engine.saveEvent("role_repaired", message, RoleRepair{Role: role, Repair: string(repair)})
+}
+
 func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result orchestrator.CampaignResult) (domain.Job, error) {
 	job.Status = domain.JobSucceeded
+	if result.ProviderFailure != "" {
+		// The graph stopped because nothing answered, not because a bound was
+		// reached, so the job did not succeed.
+		job.Status = domain.JobFailed
+	}
 	job.UpdatedAt = time.Now().UTC()
 	_ = s.engine.saveEvent("adk_finalized", result.StopReason, result)
 	return job, nil
@@ -326,6 +400,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		Samples:         input.Evidence.RepSamples,
 		PgoComparisons:  input.Evidence.PgoComparisons,
 		PgoNote:         input.Evidence.PgoNote,
+		ProposalRepair:  string(input.Evidence.ProposalRepair),
 	}
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	// Persist immediately: an ADK failure later in the run must not lose

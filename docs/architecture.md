@@ -50,7 +50,22 @@ initialize_campaign
 The route node stops the loop when the manifest's maximum candidate count or
 consecutive-failure limit is reached; the engine's `max_duration` bound (see
 Campaign bounds) can also end a run from outside the graph, at whatever node
-is executing when it expires. The final acceptance transition is
+is executing when it expires.
+
+A role whose model call fails degrades to an empty result (`role_degraded`)
+instead of ending the run, because every role has a deterministic fallback
+for an absent answer. A provider that is down, or a revoked key, used to
+exploit that: every role degraded on every cycle, the optimizer's empty patch
+was rejected as if a model had written it, and the campaign ended
+`completed` at the rejection streak, blaming the patches for the provider.
+Each degraded role now appends to `CampaignState.CycleFailures`, and route
+checks it before any bound. When every model role failed in the same cycle,
+the campaign stops with a stop reason naming the last failure, and
+`finishCampaign` returns `ErrProviderUnavailable`, so it ends `failed` and can
+be resumed once the provider answers. The record is cleared every cycle, so
+roles that fail in different cycles never add up to an outage.
+
+The final acceptance transition is
 always produced by deterministic policy (`internal/policy`); agent output,
 including the reviewer's recommendation, never decides acceptance by itself.
 
@@ -74,18 +89,32 @@ produced here or in policy.
    so an empty run with more body lines after it can only be blank context,
    while an empty run at the end is trailing slack and still ends the hunk.
    `ValidateUnifiedDiff` then rejects empty or oversized patches, binary
-   content, paths escaping the repository, edits to `go.mod`, `go.sum`,
-   `default.pgo`, or vendored files, diagnostic instrumentation files, and,
-   depending on the manifest's optimization policy, prohibited techniques
-   such as `unsafe`, assembly, or cgo.
+   content, diagnostic instrumentation files, and, depending on the
+   manifest's optimization policy, prohibited techniques such as `unsafe`,
+   assembly, or cgo. It checks every name git apply or patch could act on:
+   `---`, `+++`, `diff --git`, rename/copy, `***` and `Index:` headers, each as
+   written and as `-p1` strips it, deletions to `/dev/null` included. Paths
+   that escape the repository are rejected, and so are protected paths:
+   `go.mod`, `go.sum`, `go.work`, `go.work.sum`, `default.pgo`, `vendor/`,
+   `*_test.go`, `testdata/`, `.git` and `.gitattributes`. Mode, symlink,
+   submodule and git-binary changes are refused too. The test files are on
+   that list because they define the gate in step 4: a patch that can edit a
+   golden file or skip an assertion can make itself pass. Checking only `+++`
+   paths let a deletion (`+++ /dev/null`) or a rename past the dependency
+   rule.
 2. **Isolated worktree at the base revision.** A Git worktree is created from
    the recorded base revision under the campaign directory. The normalized
    patch is applied with strict `git apply --check`; when that fails because
    model context lines are approximate, GNU patch with `--fuzz=5` is tried as
-   a fallback. The applied tree still faces the full test-suite gate before
-   any measurement, so fuzzy application cannot smuggle in behavior changes.
-   Apply errors are returned with captured stderr so the optimizer can see
-   why its diff was rejected.
+   a fallback. patch picks its target file by its own rules, not by the
+   header validation read: with `--- a/go.mod` / `+++ b/other.go` it edits
+   `go.mod`, and it follows a tracked symlink into `testdata/` that git
+   apply refuses. So once the patch is applied, `toolchain.ChangedFiles`
+   lists every path Git sees as changed in the worktree, ignored and
+   untracked files included. A protected path or a new symlink rejects the
+   candidate before build, with the path named in its failure detail. Apply
+   errors are returned with captured stderr so the optimizer can see why its
+   diff was rejected.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
    the compiler stderr attached to the candidate record.
@@ -100,9 +129,20 @@ produced here or in policy.
    is evidence about the operator's toolchain, not about the candidate. A
    baseline run whose tests never executed at all (build or setup failure)
    stops the campaign instead, because subtracting it would leave the gate
-   switched off while still reporting verdicts. A candidate that breaks a
-   test the baseline passed is rejected without any timing comparison, and
-   the report names the tests it broke.
+   switched off while still reporting verdicts. The baseline run also
+   records every test that passed, subtests included
+   (`baseline_test_passes`). Comparing failures alone never noticed a
+   baseline-passing test that the candidate run skipped or never ran, so a
+   test disabled by the patch passed the gate. Every candidate run is now
+   classified, clean exits included, and a candidate is rejected when any
+   baseline-passing test fails, skips, or does not run. The rejection is
+   made without any timing comparison, and the report names the tests. State
+   written before the pass set existed re-runs the baseline step once
+   (`CompletedSteps["baseline_test_passes"]`) instead of running the rest of
+   the campaign without the check. The baseline suite runs in the canonical
+   checkout and candidates run in fresh worktrees. A test that passes only
+   because of an ignored local file therefore rejects every candidate, by
+   name.
 5. **Interleaved A/B measurement.** For each representative-tier seed
    workload, baseline and candidate binaries are measured in serialized
    alternating pairs (baseline first, twenty-five pairs per workload) so CPU
@@ -358,12 +398,48 @@ only removes parse failures of otherwise usable recommendations.
   merely failed to parse as JSON is still yielded, because downstream decoding
   names the offending text. At most one complete response escapes a call, by
   construction rather than by trusting the inner iterator.
+- Repair recording: when a payload parses only after a repair that can
+  change its meaning (escaped control characters or quotes, completed
+  closers, a dropped stray quote, a string closed where the output was cut
+  off), `DecodeResultWithRepair` names the repair. Fence unwrapping and
+  trailing-comma removal are not counted. Workflow nodes record a
+  `role_repaired` event, and the optimizer's repair lands on its candidate
+  record as `proposal_repair` ("Proposal salvaged" in the report). Before
+  this, a patch cut off at the output-token cap was closed by the decoder,
+  had its hunk counts recomputed by normalization, and read in every record
+  like one the model meant. The repaired value is still judged normally, and
+  policy never reads the field.
 - Retry and usage decoration: the OpenAI-compatible provider wraps every
   role model in a decorator that transparently retries up to four attempts
   with 15, 30, then 60 second backoff while a call fails before producing
   any content (shared-pool rate limits otherwise abort multi-hour campaigns),
   and records per-role token usage into a collector persisted with campaign
-  state. Endpoint credentials and API keys are never persisted.
+  state. Endpoint credentials and API keys are never persisted. HTTP 400,
+  401, 402, 403, 404 and 422 end the ladder on the first attempt: they
+  describe the request, the credential or the account, so a revoked key or
+  an OpenRouter balance too low for the request (402 Payment Required) used
+  to spend the whole ladder on every role before degrading anyway. They are
+  recognized with `errors.As` against openai-go's `*openai.Error`, which ADK
+  yields raw on the streaming path. 408, 409, 429, 5xx, transport errors, stalls and
+  incomplete streams still retry. The per-attempt deadline is a
+  `context.WithTimeoutCause` that names its budget, and `stream.go` reports
+  `context.Cause`, so a timed-out attempt no longer reads as a bare
+  `context deadline exceeded` indistinguishable from Ctrl-C or `max_duration`.
+- Event-stream filtering (`internal/agents/sse.go`, `transport.go`): every
+  model call reads its `text/event-stream` body through a filter below
+  openai-go. openai-go dispatches an event on the blank line that ends an SSE
+  comment, such as OpenRouter's documented `: OPENROUTER PROCESSING`
+  keepalive, then fails the call with `unexpected end of JSON input` while
+  parsing that event's empty data. It also treats a connection that closes
+  cleanly before `response.completed` as a finished stream, and ADK ignores
+  `response.incomplete`, so a cut or length-truncated answer used to arrive as
+  a normal response with finish reason Unspecified. The filter drops events
+  that carry no data, which also keeps keepalives from counting as activity
+  against the idle bound. It raises `ErrStreamIncomplete` when the stream ends
+  without a terminal event, or with `response.incomplete` naming its reason.
+  That error carries no HTTP status, so it stays retryable. Error statuses
+  pass through unfiltered so the SDK still builds the status error the ladder
+  classifies.
 - Per-attempt call logging (`internal/agents/observer.go`): a `CallObserver`
   receives one `CallInfo` per attempt (role, attempt number, duration, error,
   and whether a retry follows), and `--adk` wires `LogCalls` to the command's
@@ -389,7 +465,20 @@ and acceptance transitions remain deterministic and model-independent.
 Before expensive repository work starts, the provider validates connectivity:
 it requires `OPENROUTER_API_KEY`, checks endpoint reachability via
 `OPENROUTER_BASE_URL` (defaulting to `https://openrouter.ai/api/v1`), and
-verifies every configured model ID is advertised by the endpoint.
+verifies every configured model ID is advertised by the endpoint. It also
+rejects a routed model whose advertised `top_provider.max_completion_tokens`
+is below `MaxOutputTokens` (32768, what every role requests), naming the role.
+Such a model would otherwise fail every call with a client error at request
+time. A model that does not advertise the field passes.
+
+Reasoning effort is optional per role:
+`GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}` takes
+`low`, `medium` or `high`, and anything else fails the preflight. ADK's
+openaimodel maps only `MaxOutputTokens` onto the Responses API request, never
+`ThinkingConfig`, so a per-role transport (`reasoningTransport`) sets
+`reasoning.effort` on the request body. Unset sends nothing and leaves the
+provider's default. Campaign state does not record the routed model IDs or
+efforts.
 
 Model calls and that preflight resolve their base URL through the same
 `endpoint()` accessor, so they cannot disagree. Passing an empty `BaseURL` to
@@ -470,6 +559,19 @@ streaks are persisted (`consecutive_failures`, `consecutive_inconclusive`) and
 carried into the next process the same way, because the graph rebuilds its
 `CampaignState` on every entry.
 
+`DeterministicTimeout` (`internal/orchestrator/config.go`) is a separate,
+per-node bound. The ADK scheduler wraps every deterministic node in
+`context.WithTimeout`, and that includes `evaluate_candidate`: build, test
+gate, A/B measurement and the PGO lane. The `--adk` path used to set it from
+the manifest's `minimum_command_timeout`, a per-command floor that is 30s in
+every shipped manifest. gron evaluations fit (6–10s), but a heavier target or
+a cold build cache would have hit it. A node deadline surfaces as
+`DeadlineExceeded`, deterministic nodes have no degraded fallback, and the
+campaign ended `interrupted` with a bare `context deadline exceeded` that the
+next resume would hit again. The CI stub config used twenty minutes, so CI
+never saw it. `orchestratorConfigFromManifest` (`internal/cli/root.go`) now
+keeps `DefaultConfig`'s twenty minutes, nested inside `max_duration`.
+
 A spent budget otherwise surfaces as whatever call happened to be in flight,
 a git status, a model request, an ADK graph that drained without producing a
 result, naming an innocent bystander instead of the bound that stopped the
@@ -498,6 +600,24 @@ fresh `CampaignState` every time it is entered, so a tally living only there
 restarts at zero on every resume and the bound holds only within one process.
 `ConsecutiveFailures` is therefore persisted at every policy decision and fed
 back as `PriorConsecutiveFailures` when the graph is re-entered.
+
+Token usage is campaign-wide too. Provider usage collectors are created per
+process, and `TokenUsage` used to be overwritten with the current process's
+totals when `RunADK` returned. A resumed campaign reported only its last
+process's spend, and a killed process's spend never reached bbolt.
+`recordTokenUsage` now adds the process's cumulative collector snapshot to a
+baseline captured before the process wrote anything. `saveEvent` refreshes it
+on every event while an ADK run is active. Each refresh recomputes baseline
+plus snapshot rather than adding a delta, so repeated calls never
+double-count.
+
+bbolt's exclusive lock is the liveness signal. A second process that tries to
+open a campaign another one is running is told so, instead of receiving
+bbolt's bare `timeout`. `gotorque report` falls back to the `report.json`
+snapshot while the lock is held, so the campaign really is live. When the
+report can open the database and the stored status still says `running`, the
+owning process died without recording a stop. The report shows it as
+`interrupted` with that stop reason and writes nothing back.
 
 `MaxCandidates` is a known exception: `CandidatesTried` is not persisted, so
 `max_candidate_patches` still binds per process and a campaign resumed enough
@@ -555,7 +675,7 @@ evidence gathered with degraded isolation is not equivalent.
 
 ## CI
 
-CI runs unit tests, builds the CLI, validates the checked-in target
+CI runs unit tests under the race detector, builds the CLI, validates the checked-in target
 manifests, and performs a deterministic stub-agent smoke campaign against a
 pinned gojq clone, with no model endpoint involved. Both CI and the nightly
 workflow run in a container granted `SYS_ADMIN` so bubblewrap can create

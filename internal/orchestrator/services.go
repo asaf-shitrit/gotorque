@@ -42,4 +42,10 @@ type JobService interface {
 	// stderr, where no report and no API consumer can read it, and a candidate
 	// that arrived empty is explained as "patch is empty".
 	RecordRoleDegraded(ctx context.Context, role string, cause error) error
+	// RecordRoleRepaired reports a role whose output parsed only after the
+	// decoder rewrote it: control characters or quotes escaped, closers added,
+	// or a string closed where the output was cut off. The repaired value is
+	// used as the role's answer, so without the record a salvaged answer reads
+	// exactly like an intended one. It is advisory and changes no decision.
+	RecordRoleRepaired(ctx context.Context, role string, repair agents.Repair) error
 }
