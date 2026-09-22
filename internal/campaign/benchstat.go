@@ -122,6 +122,9 @@ func (e *Engine) compareWallTimeMetric(ctx context.Context, workload string, bas
 		return comparisons, ""
 	}
 	c := &comparisons[0]
+	if summary.HasPValue {
+		c.Significant = summary.supported()
+	}
 	if summary.supported() {
 		c.StatisticallyFit = true
 	} else if !summary.InformativeOnly {

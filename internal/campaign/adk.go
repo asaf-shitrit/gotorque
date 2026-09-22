@@ -388,18 +388,25 @@ func policyConfigFromManifest(m manifest.Manifest) policy.Config {
 	return config
 }
 
+// eligibleReadings are the comparisons a verdict may rest on: every reading of
+// the primary metric, pooled or per workload.
+func eligibleReadings(config policy.Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
+	var eligible []domain.MetricComparison
+	for _, c := range comparisons {
+		if c.Metric == config.PrimaryMetric {
+			eligible = append(eligible, c)
+		}
+	}
+	return eligible
+}
+
 func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput) (domain.Evaluation, error) {
 	config := policyConfigFromManifest(s.engine.state.Manifest)
 	// Eligibility is structural now: every reading of the primary metric may
 	// carry the verdict, and a reading without a workload is the pooled one.
 	// This used to be re-derived here from the comparison's name, a convention
 	// the engine, this function and the policy all had to agree on.
-	var eligible []domain.MetricComparison
-	for _, c := range input.Evidence.Comparisons {
-		if c.Metric == config.PrimaryMetric {
-			eligible = append(eligible, c)
-		}
-	}
+	eligible := eligibleReadings(config, input.Evidence.Comparisons)
 	result := policy.Evaluate(config, policy.Evidence{
 		BehaviorMatches:        input.Evidence.BehaviorMatches,
 		FailureSummary:         input.Evidence.Summary,
