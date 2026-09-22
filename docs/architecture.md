@@ -470,6 +470,19 @@ streaks are persisted (`consecutive_failures`, `consecutive_inconclusive`) and
 carried into the next process the same way, because the graph rebuilds its
 `CampaignState` on every entry.
 
+`DeterministicTimeout` (`internal/orchestrator/config.go`) is a separate,
+per-node bound. The ADK scheduler wraps every deterministic node in
+`context.WithTimeout`, and that includes `evaluate_candidate`: build, test
+gate, A/B measurement and the PGO lane. The `--adk` path used to set it from
+the manifest's `minimum_command_timeout`, a per-command floor that is 30s in
+every shipped manifest. gron evaluations fit (6–10s), but a heavier target or
+a cold build cache would have hit it. A node deadline surfaces as
+`DeadlineExceeded`, deterministic nodes have no degraded fallback, and the
+campaign ended `interrupted` with a bare `context deadline exceeded` that the
+next resume would hit again. The CI stub config used twenty minutes, so CI
+never saw it. `orchestratorConfigFromManifest` (`internal/cli/root.go`) now
+keeps `DefaultConfig`'s twenty minutes, nested inside `max_duration`.
+
 A spent budget otherwise surfaces as whatever call happened to be in flight,
 a git status, a model request, an ADK graph that drained without producing a
 result, naming an innocent bystander instead of the bound that stopped the

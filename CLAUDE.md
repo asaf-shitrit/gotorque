@@ -140,6 +140,8 @@ Package map:
   clients cannot be serialized) and rejects `--repo`, `--manifest`, and
   `--campaign-dir`. Anything that must survive resume has to be persisted in
   bbolt; in-graph `CampaignState` is rebuilt on every entry.
+- The per-node `DeterministicTimeout` covers all of `evaluate_candidate`; it
+  is not `minimum_command_timeout` (a per-command floor).
 - Profiled source positions must be rewritten repository-relative; the excerpt
   collector rejects absolute paths.
 

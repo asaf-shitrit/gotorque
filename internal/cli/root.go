@@ -188,6 +188,28 @@ func configureADK(ctx context.Context, out io.Writer, manifestPath string) (*age
 	if err != nil {
 		return nil, nil, err
 	}
+	config := orchestratorConfigFromManifest(m)
+	return &roles, &config, nil
+}
+
+// orchestratorConfigFromManifest maps a loaded target manifest onto the ADK
+// graph's node-level config. It is pure (no I/O) so the mapping can be unit
+// tested without a manifest file or campaign directory.
+//
+// DeterministicTimeout deliberately does NOT come from
+// minimum_command_timeout: that field is a per-command floor (see
+// engine.go's use of it to size individual toolchain invocations), while
+// DeterministicTimeout is the deadline the ADK scheduler applies to an
+// entire deterministic graph node (evaluate_candidate, run_discovery) via
+// context.WithTimeout. evaluate_candidate alone runs a build, `go test`, 25
+// A/B pairs per workload, and a PGO lane; every shipped manifest sets
+// minimum_command_timeout to 30s, which is nowhere near enough for that
+// node and would fail the run with a bare "context deadline exceeded" the
+// moment a heavier target or a cold build cache pushed evaluation past it.
+// DefaultConfig's 20-minute deadline is kept instead: it already sits inside
+// (and is bounded by) the campaign-wide max_duration deadline, so a stuck
+// node still cannot run away with the whole campaign.
+func orchestratorConfigFromManifest(m manifest.Manifest) orchestrator.Config {
 	config := orchestrator.DefaultConfig()
 	config.MaxCandidates = m.Campaign.MaxCandidatePatches
 	config.MaxConsecutiveFailures = m.Campaign.StopAfterFailures
@@ -196,8 +218,7 @@ func configureADK(ctx context.Context, out io.Writer, manifestPath string) (*age
 	// manifest that wants its patch budget spent on unresolved candidates
 	// sets stop_after_inconclusive.
 	config.MaxConsecutiveInconclusive = m.Campaign.StopAfterInconclusive
-	config.DeterministicTimeout = m.Campaign.MinimumCommandTimeout.Duration()
-	return &roles, &config, nil
+	return config
 }
 
 func newReportCommand(out io.Writer) *cobra.Command {
