@@ -10,6 +10,7 @@ import (
 
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/campaign"
+	"example.com/gotorque/internal/jev"
 	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/version"
@@ -40,7 +41,15 @@ func New(deps Dependencies) *cobra.Command {
 type optimizeFlags struct {
 	repo, manifestPath, campaignDir, resume string
 	runADK, runADKStub                      bool
+	analyst                                 string
 }
+
+// Analyst backends for --analyst. llm is the analyst model role; jev replaces
+// it with TypeSafe Jev cause classification ranked in code.
+const (
+	analystLLM = "llm"
+	analystJev = "jev"
+)
 
 func newOptimizeCommand(out io.Writer) *cobra.Command {
 	var f optimizeFlags
@@ -58,12 +67,16 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&f.resume, "resume", "", "resume an existing campaign directory")
 	cmd.Flags().BoolVar(&f.runADK, "adk", false, "run the full ADK graph using the OpenAI-compatible endpoint")
 	cmd.Flags().BoolVar(&f.runADKStub, "adk-stub", false, "run the full ADK graph with deterministic stub agents")
+	cmd.Flags().StringVar(&f.analyst, "analyst", analystLLM, "analyst backend: llm (the analyst model role) or jev (TypeSafe Jev cause classification; needs "+jev.EnvAPIKey+" with --adk)")
 	return cmd
 }
 
 func runOptimize(ctx context.Context, out io.Writer, f optimizeFlags) error {
 	if f.runADK && f.runADKStub {
 		return errors.New("--adk and --adk-stub are mutually exclusive")
+	}
+	if err := validateAnalyst(f); err != nil {
+		return err
 	}
 	roleSet, adkConfig, err := configureOptimizeAgents(ctx, out, f)
 	if err != nil {
@@ -83,6 +96,14 @@ func configureOptimizeAgents(ctx context.Context, out io.Writer, f optimizeFlags
 	if f.resume != "" {
 		return nil, nil, nil
 	}
+	roles, config, err := configureFreshAgents(ctx, out, f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return roles, config, selectAnalyst(ctx, out, roles, f)
+}
+
+func configureFreshAgents(ctx context.Context, out io.Writer, f optimizeFlags) (*agents.Set, *orchestrator.Config, error) {
 	if f.runADK {
 		if f.manifestPath == "" {
 			return nil, nil, errors.New("--manifest is required with --adk")
@@ -127,25 +148,70 @@ func attachResumeADK(ctx context.Context, out io.Writer, engine *campaign.Engine
 	if engine.State().ADKMode != "" && !f.runADK && !f.runADKStub {
 		return fmt.Errorf("campaign %s was started with model agents; pass --adk or --adk-stub to resume model-driven work", f.resume)
 	}
+	// Same rule as --adk: a resumed campaign must not quietly change where
+	// its hypotheses come from halfway through.
+	if engine.State().Analyst == campaign.AnalystJev && f.analyst != analystJev {
+		return fmt.Errorf("campaign %s was started with --analyst jev; pass it again to resume with the same analyst", f.resume)
+	}
+	roles, config, err := resumeRoles(ctx, out, engine, f, roleSet, adkConfig)
+	if err != nil || roles == nil {
+		return err
+	}
+	if err := selectAnalyst(ctx, out, roles, f); err != nil {
+		return err
+	}
+	engine.SetADK(roles, config)
+	return nil
+}
+
+// resumeRoles rebuilds the role set a resumed campaign runs with, or nil when
+// neither --adk nor --adk-stub was given.
+func resumeRoles(ctx context.Context, out io.Writer, engine *campaign.Engine, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) (*agents.Set, *orchestrator.Config, error) {
 	if f.runADK {
-		configured, config, err := configureADK(ctx, out, engine.State().ManifestPath)
-		if err != nil {
-			return err
+		return configureADK(ctx, out, engine.State().ManifestPath)
+	}
+	if !f.runADKStub {
+		return nil, nil, nil
+	}
+	if roleSet != nil {
+		return roleSet, adkConfig, nil
+	}
+	return deterministicAgents() //nolint:contextcheck // static stub set: no I/O, nothing to cancel
+}
+
+func validateAnalyst(f optimizeFlags) error {
+	switch f.analyst {
+	case "", analystLLM:
+		return nil
+	case analystJev:
+		if !f.runADK && !f.runADKStub {
+			return errors.New("--analyst jev needs --adk or --adk-stub: it replaces a role of the agent graph")
 		}
-		engine.SetADK(configured, config)
+		return nil
+	}
+	return fmt.Errorf("unknown --analyst %q: want %s or %s", f.analyst, analystLLM, analystJev)
+}
+
+// selectAnalyst swaps the analyst role for Jev cause classification when
+// --analyst jev asks for it. Under --adk-stub it uses the no-network stub; under
+// --adk it spends one request proving the key and billing work, because a
+// gateway account without a card on file refuses every request and the
+// analyst node is reached only after the baseline has been built.
+func selectAnalyst(ctx context.Context, out io.Writer, roles *agents.Set, f optimizeFlags) error {
+	if f.analyst != analystJev || roles == nil {
 		return nil
 	}
 	if f.runADKStub {
-		if roleSet == nil {
-			configured, config, err := deterministicAgents() //nolint:contextcheck // static stub set: no I/O, nothing to cancel
-			if err != nil {
-				return err
-			}
-			roleSet, adkConfig = configured, config
-		}
-		engine.SetADK(roleSet, adkConfig)
+		roles.CauseEvaluator = jev.Stub{}
+		return nil
 	}
-	return nil
+	client := jev.NewClientFromEnvironment()
+	if err := client.Preflight(ctx); err != nil {
+		return err
+	}
+	roles.CauseEvaluator = client
+	_, err := fmt.Fprintf(out, "analyst: Jev cause classification (%s)\n", jev.Model)
+	return err
 }
 
 func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) (err error) {
