@@ -339,6 +339,12 @@ var gitScopingEnv = []string{
 	"GIT_CEILING_DIRECTORIES",
 }
 
+// GitScopingEnv returns the variables that redirect git away from the
+// directory it runs in. Test binaries that run git directly to build fixtures
+// clear them in TestMain, for the reason the wrappers here drop them: inside a
+// commit hook they name the repository being committed.
+func GitScopingEnv() []string { return slices.Clone(gitScopingEnv) }
+
 func withoutGitScoping(env []string) []string {
 	kept := make([]string, 0, len(env))
 	for _, pair := range env {
