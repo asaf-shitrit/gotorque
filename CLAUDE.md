@@ -146,6 +146,10 @@ Package map:
   checked in every diff header and again in Git's list of changed files after
   apply, because GNU patch can edit a file validation never saw. A
   baseline-passing test that is skipped or missing rejects the candidate.
+- Model streams (`internal/agents/sse.go`): openai-go fails on SSE comment
+  keepalives and accepts a stream cut before `response.completed`. Both are
+  handled by the body filter, so model calls must keep going through
+  `modelClient`.
 - The per-node `DeterministicTimeout` covers all of `evaluate_candidate`; it
   is not `minimum_command_timeout` (a per-command floor).
 - Profiled source positions must be rewritten repository-relative; the excerpt
@@ -172,7 +176,11 @@ the schema without keeping them consistent fails the test suite by design.
 Per-role model IDs come from `GOTORQUE_MODEL_{COORDINATOR,EXPLORER,ANALYST,
 OPTIMIZER,REVIEWER}`, defaulting to `deepseek/deepseek-v4.1-flash` via
 OpenRouter (`internal/agents/routing.go`). `OPENROUTER_BASE_URL` overrides the
-endpoint. Credentials are never persisted into campaign state.
+endpoint.
+Optional `GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}`
+(`low|medium|high`) sets per-role `reasoning.effort`. Unset sends nothing,
+and an invalid value fails the preflight.
+Credentials are never persisted into campaign state.
 
 ## Commit messages
 

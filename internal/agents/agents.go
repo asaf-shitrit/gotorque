@@ -91,6 +91,13 @@ Return only JSON with proceed, behavior_argument, concerns, and required_checks 
 	},
 }
 
+// MaxOutputTokens is the completion budget every role requests. Structured
+// JSON recommendations are long and the default model reasons before it
+// answers, so a small cap truncates the payload mid-object and makes it
+// impossible to recover the agent's recommendation. The connectivity
+// preflight checks each routed model's advertised ceiling against it.
+const MaxOutputTokens = 32768
+
 // NewSet constructs all judgment-heavy ADK single-turn agents using injected
 // models. It performs no environment lookup and requires no API key itself.
 func NewSet(ctx context.Context, provider ModelProvider) (Set, error) {
@@ -120,10 +127,7 @@ func NewSet(ctx context.Context, provider ModelProvider) (Set, error) {
 			Mode:                     llmagent.ModeSingleTurn,
 			DisallowTransferToParent: true,
 			DisallowTransferToPeers:  true,
-			// Structured JSON recommendations are long; a small default
-			// output cap truncates the payload mid-object and makes it
-			// impossible to recover the agent's recommendation.
-			GenerateContentConfig: &genai.GenerateContentConfig{MaxOutputTokens: 32768},
+			GenerateContentConfig:    &genai.GenerateContentConfig{MaxOutputTokens: MaxOutputTokens},
 		})
 		if err != nil {
 			return Set{}, fmt.Errorf("create %s agent: %w", spec.role, err)

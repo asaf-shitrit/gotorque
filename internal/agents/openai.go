@@ -30,6 +30,9 @@ type OpenAIProvider struct {
 	Routing Routing
 	Client  *http.Client
 
+	// Reasoning sets reasoning.effort per role; a role left out sends none.
+	Reasoning Reasoning
+
 	// Usage accumulates per-role token usage across every model this provider
 	// decorates. It is shared by pointer when the value struct is copied.
 	Usage *UsageCollector
@@ -40,7 +43,7 @@ type OpenAIProvider struct {
 }
 
 func NewOpenAIProviderFromEnvironment() OpenAIProvider {
-	return OpenAIProvider{APIKey: os.Getenv(EnvAPIKey), BaseURL: os.Getenv(EnvBaseURL), Routing: RoutingFromEnvironment(), Usage: NewUsageCollector()}
+	return OpenAIProvider{APIKey: os.Getenv(EnvAPIKey), BaseURL: os.Getenv(EnvBaseURL), Routing: RoutingFromEnvironment(), Reasoning: ReasoningFromEnvironment(), Usage: NewUsageCollector()}
 }
 
 // endpoint resolves the base URL every caller must use. It exists so model
@@ -56,17 +59,24 @@ func (p OpenAIProvider) endpoint() string {
 }
 
 func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, error) {
-	if err := p.Routing.Validate(); err != nil {
-		return nil, err
-	}
-	name := p.Routing[role]
-	inner, err := openaimodel.NewModel(ctx, name, &openaimodel.ClientConfig{APIKey: p.APIKey, BaseURL: p.endpoint(), HTTPClient: p.httpClient()})
+	inner, err := p.roleModel(ctx, role)
 	if err != nil {
 		return nil, err
 	}
 	// Streaming sits inside the fence so the fence still sees one response per
 	// attempt, and the endpoint still sends bytes while the model works.
 	return NewFenceStrippingModel(newStreamedModel(inner), string(role), p.Usage, p.Observer), nil
+}
+
+// roleModel returns one role's endpoint model before any decoration.
+func (p OpenAIProvider) roleModel(ctx context.Context, role Role) (model.LLM, error) {
+	if err := p.Routing.Validate(); err != nil {
+		return nil, err
+	}
+	if err := p.Reasoning.Validate(); err != nil {
+		return nil, err
+	}
+	return openaimodel.NewModel(ctx, p.Routing[role], &openaimodel.ClientConfig{APIKey: p.APIKey, BaseURL: p.endpoint(), HTTPClient: p.modelClient(role)})
 }
 
 // attemptTimeout bounds one attempt of the retry ladder in fence.go. It is the
@@ -80,7 +90,8 @@ func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, err
 // minutes instead of consuming the whole attempt.
 const attemptTimeout = 4 * time.Minute
 
-// httpClient returns the transport model calls use.
+// httpClient returns the client model calls are built on; modelClient layers
+// the per-role transports over it.
 //
 // It carries no whole-request timeout on purpose. That bound was the old
 // instrument for a non-streaming call, where silence is the only observable,
@@ -103,13 +114,32 @@ func (p OpenAIProvider) httpClient() *http.Client {
 	}
 }
 
+// modelClient returns the client one role's model calls use: httpClient's,
+// with every event stream filtered by eventStreamTransport and, when the role
+// has an effort configured, every request carrying it. An injected Client is
+// copied rather than modified, so a caller sharing it sees no change.
+func (p OpenAIProvider) modelClient(role Role) *http.Client {
+	client := *p.httpClient()
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	var transport http.RoundTripper = eventStreamTransport{base: base}
+	if effort := p.Reasoning[role]; effort != "" {
+		transport = reasoningTransport{base: transport, effort: effort}
+	}
+	client.Transport = transport
+	return &client
+}
+
 // UsageReporter exposes the shared token-usage collector so the campaign
 // layer can read per-role totals after a run.
 func (p OpenAIProvider) UsageReporter() *UsageCollector { return p.Usage }
 
-// ValidateConnectivity checks credentials, endpoint reachability, and model
-// IDs before a campaign starts expensive repository work. It never records the
-// API key or response body in campaign state.
+// ValidateConnectivity checks credentials, endpoint reachability, model IDs,
+// reasoning settings, and each model's completion ceiling before a campaign
+// starts expensive repository work. It never records the API key or response
+// body in campaign state.
 func (p OpenAIProvider) ValidateConnectivity(ctx context.Context) error {
 	if p.APIKey == "" {
 		return errors.New(EnvAPIKey + " is required for --adk")
@@ -117,14 +147,43 @@ func (p OpenAIProvider) ValidateConnectivity(ctx context.Context) error {
 	if err := p.Routing.Validate(); err != nil {
 		return err
 	}
+	if err := p.Reasoning.Validate(); err != nil {
+		return err
+	}
 	available, err := p.listEndpointModels(ctx)
 	if err != nil {
 		return err
 	}
 	for _, role := range AllRoles {
-		if !available[p.Routing[role]] {
-			return fmt.Errorf("configured model %q for %s is not advertised by endpoint", p.Routing[role], role)
+		if err := checkAdvertised(role, p.Routing[role], available); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// advertisedModel is the part of an endpoint's /models entry the preflight
+// reads. OpenRouter reports the completion ceiling under top_provider; an
+// absent or null value decodes to zero and is not checked.
+type advertisedModel struct {
+	ID          string `json:"id"`
+	TopProvider struct {
+		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+	} `json:"top_provider"`
+}
+
+// checkAdvertised fails a role whose model the endpoint does not list, or
+// whose advertised completion ceiling is below MaxOutputTokens. A model
+// capped below that budget cannot deliver the output the budget was sized
+// for, and learning so from the first role call wastes the discovery work the
+// campaign did before it.
+func checkAdvertised(role Role, id string, available map[string]advertisedModel) error {
+	advertised, ok := available[id]
+	if !ok {
+		return fmt.Errorf("configured model %q for %s is not advertised by endpoint", id, role)
+	}
+	if ceiling := advertised.TopProvider.MaxCompletionTokens; ceiling > 0 && ceiling < MaxOutputTokens {
+		return fmt.Errorf("configured model %q for %s allows at most %d completion tokens, below the %d every role requests", id, role, ceiling, MaxOutputTokens)
 	}
 	return nil
 }
@@ -133,7 +192,7 @@ func httpOK(code int) bool {
 	return code >= 200 && code < 300
 }
 
-func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]bool, error) {
+func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]advertisedModel, error) {
 	base := p.endpoint()
 	client := p.Client
 	if client == nil {
@@ -153,16 +212,14 @@ func (p OpenAIProvider) listEndpointModels(ctx context.Context) (map[string]bool
 		return nil, fmt.Errorf("OpenRouter endpoint returned HTTP %s", resp.Status)
 	}
 	var document struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+		Data []advertisedModel `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&document); err != nil {
 		return nil, fmt.Errorf("decode model list: %w", err)
 	}
-	available := map[string]bool{}
+	available := make(map[string]advertisedModel, len(document.Data))
 	for _, item := range document.Data {
-		available[item.ID] = true
+		available[item.ID] = item
 	}
 	if len(available) == 0 {
 		return nil, errors.New("OpenRouter endpoint returned no models")

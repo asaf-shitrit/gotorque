@@ -393,11 +393,26 @@ only removes parse failures of otherwise usable recommendations.
   the request or the credential, so a revoked key used to spend the whole
   ladder on every role before degrading anyway. They are recognized with
   `errors.As` against openai-go's `*openai.Error`, which ADK yields raw on the
-  streaming path. 408, 409, 429, 5xx, transport errors and stalls still
-  retry. The per-attempt deadline is a
+  streaming path. 408, 409, 429, 5xx, transport errors, stalls and
+  incomplete streams still retry. The per-attempt deadline is a
   `context.WithTimeoutCause` that names its budget, and `stream.go` reports
   `context.Cause`, so a timed-out attempt no longer reads as a bare
   `context deadline exceeded` indistinguishable from Ctrl-C or `max_duration`.
+- Event-stream filtering (`internal/agents/sse.go`, `transport.go`): every
+  model call reads its `text/event-stream` body through a filter below
+  openai-go. openai-go dispatches an event on the blank line that ends an SSE
+  comment, such as OpenRouter's documented `: OPENROUTER PROCESSING`
+  keepalive, then fails the call with `unexpected end of JSON input` while
+  parsing that event's empty data. It also treats a connection that closes
+  cleanly before `response.completed` as a finished stream, and ADK ignores
+  `response.incomplete`, so a cut or length-truncated answer used to arrive as
+  a normal response with finish reason Unspecified. The filter drops events
+  that carry no data, which also keeps keepalives from counting as activity
+  against the idle bound. It raises `ErrStreamIncomplete` when the stream ends
+  without a terminal event, or with `response.incomplete` naming its reason.
+  That error carries no HTTP status, so it stays retryable. Error statuses
+  pass through unfiltered so the SDK still builds the status error the ladder
+  classifies.
 - Per-attempt call logging (`internal/agents/observer.go`): a `CallObserver`
   receives one `CallInfo` per attempt (role, attempt number, duration, error,
   and whether a retry follows), and `--adk` wires `LogCalls` to the command's
@@ -423,7 +438,20 @@ and acceptance transitions remain deterministic and model-independent.
 Before expensive repository work starts, the provider validates connectivity:
 it requires `OPENROUTER_API_KEY`, checks endpoint reachability via
 `OPENROUTER_BASE_URL` (defaulting to `https://openrouter.ai/api/v1`), and
-verifies every configured model ID is advertised by the endpoint.
+verifies every configured model ID is advertised by the endpoint. It also
+rejects a routed model whose advertised `top_provider.max_completion_tokens`
+is below `MaxOutputTokens` (32768, what every role requests), naming the role.
+Such a model would otherwise fail every call with a client error at request
+time. A model that does not advertise the field passes.
+
+Reasoning effort is optional per role:
+`GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}` takes
+`low`, `medium` or `high`, and anything else fails the preflight. ADK's
+openaimodel maps only `MaxOutputTokens` onto the Responses API request, never
+`ThinkingConfig`, so a per-role transport (`reasoningTransport`) sets
+`reasoning.effort` on the request body. Unset sends nothing and leaves the
+provider's default. Campaign state does not record the routed model IDs or
+efforts.
 
 Model calls and that preflight resolve their base URL through the same
 `endpoint()` accessor, so they cannot disagree. Passing an empty `BaseURL` to
