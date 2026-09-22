@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,25 +173,63 @@ func TestPartialRoleFailuresKeepTheCampaignRunning(t *testing.T) {
 	}
 }
 
-func TestModelRolesAreEveryRole(t *testing.T) {
+// TestProviderOutageDoesNotWaitForJevRoles: with --analyst jev and --reviewer
+// jev the analyst and reviewer are served by a different gateway on a
+// different key, and the coordinator by code, so a model provider outage must
+// trip the breaker even while all three keep answering. The analysis ranks
+// targets, as Jev's always does, so the cycle runs the path a Jev campaign
+// takes.
+func TestProviderOutageDoesNotWaitForJevRoles(t *testing.T) {
+	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
+	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
+	orch := mustNew(t, Dependencies{
+		Runner: &hotRunner{},
+		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+		Jobs:   &fakeJobService{},
+		Agents: scriptedRoleSet(t, everyRole(1, 2, 3, 4)),
+		Causes: analyst,
+		Review: review,
+	}, Config{MaxCandidates: 4, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
+	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-outage-jev", causeCampaign, "finalize_campaign")
+
+	if result.CandidatesTried != 1 || !strings.HasPrefix(result.StopReason, stopReasonProviderFailure) {
+		t.Errorf("tried %d, stop reason %q; want the breaker after one cycle", result.CandidatesTried, result.StopReason)
+	}
+	if len(analyst.requests) != 1 || len(review.requests) != 1 {
+		t.Errorf("cause analyst calls = %d, review calls = %d, want 1 each", len(analyst.requests), len(review.requests))
+	}
+}
+
+func TestModelRolesLeaveOutJevRoles(t *testing.T) {
 	all := []string{"coordinator", "explorer", "analyst", "optimizer", "reviewer"}
 	if got := (&campaignGraph{}).modelRoles(); !slices.Equal(got, all) {
 		t.Errorf("model roles = %v, want %v", got, all)
 	}
+	withJev := []string{"explorer", "optimizer", "reviewer"}
+	if got := (&campaignGraph{deps: Dependencies{Causes: &fakeCauseAnalyst{}}}).modelRoles(); !slices.Equal(got, withJev) {
+		t.Errorf("model roles with a cause analyst = %v, want %v", got, withJev)
+	}
+	reviewed := []string{"coordinator", "explorer", "analyst", "optimizer"}
+	if got := (&campaignGraph{deps: Dependencies{Review: &fakeReviewAnalyst{}}}).modelRoles(); !slices.Equal(got, reviewed) {
+		t.Errorf("model roles with a review analyst = %v, want %v", got, reviewed)
+	}
+	both := []string{"explorer", "optimizer"}
+	if got := (&campaignGraph{deps: Dependencies{Causes: &fakeCauseAnalyst{}, Review: &fakeReviewAnalyst{}}}).modelRoles(); !slices.Equal(got, both) {
+		t.Errorf("model roles with both = %v, want %v", got, both)
+	}
 }
 
 func TestProviderFailureNeedsEveryModelRole(t *testing.T) {
-	g := &campaignGraph{}
-	fourRoles := []RoleFailure{{"coordinator", "a"}, {"explorer", "b"}, {"optimizer", "c"}, {"reviewer", "d"}}
-	if _, down := g.providerFailure(CampaignState{CycleFailures: fourRoles}); down {
-		t.Error("tripped while the analyst still answered")
+	jev := &campaignGraph{deps: Dependencies{Causes: &fakeCauseAnalyst{}}}
+	threeModelRoles := []RoleFailure{{"explorer", "b"}, {"optimizer", "c"}, {"reviewer", "d"}}
+	if _, down := (&campaignGraph{}).providerFailure(CampaignState{CycleFailures: threeModelRoles}); down {
+		t.Error("tripped while the coordinator and analyst, both model roles here, still answered")
 	}
-	allFive := append(slices.Clone(fourRoles), RoleFailure{"analyst", "e"})
-	failure, down := g.providerFailure(CampaignState{CycleFailures: allFive})
-	if !down || failure != "analyst: e" {
+	failure, down := jev.providerFailure(CampaignState{CycleFailures: threeModelRoles})
+	if !down || failure != "reviewer: d" {
 		t.Errorf("providerFailure = %q, %v; want the last failure", failure, down)
 	}
-	if _, down := g.providerFailure(CampaignState{}); down {
+	if _, down := jev.providerFailure(CampaignState{}); down {
 		t.Error("tripped on a cycle with no failures")
 	}
 }

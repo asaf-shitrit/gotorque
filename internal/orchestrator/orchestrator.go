@@ -678,17 +678,33 @@ func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*sessi
 	return ev, nil
 }
 
-// modelRoles are the roles whose answers come from the model provider, which
-// today is every role. A role served by anything else must be left out: its
-// failures say nothing about the provider the others share, and counting it
-// would keep a campaign running whose other roles all failed while it kept
-// answering.
-func (*campaignGraph) modelRoles() []string {
+// modelRoles are the roles whose answers come from the model provider. A role
+// Jev serves is not one of them: with a cause analyst (--analyst jev), neither
+// the analyst nor the coordinator, which becomes a deterministic plan that
+// never calls a model; with a review analyst (--reviewer jev), not the
+// reviewer. Jev is served by a different gateway on a different key, so
+// counting any of them would keep a campaign running whose other roles all
+// failed, because none of them can fail the same way.
+func (g *campaignGraph) modelRoles() []string {
 	roles := make([]string, 0, len(agents.AllRoles))
 	for _, role := range agents.AllRoles {
-		roles = append(roles, string(role))
+		if !g.servedByJev(role) {
+			roles = append(roles, string(role))
+		}
 	}
 	return roles
+}
+
+func (g *campaignGraph) servedByJev(role agents.Role) bool {
+	switch role {
+	case agents.RoleAnalyst, agents.RoleCoordinator:
+		return g.deps.Causes != nil
+	case agents.RoleReviewer:
+		return g.deps.Review != nil
+	case agents.RoleExplorer, agents.RoleOptimizer:
+		return false
+	}
+	return false
 }
 
 // providerFailure reports the cycle's last failure when every model role failed

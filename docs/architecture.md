@@ -64,7 +64,11 @@ checks it before any bound. When every model role failed in the same cycle,
 the campaign stops with a stop reason naming the last failure, and
 `finishCampaign` returns `ErrProviderUnavailable`, so it ends `failed` and can
 be resumed once the provider answers. The record is cleared every cycle, so
-roles that fail in different cycles never add up to an outage.
+roles that fail in different cycles never add up to an outage. A role Jev
+serves is not counted: with `--analyst jev` neither the analyst nor the
+coordinator, which becomes a deterministic plan that never calls a model, and
+with `--reviewer jev` not the reviewer. Jev is served by a different gateway,
+so a role it answers would otherwise keep the breaker from ever tripping.
 
 The final acceptance transition is
 always produced by deterministic policy (`internal/policy`); agent output,
