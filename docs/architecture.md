@@ -74,18 +74,32 @@ produced here or in policy.
    so an empty run with more body lines after it can only be blank context,
    while an empty run at the end is trailing slack and still ends the hunk.
    `ValidateUnifiedDiff` then rejects empty or oversized patches, binary
-   content, paths escaping the repository, edits to `go.mod`, `go.sum`,
-   `default.pgo`, or vendored files, diagnostic instrumentation files, and,
-   depending on the manifest's optimization policy, prohibited techniques
-   such as `unsafe`, assembly, or cgo.
+   content, diagnostic instrumentation files, and, depending on the
+   manifest's optimization policy, prohibited techniques such as `unsafe`,
+   assembly, or cgo. It checks every name git apply or patch could act on:
+   `---`, `+++`, `diff --git`, rename/copy, `***` and `Index:` headers, each as
+   written and as `-p1` strips it, deletions to `/dev/null` included. Paths
+   that escape the repository are rejected, and so are protected paths:
+   `go.mod`, `go.sum`, `go.work`, `go.work.sum`, `default.pgo`, `vendor/`,
+   `*_test.go`, `testdata/`, `.git` and `.gitattributes`. Mode, symlink,
+   submodule and git-binary changes are refused too. The test files are on
+   that list because they define the gate in step 4: a patch that can edit a
+   golden file or skip an assertion can make itself pass. Checking only `+++`
+   paths let a deletion (`+++ /dev/null`) or a rename past the dependency
+   rule.
 2. **Isolated worktree at the base revision.** A Git worktree is created from
    the recorded base revision under the campaign directory. The normalized
    patch is applied with strict `git apply --check`; when that fails because
    model context lines are approximate, GNU patch with `--fuzz=5` is tried as
-   a fallback. The applied tree still faces the full test-suite gate before
-   any measurement, so fuzzy application cannot smuggle in behavior changes.
-   Apply errors are returned with captured stderr so the optimizer can see
-   why its diff was rejected.
+   a fallback. patch picks its target file by its own rules, not by the
+   header validation read: with `--- a/go.mod` / `+++ b/other.go` it edits
+   `go.mod`, and it follows a tracked symlink into `testdata/` that git
+   apply refuses. So once the patch is applied, `toolchain.ChangedFiles`
+   lists every path Git sees as changed in the worktree, ignored and
+   untracked files included. A protected path or a new symlink rejects the
+   candidate before build, with the path named in its failure detail. Apply
+   errors are returned with captured stderr so the optimizer can see why its
+   diff was rejected.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
    the compiler stderr attached to the candidate record.
@@ -100,9 +114,20 @@ produced here or in policy.
    is evidence about the operator's toolchain, not about the candidate. A
    baseline run whose tests never executed at all (build or setup failure)
    stops the campaign instead, because subtracting it would leave the gate
-   switched off while still reporting verdicts. A candidate that breaks a
-   test the baseline passed is rejected without any timing comparison, and
-   the report names the tests it broke.
+   switched off while still reporting verdicts. The baseline run also
+   records every test that passed, subtests included
+   (`baseline_test_passes`). Comparing failures alone never noticed a
+   baseline-passing test that the candidate run skipped or never ran, so a
+   test disabled by the patch passed the gate. Every candidate run is now
+   classified, clean exits included, and a candidate is rejected when any
+   baseline-passing test fails, skips, or does not run. The rejection is
+   made without any timing comparison, and the report names the tests. State
+   written before the pass set existed re-runs the baseline step once
+   (`CompletedSteps["baseline_test_passes"]`) instead of running the rest of
+   the campaign without the check. The baseline suite runs in the canonical
+   checkout and candidates run in fresh worktrees. A test that passes only
+   because of an ignored local file therefore rejects every candidate, by
+   name.
 5. **Interleaved A/B measurement.** For each representative-tier seed
    workload, baseline and candidate binaries are measured in serialized
    alternating pairs (baseline first, twenty-five pairs per workload) so CPU

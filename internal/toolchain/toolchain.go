@@ -166,6 +166,61 @@ func (t *Toolchain) GitStatus(ctx context.Context, repository string) (Result, e
 	return t.run(ctx, t.gitPath, []string{"status", "--porcelain=v1", "--untracked-files=all"}, repository, nil, nil)
 }
 
+// ChangedFiles lists every path in repository whose content differs from its
+// checked-out revision: modified, deleted, and new files, untracked and
+// ignored ones included, each named repository-relative.
+//
+// It exists because the patch a candidate proposes is not the change that
+// lands. GNU patch, the fuzzy fallback, chooses the file it edits by its own
+// rules: given `--- a/go.mod` and `+++ b/other.go` it rewrote go.mod, a path
+// that header validation never saw as a target. Asking Git what actually
+// changed is the only view that does not depend on how a tool read the diff.
+// Ignored files are listed because a new file under a .gitignore pattern is
+// otherwise invisible, and renames are split into their two paths so a moved
+// file is judged at both ends.
+func (t *Toolchain) ChangedFiles(ctx context.Context, repository string) ([]string, error) {
+	if err := requireDirectory(repository); err != nil {
+		return nil, err
+	}
+	result, err := t.run(ctx, t.gitPath, []string{"status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored", "--no-renames"}, repository, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return parsePorcelainZ(result.Stdout)
+}
+
+// parsePorcelainZ reads `git status --porcelain=v1 -z` output. Each entry is a
+// two-letter status, a space, and a path, NUL-terminated and never quoted; a
+// rename or copy entry is followed by a second NUL-terminated field holding
+// its source path, which is returned as a changed path too.
+func parsePorcelainZ(output []byte) ([]string, error) {
+	fields := strings.Split(string(output), "\x00")
+	var paths []string
+	for i := 0; i < len(fields); i++ {
+		entry := fields[i]
+		if entry == "" {
+			continue
+		}
+		if len(entry) < 4 || entry[2] != ' ' {
+			return nil, fmt.Errorf("malformed git status entry %q", entry)
+		}
+		paths = append(paths, entry[3:])
+		if !isRenameOrCopy(entry[:2]) {
+			continue
+		}
+		i++
+		if i >= len(fields) || fields[i] == "" {
+			return nil, fmt.Errorf("git status entry %q is missing its source path", entry)
+		}
+		paths = append(paths, fields[i])
+	}
+	return paths, nil
+}
+
+func isRenameOrCopy(status string) bool {
+	return strings.ContainsAny(status, "RC")
+}
+
 // GoVersion resolves the locally installed toolchain. GOTOOLCHAIN=local
 // prevents Go from downloading or selecting a different toolchain.
 func (t *Toolchain) GoVersion(ctx context.Context, repository string) (Result, error) {
@@ -217,8 +272,9 @@ func (t *Toolchain) ApplyPatch(ctx context.Context, repository, patchPath string
 
 // ApplyPatchFuzzy applies a patch with GNU patch's fuzz matching for models
 // that cannot reproduce exact context lines from memory. It is only used as
-// a fallback after strict git apply fails; the applied tree still faces the
-// full test-suite behavior gate.
+// a fallback after strict git apply fails. patch picks the file it edits by
+// its own rules, which need not be the path a header validator checked, so
+// the caller must judge the result with ChangedFiles, not the diff text.
 func (t *Toolchain) ApplyPatchFuzzy(ctx context.Context, repository, patchPath string) (Result, error) {
 	if err := requireDirectory(repository); err != nil {
 		return Result{}, err

@@ -135,11 +135,9 @@ func (e *Engine) buildCandidateBinary(ctx context.Context, worktree, candidateBi
 func (e *Engine) candidateTestsPassed(ctx context.Context, worktree string, evidence *orchestrator.CandidateEvidence) bool {
 	// Behavior gate: the upstream test suite must not regress against the
 	// unpatched revision. Failures that predate the patch are subtracted
-	// rather than charged to it.
+	// rather than charged to it. A clean exit is classified too: it is what a
+	// suite reports after a test the baseline passed was skipped or dropped.
 	testResult, testErr := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: worktree, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
-	if testErr == nil && testResult.ExitCode == 0 {
-		return true
-	}
 	reason, passed := e.classifyTestOutcome(testResult, testErr)
 	if passed {
 		return true

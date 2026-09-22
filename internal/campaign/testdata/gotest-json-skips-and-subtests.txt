@@ -1,0 +1,29 @@
+{"Time":"2026-09-22T12:56:48.998506+03:00","Action":"start","Package":"test.local/fixture"}
+{"Time":"2026-09-22T12:56:48.998761+03:00","Action":"start","Package":"test.local/fixture/empty"}
+{"Time":"2026-09-22T12:56:48.998812+03:00","Action":"output","Package":"test.local/fixture/empty","Output":"?   \ttest.local/fixture/empty\t[no test files]\n"}
+{"Time":"2026-09-22T12:56:48.998837+03:00","Action":"skip","Package":"test.local/fixture/empty","Elapsed":0}
+{"Time":"2026-09-22T12:56:49.207037+03:00","Action":"run","Package":"test.local/fixture","Test":"TestKept"}
+{"Time":"2026-09-22T12:56:49.207656+03:00","Action":"output","Package":"test.local/fixture","Test":"TestKept","Output":"=== RUN   TestKept\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207679+03:00","Action":"output","Package":"test.local/fixture","Test":"TestKept","Output":"--- PASS: TestKept (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.20769+03:00","Action":"pass","Package":"test.local/fixture","Test":"TestKept","Elapsed":0}
+{"Time":"2026-09-22T12:56:49.207699+03:00","Action":"run","Package":"test.local/fixture","Test":"TestSkipped"}
+{"Time":"2026-09-22T12:56:49.207704+03:00","Action":"output","Package":"test.local/fixture","Test":"TestSkipped","Output":"=== RUN   TestSkipped\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207708+03:00","Action":"output","Package":"test.local/fixture","Test":"TestSkipped","Output":"    main_test.go:7: not on this platform\n"}
+{"Time":"2026-09-22T12:56:49.207718+03:00","Action":"output","Package":"test.local/fixture","Test":"TestSkipped","Output":"--- SKIP: TestSkipped (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207725+03:00","Action":"skip","Package":"test.local/fixture","Test":"TestSkipped","Elapsed":0}
+{"Time":"2026-09-22T12:56:49.207729+03:00","Action":"run","Package":"test.local/fixture","Test":"TestTable"}
+{"Time":"2026-09-22T12:56:49.207734+03:00","Action":"output","Package":"test.local/fixture","Test":"TestTable","Output":"=== RUN   TestTable\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207738+03:00","Action":"run","Package":"test.local/fixture","Test":"TestTable/runs"}
+{"Time":"2026-09-22T12:56:49.207741+03:00","Action":"output","Package":"test.local/fixture","Test":"TestTable/runs","Output":"=== RUN   TestTable/runs\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207744+03:00","Action":"output","Package":"test.local/fixture","Test":"TestTable/runs","Output":"--- PASS: TestTable/runs (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207748+03:00","Action":"pass","Package":"test.local/fixture","Test":"TestTable/runs","Elapsed":0}
+{"Time":"2026-09-22T12:56:49.207752+03:00","Action":"run","Package":"test.local/fixture","Test":"TestTable/skips"}
+{"Time":"2026-09-22T12:56:49.207756+03:00","Action":"output","Package":"test.local/fixture","Test":"TestTable/skips","Output":"=== RUN   TestTable/skips\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207759+03:00","Action":"output","Package":"test.local/fixture","Test":"TestTable/skips","Output":"    main_test.go:11: disabled\n"}
+{"Time":"2026-09-22T12:56:49.20777+03:00","Action":"output","Package":"test.local/fixture","Test":"TestTable/skips","Output":"--- SKIP: TestTable/skips (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207775+03:00","Action":"skip","Package":"test.local/fixture","Test":"TestTable/skips","Elapsed":0}
+{"Time":"2026-09-22T12:56:49.207779+03:00","Action":"output","Package":"test.local/fixture","Test":"TestTable","Output":"--- PASS: TestTable (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.207782+03:00","Action":"pass","Package":"test.local/fixture","Test":"TestTable","Elapsed":0}
+{"Time":"2026-09-22T12:56:49.207785+03:00","Action":"output","Package":"test.local/fixture","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-09-22T12:56:49.208345+03:00","Action":"output","Package":"test.local/fixture","Output":"ok  \ttest.local/fixture\t0.209s\n"}
+{"Time":"2026-09-22T12:56:49.215786+03:00","Action":"pass","Package":"test.local/fixture","Elapsed":0.217}

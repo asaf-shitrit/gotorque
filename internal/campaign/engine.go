@@ -161,6 +161,13 @@ type State struct {
 	// revision, keyed `package::Test`. The behavior gate only rejects a
 	// candidate for failures absent from this set.
 	BaselineTestFailures []string `json:"baseline_test_failures,omitempty"`
+	// BaselineTestPasses holds the tests, subtests included, that pass on the
+	// unpatched revision, keyed `package::Test`. A candidate must pass every
+	// one of them: comparing failures alone never noticed a test that the
+	// candidate made skip, or that stopped running at all. State written
+	// before this field existed has none, and the baseline test step re-runs
+	// to record them (CompletedSteps["baseline_test_passes"] marks the run).
+	BaselineTestPasses []string `json:"baseline_test_passes,omitempty"`
 	// TokenUsage holds per-role model token totals collected during ADK runs.
 	TokenUsage map[string]RoleUsageSnapshot `json:"token_usage,omitempty"`
 }
