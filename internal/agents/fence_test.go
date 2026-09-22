@@ -231,6 +231,28 @@ func TestFenceStrippingModelRetriesFirstFailure(t *testing.T) {
 	}
 }
 
+// An attempt that answers records no error of its own, so a successful retry
+// used to be reported with the failure of the attempt before it. A live
+// campaign logged "explorer attempt 2 failed after 44.222s: model call attempt
+// exceeded its 4m0s budget" for an attempt that had answered.
+func TestFenceStrippingModelReportsASuccessfulRetryWithoutTheEarlierError(t *testing.T) {
+	inner := &flakyLLM{fail: true, resp: &model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"ok":1}`}}}}}
+	decorated := fastModel(inner, "explorer", nil)
+	var finished []CallInfo
+	decorated.observer = func(info CallInfo) {
+		if !info.Started {
+			finished = append(finished, info)
+		}
+	}
+	for _, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		require.NoError(t, err)
+	}
+	require.Len(t, finished, 2)
+	require.Error(t, finished[0].Err, "the first attempt failed")
+	require.NoError(t, finished[1].Err, "the retry answered, so it must not carry the first attempt's error")
+	require.False(t, finished[1].Retrying)
+}
+
 func TestFenceStrippingModelRecordsUsage(t *testing.T) {
 	inner := &fakeLLM{resp: &model.LLMResponse{
 		Content:       &genai.Content{Parts: []*genai.Part{{Text: `{"a":1}`}}},

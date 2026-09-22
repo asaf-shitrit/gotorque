@@ -127,6 +127,7 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 			// a completion line alone arrives only once the attempt is over, so
 			// four minutes of silence reads the same as four minutes of work.
 			m.observer.observe(CallInfo{Role: m.role, Attempt: attempt + 1, Started: true})
+			run.startAttempt()
 			done := m.runAttempt(ctx, req, stream, yield, run)
 			// Reported per attempt rather than per call: a campaign that
 			// prints only the final outcome cannot distinguish a slow
@@ -182,6 +183,13 @@ type generateRun struct {
 	lastErr error
 	partial bool
 }
+
+// startAttempt forgets the previous attempt before the next one runs. An
+// attempt that answers records nothing, so without the reset a retry that
+// succeeded was reported with the failure of the attempt before it: a live
+// campaign logged "explorer attempt 2 failed after 44.222s: model call attempt
+// exceeded its 4m0s budget" for an attempt that had answered in 44 seconds.
+func (r *generateRun) startAttempt() { r.last, r.lastErr = nil, nil }
 
 func (r *generateRun) recordErr(err error) { r.last, r.lastErr = nil, err }
 
