@@ -568,7 +568,7 @@ evidence gathered with degraded isolation is not equivalent.
 
 ## CI
 
-CI runs unit tests, builds the CLI, validates the checked-in target
+CI runs unit tests under the race detector, builds the CLI, validates the checked-in target
 manifests, and performs a deterministic stub-agent smoke campaign against a
 pinned gojq clone, with no model endpoint involved. Both CI and the nightly
 workflow run in a container granted `SYS_ADMIN` so bubblewrap can create
