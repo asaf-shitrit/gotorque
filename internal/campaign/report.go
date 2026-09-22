@@ -240,7 +240,7 @@ func writeDegradedRoles(b *strings.Builder, state State) {
 	if len(state.DegradedRoles) == 0 {
 		return
 	}
-	b.WriteString("\n## Degraded roles\n\nA role whose model call failed is absorbed rather than fatal: the campaign continues with an empty result, so a candidate below may be missing that role's output.\n\n")
+	b.WriteString("\n## Degraded roles\n\nA role whose model call failed is absorbed rather than fatal: the campaign continues with an empty result, so a candidate below may be missing that role's output. A cycle in which every model role failed stops the campaign as `failed` instead, naming the provider; resume it once the provider answers.\n\n")
 	for _, degraded := range state.DegradedRoles {
 		fmt.Fprintf(b, "- `%s`: %s\n", degraded.Role, degraded.Cause)
 	}

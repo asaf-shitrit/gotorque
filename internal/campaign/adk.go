@@ -212,6 +212,11 @@ func (s adkServices) RecordRoleRepaired(_ context.Context, role string, repair a
 
 func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result orchestrator.CampaignResult) (domain.Job, error) {
 	job.Status = domain.JobSucceeded
+	if result.ProviderFailure != "" {
+		// The graph stopped because nothing answered, not because a bound was
+		// reached, so the job did not succeed.
+		job.Status = domain.JobFailed
+	}
 	job.UpdatedAt = time.Now().UTC()
 	_ = s.engine.saveEvent("adk_finalized", result.StopReason, result)
 	return job, nil

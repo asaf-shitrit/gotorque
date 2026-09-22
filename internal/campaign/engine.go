@@ -588,6 +588,15 @@ func (e *Engine) finishCampaign(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if result.ProviderFailure != "" {
+			// Every model role failed in one cycle: no bound was reached, so
+			// "completed" would misreport the campaign, and a completed campaign
+			// cannot be resumed once the provider answers again. Returning the
+			// failure lets captureRunFailure record it as failed with this stop
+			// reason, and the command exits non-zero.
+			e.state.StopReason = result.StopReason
+			return fmt.Errorf("%w: %s", orchestrator.ErrProviderUnavailable, result.ProviderFailure)
+		}
 		if strings.TrimSpace(result.StopReason) != "" {
 			stopReason = result.StopReason
 		}

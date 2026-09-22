@@ -50,7 +50,22 @@ initialize_campaign
 The route node stops the loop when the manifest's maximum candidate count or
 consecutive-failure limit is reached; the engine's `max_duration` bound (see
 Campaign bounds) can also end a run from outside the graph, at whatever node
-is executing when it expires. The final acceptance transition is
+is executing when it expires.
+
+A role whose model call fails degrades to an empty result (`role_degraded`)
+instead of ending the run, because every role has a deterministic fallback
+for an absent answer. A provider that is down, or a revoked key, used to
+exploit that: every role degraded on every cycle, the optimizer's empty patch
+was rejected as if a model had written it, and the campaign ended
+`completed` at the rejection streak, blaming the patches for the provider.
+Each degraded role now appends to `CampaignState.CycleFailures`, and route
+checks it before any bound. When every model role failed in the same cycle,
+the campaign stops with a stop reason naming the last failure, and
+`finishCampaign` returns `ErrProviderUnavailable`, so it ends `failed` and can
+be resumed once the provider answers. The record is cleared every cycle, so
+roles that fail in different cycles never add up to an outage.
+
+The final acceptance transition is
 always produced by deterministic policy (`internal/policy`); agent output,
 including the reviewer's recommendation, never decides acceptance by itself.
 

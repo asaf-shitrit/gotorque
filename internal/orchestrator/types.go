@@ -120,8 +120,16 @@ type PriorCandidate struct {
 	FailureDetail string   `json:"failure_detail,omitempty"`
 }
 
+// RoleFailure is one role call the graph absorbed instead of failing on.
+type RoleFailure struct {
+	Role  string `json:"role"`
+	Cause string `json:"cause"`
+}
+
 // CampaignState is passed between graph nodes and mirrored into ADK session
-// state. Deterministic nodes are the only writers of this structure.
+// state. Deterministic code is the only writer of this structure: the function
+// nodes, and the degrading wrapper, which records a failed role call in
+// CycleFailures without ever reading the model output it failed to get.
 type CampaignState struct {
 	Request             CampaignRequest          `json:"request"`
 	Job                 domain.Job               `json:"job"`
@@ -145,6 +153,17 @@ type CampaignState struct {
 	AcceptedCandidates      []string  `json:"accepted_candidates,omitempty"`
 	StartedAt               time.Time `json:"started_at"`
 	StopReason              string    `json:"stop_reason,omitempty"`
+	// CycleFailures lists the role calls that failed and were absorbed during
+	// the current coordinator-to-reviewer cycle. The degrading wrapper appends
+	// to it and the route node clears it before the next cycle, so the route
+	// can tell one flaky call from a provider that answered nothing all cycle.
+	// It never outlives a cycle: a resumed campaign starts a fresh one, so it
+	// needs no persistence of its own.
+	CycleFailures []RoleFailure `json:"cycle_failures,omitempty"`
+	// ProviderFailure is set when the route stopped the campaign because every
+	// model role failed in the same cycle. It holds the last failure, as
+	// "role: cause".
+	ProviderFailure string `json:"provider_failure,omitempty"`
 
 	// SourceExcerpts is best-effort enrichment: real code around hot paths
 	// so the optimizer can write patch context lines that git apply accepts.
@@ -176,4 +195,9 @@ type CampaignResult struct {
 	AcceptedCandidates []string          `json:"accepted_candidates,omitempty"`
 	FinalEvaluation    domain.Evaluation `json:"final_evaluation"`
 	StopReason         string            `json:"stop_reason"`
+	// ProviderFailure is non-empty when the campaign stopped because every
+	// model role failed in one cycle; it holds the last failure. The caller
+	// reports such a campaign as failed rather than completed: no bound was
+	// reached, and the patches it rejected were empty for want of a provider.
+	ProviderFailure string `json:"provider_failure,omitempty"`
 }
