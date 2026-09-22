@@ -52,3 +52,10 @@ func stubAgent[T any](name string, value T) (adkagent.Agent, error) {
 		}
 	}})
 }
+
+// PlannedExplorer stands in for the explorer role when workloads are chosen
+// before discovery by code and Jev (--explorer jev). The model's proposals were
+// validated and counted but never run; this answers at once with the plan.
+func PlannedExplorer() (adkagent.Agent, error) {
+	return stubAgent(string(RoleExplorer), ExplorerResult{Rationale: []string{"workloads were chosen before discovery: the target's own options that Jev judged processing modes, kept when they change the output"}})
+}

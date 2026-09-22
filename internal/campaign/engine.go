@@ -124,6 +124,9 @@ type State struct {
 	// Reviewer is ReviewerJev when the reviewer role was Jev behaviour-hazard
 	// checks rather than a model.
 	Reviewer string `json:"reviewer,omitempty"`
+	// Explorer is ExplorerJev when discovery's extra workloads were generated
+	// by code and judged by Jev instead of proposed by the explorer model.
+	Explorer string `json:"explorer,omitempty"`
 	// SchemaVersion is stamped by WriteReports onto the artifact it writes, so a
 	// report carries the shape it was written in. It stays zero for state that
 	// predates versioning, which readers report rather than assume.
@@ -156,15 +159,18 @@ type State struct {
 	// cannot stand in for it: a campaign is idle between an interruption and
 	// its resume, and charging that idle time against max_duration would
 	// expire any campaign resumed the next day.
-	ElapsedRunTime              time.Duration `json:"elapsed_run_time,omitempty"`
-	Environment                 Environment   `json:"environment"`
-	Inventory                   Inventory     `json:"inventory"`
-	BuildID                     string        `json:"build_id,omitempty"`
-	BinaryPath                  string        `json:"binary_path,omitempty"`
-	DiscoveryBuildID            string        `json:"discovery_build_id,omitempty"`
-	DiscoveryBinaryPath         string        `json:"discovery_binary_path,omitempty"`
-	DiscoveryHotFunctions       []string      `json:"discovery_hot_functions,omitempty"`
-	DiscoveryProfileSummaryPath string        `json:"discovery_profile_summary_path,omitempty"`
+	ElapsedRunTime        time.Duration `json:"elapsed_run_time,omitempty"`
+	Environment           Environment   `json:"environment"`
+	Inventory             Inventory     `json:"inventory"`
+	BuildID               string        `json:"build_id,omitempty"`
+	BinaryPath            string        `json:"binary_path,omitempty"`
+	DiscoveryBuildID      string        `json:"discovery_build_id,omitempty"`
+	DiscoveryBinaryPath   string        `json:"discovery_binary_path,omitempty"`
+	DiscoveryHotFunctions []string      `json:"discovery_hot_functions,omitempty"`
+	// DiscoveryWorkloads names the option variants discovery sampled next to
+	// the first seed, with Jev's processing-mode judgment of each.
+	DiscoveryWorkloads          []string `json:"discovery_workloads,omitempty"`
+	DiscoveryProfileSummaryPath string   `json:"discovery_profile_summary_path,omitempty"`
 	// PGOProfilePath points at the raw pprof-format CPU profile produced by
 	// benchmark-based discovery (profiles/bench-cpu.pb.gz), or is empty when
 	// only a non-pprof sampler report exists. Only this file may seed the
@@ -365,7 +371,7 @@ func attachADK(e *Engine, opts Options) {
 	e.noteAnalyst(opts.ADKAgents)
 }
 
-// noteAnalyst records a switch of the analyst or reviewer to Jev. It never
+// noteAnalyst records a switch of the analyst, reviewer, or explorer to Jev. It never
 // clears a mark: a campaign any part of which ran on Jev says so.
 func (e *Engine) noteAnalyst(roleSet *agents.Set) {
 	if roleSet == nil {
@@ -376,6 +382,9 @@ func (e *Engine) noteAnalyst(roleSet *agents.Set) {
 	}
 	if roleSet.ReviewEvaluator != nil {
 		e.state.Reviewer = ReviewerJev
+	}
+	if roleSet.ExploreEvaluator != nil {
+		e.state.Explorer = ExplorerJev
 	}
 }
 
@@ -763,25 +772,36 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 		return errors.New("manifest defines no seed workloads to sample")
 	}
 	seed := e.state.Manifest.Workloads.Seeds[0]
+	result, err := e.sampleSeed(ctx, seed, "sample-report.txt")
+	if err != nil {
+		return err
+	}
+	results := append([]profile.SampleResult{result}, e.sampleExplored(ctx, seed)...)
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", e.sampledHotNames(results...))
+	e.state.DiscoveryProfileSummaryPath = result.RawReport
+	return nil
+}
+
+// sampleSeed samples one workload under the platform sampler, with its input
+// amplified so the target outlives the sampling window.
+func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
+	return e.sampleWith(ctx, seed, amplifyStdin([]byte(seed.Stdin)), reportName)
+}
+
+// sampleWith samples one workload on the given input.
+func (e *Engine) sampleWith(ctx context.Context, seed manifest.SeedWorkload, stdin []byte, reportName string) (profile.SampleResult, error) {
 	fixtures := make(map[string][]byte, len(seed.Files))
 	for _, f := range seed.Files {
 		fixtures[f.Path] = []byte(f.Content)
 	}
-	outDir := filepath.Join(e.dir, "profile-sample")
-	result, err := profile.SampleTargetProfile(ctx, profile.SampleTarget{
+	return profile.SampleTargetProfile(ctx, profile.SampleTarget{
 		BinaryPath: e.state.BinaryPath,
 		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),
-		Stdin:      amplifyStdin([]byte(seed.Stdin)),
+		Stdin:      stdin,
 		Fixtures:   fixtures,
 		Duration:   4 * time.Second,
-		OutputPath: filepath.Join(outDir, "sample-report.txt"),
+		OutputPath: filepath.Join(e.dir, "profile-sample", reportName),
 	})
-	if err != nil {
-		return err
-	}
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", e.sampledHotNames(result))
-	e.state.DiscoveryProfileSummaryPath = result.RawReport
-	return nil
 }
 
 // sampledHotNames ranks the target's own functions by the samples spent on
@@ -798,18 +818,60 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 //
 // It returns up to twice the budget, because resolveHotLocations folds symbols
 // that share a declaration and keeps resolving until the budget is filled.
-func (e *Engine) sampledHotNames(result profile.SampleResult) []string {
+//
+// With explored workloads there are several samples; mergeAttributed weighs
+// each as a whole, so a mode only a variant reaches ranks by its share of that
+// variant's time rather than disappearing behind the seed.
+func (e *Engine) sampledHotNames(results ...profile.SampleResult) []string {
 	limit := 2 * hotFunctionBudget
-	names := hotFunctionNames(profile.AttributeToOwn(result.Stacks, e.ownSymbol), limit)
-	for _, name := range hotFunctionNames(result.Functions, limit) {
-		if len(names) == limit {
-			break
-		}
-		if !slices.Contains(names, name) {
-			names = append(names, name)
+	names := hotFunctionNames(mergeAttributed(results, e.ownSymbol), limit)
+	for _, result := range results {
+		for _, name := range hotFunctionNames(result.Functions, limit) {
+			if len(names) < limit && !slices.Contains(names, name) {
+				names = append(names, name)
+			}
 		}
 	}
 	return names
+}
+
+// mergeAttributed sums each sample's attributed weights as fractions of that
+// sample's total, so every sampled workload counts equally whatever its length.
+func mergeAttributed(results []profile.SampleResult, own func(string) bool) []profile.Function {
+	weights := map[string]float64{}
+	for _, result := range results {
+		attributed := profile.AttributeToOwn(result.Stacks, own)
+		total := 0.0
+		for _, fn := range attributed {
+			total += float64(atoiOrZero(fn.Flat))
+		}
+		if total == 0 {
+			continue
+		}
+		for _, fn := range attributed {
+			weights[fn.Name] += float64(atoiOrZero(fn.Flat)) / total
+		}
+	}
+	names := make([]string, 0, len(weights))
+	for name := range weights {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if weights[names[i]] != weights[names[j]] {
+			return weights[names[i]] > weights[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	merged := make([]profile.Function, 0, len(names))
+	for _, name := range names {
+		merged = append(merged, profile.Function{Name: name, Flat: strconv.Itoa(int(weights[name] * 10000))})
+	}
+	return merged
+}
+
+func atoiOrZero(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
 }
 
 // ownSymbol reports whether a sampled frame belongs to the target: its package
@@ -940,6 +1002,12 @@ func widest(a, b jsonSpan) jsonSpan {
 
 // repeatStdin is the format-agnostic fallback: it lengthens the input for any
 // target that consumes all of stdin.
+// repeatLines repeats the input one copy per line, the shape a line-oriented
+// mode reads as many documents.
+func repeatLines(stdin []byte) []byte {
+	return repeatStdin(append(bytes.TrimRight(stdin, "\n"), '\n'))
+}
+
 func repeatStdin(stdin []byte) []byte {
 	amplified := make([]byte, 0, maxAmplifiedStdin)
 	for len(amplified) < amplificationTarget {

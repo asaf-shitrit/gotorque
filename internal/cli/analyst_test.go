@@ -114,3 +114,17 @@ func TestAttachResumeADKRequiresTheReviewerAJevCampaignStartedWith(t *testing.T)
 	require.ErrorContains(t, err, "started with --reviewer jev")
 	require.NoError(t, attachResumeADK(context.Background(), io.Discard, engine, optimizeFlags{resume: "campaign-dir", runADKStub: true, reviewer: analystJev}, nil, nil))
 }
+
+func TestExplorerFlagReplacesTheExplorerWithAPlan(t *testing.T) {
+	require.ErrorContains(t, validateJevRoles(optimizeFlags{explorer: analystJev}), "--explorer jev needs --adk or --adk-stub")
+	roles := &agents.Set{}
+	var out bytes.Buffer
+	require.NoError(t, selectJev(context.Background(), &out, roles, optimizeFlags{runADKStub: true, explorer: analystJev}))
+	require.Equal(t, jev.Stub{}, roles.ExploreEvaluator)
+	require.NotNil(t, roles.Explorer)
+	require.Equal(t, "explorer", roles.Explorer.Name())
+	require.Contains(t, out.String(), "explorer: the target's own processing modes, judged by Jev")
+
+	engine := resumeEngine(t, campaign.State{ID: "campaign-test", ADKMode: "live", Explorer: campaign.ExplorerJev})
+	require.ErrorContains(t, attachResumeADK(context.Background(), io.Discard, engine, optimizeFlags{resume: "campaign-dir", runADKStub: true}, nil, nil), "started with --explorer jev")
+}

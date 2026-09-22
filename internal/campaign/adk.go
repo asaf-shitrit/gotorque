@@ -303,6 +303,9 @@ func (s adkServices) Discover(_ context.Context, req orchestrator.DiscoveryReque
 	if s.engine.state.DiscoveryProfileSummaryPath != "" {
 		metadata["profile_summary"] = s.engine.state.DiscoveryProfileSummaryPath
 	}
+	if len(s.engine.state.DiscoveryWorkloads) > 0 {
+		metadata["explored_workloads"] = strings.Join(s.engine.state.DiscoveryWorkloads, "; ")
+	}
 	// Explorer proposals are model output: validate each one deterministically
 	// and drop invalid proposals instead of failing the whole turn, mirroring
 	// the fixture-shape tolerance used elsewhere.

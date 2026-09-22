@@ -79,6 +79,12 @@ type Set struct {
 	// behaviour-hazard checks (--reviewer jev). The Reviewer agent is still
 	// built but never run.
 	ReviewEvaluator jev.Evaluator
+
+	// ExploreEvaluator, when set, replaces the explorer role (--explorer jev):
+	// before discovery, code finds the target's options, Jev judges which
+	// select a processing mode, and discovery samples those variants. Explorer
+	// is then a stub that states this plan instead of a model call.
+	ExploreEvaluator jev.Evaluator
 }
 
 // All returns the role agents in a stable order.

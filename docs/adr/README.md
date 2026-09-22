@@ -21,5 +21,6 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0012](0012-jev-cause-analyst.md) | Jev cause classification may replace the analyst model | accepted (opt-in) |
 | [0013](0013-code-chooses-the-target.md) | With causes ranked, code chooses each candidate's target | accepted (opt-in) |
 | [0014](0014-jev-reviewer.md) | Jev behaviour-hazard checks may replace the reviewer model, and reviews are kept | accepted (opt-in) |
+| [0015](0015-jev-explorer.md) | Code-generated option variants, judged by Jev, may replace the explorer model | accepted (opt-in) |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence).

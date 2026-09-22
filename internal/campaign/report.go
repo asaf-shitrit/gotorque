@@ -156,6 +156,9 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.Reviewer == ReviewerJev {
 		fmt.Fprintf(b, "- Reviewer: Jev behaviour-hazard checks (`%s`), not a model role\n", jev.Model)
 	}
+	if state.Explorer == ExplorerJev {
+		fmt.Fprintf(b, "- Explorer: the target's own options, judged by Jev (`%s`); discovery also sampled: %s\n", jev.Model, orNone(strings.Join(state.DiscoveryWorkloads, "; ")))
+	}
 	b.WriteString("\n")
 	writeSchemaNotice(b, state)
 }
@@ -452,4 +455,11 @@ func fmtFloats(values []float64) string {
 		parts = append(parts, strconv.FormatInt(int64(v), 10))
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }

@@ -34,7 +34,8 @@ actual node sequence built by `internal/orchestrator` is:
 initialize_campaign
   -> inspect_repository
   -> coordinator (choose next experiment)
-  -> explorer (propose workload strategies)
+  -> explorer (propose workload strategies; with --explorer jev, a stub that
+              reports the variants discovery already sampled)
   -> run_discovery (deterministic; validates each proposal)
   -> analyst (interpret profile and coverage evidence; with --analyst jev,
              deterministic Jev cause classification instead of a model)
@@ -390,6 +391,64 @@ nothing kept it. Its concerns are now recorded with the verdict, printed in the
 report under the candidate, and carried into the next cycle's
 `prior_candidates`, whichever reviewer ran. They remain advice: the policy
 never reads them.
+
+## Jev explorer
+
+`--explorer jev` (with `--adk` or `--adk-stub`) replaces the explorer model role
+(ADR 0015). The model's proposals were validated by `run_discovery` and counted,
+but never run, so discovery only ever sampled the manifest's first seed and a
+CLI's other modes were invisible to it: gron's `--stream` runs `gronStream`,
+which the seed never reaches. With the flag, the variants are chosen before
+discovery samples anything (`internal/campaign/explore.go`), and the explorer
+node answers at once with that plan (`agents.PlannedExplorer`):
+
+1. Code lists the boolean options the target declares
+   (`internal/workload.BoolFlags`): standard `flag` and pflag/cobra `Bool`,
+   `BoolVar`, `BoolP` and `BoolVarP` calls on any receiver, and go-flags
+   `long:` tags on bool fields. Spellings bound to one variable are one option
+   (gron's `-s` and `--stream`). They are read from the build package or, when
+   it declares none (gojq's live in `./cli`), from the module package that
+   declares the most. Options the seed already passes are skipped.
+2. Code runs the target's `--help` in the sandbox and keeps what it printed on
+   either stream, whatever the exit status.
+3. Jev answers, in one request whose state is the command and its help text,
+   one yes/no question per option: does it change how the program processes
+   its input or formats its output. An option is a processing mode at
+   probability one half or more (`jev.ModeFloor`); each option is judged on its
+   own, so no baseline is needed. On gron and gojq the modes answered 0.89 to
+   0.98, while `--help`, `--version`, `--insecure` and `--exit-status` answered
+   0.09 to 0.15, and gojq's `--from-file` 0.49. An earlier wording that asked
+   whether a typical user passes the option put nearly everything below one
+   half.
+4. Code runs each mode once on the seed input, likeliest first, with the option
+   placed before the seed's arguments (the standard flag package stops at the
+   first positional argument), and keeps those that exit 0 with output
+   different from the seed's: an option that fails on this input or changes
+   nothing reaches no new code. At most three are kept
+   (`maxExploredWorkloads`), since each costs a sampling window.
+5. Discovery samples each kept variant after the seed, on the seed's amplified
+   input and, if the target exits before the sampler attaches, on the seed
+   input repeated one copy per line. gron's `--stream` reads one document per
+   line of at most 1 MiB and exits at once on the 16 MiB single-line document,
+   while its default mode would finish the line-repeated input in 10 ms, so
+   neither shape serves both. A variant that cannot be sampled either way is
+   recorded (`workload_sample_skipped`) and left out.
+6. The samples are merged by share (`mergeAttributed`): each sample's
+   attributed weights become fractions of that sample before they are summed,
+   so a mode only one variant reaches ranks by its share of that variant's time
+   instead of disappearing behind the seed's.
+
+On gron the variants were `--stream` (0.97), `--json` (0.95) and `--no-sort`
+(0.93). `gronStream` entered the hot list third and the `--json` path
+(`jsonify`, `statementsFromJSON`) entered it too, while `strconv.Atoi` and
+`strings.Join`, which had filled its tail, dropped out.
+
+Jev decides nothing here. Code finds the options, runs them, and decides which
+reach the profile, and Jev only orders and filters which ones are worth a run.
+The variants only widen discovery: they are never measured workloads, and no
+verdict reads them. The chosen variants are kept in campaign state
+(`discovery_workloads`), in the discovery step's metadata
+(`explored_workloads`), and in the report header.
 
 ## Discovery benchmark profiling
 

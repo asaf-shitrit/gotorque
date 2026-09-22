@@ -36,7 +36,7 @@ CLI surface (`internal/cli/root.go`):
 ```sh
 gotorque manifest validate targets/gojq/manifest.json
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk-stub
-gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --analyst jev --reviewer jev
+gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --analyst jev --reviewer jev --explorer jev
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
 ```
@@ -126,7 +126,11 @@ Package map:
   `types.go`). This layer only removes parse failures; it never relaxes policy.
 - `internal/jev`: TypeSafe Jev client (Vercel AI Gateway `/v1/evaluate`), the
   seven cause questions, their measured baseline, and the pure ranking used by
-  `--analyst jev` (`internal/campaign/causes.go` is the analyst node itself).
+  `--analyst jev` (`internal/campaign/causes.go` is the analyst node itself),
+  plus the reviewer's hazard questions and the explorer's option question.
+- `internal/workload`: validates explorer proposals, generates cases, and reads
+  the boolean options a target's source declares, which `--explorer jev`
+  (`internal/campaign/explore.go`) turns into discovery variants.
 - `internal/policy`: pure acceptance decision. No filesystem, process, or
   network access; keep it that way.
 - `internal/candidate`: unified-diff normalization, validation, worktrees.
@@ -197,9 +201,9 @@ OpenRouter (`internal/agents/routing.go`). `OPENROUTER_BASE_URL` overrides the
 endpoint.
 Optional `GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}`
 (`low|medium|high`) sets per-role `reasoning.effort`. Unset sends nothing,
-and an invalid value fails the preflight. `--analyst jev` replaces the analyst
-role with Jev cause classification, which needs `AI_GATEWAY_API_KEY` instead
-(ADR 0012).
+and an invalid value fails the preflight. `--analyst jev`, `--reviewer jev`
+and `--explorer jev` replace those roles with Jev questions, which need
+`AI_GATEWAY_API_KEY` instead (ADRs 0012, 0014, 0015).
 Credentials are never persisted into campaign state.
 
 ## Commit messages

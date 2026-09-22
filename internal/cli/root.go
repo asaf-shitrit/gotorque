@@ -41,7 +41,7 @@ func New(deps Dependencies) *cobra.Command {
 type optimizeFlags struct {
 	repo, manifestPath, campaignDir, resume string
 	runADK, runADKStub                      bool
-	analyst, reviewer                       string
+	analyst, reviewer, explorer             string
 }
 
 // Role backends for --analyst and --reviewer. llm is the model role; jev
@@ -68,6 +68,7 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&f.runADK, "adk", false, "run the full ADK graph using the OpenAI-compatible endpoint")
 	cmd.Flags().BoolVar(&f.runADKStub, "adk-stub", false, "run the full ADK graph with deterministic stub agents")
 	cmd.Flags().StringVar(&f.analyst, "analyst", analystLLM, "analyst backend: llm (the analyst model role) or jev (TypeSafe Jev cause classification; needs "+jev.EnvAPIKey+" with --adk)")
+	cmd.Flags().StringVar(&f.explorer, "explorer", analystLLM, "explorer backend: llm (the explorer model role) or jev (the target's own options, judged by TypeSafe Jev and sampled in discovery; needs "+jev.EnvAPIKey+" with --adk)")
 	cmd.Flags().StringVar(&f.reviewer, "reviewer", analystLLM, "reviewer backend: llm (the reviewer model role) or jev (TypeSafe Jev behaviour-hazard checks; needs "+jev.EnvAPIKey+" with --adk)")
 	return cmd
 }
@@ -188,14 +189,19 @@ func requireSameJevRoles(state campaign.State, f optimizeFlags) error {
 	if state.Reviewer == campaign.ReviewerJev && f.reviewer != analystJev {
 		return fmt.Errorf("campaign %s was started with --reviewer jev; pass it again to resume with the same reviewer", f.resume)
 	}
+	if state.Explorer == campaign.ExplorerJev && f.explorer != analystJev {
+		return fmt.Errorf("campaign %s was started with --explorer jev; pass it again to resume with the same explorer", f.resume)
+	}
 	return nil
 }
 
 func validateJevRoles(f optimizeFlags) error {
-	if err := validateBackend("--analyst", f.analyst, f); err != nil {
-		return err
+	for _, backend := range []struct{ flag, value string }{{"--analyst", f.analyst}, {"--reviewer", f.reviewer}, {"--explorer", f.explorer}} {
+		if err := validateBackend(backend.flag, backend.value, f); err != nil {
+			return err
+		}
 	}
-	return validateBackend("--reviewer", f.reviewer, f)
+	return nil
 }
 
 func validateBackend(flag, value string, f optimizeFlags) error {
@@ -211,31 +217,53 @@ func validateBackend(flag, value string, f optimizeFlags) error {
 	return fmt.Errorf("unknown %s %q: want %s or %s", flag, value, analystLLM, analystJev)
 }
 
-// selectJev swaps the analyst and reviewer roles for Jev when --analyst jev or
-// --reviewer jev asks for it. Under --adk-stub it uses the no-network stub; under
-// --adk it spends one request proving the key and billing work, because a
-// gateway account without a card on file refuses every request and those
-// roles are reached only after the baseline has been built.
+// selectJev swaps the analyst, reviewer, and explorer roles for Jev when
+// --analyst jev, --reviewer jev, or --explorer jev asks for it. Under --adk-stub
+// it uses the no-network stub; under --adk it spends one request proving the key
+// and billing work, because a gateway account without a card on file refuses
+// every request and those roles are reached only after the baseline has been
+// built.
 func selectJev(ctx context.Context, out io.Writer, roles *agents.Set, f optimizeFlags) error {
-	analyst, reviewer := f.analyst == analystJev, f.reviewer == analystJev
-	if roles == nil || (!analyst && !reviewer) {
+	if roles == nil || (f.analyst != analystJev && f.reviewer != analystJev && f.explorer != analystJev) {
 		return nil
 	}
 	evaluator, err := jevEvaluator(ctx, f)
 	if err != nil {
 		return err
 	}
-	if analyst {
-		roles.CauseEvaluator = evaluator
-		if _, err := fmt.Fprintf(out, "analyst: Jev cause classification (%s)\n", jev.Model); err != nil {
+	lines, err := assignJev(roles, evaluator, f) //nolint:contextcheck // assigns fields and builds a static stub agent: no I/O, nothing to cancel
+	if err != nil {
+		return err
+	}
+	for _, line := range lines {
+		if _, err := fmt.Fprintf(out, "%s (%s)\n", line, jev.Model); err != nil {
 			return err
 		}
 	}
-	if reviewer {
-		roles.ReviewEvaluator = evaluator
-		_, err = fmt.Fprintf(out, "reviewer: Jev behaviour-hazard checks (%s)\n", jev.Model)
+	return nil
+}
+
+// assignJev hands the evaluator to each role the flags move to Jev and names
+// those roles for the progress output.
+func assignJev(roles *agents.Set, evaluator jev.Evaluator, f optimizeFlags) ([]string, error) {
+	var lines []string
+	if f.analyst == analystJev {
+		roles.CauseEvaluator = evaluator
+		lines = append(lines, "analyst: Jev cause classification")
 	}
-	return err
+	if f.reviewer == analystJev {
+		roles.ReviewEvaluator = evaluator
+		lines = append(lines, "reviewer: Jev behaviour-hazard checks")
+	}
+	if f.explorer == analystJev {
+		explorer, err := agents.PlannedExplorer()
+		if err != nil {
+			return nil, err
+		}
+		roles.Explorer, roles.ExploreEvaluator = explorer, evaluator
+		lines = append(lines, "explorer: the target's own processing modes, judged by Jev")
+	}
+	return lines, nil
 }
 
 func jevEvaluator(ctx context.Context, f optimizeFlags) (jev.Evaluator, error) {
