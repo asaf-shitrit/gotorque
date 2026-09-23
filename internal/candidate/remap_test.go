@@ -47,3 +47,25 @@ func contains(haystack, needle string) bool {
 		return false
 	})()
 }
+
+// TestRemapDiffPathsNamespacesABareHeader: `--- cli/cli.go` names a file that
+// exists, but git apply strips one component and looks for cli.go, so the
+// header is put in the a/ b/ namespace.
+func TestRemapDiffPathsNamespacesABareHeader(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "cli"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cli", "cli.go"), []byte("package cli\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte("--- cli/cli.go\n+++ cli/cli.go\n@@ -1 +1 @@\n-package cli\n+package cli // changed\n")
+	got, changed := RemapDiffPaths(root, patch)
+	if !changed {
+		t.Fatal("expected the bare header to be namespaced")
+	}
+	want := "--- a/cli/cli.go\n+++ b/cli/cli.go\n@@ -1 +1 @@\n-package cli\n+package cli // changed\n"
+	if string(got) != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

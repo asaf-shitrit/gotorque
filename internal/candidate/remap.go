@@ -22,7 +22,17 @@ func RemapDiffPaths(worktree string, patch []byte) ([]byte, bool) {
 		}
 		full := filepath.Join(worktree, target)
 		if _, err := os.Stat(full); err == nil {
-			continue // exists; leave untouched
+			// The file exists as named. A header already in the a/ b/
+			// namespace is left untouched; one without it is put there,
+			// because git apply strips one leading component, and a bare
+			// `--- cli/cli.go` then names cli.go at the root. On a live
+			// gojq campaign that turned the one correct patch of the run
+			// into "patch does not apply".
+			if fixed := prefix + namespace + target + extra; !hasNamespace(line, prefix, namespace) && fixed != line {
+				lines[i] = fixed
+				changed = true
+			}
+			continue
 		}
 		match, ok := uniqueSuffixMatch(worktree, target)
 		if !ok {
@@ -61,6 +71,10 @@ func parseRemapHeader(line string) (prefix, namespace, target, extra string, ok 
 		return "", "", "", "", false
 	}
 	return prefix, namespace, target, restoreFields(clean), true
+}
+
+func hasNamespace(line, prefix, namespace string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(line, prefix), namespace)
 }
 
 func restoreFields(fields []string) string {
