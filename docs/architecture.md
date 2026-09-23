@@ -366,7 +366,13 @@ attacks (ADR 0013). The analysis carries its flags as structured `targets`
 (function, location, cause, remedy) in the order above, and `merge_analysis`
 picks the first one no earlier candidate tried (`planTarget`), writes its remedy
 as the coordinator's experiment, and cuts the source excerpts down to that
-function; the optimizer's instruction forbids patching any other. Tried targets
+function; the optimizer's instruction forbids patching any other. The
+optimizer's input is then an `OptimizerBrief` (the optimization mode, the
+target, its excerpts and the prior candidates) rather than the whole campaign
+state: discovery evidence, the full analysis and the repository inventory are
+things it has been told not to act on. The session keeps the full state for the
+deterministic nodes, and a cycle with no target left hands the optimizer
+everything, as before. Tried targets
 are recorded with each verdict and handed back on resume, so no target is
 attacked twice, and once every flagged target has been tried the optimizer
 chooses freely again. The coordinator model is not called in this mode, because

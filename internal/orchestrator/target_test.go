@@ -2,11 +2,18 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
+	"iter"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/session"
 )
 
 var (
@@ -111,5 +118,81 @@ func TestCodeChoosesEachCycleTarget(t *testing.T) {
 	if len(policy.targets) != 3 || policy.targets[0] == nil || *policy.targets[0] != targetLoop ||
 		policy.targets[1] == nil || *policy.targets[1] != targetAlloc || policy.targets[2] != nil {
 		t.Errorf("targets per verdict = %v, want the loop, then the allocation, then none", policy.targets)
+	}
+}
+
+// inputRecorder is an optimizer that remembers the text of every input it was
+// handed and answers with a fixed proposal.
+func inputRecorder(t *testing.T, inputs *[]string) adkagent.Agent {
+	t.Helper()
+	a, err := adkagent.New(adkagent.Config{
+		Name: "optimizer",
+		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				var text strings.Builder
+				if content := ctx.UserContent(); content != nil {
+					for _, part := range content.Parts {
+						text.WriteString(part.Text)
+					}
+				}
+				*inputs = append(*inputs, text.String())
+				ev := session.NewEvent(ctx, ctx.InvocationID())
+				ev.Output = map[string]any{"hypothesis": "buffer output", "patch": []string{"diff"}}
+				yield(ev, nil)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("create optimizer: %v", err)
+	}
+	return a
+}
+
+// TestTheOptimizerReadsOnlyItsBrief: with a code-chosen target the optimizer
+// sees the target, its excerpt, the policy and the earlier attempts, and none
+// of the discovery evidence or analysis it is told not to act on. Once the
+// targets run out it chooses for itself, so it gets the full state again.
+func TestTheOptimizerReadsOnlyItsBrief(t *testing.T) {
+	var calls int
+	var inputs []string
+	roleSet := agents.Set{
+		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{}, &calls),
+		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{}, &calls),
+		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
+		Optimizer:   inputRecorder(t, &inputs),
+		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{}, &calls),
+	}
+	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop}}}
+	orch := mustNew(t, Dependencies{Runner: &hotRunner{}, Policy: &targetPolicy{}, Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
+		Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
+	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-brief", causeCampaign, "finalize_campaign")
+
+	if len(inputs) != 2 {
+		t.Fatalf("optimizer called %d times, want 2", len(inputs))
+	}
+	var brief map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(inputs[0]), &brief); err != nil {
+		t.Fatalf("first input is not JSON: %v\n%s", err, inputs[0])
+	}
+	want := []string{"optimization_mode", "target"}
+	for _, key := range want {
+		if _, ok := brief[key]; !ok {
+			t.Errorf("brief lacks %q: %s", key, inputs[0])
+		}
+	}
+	for _, key := range []string{"discovery", "analysis", "inspection", "explorer", "request"} {
+		if _, ok := brief[key]; ok {
+			t.Errorf("brief carries %q, which the optimizer is not to act on", key)
+		}
+	}
+	var second map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(inputs[1]), &second); err != nil {
+		t.Fatalf("second input is not JSON: %v", err)
+	}
+	if _, ok := second["discovery"]; !ok {
+		t.Errorf("with no target left the optimizer should see the full state, got keys %v", slices.Collect(maps.Keys(second)))
+	}
+	if _, ok := second["prior_candidates"]; !ok {
+		t.Errorf("second input lacks the first attempt")
 	}
 }
