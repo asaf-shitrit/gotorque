@@ -262,3 +262,43 @@ func TestRunADKWithJevAnalyst(t *testing.T) {
 	require.True(t, classified, "no cause_analysis event")
 	require.Contains(t, RenderMarkdown(engine.State()), "Analyst: Jev cause classification (`typesafe-ai/jev`)")
 }
+
+func flaggedSite(name string, flags ...jev.Score) siteVerdict {
+	return siteVerdict{Site: hotFunction{Location: name + ".go:1", Name: name}, Flagged: flags}
+}
+
+// TestTargetsWeighEvidenceAgainstHotness replays the first-cause flags of two
+// live analyses. Hotness alone sent gojq to weak fast-path flags on its
+// hottest functions before printValues' unbuffered output; z alone would send
+// gron to a fast path in statementsFromJSON before the bufio fix of its
+// output loop. Both known fixes must come first.
+func TestTargetsWeighEvidenceAgainstHotness(t *testing.T) {
+	gojq := []siteVerdict{
+		flaggedSite("flush"),
+		flaggedSite("marshal", jev.Score{Cause: jev.CauseFastPath, Z: 1.39}, jev.Score{Cause: jev.CauseUnbufferedIO, Z: 0.74}),
+		flaggedSite("Next", jev.Score{Cause: jev.CauseFastPath, Z: 1.69}),
+		flaggedSite("pushfork"),
+		flaggedSite("printValues", jev.Score{Cause: jev.CauseUnbufferedIO, Z: 3.41}, jev.Score{Cause: jev.CauseFastPath, Z: 2.13}),
+	}
+	got := targets(gojq)
+	require.Equal(t, "printValues", got[0].Function)
+	require.Equal(t, "unbuffered_io", got[0].Cause)
+	require.Equal(t, []string{"printValues", "marshal", "Next", "printValues", "marshal"}, functionsOf(got), "every first cause precedes any second cause")
+
+	gron := []siteVerdict{
+		flaggedSite("gron", jev.Score{Cause: jev.CauseUnbufferedIO, Z: 3.47}),
+		flaggedSite("Less", jev.Score{Cause: jev.CauseFastPath, Z: 0.51}),
+		flaggedSite("String", jev.Score{Cause: jev.CauseAlloc, Z: 1.35}),
+		flaggedSite("quoteString", jev.Score{Cause: jev.CausePrealloc, Z: 1.86}),
+		flaggedSite("statementsFromJSON", jev.Score{Cause: jev.CauseFastPath, Z: 3.97}),
+	}
+	require.Equal(t, "gron", targets(gron)[0].Function)
+}
+
+func functionsOf(ts []agents.Target) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, t.Function)
+	}
+	return out
+}
