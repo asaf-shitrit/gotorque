@@ -3,6 +3,8 @@ package campaign
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"example.com/gotorque/internal/agents"
@@ -111,4 +113,15 @@ func TestReviewConcernsAreRecordedAndReported(t *testing.T) {
 	report := RenderMarkdown(engine.State())
 	require.Contains(t, report, "- Reviewer: Jev behaviour-hazard checks (`typesafe-ai/jev`)")
 	require.Contains(t, report, "- Review: an error from a call that can fail is discarded (Jev yes 0.96, +5.0 sd)")
+}
+
+// TestAnImportHunkDoesNotHideThePatchedFunction: a remedy that adds an import
+// changes the file header first; the review still names the function the
+// remedy lands in.
+func TestAnImportHunkDoesNotHideThePatchedFunction(t *testing.T) {
+	repo := t.TempDir()
+	src := "// Package p does things.\npackage p\n\nimport (\n\t\"os\"\n)\n\nfunc write(b []byte) {\n\tos.Stdout.Write(b)\n}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "p.go"), []byte(src), 0o600))
+	patch := "--- a/p.go\n+++ b/p.go\n@@ -4,2 +4,3 @@\n import (\n+\t\"bufio\"\n \t\"os\"\n@@ -8,3 +9,5 @@\n func write(b []byte) {\n-\tos.Stdout.Write(b)\n+\tw := bufio.NewWriter(os.Stdout)\n+\tw.Write(b)\n+\tw.Flush()\n }\n"
+	require.Equal(t, "write", patchedFunction(repo, patch).Name)
 }

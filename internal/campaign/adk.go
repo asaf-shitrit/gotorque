@@ -214,6 +214,7 @@ func excerptCandidates(hotPaths []agents.HotPath, discovered []string) []agents.
 func (s adkServices) CollectExcerpts(_ context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
 	candidates := excerptCandidates(analysis.HotPaths, s.engine.state.DiscoveryHotFunctions)
 	excerpts, err := extractExcerpts(s.engine.state.Repository, candidates, defaultMaxExcerpts)
+	excerpts = withFileHeaders(s.engine.state.Repository, excerpts)
 	locs := make([]string, 0, len(analysis.HotPaths))
 	for _, hp := range analysis.HotPaths {
 		locs = append(locs, hp.Location)

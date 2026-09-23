@@ -277,3 +277,22 @@ func TestTheGraphRetriesATargetItNeverMeasured(t *testing.T) {
 func allTargets(got []*agents.Target, want agents.Target, n int) bool {
 	return len(got) == n && !slices.ContainsFunc(got, func(t *agents.Target) bool { return t == nil || *t != want })
 }
+
+// TestPlanTargetKeepsTheFileHeader: the header of the target's file travels
+// with the target's window, whichever hot path of that file it was collected
+// for, and headers of other files do not.
+func TestPlanTargetKeepsTheFileHeader(t *testing.T) {
+	state := CampaignState{
+		Analysis: agents.AnalystResult{Targets: []agents.Target{targetAlloc}},
+		SourceExcerpts: []SourceExcerpt{
+			{Path: "statements.go", StartLine: 1, HotPath: "statements.go:5", Content: "package main"},
+			{Path: "statements.go", StartLine: 2, HotPath: "statements.go:5"},
+			{Path: "main.go", StartLine: 1, HotPath: "main.go:206", Content: "package main"},
+			{Path: "statements.go", StartLine: 10, HotPath: "statements.go:26"},
+		},
+	}
+	planTarget(&state)
+	if len(state.SourceExcerpts) != 2 || state.SourceExcerpts[0].StartLine != 1 || state.SourceExcerpts[0].Path != "statements.go" || state.SourceExcerpts[1].HotPath != "statements.go:26" {
+		t.Errorf("excerpts = %+v, want the statements.go header, then the target's window", state.SourceExcerpts)
+	}
+}

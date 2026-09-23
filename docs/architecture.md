@@ -374,7 +374,9 @@ version in its responses. The baseline was measured on Jev 1.13; re-run
 `TestLiveBaseline` when TypeSafe ships a release.
 
 Each flagged cause becomes a one-sentence remedy in `candidate_hypotheses`,
-every function's first cause in hotness order before any second cause, and a
+every function's first cause before any second cause, each tier ordered by
+the cause's z divided by the square root of one plus its function's hotness
+rank (ADR 0018), and a
 function with nothing flagged is named in `additional_checks` rather than
 guessed at. Hot paths keep discovery's `path:line` verbatim, which the model
 analyst used to reformat. Per-function scores are persisted with a

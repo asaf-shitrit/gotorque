@@ -42,3 +42,5 @@ write the patch; it no longer decides where.
   optimizer may not follow, which is the failure observed.
 - Order targets by Jev's z-score instead of hotness: the hottest function's best-supported cause is
   the likeliest to move wall time, and on gron the accepted patch was the top target in hotness order.
+  ADR 0018 later replaced pure hotness order with z discounted by hotness rank, after gojq showed
+  hotness order spending every candidate on weak flags.

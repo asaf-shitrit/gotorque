@@ -1,6 +1,7 @@
 package campaign
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -230,18 +232,40 @@ func analystResult(verdicts []siteVerdict) agents.AnalystResult {
 	return result
 }
 
-// targets lists every flagged cause as a target, first causes of every site in
-// hotness order before any site's second cause: the hottest function's
-// best-supported cause is the likeliest to move the measured wall time. The
+// targets lists every flagged cause as a target, every site's first cause
+// before any site's second cause. Within a tier, a cause is ordered by its z
+// discounted by how far its function sits from the top of the profile,
+// z/sqrt(1+rank): strong evidence a few places down outranks weak evidence at
+// the top, and far down the list only much stronger evidence does. The
 // orchestrator attacks them in this order, one per candidate.
+//
+// Hotness alone sent a live gojq campaign, once a realistic workload was
+// measured, to three fast-path flags at +1.4 to +1.7 sd on its hottest
+// functions, all inconclusive, before printValues' unbuffered output at +3.4
+// sd, a bufio fix measured by hand at -12.8%. z alone would have sent gron to
+// a +3.97 sd fast path in statementsFromJSON before the +3.47 sd bufio fix of
+// its output loop, the patch accepted at -19%. The discounted order puts the
+// known fix first in every recorded analysis, on both targets.
 func targets(verdicts []siteVerdict) []agents.Target {
-	var out []agents.Target
+	out := make([]agents.Target, 0, len(verdicts)*jev.MaxFlagged)
 	for rank := range jev.MaxFlagged {
-		for _, v := range verdicts {
+		type ranked struct {
+			target agents.Target
+			weight float64
+		}
+		var tier []ranked
+		for i, v := range verdicts {
 			if rank < len(v.Flagged) {
 				s := v.Flagged[rank]
-				out = append(out, agents.Target{Location: v.Site.Location, Function: v.Site.Name, Cause: string(s.Cause), Remedy: s.Cause.Remedy(v.Site.Name, v.Site.Location), Z: s.Z})
+				tier = append(tier, ranked{
+					target: agents.Target{Location: v.Site.Location, Function: v.Site.Name, Cause: string(s.Cause), Remedy: s.Cause.Remedy(v.Site.Name, v.Site.Location), Z: s.Z},
+					weight: s.Z / math.Sqrt(float64(1+i)),
+				})
 			}
+		}
+		slices.SortStableFunc(tier, func(a, b ranked) int { return cmp.Compare(b.weight, a.weight) })
+		for _, r := range tier {
+			out = append(out, r.target)
 		}
 	}
 	return out

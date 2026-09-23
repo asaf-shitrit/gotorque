@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/orchestrator"
 )
 
 func lines(n int) string {
@@ -190,4 +193,30 @@ func TestExtractExcerptsCoversAMeasuredHotList(t *testing.T) {
 	if total > defaultMaxExcerpts {
 		t.Fatalf("excerpts total %d bytes, over the %d-byte budget", total, defaultMaxExcerpts)
 	}
+}
+
+// TestFileHeadersCarryTheImports: the optimizer is shown each file's header,
+// doc comment and imports included, ahead of the first window of that file,
+// once per file, and not when the window already starts at line 1.
+func TestFileHeadersCarryTheImports(t *testing.T) {
+	root := t.TempDir()
+	src := "// Package cli implements the tool.\npackage cli\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\n" + strings.Repeat("// filler\n", 60) + "func run() { fmt.Fprintln(os.Stdout, 1) }\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cli.go"), []byte(src), 0o600))
+	windows := []orchestrator.SourceExcerpt{
+		{Path: "cli.go", StartLine: 30, Content: "window a", HotPath: "cli.go:69"},
+		{Path: "cli.go", StartLine: 40, Content: "window b", HotPath: "cli.go:80"},
+		{Path: "top.go", StartLine: 1, Content: "whole file", HotPath: "top.go:3"},
+	}
+	got := withFileHeaders(root, windows)
+	require.Len(t, got, 4)
+	require.Equal(t, orchestrator.SourceExcerpt{Path: "cli.go", StartLine: 1, HotPath: "cli.go:69",
+		Content: "// Package cli implements the tool.\npackage cli\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)"}, got[0])
+	require.Equal(t, windows, got[1:])
+}
+
+func TestFileHeaderWithoutImportsEndsAtThePackageClause(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.go")
+	require.NoError(t, os.WriteFile(path, []byte("package a\n\nfunc f() {}\n"), 0o600))
+	require.Equal(t, "package a", fileHeader(path))
+	require.Empty(t, fileHeader(filepath.Join(t.TempDir(), "missing.go")))
 }

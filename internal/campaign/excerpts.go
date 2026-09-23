@@ -3,6 +3,9 @@ package campaign
 import (
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -131,4 +134,55 @@ func readWindow(path string, line int) (string, int, int) {
 		return "", 0, 0
 	}
 	return b.String(), start + 1, b.Len()
+}
+
+// withFileHeaders puts each Go file's package clause and imports in front of
+// the first window from that file that does not already show them, tagged
+// with that window's hot path.
+//
+// A remedy often needs a new import, and the optimizer may only base hunks on
+// the excerpts it is given. Shown only the function, it guessed the top of
+// the file: on a live gojq campaign, told that its bufio fix lacked the
+// import, it wrote an import hunk whose context assumed cli/cli.go opens with
+// its package clause, and the file opens with a doc comment, so the patch did
+// not apply.
+func withFileHeaders(repoRoot string, excerpts []orchestrator.SourceExcerpt) []orchestrator.SourceExcerpt {
+	out := make([]orchestrator.SourceExcerpt, 0, len(excerpts))
+	done := map[string]bool{}
+	for _, e := range excerpts {
+		if !done[e.Path] && e.StartLine > 1 && strings.HasSuffix(e.Path, ".go") {
+			if content := fileHeader(filepath.Join(repoRoot, filepath.FromSlash(e.Path))); content != "" {
+				out = append(out, orchestrator.SourceExcerpt{Path: e.Path, StartLine: 1, Content: content, HotPath: e.HotPath})
+			}
+		}
+		done[e.Path] = true
+		out = append(out, e)
+	}
+	return out
+}
+
+// fileHeader is the file from its first line through its import declarations,
+// or through the package clause when it imports nothing.
+func fileHeader(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, data, parser.ImportsOnly|parser.ParseComments)
+	if err != nil {
+		return ""
+	}
+	end := fset.Position(file.Name.End()).Line
+	for _, decl := range file.Decls {
+		if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.IMPORT {
+			end = fset.Position(gd.End()).Line
+		}
+	}
+	lines := strings.Split(string(data), "\n")
+	header := strings.Join(lines[:min(end, len(lines))], "\n")
+	if len(header) > maxExcerptBytes {
+		return ""
+	}
+	return header
 }

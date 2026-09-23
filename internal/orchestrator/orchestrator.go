@@ -501,11 +501,23 @@ func nextTarget(targets []agents.Target, tried map[string]bool) (agents.Target, 
 	return agents.Target{}, false
 }
 
+// excerptsAt keeps the excerpts for one location, and the header of its file
+// (the excerpt that starts at line 1), which carries the imports a remedy may
+// have to extend whichever hot path of that file it was collected for.
 func excerptsAt(excerpts []SourceExcerpt, location string) []SourceExcerpt {
 	var kept []SourceExcerpt
 	for _, e := range excerpts {
 		if e.HotPath == location {
 			kept = append(kept, e)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	file, _, _ := strings.Cut(location, ":")
+	for _, e := range excerpts {
+		if e.Path == file && e.StartLine == 1 && e.HotPath != location {
+			kept = append([]SourceExcerpt{e}, kept...)
 		}
 	}
 	return kept
