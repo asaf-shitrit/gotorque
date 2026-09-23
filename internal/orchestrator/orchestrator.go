@@ -404,7 +404,34 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	state.Analysis = result
 	attachExcerpts(ctx, g.deps.Runner, &state, result)
 	planTarget(&state)
-	return stateEvent(ctx, state), nil
+	ev := stateEvent(ctx, state)
+	if state.Target != nil {
+		ev.Output = optimizerBrief(state)
+	}
+	return ev, nil
+}
+
+// OptimizerBrief is the optimizer's whole input once code has chosen its
+// target: the fields its instruction names, and nothing it is told to ignore.
+// Handed the full CampaignState instead, the model read discovery evidence,
+// every hot path and target in the analysis, and repository inventory, all of
+// which its instruction forbids it to act on once a target is chosen. The
+// session still carries the full state; only the model's view narrows, and a
+// cycle with no target left still hands the optimizer everything.
+type OptimizerBrief struct {
+	OptimizationMode domain.OptimizationPolicy `json:"optimization_mode"`
+	Target           agents.Target             `json:"target"`
+	SourceExcerpts   []SourceExcerpt           `json:"source_excerpts,omitempty"`
+	PriorCandidates  []PriorCandidate          `json:"prior_candidates,omitempty"`
+}
+
+func optimizerBrief(state CampaignState) OptimizerBrief {
+	return OptimizerBrief{
+		OptimizationMode: state.Request.OptimizationMode,
+		Target:           *state.Target,
+		SourceExcerpts:   state.SourceExcerpts,
+		PriorCandidates:  state.PriorCandidates,
+	}
 }
 
 // planTarget lets code choose what the optimizer attacks whenever the analysis
