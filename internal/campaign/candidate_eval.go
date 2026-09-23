@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/candidate"
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/manifest"
@@ -67,6 +68,9 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	// Worktree teardown runs even when the caller's context is already
 	// canceled (duration budget or Ctrl-C), but keeps its values.
 	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
+	if !e.patchHasShape(ctx, prepared.Worktree, req.Target, &evidence) {
+		return evidence, nil
+	}
 	candidateBinary, ok := e.buildAndTestCandidate(ctx, prepared.Worktree, id, &evidence)
 	if !ok {
 		return evidence, nil
@@ -101,10 +105,28 @@ func (e *Engine) prepareCandidate(ctx context.Context, req orchestrator.Candidat
 	if err != nil {
 		evidence.Summary = fmt.Sprintf("candidate rejected before build: %v", err)
 		evidence.FailureDetail = tail(err.Error(), 400)
+		evidence.Unmeasured = true
 		return nil, false
 	}
 	evidence.Candidate = prepared.Candidate
 	return prepared, true
+}
+
+// patchHasShape runs checkShape on the applied worktree. A diff Git cannot
+// produce leaves the judgment to the build, which would fail on the same
+// tree; the check only ever adds a reason, never a pass.
+func (e *Engine) patchHasShape(ctx context.Context, worktree string, target *agents.Target, evidence *orchestrator.CandidateEvidence) bool {
+	diff, err := e.toolchain.ChangedLines(ctx, worktree)
+	if err != nil {
+		return true
+	}
+	if err := checkShape(worktree, diff, target); err != nil {
+		evidence.Summary = fmt.Sprintf("candidate rejected before build: patch shape: %v", err)
+		evidence.FailureDetail = tail(err.Error(), 400)
+		evidence.Unmeasured = true
+		return false
+	}
+	return true
 }
 
 func (e *Engine) buildAndTestCandidate(ctx context.Context, worktree, id string, evidence *orchestrator.CandidateEvidence) (string, bool) {
@@ -124,6 +146,7 @@ func (e *Engine) buildCandidateBinary(ctx context.Context, worktree, candidateBi
 	buildResult, buildErr := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: worktree, Target: e.state.Manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}})
 	if buildErr != nil {
 		evidence.Summary = fmt.Sprintf("candidate build failed: %v", buildErr)
+		evidence.Unmeasured = true
 		evidence.FailureDetail = tail(string(buildResult.Stderr), 600)
 		if evidence.FailureDetail == "" {
 			evidence.FailureDetail = tail(buildErr.Error(), 600)

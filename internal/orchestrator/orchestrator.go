@@ -459,18 +459,36 @@ func planTarget(state *CampaignState) {
 	}
 }
 
+// triedTargets is every target already judged. A candidate rejected before
+// measurement (its patch did not apply, failed the shape check, or did not
+// build) said nothing about its target, so that target gets one more attempt,
+// with the reason in prior_candidates; a second unmeasured attempt closes it,
+// so a target the optimizer cannot patch does not hold the campaign. Targets
+// carried across a resume count as tried, whatever became of them.
 func triedTargets(state CampaignState) map[string]bool {
 	tried := map[string]bool{}
 	for _, t := range state.Request.PriorTargets {
 		tried[targetKey(t)] = true
 	}
+	unmeasured := map[string]int{}
 	for _, prior := range state.PriorCandidates {
-		if prior.Target != nil {
-			tried[targetKey(*prior.Target)] = true
+		if prior.Target == nil {
+			continue
+		}
+		key := targetKey(*prior.Target)
+		if prior.Unmeasured {
+			unmeasured[key]++
+		}
+		if !prior.Unmeasured || unmeasured[key] >= maxUnmeasuredAttempts {
+			tried[key] = true
 		}
 	}
 	return tried
 }
+
+// maxUnmeasuredAttempts is how many candidates one target may spend without
+// reaching measurement.
+const maxUnmeasuredAttempts = 2
 
 func targetKey(t agents.Target) string { return t.Location + "\x00" + t.Cause }
 
@@ -561,6 +579,7 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 		Attempt:  state.CandidatesTried + 1,
 		Analysis: state.Analysis,
 		Proposal: proposal,
+		Target:   state.Target,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("evaluate candidate: %w", err)
@@ -651,6 +670,7 @@ func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignSt
 		Reasons:        evaluation.Reasons,
 		FailureDetail:  state.Candidate.FailureDetail,
 		Target:         state.Target,
+		Unmeasured:     state.Candidate.Unmeasured,
 		ReviewConcerns: state.Review.Concerns,
 	})
 	countDecision(state, evaluation.Decision, separateInconclusiveBound)
