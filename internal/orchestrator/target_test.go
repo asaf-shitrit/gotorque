@@ -196,3 +196,84 @@ func TestTheOptimizerReadsOnlyItsBrief(t *testing.T) {
 		t.Errorf("second input lacks the first attempt")
 	}
 }
+
+// TestAnUnmeasuredTargetGetsOneMoreAttempt: a candidate rejected before
+// measurement said nothing about its target, so the next cycle attacks the
+// same target with the reason in prior_candidates; a second unmeasured
+// attempt closes it.
+func TestAnUnmeasuredTargetGetsOneMoreAttempt(t *testing.T) {
+	state := CampaignState{
+		Analysis:        agents.AnalystResult{Targets: []agents.Target{targetLoop, targetAlloc}},
+		PriorCandidates: []PriorCandidate{{Attempt: 1, Target: &targetLoop, Unmeasured: true, FailureDetail: "the patch uses bufio without importing it"}},
+	}
+	planTarget(&state)
+	if state.Target == nil || *state.Target != targetLoop {
+		t.Fatalf("target = %+v, want the loop again after an unmeasured attempt", state.Target)
+	}
+
+	state.PriorCandidates = append(state.PriorCandidates, PriorCandidate{Attempt: 2, Target: &targetLoop, Unmeasured: true})
+	planTarget(&state)
+	if state.Target == nil || *state.Target != targetAlloc {
+		t.Fatalf("target = %+v, want the next target after two unmeasured attempts", state.Target)
+	}
+
+	measured := CampaignState{
+		Analysis:        agents.AnalystResult{Targets: []agents.Target{targetLoop, targetAlloc}},
+		PriorCandidates: []PriorCandidate{{Attempt: 1, Target: &targetLoop}},
+	}
+	planTarget(&measured)
+	if measured.Target == nil || *measured.Target != targetAlloc {
+		t.Fatalf("target = %+v, want a measured target closed at once", measured.Target)
+	}
+}
+
+// unmeasuredRunner rejects its first candidate before measurement.
+type unmeasuredRunner struct {
+	hotRunner
+	targets []*agents.Target
+}
+
+func (r *unmeasuredRunner) EvaluateCandidate(ctx context.Context, req CandidateRequest) (CandidateEvidence, error) {
+	r.targets = append(r.targets, req.Target)
+	evidence, err := r.hotRunner.EvaluateCandidate(ctx, req)
+	if req.Attempt == 1 {
+		evidence.Unmeasured = true
+		evidence.FailureDetail = "the patch uses bufio without importing it"
+	}
+	return evidence, err
+}
+
+// TestTheGraphRetriesATargetItNeverMeasured drives two cycles: the first
+// candidate never reaches measurement, and the second is told to attack the
+// same target, with the target on the evaluation request both times.
+func TestTheGraphRetriesATargetItNeverMeasured(t *testing.T) {
+	var calls int
+	var inputs []string
+	roleSet := agents.Set{
+		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{}, &calls),
+		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{}, &calls),
+		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
+		Optimizer:   inputRecorder(t, &inputs),
+		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{}, &calls),
+	}
+	policy := &targetPolicy{}
+	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
+	runner := &unmeasuredRunner{}
+	orch := mustNew(t, Dependencies{Runner: runner, Policy: policy, Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
+		Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
+	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-retry", causeCampaign, "finalize_campaign")
+
+	if !allTargets(policy.targets, targetLoop, 2) {
+		t.Fatalf("targets per verdict = %v, want the loop twice", policy.targets)
+	}
+	if !allTargets(runner.targets, targetLoop, 2) {
+		t.Errorf("evaluation requests carried targets %v, want the loop twice", runner.targets)
+	}
+	if len(inputs) != 2 || !strings.Contains(inputs[1], "without importing it") {
+		t.Errorf("the retry's brief should carry the first attempt's reason; got %d inputs", len(inputs))
+	}
+}
+
+func allTargets(got []*agents.Target, want agents.Target, n int) bool {
+	return len(got) == n && !slices.ContainsFunc(got, func(t *agents.Target) bool { return t == nil || *t != want })
+}

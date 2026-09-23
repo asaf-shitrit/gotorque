@@ -171,6 +171,9 @@ Package map:
   is not `minimum_command_timeout` (a per-command floor).
 - Profiled source positions must be rewritten repository-relative; the excerpt
   collector rejects absolute paths.
+- Patch-shape check (`internal/campaign/shape.go`, ADR 0017): it may only add
+  rejections. Every rule must pass the recorded patches that built, so replay
+  them before tightening one; a false rejection costs a good candidate.
 - Jev baseline (`internal/jev/baseline.go`): valid only for the exact question
   text and state template. `TestBaselineMatchesQuestions` fails on any edit;
   re-measure with `TestLiveBaseline` rather than pasting a new digest. Never

@@ -189,6 +189,22 @@ func (t *Toolchain) ChangedFiles(ctx context.Context, repository string) ([]stri
 	return parsePorcelainZ(result.Stdout)
 }
 
+// ChangedLines returns the applied change as a zero-context diff against the
+// checked-out revision, so the lines a patch touched can be read from what
+// actually landed rather than from the patch text a fuzzy apply may have
+// placed elsewhere. External diff drivers and color are disabled so the
+// output is always plain unified diff.
+func (t *Toolchain) ChangedLines(ctx context.Context, repository string) ([]byte, error) {
+	if err := requireDirectory(repository); err != nil {
+		return nil, err
+	}
+	result, err := t.run(ctx, t.gitPath, []string{"diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "HEAD"}, repository, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return result.Stdout, nil
+}
+
 // parsePorcelainZ reads `git status --porcelain=v1 -z` output. Each entry is a
 // two-letter status, a space, and a path, NUL-terminated and never quoted; a
 // rename or copy entry is followed by a second NUL-terminated field holding

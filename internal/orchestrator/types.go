@@ -88,6 +88,9 @@ type CandidateRequest struct {
 	Attempt  int                    `json:"attempt"`
 	Analysis agents.AnalystResult   `json:"analysis"`
 	Proposal agents.OptimizerResult `json:"proposal"`
+	// Target is the function and cause code chose for this patch, or nil
+	// when the optimizer chose. The patch-shape check holds the patch to it.
+	Target *agents.Target `json:"target,omitempty"`
 }
 
 // CandidateEvidence records the candidate and deterministic measurements used
@@ -107,6 +110,9 @@ type CandidateEvidence struct {
 	// stderr tail) behind a rejection so later cycles can avoid repeating
 	// the same failed approach.
 	FailureDetail string `json:"failure_detail,omitempty"`
+	// Unmeasured is set when the candidate was rejected before measurement:
+	// its patch did not apply, failed the shape check, or did not build.
+	Unmeasured bool `json:"unmeasured,omitempty"`
 	// PgoComparisons and PgoNote record the informational PGO lane: one extra
 	// interleaved A/B series in which baseline and candidate were both built
 	// with the same discovery-derived pprof CPU profile. The lane attributes
@@ -144,6 +150,9 @@ type PriorCandidate struct {
 	// Target is the (function, cause) this candidate was told to attack, so
 	// later cycles move on to the next one.
 	Target *agents.Target `json:"target,omitempty"`
+	// Unmeasured marks a candidate rejected before it was measured, so its
+	// target has not been judged and may be attacked once more.
+	Unmeasured bool `json:"unmeasured,omitempty"`
 	// ReviewConcerns are the behaviour hazards the review raised, so the next
 	// patch can avoid repeating them.
 	ReviewConcerns []string `json:"review_concerns,omitempty"`

@@ -122,9 +122,29 @@ produced here or in policy.
    candidate before build, with the path named in its failure detail. Apply
    errors are returned with captured stderr so the optimizer can see why its
    diff was rejected.
+   The applied change is then held to its shape (ADR 0017,
+   `internal/campaign/shape.go`), read from `toolchain.ChangedLines`, Git's
+   zero-context diff of the worktree. Every changed Go file must parse; a
+   selector on a common standard package (`bufio.`, `strings.`, `strconv.`...)
+   on a changed line must be imported, unless the file or package declares
+   that name. With a code-chosen target, no existing function other than
+   the target may change; imports, package-level declarations and wholly new
+   helpers may. And for the three causes whose remedy has one recognisable
+   mechanism, the added lines must carry it: a `bufio.` reader or writer
+   (flushed, when it is a writer) for unbuffered I/O, a `strings.Builder`,
+   `bytes.Buffer`, `strconv.`, `append(` or `Grow(` for string building, a
+   `make(` or `Grow(` for preallocation. A failure rejects before build with
+   the reason as failure detail. The check can only add a rejection: when Git
+   cannot produce the diff, the build decides as before.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
    the compiler stderr attached to the candidate record.
+
+   A candidate that fails in steps 1-3 is recorded as `unmeasured`: it says
+   nothing about its target, so `planTarget` hands the same target to the
+   next cycle, with the reason in `prior_candidates`. A second unmeasured
+   attempt closes the target, so one the optimizer cannot patch does not
+   hold the campaign.
 4. **Upstream test-suite gate.** `go test -json` must not regress against the
    unpatched revision before measurement starts: the campaign runs the
    target's own suite once during baseline discovery, records the failing
@@ -373,8 +393,9 @@ state: discovery evidence, the full analysis and the repository inventory are
 things it has been told not to act on. The session keeps the full state for the
 deterministic nodes, and a cycle with no target left hands the optimizer
 everything, as before. Tried targets
-are recorded with each verdict and handed back on resume, so no target is
-attacked twice, and once every flagged target has been tried the optimizer
+are recorded with each verdict and handed back on resume, so no measured
+target is attacked twice (an unmeasured one gets one retry, see step 3 of the
+evaluation), and once every flagged target has been tried the optimizer
 chooses freely again. The coordinator model is not called in this mode, because
 nothing is left for it to decide. On a live gron campaign it took up to 2m40s a
 cycle, and left with a ranked list the optimizer ignored the top target and
