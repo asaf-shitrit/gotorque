@@ -69,38 +69,57 @@ func reviewerResult(flagged []jev.HazardScore) agents.ReviewerResult {
 
 var hunkHeader = regexp.MustCompile(`^@@ -(\d+)`)
 
-// patchedFunction reads the function the patch's first change lands in, from
-// the repository as it stands at the base revision. The review judges the
-// change against that source; when it cannot be found the review still reads
+// patchedFunction reads the function the patch's first change inside a
+// function lands in, from the repository as it stands at the base revision.
+// A change outside every function, such as the import a remedy needs, is
+// skipped: reviewed alone it named no function at all. The review judges the
+// change against that source; when none can be found the review still reads
 // the diff, which carries its own context lines.
 func patchedFunction(repo, patch string) hotFunction {
-	path, line, ok := firstChange(patch)
-	if !ok {
-		return hotFunction{}
+	for _, c := range hunkChanges(patch) {
+		if fn, _, err := functionAt(filepath.Join(repo, c.path), c.line); err == nil {
+			return fn
+		}
 	}
-	fn, _, err := functionAt(filepath.Join(repo, path), line)
-	if err != nil {
-		return hotFunction{}
-	}
-	return fn
+	return hotFunction{}
+}
+
+type change struct {
+	path string
+	line int
 }
 
 // firstChange returns the old-side file and line of the patch's first removed
 // or added line.
 func firstChange(patch string) (string, int, bool) {
-	path, line := "", 0
+	changes := hunkChanges(patch)
+	if len(changes) == 0 {
+		return "", 0, false
+	}
+	return changes[0].path, changes[0].line, true
+}
+
+// hunkChanges returns, for every hunk, the old-side file and line of its first
+// removed or added line.
+func hunkChanges(patch string) []change {
+	var out []change
+	path, line, found := "", 0, false
 	for _, text := range strings.Split(patch, "\n") {
 		switch {
 		case strings.HasPrefix(text, "--- "):
 			path = strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, "--- ")), "a/")
 		case hunkHeader.MatchString(text):
 			line, _ = strconv.Atoi(hunkHeader.FindStringSubmatch(text)[1])
-		case line > 0 && strings.HasPrefix(text, " "):
+			found = false
+		case found || line == 0:
+		case strings.HasPrefix(text, " "):
 			line++
-		case line > 0 && (strings.HasPrefix(text, "-") || strings.HasPrefix(text, "+")):
-			_, _, ok := parseLocation(path)
-			return path, line, ok
+		case strings.HasPrefix(text, "-") || strings.HasPrefix(text, "+"):
+			found = true
+			if _, _, ok := parseLocation(path); ok {
+				out = append(out, change{path, line})
+			}
 		}
 	}
-	return "", 0, false
+	return out
 }
