@@ -89,3 +89,110 @@ func TestConfirmationNoteNamesEveryReading(t *testing.T) {
 	note := confirmationNote([]domain.MetricComparison{{Workload: "small-doc", DeltaPercent: 4.01}, {DeltaPercent: 3.05}}, 2)
 	require.True(t, strings.HasPrefix(note, "small-doc +4.01%, pooled +3.05% over the 2.00% limit"), note)
 }
+
+// guardrailsUnaffected plants supported, non-regressing guardrail readings so
+// a planted primary-metric comparison is the only thing an evaluation could
+// turn on.
+func guardrailsUnaffected() []domain.MetricComparison {
+	return []domain.MetricComparison{
+		{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+	}
+}
+
+// TestAnUnsupportedPromisingImprovementIsMeasuredAgain: ADR 0021. A reading
+// that improved by at least the manifest's minimum but lacks statistical
+// support would otherwise end inconclusive, so it is measured again and
+// every comparison is derived from both series.
+func TestAnUnsupportedPromisingImprovementIsMeasuredAgain(t *testing.T) {
+	engine, evidence, m, candidate := measuredEngine(t)
+	evidence.Comparisons = append([]domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 91}, // 9% improvement, unsupported
+	}, guardrailsUnaffected()...)
+
+	require.True(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples, 1)
+	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions)
+	require.Len(t, evidence.RepSamples[0].CandidateNs, 2*measurementRepetitions)
+	require.Contains(t, evidence.Summary, "improved past the 3.00% minimum without significance after 25 pairs, so every workload was measured over 25 more")
+	require.Contains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
+	for _, c := range evidence.Comparisons {
+		require.NotEqual(t, 91.0, c.Candidate, "the planted reading is derived again from the runs")
+	}
+	events, err := engine.store.Events()
+	require.NoError(t, err)
+	require.Equal(t, "improvement_confirmed", events[len(events)-1].Type)
+}
+
+// TestASettledImprovementVerdictIsNotMeasuredAgain: a supported win, or one
+// below the minimum, is not extended.
+func TestASettledImprovementVerdictIsNotMeasuredAgain(t *testing.T) {
+	engine, evidence, m, candidate := measuredEngine(t)
+	for _, planted := range [][]domain.MetricComparison{
+		{{Metric: "wall_time_ns", Baseline: 100, Candidate: 91, StatisticallyFit: true}}, // supported win
+		{{Metric: "wall_time_ns", Baseline: 100, Candidate: 99}},                         // below the minimum
+	} {
+		evidence.Comparisons = append(append([]domain.MetricComparison{}, planted...), guardrailsUnaffected()...)
+		require.True(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+		require.Len(t, evidence.RepSamples[0].BaselineNs, measurementRepetitions)
+	}
+	require.NotContains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
+}
+
+// TestImprovementConfirmationIsHeldToBehaviour mirrors
+// TestAConfirmationSeriesIsHeldToBehaviour on the improvement side: the first
+// series already marked the behaviour verified, so a second series whose
+// output differs must take that back.
+func TestImprovementConfirmationIsHeldToBehaviour(t *testing.T) {
+	engine, evidence, m, candidate := measuredEngine(t)
+	require.True(t, evidence.BehaviorMatches)
+	require.NoError(t, os.WriteFile(candidate, []byte("#!/bin/sh\necho changed\n"), 0o700)) //nolint:gosec // stands in for the candidate binary, so it must be executable
+	evidence.Comparisons = append([]domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 91},
+	}, guardrailsUnaffected()...)
+
+	require.False(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+	require.False(t, evidence.BehaviorMatches)
+	require.Contains(t, evidence.Summary, `behavior mismatch (byte-exact comparison) on workload "fixture"`)
+}
+
+// TestAtMostOneExtraSeriesPerCandidate: when the regression confirmation
+// already extended every seed, the improvement confirmation must not run a
+// second extra series.
+func TestAtMostOneExtraSeriesPerCandidate(t *testing.T) {
+	engine, evidence, m, candidate := measuredEngine(t)
+	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
+	evidence.Comparisons = append([]domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 91}, // would otherwise trigger a second series
+	}, guardrailsUnaffected()...)
+
+	require.True(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, measurementRepetitions, "no additional series was measured")
+}
+
+func TestImprovementConfirmationNoteNamesEveryReading(t *testing.T) {
+	note := improvementConfirmationNote([]domain.MetricComparison{{Workload: "small-doc", DeltaPercent: -11.55}, {DeltaPercent: -3.05}}, 3)
+	require.True(t, strings.HasPrefix(note, "small-doc -11.55%, pooled -3.05% improved past the 3.00% minimum"), note)
+}
+
+func TestUnconfirmedImprovementsTruthTable(t *testing.T) {
+	config := policy.Config{StatisticalSupportRequired: true, MinimumImprovementPercent: 3}
+	for name, tc := range map[string]struct {
+		comparison domain.MetricComparison
+		want       int
+	}{
+		"unsupported and past the minimum":     {domain.MetricComparison{Baseline: 100, Candidate: 91}, 1},
+		"supported and past the minimum":       {domain.MetricComparison{Baseline: 100, Candidate: 91, StatisticallyFit: true}, 0},
+		"unsupported but below the minimum":    {domain.MetricComparison{Baseline: 100, Candidate: 99}, 0},
+		"unsupported regression, not improved": {domain.MetricComparison{Baseline: 100, Candidate: 110}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := policy.UnconfirmedImprovements(config, []domain.MetricComparison{tc.comparison})
+			require.Len(t, got, tc.want)
+		})
+	}
+	noSupport := config
+	noSupport.StatisticalSupportRequired = false
+	require.Empty(t, policy.UnconfirmedImprovements(noSupport, []domain.MetricComparison{{Baseline: 100, Candidate: 91}}))
+}

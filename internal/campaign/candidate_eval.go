@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -219,7 +220,10 @@ func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.
 	}
 	e.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	return e.confirmRegressions(ctx, evidence, id, candidateBinary, &m)
+	if !e.confirmRegressions(ctx, evidence, id, candidateBinary, &m) {
+		return false
+	}
+	return e.confirmImprovements(ctx, evidence, id, candidateBinary, &m)
 }
 
 func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
@@ -313,6 +317,54 @@ func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.
 	return true
 }
 
+// confirmImprovements measures every representative seed again when the
+// candidate would otherwise end inconclusive only because an
+// acceptance-eligible reading improved by at least the manifest's minimum but
+// lacks statistical support, then derives every comparison from both series
+// and lets the unchanged policy decide (ADR 0021). This mirrors
+// confirmRegressions on the acceptance side: on live yq campaigns
+// (~20ms workloads, 25 pairs) candidates read per-workload improvements of
+// 11.55%, 9.51% and 5.39% that were not statistically supported and were
+// discarded as inconclusive, because 25 pairs cannot separate a 5-10% effect
+// from noise at that duration.
+//
+// At most one extra series runs per candidate in total: if the regression
+// confirmation already extended every seed, this reuses that series rather
+// than running a third one.
+func (e *Engine) confirmImprovements(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	if slices.Contains(evidence.ValidationJobs, "interleaved-ab-confirmation") {
+		return true
+	}
+	config := policyConfigFromManifest(e.state.Manifest)
+	eligible := eligibleReadings(config, evidence.Comparisons)
+	preview := policy.Evaluate(config, policy.Evidence{
+		BehaviorMatches:        evidence.BehaviorMatches,
+		FailureSummary:         evidence.Summary,
+		SafetyChecksPassed:     evidence.SafetyChecksPassed,
+		RepresentativeEvidence: evidence.RepresentativeEvidence,
+		Comparisons:            evidence.Comparisons,
+		Primary:                eligible,
+	})
+	if preview.Decision != domain.DecisionInconclusive {
+		return true
+	}
+	unconfirmed := policy.UnconfirmedImprovements(config, eligible)
+	if len(unconfirmed) == 0 {
+		return true
+	}
+	for i := range m.seeds {
+		if !e.runSeries(ctx, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
+			return false
+		}
+	}
+	e.rederive(ctx, evidence, m)
+	note := improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent)
+	evidence.Summary += "; " + note
+	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
+	_ = e.saveEvent("improvement_confirmed", note, nil)
+	return true
+}
+
 // rederive computes every comparison again from the runs measured so far.
 func (e *Engine) rederive(ctx context.Context, evidence *orchestrator.CandidateEvidence, m *measurement) {
 	evidence.RepSamples, evidence.BenchstatOutput = nil, ""
@@ -333,6 +385,18 @@ func confirmationNote(unconfirmed []domain.MetricComparison, limit float64) stri
 		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
 	}
 	return fmt.Sprintf("%s over the %.2f%% limit without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), limit, measurementRepetitions, measurementRepetitions)
+}
+
+func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum float64) string {
+	readings := make([]string, 0, len(unconfirmed))
+	for _, c := range unconfirmed {
+		name := "pooled"
+		if c.Workload != "" {
+			name = c.Workload
+		}
+		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
+	}
+	return fmt.Sprintf("%s improved past the %.2f%% minimum without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), minimum, measurementRepetitions, measurementRepetitions)
 }
 
 func (e *Engine) outputIsDeterministic(ctx context.Context, baseReq runner.RunRequest) bool {
