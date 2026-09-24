@@ -127,6 +127,10 @@ type State struct {
 	// Explorer is ExplorerJev when discovery's extra workloads were generated
 	// by code and judged by Jev instead of proposed by the explorer model.
 	Explorer string `json:"explorer,omitempty"`
+	// Tradeoff is the trade-off the campaign was started with. Manifest
+	// already holds the performance block it produced, which is what every
+	// verdict and a resume read; this records where that block came from.
+	Tradeoff manifest.Tradeoff `json:"tradeoff,omitzero"`
 	// SchemaVersion is stamped by WriteReports onto the artifact it writes, so a
 	// report carries the shape it was written in. It stays zero for state that
 	// predates versioning, which readers report rather than assume.
@@ -213,6 +217,9 @@ type Options struct {
 	TestingUnsafeDisableIsolation bool
 	ADKAgents                     *agents.Set
 	ADKConfig                     *orchestrator.Config
+	// Tradeoff overrides the manifest's performance block for this
+	// campaign; the zero value leaves it as written.
+	Tradeoff manifest.Tradeoff
 }
 
 type Engine struct {
@@ -247,6 +254,11 @@ func Create(ctx context.Context, opts Options) (*Engine, error) {
 	repo, manifestPath, m, err := loadCampaignInputs(opts)
 	if err != nil {
 		return nil, err
+	}
+	if !opts.Tradeoff.IsZero() {
+		if m.Performance, err = opts.Tradeoff.Apply(m.Performance); err != nil {
+			return nil, err
+		}
 	}
 	revision, goVersion, err := inspectRepoToolchain(ctx, toolchain.New(toolchain.Options{}), repo)
 	if err != nil {
@@ -338,7 +350,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 	if err != nil {
 		return nil, err
 	}
-	state := State{Version: 1, ID: id, Directory: dir, Repository: repo, ManifestPath: manifestPath, Manifest: m,
+	state := State{Version: 1, ID: id, Directory: dir, Repository: repo, ManifestPath: manifestPath, Manifest: m, Tradeoff: opts.Tradeoff,
 		Status: StatusPending, StartedAt: now, UpdatedAt: now, CompletedSteps: map[string]bool{}, LocalIsolation: !opts.TestingUnsafeDisableIsolation,
 		Environment: Environment{Authority: authority(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPU: cpuName(), GoVersion: goVersion, Revision: revision, BuildFlags: []string{"-mod=readonly", "-trimpath"}, CI: os.Getenv("CI") != "", CIEnvironment: ciEnvironment()},
 	}

@@ -235,6 +235,15 @@ the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as
 before. The reason names the workload the verdict rests on.
 
+Those limits come from the manifest's performance block unless the campaign
+was started with a trade-off (`--tradeoff speed|balanced|lean`, `--allow
+metric=percent`, ADR 0020). `manifest.Tradeoff.Apply` resolves it once, in
+`Create`, into the campaign's copy of the manifest: `policyConfigFromManifest`
+is the only reader of the performance block, so verdicts, the confirmation
+series and resume all see the same limits with no second code path.
+`State.Tradeoff` records where they came from, and the report's "Judged under"
+line states them.
+
 Eligibility is encoded in the comparison, not in its name. A
 `domain.MetricComparison` carries the canonical `metric` plus the `workload` it
 was measured on, where an empty workload *is* the pooled reading. That replaced

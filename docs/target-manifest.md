@@ -135,6 +135,30 @@ candidates whose measurements simply do not resolve — every campaign run in
 this repository's own target set stopped at four attempts of its twelve for
 that reason.
 
+### Trade-offs per campaign
+
+The performance block is the target's default contract. A campaign can
+override it without editing the manifest: `--tradeoff` starts from a preset,
+and `--allow metric=percent` (repeatable) sets any one metric's regression
+limit on top of it (ADR 0020).
+
+| Preset | Improves | May regress |
+|---|---|---|
+| `balanced` | the manifest's primary metric | the manifest's guardrails, unchanged |
+| `speed` | `wall_time_ns` | `peak_memory_bytes` +10%, `cpu_time_ns` +5% |
+| `lean` | `peak_memory_bytes` | `wall_time_ns` +3%, `cpu_time_ns` +3% |
+
+`--allow` accepts `wall`, `cpu`, `memory`, `size` or a full metric name, and
+makes that metric a required guardrail. Switching the improved metric turns the
+old one into a required guardrail at `maximum_guardrail_regression_percent`
+unless an allowance says otherwise. A metric cannot be improved and allowed to
+regress at once. The effective limits are written into the campaign's copy of
+the manifest when it is created, so a resume keeps them and refuses new
+trade-off flags, and every report opens with a "Judged under" line.
+
+Targets are still chosen from a CPU profile, so a `lean` campaign finds memory
+wins only where CPU-hot code also allocates.
+
 The deterministic policy returns:
 
 - `accepted` only for behavior-preserving candidates with safety checks passed,

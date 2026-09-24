@@ -3,9 +3,11 @@ package campaign
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -142,7 +144,7 @@ func RenderMarkdown(state State) string {
 	writeDegradedRoles(&b, state)
 	writeCandidateExperiments(&b, state)
 	writeTokenUsage(&b, state)
-	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q\n```\n", state.Repository, state.ManifestPath)
+	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q%s\n```\n", state.Repository, state.ManifestPath, tradeoffFlags(state.Tradeoff))
 	return b.String()
 }
 
@@ -159,8 +161,44 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.Explorer == ExplorerJev {
 		fmt.Fprintf(b, "- Explorer: the target's own options, judged by Jev (`%s`); discovery also sampled: %s\n", jev.Model, orNone(strings.Join(state.DiscoveryWorkloads, "; ")))
 	}
+	fmt.Fprintf(b, "- Judged under: %s: %s\n", tradeoffName(state.Tradeoff), manifest.Describe(state.Manifest.Performance))
 	b.WriteString("\n")
 	writeSchemaNotice(b, state)
+}
+
+// tradeoffName names the trade-off a campaign's verdicts were judged under.
+func tradeoffName(t manifest.Tradeoff) string {
+	switch {
+	case t.IsZero():
+		return "the manifest"
+	case t.Name == "":
+		return "custom trade-off"
+	case !sameAllowances(t, manifest.Presets[t.Name]):
+		return fmt.Sprintf("trade-off `%s` with overrides", t.Name)
+	}
+	return fmt.Sprintf("trade-off `%s`", t.Name)
+}
+
+func sameAllowances(a, b manifest.Tradeoff) bool {
+	return maps.Equal(a.Allow, b.Allow) && a.Objective == b.Objective
+}
+
+// tradeoffFlags renders a trade-off as the flags that reproduce it.
+func tradeoffFlags(t manifest.Tradeoff) string {
+	if t.IsZero() {
+		return ""
+	}
+	var flags strings.Builder
+	if t.Name != "" {
+		fmt.Fprintf(&flags, " --tradeoff %s", t.Name)
+	}
+	preset := manifest.Presets[t.Name]
+	for _, metric := range slices.Sorted(maps.Keys(t.Allow)) {
+		if v, ok := preset.Allow[metric]; !ok || v != t.Allow[metric] {
+			fmt.Fprintf(&flags, " --allow %s=%g%%", metric, t.Allow[metric])
+		}
+	}
+	return flags.String()
 }
 
 // writeSchemaNotice says which shape a report is in. A directory written before
