@@ -30,9 +30,9 @@ const (
 // table, reaches only the report file: a live campaign holds the database's
 // exclusive lock, so an operator watching a ninety-minute run has no other
 // place to read why a candidate was refused.
-func candidateEventSummary(record CandidateRecord) string {
+func candidateEventSummary(record CandidateRecord, primaryMetric string) string {
 	summary := fmt.Sprintf("attempt %d: %s", record.Attempt, record.Decision)
-	if metric := primaryComparisonSummary(record.Comparisons); metric != "" {
+	if metric := primaryComparisonSummary(record.Comparisons, primaryMetric); metric != "" {
 		summary += " — " + metric
 	}
 	if len(record.Reasons) > 0 {
@@ -44,13 +44,18 @@ func candidateEventSummary(record CandidateRecord) string {
 const maxEventReasonChars = 200
 
 // primaryComparisonSummary describes the metric the verdict turns on, with its
-// delta and whether benchstat supported it.
-func primaryComparisonSummary(comparisons []domain.MetricComparison) string {
+// delta and whether benchstat supported it. The metric is the campaign's own:
+// under --tradeoff lean a verdict turns on peak memory, and headlining wall
+// time there named a number the policy never judged by.
+func primaryComparisonSummary(comparisons []domain.MetricComparison, primaryMetric string) string {
+	if primaryMetric == "" {
+		primaryMetric = manifest.DefaultPrimaryMetric
+	}
 	chosen := -1
 	for i, c := range comparisons {
 		// The pooled reading is the headline number when it is present; a
 		// per-workload reading is the fallback, never the preference.
-		if c.Metric == manifest.DefaultPrimaryMetric && c.Workload == "" {
+		if c.Metric == primaryMetric && c.Workload == "" {
 			chosen = i
 			break
 		}
