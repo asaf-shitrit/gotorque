@@ -434,3 +434,35 @@ func TestBenchmarkProfilingLeavesTheCheckoutClean(t *testing.T) {
 	require.FileExists(t, profilePath)
 	require.Empty(t, git(t, repo, "status", "--porcelain", "--untracked-files=all", "--ignored"), "profiling must not write into the checkout")
 }
+
+// TestAllocationProfilingLeavesTheCheckoutClean is the memprofile analogue of
+// TestBenchmarkProfilingLeavesTheCheckoutClean: profileAllocations runs the
+// same benchmarks a second time under -memprofile (ADR 0024), and must keep
+// that test binary out of the canonical checkout too.
+func TestAllocationProfilingLeavesTheCheckoutClean(t *testing.T) {
+	repo := makeRepository(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "bench_test.go"), []byte("package main\n\nimport \"testing\"\n\nfunc BenchmarkSum(b *testing.B) {\n\tfor i := 0; i < b.N; i++ {\n\t\t_ = make([]int, 8)\n\t}\n}\n"), 0o600))
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "benchmark")
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+
+	source := engine.profileAllocations(context.Background())
+	require.Equal(t, "a benchmark alloc_space profile", source)
+	require.NotEmpty(t, engine.state.DiscoveryAllocProfileSummaryPath)
+	require.Empty(t, git(t, repo, "status", "--porcelain", "--untracked-files=all", "--ignored"), "allocation profiling must not write into the checkout")
+}
+
+func TestMergeAllocFirstPrefersAllocatorsWithoutDroppingCPUEvidence(t *testing.T) {
+	cpu := []string{"a.go:1", "b.go:2", "c.go:3"}
+	alloc := []string{"c.go:3", "d.go:4"}
+
+	got := mergeAllocFirst(cpu, alloc, 4)
+	require.Equal(t, []string{"c.go:3", "d.go:4", "a.go:1", "b.go:2"}, got, "allocators lead, deduplicated, then the rest of the CPU list")
+
+	require.Equal(t, []string{"c.go:3", "d.go:4"}, mergeAllocFirst(cpu, alloc, 2), "budget still caps the merged list")
+}

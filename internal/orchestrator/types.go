@@ -32,6 +32,12 @@ type CampaignRequest struct {
 	// inconclusive verdicts, for the same reason: a campaign that configures
 	// its own inconclusive bound must have that streak survive a resume too.
 	PriorConsecutiveInconclusive int `json:"prior_consecutive_inconclusive,omitempty"`
+	// Objective is the manifest's performance primary metric after the
+	// campaign's trade-off was applied (see ADR 0020), such as
+	// "peak_memory_bytes" under --tradeoff lean. The cause analyst reads it to
+	// rank allocation causes ahead of others when the objective is memory; it
+	// is empty only in tests that build a CampaignRequest by hand.
+	Objective string `json:"objective,omitempty"`
 }
 
 // Inspection is deterministic repository and target inventory.

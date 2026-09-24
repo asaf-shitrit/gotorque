@@ -128,12 +128,27 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 	if err != nil {
 		return nil, nil, err
 	}
-	req := orchestrator.CampaignRequest{CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision, BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...), OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures, PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive, PriorTargets: e.priorTargets()}
-	payload, err := json.Marshal(req)
+	payload, err := json.Marshal(e.campaignRequest())
 	if err != nil {
 		return nil, nil, err
 	}
 	return adk, &genai.Content{Role: "user", Parts: []*genai.Part{{Text: string(payload)}}}, nil
+}
+
+// campaignRequest builds the immutable campaign context every ADK node sees,
+// including the analyst (as CauseRequest.Campaign; see causes.go). Objective
+// is the manifest's performance primary metric after the campaign's
+// trade-off was applied (ADR 0020), so a campaign started with --tradeoff
+// lean carries "peak_memory_bytes" here and causeAnalyst.AnalyzeCauses ranks
+// allocation causes first (ADR 0024).
+func (e *Engine) campaignRequest() orchestrator.CampaignRequest {
+	return orchestrator.CampaignRequest{
+		CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision,
+		BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...),
+		OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures,
+		PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive, PriorTargets: e.priorTargets(),
+		Objective: e.state.Manifest.Performance.PrimaryMetric,
+	}
 }
 
 // priorTargets are the targets earlier candidates tried, read back from the

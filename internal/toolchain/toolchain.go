@@ -99,6 +99,9 @@ type TestRequest struct {
 	CoverDir   string
 	TraceFile  string
 	Cpuprofile string
+	// Memprofile asks `go test -memprofile` for a heap allocation profile,
+	// alongside Cpuprofile or on its own. Like Cpuprofile it must be absolute.
+	Memprofile string
 	// Output is where go test writes the test binary it keeps for a
 	// profile; it must be absolute. See testArgs.
 	Output string
@@ -111,6 +114,9 @@ func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
 	}
 	if req.Cpuprofile != "" && !filepath.IsAbs(req.Cpuprofile) {
 		return Result{}, errors.New("cpuprofile path must be absolute")
+	}
+	if req.Memprofile != "" && !filepath.IsAbs(req.Memprofile) {
+		return Result{}, errors.New("memprofile path must be absolute")
 	}
 	if req.Output != "" && !filepath.IsAbs(req.Output) {
 		return Result{}, errors.New("test binary output path must be absolute")
@@ -142,6 +148,9 @@ func testArgs(req TestRequest) []string {
 	}
 	if req.Cpuprofile != "" {
 		args = append(args, "-cpuprofile", req.Cpuprofile)
+	}
+	if req.Memprofile != "" {
+		args = append(args, "-memprofile", req.Memprofile)
 	}
 	// go test keeps the compiled test binary next to a profile, in the
 	// working directory, which is the repository: on go-jsonnet, the first
@@ -371,6 +380,21 @@ func (t *Toolchain) PprofTop(ctx context.Context, profilePath string, nodeCount 
 		nodeCount = 50
 	}
 	return t.run(ctx, t.goPath, []string{"tool", "pprof", "-top", "-cum", fmt.Sprintf("-nodecount=%d", nodeCount), profilePath}, "", nil, nil)
+}
+
+// PprofTopAllocSpace is PprofTop over a heap profile's alloc_space sample
+// index: cumulative bytes ever allocated by a function, rather than the
+// default inuse_space (bytes still live when the profile was taken). A
+// discovery hot list built for peak memory wants the functions that do the
+// most allocating, not the ones whose allocations happen to still be live.
+func (t *Toolchain) PprofTopAllocSpace(ctx context.Context, profilePath string, nodeCount int) (Result, error) {
+	if !filepath.IsAbs(profilePath) {
+		return Result{}, errors.New("profile path must be absolute")
+	}
+	if nodeCount <= 0 {
+		nodeCount = 50
+	}
+	return t.run(ctx, t.goPath, []string{"tool", "pprof", "-top", "-alloc_space", "-cum", fmt.Sprintf("-nodecount=%d", nodeCount), profilePath}, "", nil, nil)
 }
 
 // PprofList returns the source-annotated listing for one function from a

@@ -156,8 +156,13 @@ regress at once. The effective limits are written into the campaign's copy of
 the manifest when it is created, so a resume keeps them and refuses new
 trade-off flags, and every report opens with a "Judged under" line.
 
-Targets are still chosen from a CPU profile, so a `lean` campaign finds memory
-wins only where CPU-hot code also allocates.
+Discovery still profiles CPU first, but under `lean` (or any trade-off whose
+resolved objective is `peak_memory_bytes`) it also runs the module's
+benchmarks, when it has any, under `-memprofile` and folds the heaviest
+allocators into the hot list ahead of CPU-only functions, and the analyst
+ranks each site's allocation causes ahead of its other causes (ADR 0024). A
+module with no benchmarks still finds memory wins only where CPU-hot code
+also happens to allocate.
 
 The deterministic policy returns:
 

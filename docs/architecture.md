@@ -242,7 +242,12 @@ metric=percent`, ADR 0020). `manifest.Tradeoff.Apply` resolves it once, in
 is the only reader of the performance block, so verdicts, the confirmation
 series and resume all see the same limits with no second code path.
 `State.Tradeoff` records where they came from, and the report's "Judged under"
-line states them.
+line states them. ADR 0020 left discovery targeting a manifest's memory
+objective as an open limitation: discovery profiled CPU regardless, so `lean`
+found memory wins only where CPU-hot code also allocated. ADR 0024 closes it
+(see the Jev cause analyst and discovery sections above): the resolved
+objective ranks allocation causes first and, when the module has benchmarks,
+adds a benchmark `alloc_space` profile's hot functions to discovery's list.
 
 Eligibility is encoded in the comparison, not in its name. A
 `domain.MetricComparison` carries the canonical `metric` plus the `workload` it
@@ -397,7 +402,14 @@ every function's first cause before any second cause, each tier ordered by
 the cause's z divided by the square root of one plus its function's hotness
 rank (ADR 0018), and a
 function with nothing flagged is named in `additional_checks` rather than
-guessed at.
+guessed at. When the campaign's resolved objective is `peak_memory_bytes`
+(`--tradeoff lean`, ADR 0020), each tier is additionally split in two before
+that z/sqrt(1+rank) sort: `jev.Cause.IsAllocation` causes (`alloc`,
+`prealloc`, `string_build`) lead every other cause, the discounted order kept
+inside each half (ADR 0024). The objective reaches the node on
+`CauseRequest.Campaign.Objective`, set once in `Engine.campaignRequest` from
+the manifest already resolved by `Tradeoff.Apply`, so this never re-reads the
+trade-off flags.
 Code overrules one kind of flag before any of that. Jev reads the source alone,
 so it cannot tell `e.w.WriteByte` on a `*bytes.Buffer` field from a write to a
 file; on gojq it flagged `(*encoder).writeByte` for unbuffered I/O at +2.9 sd,
@@ -658,6 +670,27 @@ The annotated locations are stored in campaign state as
 the analyst and coordinator as measured hot functions. Only when both sources
 fail does the engine record a `discovery_profile_skipped` event and leave
 discovery evidence empty, rather than failing the campaign.
+
+When the campaign's resolved objective is `peak_memory_bytes` and one of the
+two sources above succeeded, `Engine.profileAllocations` (ADR 0024) runs the
+same benchmark packages a second time, this time under `-memprofile`
+(`toolchain.TestRequest.Memprofile`, plumbed through `testArgs` exactly like
+`Cpuprofile`, including the `-o` fix that keeps the compiled test binary out
+of the canonical checkout). The heap profile is summarized by its
+`alloc_space` sample index — cumulative bytes ever allocated, not bytes still
+live at profile time — through a dedicated `Toolchain.PprofTopAllocSpace` /
+`Collector.SummarizePprofAllocSpace` pair, since `go tool pprof -top` defaults
+to `inuse_space`. The resulting functions are annotated with source positions
+the same way as the CPU profile's, then merged to the front of
+`discovery_hot_functions` (`mergeAllocFirst`): every allocation-heavy
+location first, in its own rank order, then whatever CPU-derived locations
+are not already present, deduplicated and capped at the same
+`hotFunctionBudget`. A module with no benchmarks is skipped silently beyond a
+`discovery_alloc_profile_skipped` event — discovery still has its CPU
+evidence, exactly as it did before this objective existed. Either way,
+`State.DiscoveryProfileSource` records which profile(s) chose the hot list
+("a target sample", "target benchmarks", or either plus "a benchmark
+alloc_space profile"), and the report's header states it.
 
 ## Run modes
 
