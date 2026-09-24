@@ -90,3 +90,43 @@ func TestApplyPatchFuzzyRejectsGarbage(t *testing.T) {
 		t.Fatal("expected fuzzy apply to fail on non-patch input")
 	}
 }
+
+// TestApplyPatchAcceptsAHunkThatEndsOnAChange: a hunk whose last line is a
+// change carries no trailing context, which git would otherwise anchor to the
+// end of the file. Its context lines are still checked.
+func TestApplyPatchAcceptsAHunkThatEndsOnAChange(t *testing.T) {
+	repo := setupGitRepo(t)
+	tc := New(Options{})
+	ctx := context.Background()
+	worktree := filepath.Join(t.TempDir(), "wt")
+	if _, err := tc.CreateWorktree(ctx, repo, worktree, "HEAD"); err != nil {
+		t.Skipf("worktree unavailable in sandbox: %v", err)
+	}
+	defer func() { _, _ = tc.RemoveWorktree(ctx, repo, worktree) }()
+
+	write := func(patch string) string {
+		path := filepath.Join(t.TempDir(), "fix.diff")
+		if err := os.WriteFile(path, []byte(patch), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	endsOnChange := write("--- a/main.go\n+++ b/main.go\n@@ -3,2 +3,3 @@\n func main() {\n-\tx := 1\n+\tx := 2\n+\ty := x\n")
+	if _, err := tc.ApplyPatchCheck(ctx, worktree, endsOnChange); err != nil {
+		t.Fatalf("a mid-file hunk ending on a change should apply: %v", err)
+	}
+	wrongContext := write("--- a/main.go\n+++ b/main.go\n@@ -3,2 +3,2 @@\n func other() {\n-\tx := 1\n+\tx := 2\n")
+	if _, err := tc.ApplyPatchCheck(ctx, worktree, wrongContext); err == nil {
+		t.Fatal("context that does not match must still fail")
+	}
+	if _, err := tc.ApplyPatch(ctx, worktree, endsOnChange); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(worktree, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "\tx := 2\n\ty := x\n\t_ = x\n") {
+		t.Fatalf("patch landed wrong:\n%s", data)
+	}
+}
