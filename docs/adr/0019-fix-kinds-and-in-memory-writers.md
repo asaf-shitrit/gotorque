@@ -16,10 +16,11 @@ it.
 
 ## Decision
 
-**Fix kinds.** For a site whose flagged causes include allocation, fast path or string building,
+**Fix kinds.** For a site whose flagged causes include allocation or string building,
 the analyst asks nine fix-kind questions in one more request over the same state. Each kind is
 scored against its own baseline, as causes are. The leading kind is used only when its z is at
-least 0 and it leads the cause's next kind by `KindGate` (0.25 sd). The target then carries
+least 0 and it leads the cause's next kind by `KindGate` (0.25 sd). Fast path was shipped this way at first and turned
+off after the held-out check below. The target then carries
 `fix_kind` and that kind's remedy; otherwise the generic remedy stands. A failed request changes
 nothing. The redundant-work pair is asked, because the baseline was measured with all nine in one
 request, but never chosen. Unbuffered I/O, preallocation and superlinear work get no kinds: every
@@ -46,7 +47,21 @@ cause baseline):
 | Redundant work (not shipped) | 7/12 | 6/12 | 5/8 |
 
 The questions were written after reading those fixes and scored on them, so these are upper
-bounds until a live campaign or a held-out set confirms them. Each labelled kind's z fell after
+bounds. A held-out set followed: 129 single-function fixes from 28 repositories outside the
+benchmark, labelled from their diffs before any question was asked, 60 of them unambiguous. It
+re-scored the shipped questions, baseline and gate unchanged:
+
+| Cause | Held-out top kind right | Always guessing | Behind the gate: right / chosen |
+| --- | --- | --- | --- |
+| Allocation | 16/21 | 9/21 | 16/17 |
+| String building | 20/24 | 13/24 | 20/24 |
+| Fast path | 8/15 | 14/15 | 8/11 |
+
+Allocation and string building held. Fast path fell below always guessing the common-case kind,
+because the ASCII question fires on any function that scans bytes, with leads up to 1.96 sd, so
+no margin would save it. Its two questions are still asked, since the baseline was measured with
+all nine in one request, but never chosen. One person labelled the held-out set, and it holds
+only one real ASCII fix. Each labelled kind's z fell after
 the real fix was applied, in every cause, so the questions respond to the mechanism rather than to
 the function.
 

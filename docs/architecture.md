@@ -70,7 +70,13 @@ serves is not counted: with `--analyst jev` neither the analyst nor the
 coordinator, which becomes a deterministic plan that never calls a model, with
 `--reviewer jev` not the reviewer, and with `--explorer jev` not the explorer,
 a stub that reports the variants discovery sampled. Jev is served by a different gateway,
-so a role it answers would otherwise keep the breaker from ever tripping.
+so a role it answers would otherwise keep the breaker from ever tripping. When
+those roles leave the optimizer as the only model role, one cycle in which it
+failed is the same single failed call the degrading wrapper absorbs whenever
+another role answers, so the breaker then waits for two consecutive failed
+cycles (`outageCycles`). One slow cycle had ended a gojq campaign two
+candidates early. Permanent HTTP statuses are still not retried, so a revoked
+key stops a campaign within two quick cycles.
 
 The final acceptance transition is
 always produced by deterministic policy (`internal/policy`); agent output,
@@ -134,7 +140,11 @@ produced here or in policy.
    (flushed, when it is a writer) for unbuffered I/O, a `strings.Builder`,
    `bytes.Buffer`, `strconv.`, `append(` or `Grow(` for string building, a
    `make(` or `Grow(` for preallocation. A failure rejects before build with
-   the reason as failure detail. The check can only add a rejection: when Git
+   the reason as failure detail. A target function that wraps a writer in a
+   `bufio.Writer` must also route every write through it: a direct write left
+   on the wrapped writer lands before the buffered output and reorders it,
+   which is how a gojq patch that buffered `printValues`' values but not its
+   newlines reached the test gate. The check can only add a rejection: when Git
    cannot produce the diff, the build decides as before.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
@@ -388,8 +398,9 @@ from the receiver's struct fields, the parameters and local declarations, and
 when every one is a `bytes.Buffer`, `strings.Builder`, reader or `bufio` value
 the unbuffered-I/O flag is dropped and named under `overruled` in the
 `cause_analysis` event. A destination it cannot resolve counts as real I/O, so
-doubt leaves Jev's flag standing. A site whose flagged causes include allocation, fast path or
-string building also gets one fix-kind request (ADR 0019): nine questions over
+doubt leaves Jev's flag standing. A site whose flagged causes include allocation or string
+building also gets one fix-kind request (ADR 0019; fast path was turned off
+after it did worse than guessing on held-out fixes): nine questions over
 the same state, each kind scored against its own baseline. When a kind leads
 its cause's next kind by at least `KindGate` (0.25 sd) at a z of at least 0,
 the target carries `fix_kind` and that kind's narrower remedy. Hot paths keep discovery's `path:line` verbatim, which the model

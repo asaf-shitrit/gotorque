@@ -175,3 +175,12 @@ func diffOf(t *testing.T, before, after string) []byte {
 	require.NoError(t, err)
 	return diff
 }
+
+// TestShapeRejectsWritesThatBypassTheBuffer replays the gojq patch that
+// buffered the values but left the newline writes on the raw writer.
+func TestShapeRejectsWritesThatBypassTheBuffer(t *testing.T) {
+	half := strings.Replace(buffered(true), "\t\tw.WriteString(\"\\n\")\n", "\t\tc.out.WriteString(\"\\n\")\n", 1)
+	err := shapeOf(t, half, &printerTarget)
+	require.ErrorContains(t, err, "(*cli).printValues still writes to c.out directly after wrapping it in a bufio.Writer")
+	require.NoError(t, shapeOf(t, buffered(true), &printerTarget), "a complete patch passes")
+}

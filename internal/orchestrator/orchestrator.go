@@ -721,7 +721,13 @@ func countDecision(state *CampaignState, decision domain.Decision, separateIncon
 // rejection streak would blame the patches for the provider.
 func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
 	next := routeFinish
-	if failure, down := g.providerFailure(state); down {
+	failure, down := g.providerFailure(state)
+	if down {
+		state.OutageCycles++
+	} else {
+		state.OutageCycles = 0
+	}
+	if down && state.OutageCycles >= g.outageCycles() {
 		state.ProviderFailure = failure
 		state.StopReason = stopReasonProviderFailure + failure
 	} else if reason := g.stopReason(state); reason != "" {
@@ -767,6 +773,22 @@ func (g *campaignGraph) servedByJev(role agents.Role) bool {
 		return false
 	}
 	return false
+}
+
+// outageCycles is how many consecutive cycles must lose every model role
+// before the breaker stops the campaign. With two or more model roles, one
+// cycle in which all of them failed is an outage. With one, it is the same
+// single call that the degrading wrapper already absorbs when other roles
+// answer: once Jev and code served every role but the optimizer, one slow
+// cycle, its three attempts each cut while still producing, ended a gojq
+// campaign two candidates early. So a lone model role must fail two cycles in
+// a row. A revoked key or an empty balance still stops the campaign quickly,
+// since those HTTP statuses are not retried.
+func (g *campaignGraph) outageCycles() int {
+	if len(g.modelRoles()) == 1 {
+		return 2
+	}
+	return 1
 }
 
 // providerFailure reports the cycle's last failure when every model role failed

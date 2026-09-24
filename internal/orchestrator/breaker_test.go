@@ -178,8 +178,9 @@ func TestPartialRoleFailuresKeepTheCampaignRunning(t *testing.T) {
 // jev and --explorer jev the analyst and reviewer are served by a different
 // gateway on a different key, and the coordinator and explorer by code, so a
 // model provider outage must trip the breaker even while all four keep
-// answering. The analysis ranks targets, as Jev's always does, so the cycle
-// runs the path a Jev campaign takes.
+// answering. The optimizer is then the only model role, so the breaker waits
+// for a second failed cycle (outageCycles). The analysis ranks targets, as
+// Jev's always does, so the cycle runs the path a Jev campaign takes.
 func TestProviderOutageDoesNotWaitForJevRoles(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
@@ -199,11 +200,11 @@ func TestProviderOutageDoesNotWaitForJevRoles(t *testing.T) {
 	}, Config{MaxCandidates: 4, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-outage-jev", causeCampaign, "finalize_campaign")
 
-	if result.CandidatesTried != 1 || !strings.HasPrefix(result.StopReason, stopReasonProviderFailure) {
-		t.Errorf("tried %d, stop reason %q; want the breaker after one cycle", result.CandidatesTried, result.StopReason)
+	if result.CandidatesTried != 2 || !strings.HasPrefix(result.StopReason, stopReasonProviderFailure) {
+		t.Errorf("tried %d, stop reason %q; want the breaker after two cycles", result.CandidatesTried, result.StopReason)
 	}
-	if len(analyst.requests) != 1 || len(review.requests) != 1 {
-		t.Errorf("cause analyst calls = %d, review calls = %d, want 1 each", len(analyst.requests), len(review.requests))
+	if len(analyst.requests) != 2 || len(review.requests) != 2 {
+		t.Errorf("cause analyst calls = %d, review calls = %d, want 2 each", len(analyst.requests), len(review.requests))
 	}
 }
 
@@ -242,5 +243,32 @@ func TestProviderFailureNeedsEveryModelRole(t *testing.T) {
 	}
 	if _, down := jev.providerFailure(CampaignState{}); down {
 		t.Error("tripped on a cycle with no failures")
+	}
+}
+
+// TestALoneModelRoleSurvivesOneFailedCycle: with Jev and code serving every
+// role but the optimizer, one cycle in which the optimizer's call fails is the
+// transient case, not an outage; the campaign runs on and spends its budget.
+func TestALoneModelRoleSurvivesOneFailedCycle(t *testing.T) {
+	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
+	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
+	roles := scriptedRoleSet(t, failures{agents.RoleOptimizer: {2}})
+	planned, err := agents.PlannedExplorer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles.Explorer, roles.ExploreEvaluator = planned, jev.Stub{}
+	orch := mustNew(t, Dependencies{
+		Runner: &hotRunner{},
+		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+		Jobs:   &fakeJobService{},
+		Agents: roles,
+		Causes: analyst,
+		Review: review,
+	}, Config{MaxCandidates: 3, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
+	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-lone-role", causeCampaign, "finalize_campaign")
+
+	if result.CandidatesTried != 3 || result.StopReason != stopReasonMaxCandidates || result.ProviderFailure != "" {
+		t.Errorf("tried %d, stop reason %q, provider failure %q; want the whole budget spent", result.CandidatesTried, result.StopReason, result.ProviderFailure)
 	}
 }
