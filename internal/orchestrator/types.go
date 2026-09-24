@@ -205,6 +205,10 @@ type CampaignState struct {
 	// model role failed in the same cycle. It holds the last failure, as
 	// "role: cause".
 	ProviderFailure string `json:"provider_failure,omitempty"`
+	// OutageCycles counts consecutive cycles, the current one included, in
+	// which every model role failed. See outageCycles. Like CycleFailures it
+	// needs no persistence: a resumed campaign starts a fresh count.
+	OutageCycles int `json:"outage_cycles,omitempty"`
 
 	// SourceExcerpts is best-effort enrichment: real code around hot paths
 	// so the optimizer can write patch context lines that git apply accepts.

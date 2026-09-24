@@ -70,7 +70,13 @@ serves is not counted: with `--analyst jev` neither the analyst nor the
 coordinator, which becomes a deterministic plan that never calls a model, with
 `--reviewer jev` not the reviewer, and with `--explorer jev` not the explorer,
 a stub that reports the variants discovery sampled. Jev is served by a different gateway,
-so a role it answers would otherwise keep the breaker from ever tripping.
+so a role it answers would otherwise keep the breaker from ever tripping. When
+those roles leave the optimizer as the only model role, one cycle in which it
+failed is the same single failed call the degrading wrapper absorbs whenever
+another role answers, so the breaker then waits for two consecutive failed
+cycles (`outageCycles`). One slow cycle had ended a gojq campaign two
+candidates early. Permanent HTTP statuses are still not retried, so a revoked
+key stops a campaign within two quick cycles.
 
 The final acceptance transition is
 always produced by deterministic policy (`internal/policy`); agent output,
@@ -134,7 +140,11 @@ produced here or in policy.
    (flushed, when it is a writer) for unbuffered I/O, a `strings.Builder`,
    `bytes.Buffer`, `strconv.`, `append(` or `Grow(` for string building, a
    `make(` or `Grow(` for preallocation. A failure rejects before build with
-   the reason as failure detail. The check can only add a rejection: when Git
+   the reason as failure detail. A target function that wraps a writer in a
+   `bufio.Writer` must also route every write through it: a direct write left
+   on the wrapped writer lands before the buffered output and reorders it,
+   which is how a gojq patch that buffered `printValues`' values but not its
+   newlines reached the test gate. The check can only add a rejection: when Git
    cannot produce the diff, the build decides as before.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
