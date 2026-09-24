@@ -37,6 +37,7 @@ CLI surface (`internal/cli/root.go`):
 gotorque manifest validate targets/gojq/manifest.json
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk-stub
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --analyst jev --reviewer jev --explorer jev
+gotorque optimize --repo /path/to/repo --manifest targets/go-jsonnet/manifest.json --adk --analyst jev --tradeoff speed --allow memory=5%
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
 ```

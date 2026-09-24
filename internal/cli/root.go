@@ -42,6 +42,9 @@ type optimizeFlags struct {
 	repo, manifestPath, campaignDir, resume string
 	runADK, runADKStub                      bool
 	analyst, reviewer, explorer             string
+	tradeoffName                            string
+	allow                                   []string
+	tradeoff                                manifest.Tradeoff
 }
 
 // Role backends for --analyst and --reviewer. llm is the model role; jev
@@ -70,6 +73,8 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&f.analyst, "analyst", analystLLM, "analyst backend: llm (the analyst model role) or jev (TypeSafe Jev cause classification; needs "+jev.EnvAPIKey+" with --adk)")
 	cmd.Flags().StringVar(&f.explorer, "explorer", analystLLM, "explorer backend: llm (the explorer model role) or jev (the target's own options, judged by TypeSafe Jev and sampled in discovery; needs "+jev.EnvAPIKey+" with --adk)")
 	cmd.Flags().StringVar(&f.reviewer, "reviewer", analystLLM, "reviewer backend: llm (the reviewer model role) or jev (TypeSafe Jev behaviour-hazard checks; needs "+jev.EnvAPIKey+" with --adk)")
+	cmd.Flags().StringVar(&f.tradeoffName, "tradeoff", "", "what the campaign may give up for its improvement: balanced (the manifest as written), speed (improve wall time; memory may regress 10%, CPU 5%) or lean (improve peak memory; wall and CPU time may regress 3%)")
+	cmd.Flags().StringArrayVar(&f.allow, "allow", nil, "largest regression one metric may show, as metric=percent (wall, cpu, memory, size, or a full metric name), e.g. --allow memory=5%; repeatable, and applied over --tradeoff")
 	return cmd
 }
 
@@ -78,6 +83,9 @@ func runOptimize(ctx context.Context, out io.Writer, f optimizeFlags) error {
 		return errors.New("--adk and --adk-stub are mutually exclusive")
 	}
 	if err := validateJevRoles(f); err != nil {
+		return err
+	}
+	if err := resolveTradeoff(&f); err != nil {
 		return err
 	}
 	roleSet, adkConfig, err := configureOptimizeAgents(ctx, out, f)
@@ -277,19 +285,46 @@ func jevEvaluator(ctx context.Context, f optimizeFlags) (jev.Evaluator, error) {
 	return client, nil
 }
 
+// resolveTradeoff checks the trade-off flags before any provider is called.
+// A resumed campaign keeps the trade-off it started with.
+func resolveTradeoff(f *optimizeFlags) error {
+	if f.resume != "" && (f.tradeoffName != "" || len(f.allow) > 0) {
+		return manifest.ErrTradeoffOnResume
+	}
+	tradeoff, err := manifest.ResolveTradeoff(f.tradeoffName, f.allow)
+	if err != nil {
+		return err
+	}
+	f.tradeoff = tradeoff
+	return nil
+}
+
 func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) (err error) {
 	if f.repo == "" || f.manifestPath == "" {
 		return errors.New("--repo and --manifest are required unless --resume is used")
 	}
-	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig})
+	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig, Tradeoff: f.tradeoff})
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, engine.Close()) }()
+	if err := announceTradeoff(out, f.tradeoff, engine.State().Manifest.Performance); err != nil {
+		return err
+	}
 	if err := engine.Run(ctx); err != nil {
 		return err
 	}
 	return printCampaignComplete(out, engine)
+}
+
+// announceTradeoff states the rules a campaign started with a trade-off is
+// judged by, before it spends anything.
+func announceTradeoff(out io.Writer, tradeoff manifest.Tradeoff, performance manifest.PerformancePolicy) error {
+	if tradeoff.IsZero() {
+		return nil
+	}
+	_, err := fmt.Fprintf(out, "judged under: %s\n", manifest.Describe(performance))
+	return err
 }
 
 func printCampaignComplete(out io.Writer, engine *campaign.Engine) error {
