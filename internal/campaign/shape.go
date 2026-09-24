@@ -364,6 +364,9 @@ func checkRemedy(worktree string, changes map[string]*fileChange, target *agents
 	if target == nil {
 		return nil
 	}
+	if target.FixKind == string(jev.KindDropFmt) {
+		return checkDroppedFmt(changes)
+	}
 	shape, ok := remedyShapes[jev.Cause(target.Cause)]
 	if !ok {
 		return nil
@@ -383,6 +386,19 @@ func checkRemedy(worktree string, changes map[string]*fileChange, target *agents
 		return errors.New("the patch adds a bufio.Writer but never flushes it, so buffered output would be lost")
 	}
 	return nil
+}
+
+// checkDroppedFmt holds the drop-fmt remedy to its own shape: it replaces a
+// fmt call, so it removes one or adds strconv, and may add none of the
+// string-building mechanisms remedyShapes asks of the cause in general.
+func checkDroppedFmt(changes map[string]*fileChange) error {
+	for _, c := range changes {
+		if slices.ContainsFunc(c.removed, func(l string) bool { return strings.Contains(l, "fmt.") }) ||
+			slices.ContainsFunc(c.added, func(l string) bool { return strings.Contains(l, "strconv.") }) {
+			return nil
+		}
+	}
+	return errors.New("the target's remedy is replacing fmt formatting, but the patch removes no fmt call and adds no strconv call")
 }
 
 func containsAny(text string, subs ...string) bool {

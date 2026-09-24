@@ -100,6 +100,16 @@ func ReasoningFromEnvironment() Reasoning {
 	return reasoning
 }
 
+// Default sets role's effort when the environment left it unset, and reports
+// whether it did. An explicit value always wins.
+func (r Reasoning) Default(role Role, effort ReasoningEffort) bool {
+	if _, set := r[role]; set {
+		return false
+	}
+	r[role] = effort
+	return true
+}
+
 // Validate rejects any effort other than low, medium, or high. An unknown
 // value is not passed on for the endpoint to judge: providers disagree on
 // what they accept, and one that ignores the field would run the campaign at

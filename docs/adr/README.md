@@ -25,5 +25,6 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0016](0016-regressions-reject-on-significance.md) | A regression rejects only when it is significant, after a second series if needed | accepted |
 | [0017](0017-patch-shape-check.md) | A patch is held to its shape before it is built, and an unmeasured target is retried once | accepted |
 | [0018](0018-targets-weigh-evidence-against-hotness.md) | Targets are ordered by evidence discounted by hotness | accepted |
+| [0019](0019-fix-kinds-and-in-memory-writers.md) | Jev picks the fix within a cause, and code overrules unbuffered-I/O flags on in-memory writers | accepted (opt-in) |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence).

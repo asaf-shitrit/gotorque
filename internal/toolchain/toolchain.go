@@ -271,11 +271,18 @@ func (t *Toolchain) ApplyPatchCheck(ctx context.Context, repository, patchPath s
 	if !filepath.IsAbs(patchPath) {
 		return Result{}, errors.New("patch path must be absolute")
 	}
-	return t.run(ctx, t.gitPath, []string{"apply", "--check", patchPath}, repository, nil, nil)
+	return t.run(ctx, t.gitPath, []string{"apply", "--check", "--unidiff-zero", patchPath}, repository, nil, nil)
 }
 
 // ApplyPatch applies a patch only after the caller has passed candidate policy
 // checks. It accepts an absolute artifact path, never patch text or a shell.
+//
+// Both it and ApplyPatchCheck pass --unidiff-zero. Without it git anchors a
+// hunk that has no trailing context to the end of the file, and one with no
+// leading context to the start, and models end hunks on their last changed
+// line: on a live gojq campaign two correct bufio patches of printValues, the
+// middle of a 400-line file, failed with "patch does not apply". The flag
+// drops only that anchoring; every context line still has to match.
 func (t *Toolchain) ApplyPatch(ctx context.Context, repository, patchPath string) (Result, error) {
 	if err := requireDirectory(repository); err != nil {
 		return Result{}, err
@@ -283,7 +290,7 @@ func (t *Toolchain) ApplyPatch(ctx context.Context, repository, patchPath string
 	if !filepath.IsAbs(patchPath) {
 		return Result{}, errors.New("patch path must be absolute")
 	}
-	return t.run(ctx, t.gitPath, []string{"apply", "--whitespace=error-all", patchPath}, repository, nil, nil)
+	return t.run(ctx, t.gitPath, []string{"apply", "--unidiff-zero", "--whitespace=error-all", patchPath}, repository, nil, nil)
 }
 
 // ApplyPatchFuzzy applies a patch with GNU patch's fuzz matching for models

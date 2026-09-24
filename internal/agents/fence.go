@@ -94,9 +94,9 @@ type fenceStrippingModel struct {
 
 // Transparent retries: shared-pool rate limits (HTTP 429), transport
 // errors, and complete-but-unusable payloads all otherwise abort a
-// multi-hour campaign on a single bad roll. The ladder is 15s, 30s, 60s.
+// multi-hour campaign on a single bad roll. The ladder is 15s, then 30s.
 const (
-	defaultGenerateAttempts = 4
+	defaultGenerateAttempts = 3
 	defaultGenerateBackoff  = 15 * time.Second
 )
 

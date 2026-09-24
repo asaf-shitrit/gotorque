@@ -110,9 +110,11 @@ func TestOpenAIProviderSuppliesBoundedHTTPClient(t *testing.T) {
 // The agent deadline must fit every retry fence.go performs, or a stalled
 // endpoint still ends the campaign instead of being retried.
 func TestRequestTimeoutFitsInsideAgentDeadline(t *testing.T) {
-	const attempts = 4
-	const backoff = 15*time.Second + 30*time.Second + 60*time.Second
-	if worst := attempts*attemptTimeout + backoff; worst > 20*time.Minute {
+	worst := time.Duration(defaultGenerateAttempts) * attemptTimeout
+	for i := range defaultGenerateAttempts - 1 {
+		worst += defaultGenerateBackoff << i
+	}
+	if worst > 20*time.Minute {
 		t.Errorf("worst-case role call = %s, want <= the 20m agent deadline", worst)
 	}
 }

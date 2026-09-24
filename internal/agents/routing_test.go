@@ -44,3 +44,16 @@ func TestEveryRoleHasAReasoningVariable(t *testing.T) {
 		require.NotEmpty(t, reasoningEnv[role], "role %s", role)
 	}
 }
+
+func TestReasoningDefaultNeverOverridesTheEnvironment(t *testing.T) {
+	t.Setenv(EnvOptimizerReasoning, "")
+	unset := ReasoningFromEnvironment()
+	if !unset.Default(RoleOptimizer, ReasoningLow) || unset[RoleOptimizer] != ReasoningLow {
+		t.Fatalf("an unset optimizer effort should default to low, got %+v", unset)
+	}
+	t.Setenv(EnvOptimizerReasoning, "high")
+	explicit := ReasoningFromEnvironment()
+	if explicit.Default(RoleOptimizer, ReasoningLow) || explicit[RoleOptimizer] != ReasoningHigh {
+		t.Fatalf("an explicit effort must win, got %+v", explicit)
+	}
+}
