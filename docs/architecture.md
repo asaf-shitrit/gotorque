@@ -148,7 +148,16 @@ produced here or in policy.
    cannot produce the diff, the build decides as before.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
-   the compiler stderr attached to the candidate record.
+   the compiler stderr attached to the candidate record. When
+   `target.build.directory` names a nested Go module (ADR 0023, e.g.
+   `alecthomas/chroma`'s `cmd/chroma`, which keeps its own go.mod with a
+   `replace ../../`), the build runs with that directory as `go build`'s
+   working directory and `target.build.package` resolves relative to it;
+   every build in the campaign — baseline, its coverage twin, every
+   candidate, and the PGO lane's baseline/candidate pair — does the same.
+   Left unset, a build runs from the repository root exactly as before ADR
+   0023. The upstream test-suite gate below and discovery's benchmark
+   profiling stay root-module-only regardless.
 
    A candidate that fails in steps 1-3 is recorded as `unmeasured`: it says
    nothing about its target, so `planTarget` hands the same target to the

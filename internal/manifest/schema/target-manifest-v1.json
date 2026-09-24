@@ -34,7 +34,8 @@
       "required": ["package", "binary"],
       "properties": {
         "package": {"type": "string", "minLength": 1},
-        "binary": {"type": "string", "minLength": 1}
+        "binary": {"type": "string", "minLength": 1},
+        "directory": {"type": "string", "minLength": 1}
       }
     },
     "workloads": {

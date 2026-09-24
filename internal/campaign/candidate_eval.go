@@ -144,7 +144,7 @@ func (e *Engine) buildAndTestCandidate(ctx context.Context, worktree, id string,
 }
 
 func (e *Engine) buildCandidateBinary(ctx context.Context, worktree, candidateBinary string, evidence *orchestrator.CandidateEvidence) bool {
-	buildResult, buildErr := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: worktree, Target: e.state.Manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}})
+	buildResult, buildErr := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: worktree, Directory: e.state.Manifest.Target.Build.Directory, Target: e.state.Manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}})
 	if buildErr != nil {
 		evidence.Summary = fmt.Sprintf("candidate build failed: %v", buildErr)
 		evidence.Unmeasured = true
@@ -629,7 +629,7 @@ func (e *Engine) buildPgoBinaries(ctx context.Context, candidateWorktree, candid
 }
 
 func (e *Engine) buildPgoBinary(ctx context.Context, label, repository, output string, evidence *orchestrator.CandidateEvidence) bool {
-	result, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: repository, Target: e.state.Manifest.Target.Build.Package, Output: output, PGOProfile: e.state.PGOProfilePath, Env: []string{"GOTOOLCHAIN=local"}})
+	result, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: repository, Directory: e.state.Manifest.Target.Build.Directory, Target: e.state.Manifest.Target.Build.Package, Output: output, PGOProfile: e.state.PGOProfilePath, Env: []string{"GOTOOLCHAIN=local"}})
 	if err != nil {
 		// A build the lane's own budget cut short is a statement about the
 		// lane, not about the target's compiler output.

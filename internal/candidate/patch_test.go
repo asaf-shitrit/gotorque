@@ -101,6 +101,18 @@ func TestValidateUnifiedDiffRejectsEveryRouteToAProtectedPath(t *testing.T) {
 			"--- /dev/null\n+++ b/go.work\n@@ -0,0 +1 @@\n+use ./fake\n",
 			`"go.work" is off-limits`,
 		},
+		// A target whose CLI lives in a nested module (ADR 0023, e.g.
+		// alecthomas/chroma's cmd/chroma) has its own go.mod/go.sum fixing
+		// its build; rejectProtectedPath matches dependencyFiles by
+		// basename, so this needs no directory-specific rule.
+		"nested module go.mod": {
+			"--- a/cmd/chroma/go.mod\n+++ b/cmd/chroma/go.mod\n" + hunk,
+			`"cmd/chroma/go.mod" is off-limits`,
+		},
+		"nested module go.sum": {
+			"--- a/cmd/chroma/go.sum\n+++ b/cmd/chroma/go.sum\n" + hunk,
+			`"cmd/chroma/go.sum" is off-limits`,
+		},
 		"test file edit": {
 			"--- a/pkg/parse_test.go\n+++ b/pkg/parse_test.go\n" + hunk,
 			`test file "pkg/parse_test.go" is off-limits`,

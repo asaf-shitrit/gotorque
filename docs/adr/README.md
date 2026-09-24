@@ -28,5 +28,6 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0019](0019-fix-kinds-and-in-memory-writers.md) | Jev picks the fix within a cause, and code overrules unbuffered-I/O flags on in-memory writers | accepted (opt-in) |
 | [0020](0020-tradeoffs-per-campaign.md) | A campaign may pick its own trade-offs | accepted |
 | [0021](0021-improvements-are-measured-again.md) | A promising improvement is measured again, mirroring a regression | accepted |
+| [0023](0023-nested-module-build-directory.md) | A target's build may run from a nested module directory | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence).

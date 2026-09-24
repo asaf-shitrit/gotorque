@@ -86,7 +86,7 @@ func (e *Engine) exploreEvaluator() jev.Evaluator {
 // live in a library package (gojq's are in ./cli), from the module package
 // that declares the most.
 func (e *Engine) untriedFlags(seed manifest.SeedWorkload) []workload.Flag {
-	flags, _ := workload.BoolFlags(filepath.Join(e.state.Repository, e.state.Manifest.Target.Build.Package))
+	flags, _ := workload.BoolFlags(filepath.Join(e.state.Repository, e.state.Manifest.Target.Build.Directory, e.state.Manifest.Target.Build.Package))
 	if len(flags) == 0 {
 		flags = richestFlagPackage(e.state.Repository)
 	}
