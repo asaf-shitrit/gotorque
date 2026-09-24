@@ -706,8 +706,9 @@ only removes parse failures of otherwise usable recommendations.
   like one the model meant. The repaired value is still judged normally, and
   policy never reads the field.
 - Retry and usage decoration: the OpenAI-compatible provider wraps every
-  role model in a decorator that transparently retries up to four attempts
-  with 15, 30, then 60 second backoff while a call fails before producing
+  role model in a decorator that transparently retries up to three attempts
+  of at most six minutes each, with 15 then 30 second backoff, while a call
+  fails before producing
   any content (shared-pool rate limits otherwise abort multi-hour campaigns),
   and records per-role token usage into a collector persisted with campaign
   state. Endpoint credentials and API keys are never persisted. HTTP 400,
@@ -799,7 +800,11 @@ generations that were still working: every campaign round logged two to eight
 legitimate calls ran up to three minutes, and each stalled attempt consumed
 its entire slot in the retry ladder. Streaming makes idleness measurable, so a
 quiet call is abandoned in two minutes and retried while a producing one keeps
-its time. The client therefore carries no total timeout at all; a header
+its time. Each attempt of the retry ladder is still capped, at six minutes,
+since the optimizer, even at low effort, writes 10-12k completion tokens per
+call: completed calls took up to 3m43s, and a four-minute cap cut a whole gojq
+cycle's attempts while they were still producing. The client therefore
+carries no total timeout at all; a header
 timeout still fails a dead endpoint before any byte arrives.
 
 Rebuilding the response is not a pass-through. ADK's streaming path yields the

@@ -87,8 +87,14 @@ func (p OpenAIProvider) roleModel(ctx context.Context, role Role) (model.LLM, er
 //
 // Stalls themselves are caught much sooner than this by streamIdleTimeout:
 // streaming makes idleness measurable, so a call that goes quiet fails in two
-// minutes instead of consuming the whole attempt.
-const attemptTimeout = 4 * time.Minute
+// minutes instead of consuming the whole attempt. The attempt budget therefore
+// only ever cuts a call that is still producing output, and it was four
+// minutes until the optimizer, even at low effort, was measured writing 10-12k
+// completion tokens per call: completed calls across nine live campaigns took
+// up to 3m43s, and on gojq a whole cycle's attempts were cut at 4m0s and the
+// breaker ended the campaign. Six minutes, with one attempt fewer, keeps the
+// ladder inside the node deadline (TestRequestTimeoutFitsInsideAgentDeadline).
+const attemptTimeout = 6 * time.Minute
 
 // httpClient returns the client model calls are built on; modelClient layers
 // the per-role transports over it.
