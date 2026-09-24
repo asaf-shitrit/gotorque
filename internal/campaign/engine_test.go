@@ -412,3 +412,25 @@ func TestHotFunctionNamesSkipsRuntimeAndDeduplicates(t *testing.T) {
 	capped := hotFunctionNames([]profile.Function{{Name: "main.a"}, {Name: "main.b"}}, 1)
 	require.Equal(t, []string{"main.a"}, capped)
 }
+
+// TestBenchmarkProfilingLeavesTheCheckoutClean: go test keeps the test binary
+// it profiled in the working directory, the canonical checkout, which then no
+// longer matches its revision and stops the campaign. go-jsonnet, the first
+// target with benchmarks, stopped that way before its first candidate.
+func TestBenchmarkProfilingLeavesTheCheckoutClean(t *testing.T) {
+	repo := makeRepository(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "bench_test.go"), []byte("package main\n\nimport \"testing\"\n\nfunc BenchmarkSum(b *testing.B) {\n\tfor i := 0; i < b.N; i++ {\n\t\t_ = i * i\n\t}\n}\n"), 0o600))
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "benchmark")
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+
+	profilePath, err := engine.benchmarkCPUProfile(context.Background())
+	require.NoError(t, err)
+	require.FileExists(t, profilePath)
+	require.Empty(t, git(t, repo, "status", "--porcelain", "--untracked-files=all", "--ignored"), "profiling must not write into the checkout")
+}

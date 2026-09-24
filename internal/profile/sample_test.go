@@ -450,3 +450,45 @@ func mustInt(t *testing.T, value string) int {
 	}
 	return n
 }
+
+// writeFlakySampler writes an empty call graph on its first run and report on
+// every later one, as /usr/bin/sample once did on a live dasel campaign.
+func writeFlakySampler(t *testing.T, report string) (path, runs string) {
+	t.Helper()
+	dir := t.TempDir()
+	path, runs = filepath.Join(dir, "flaky-sample.sh"), filepath.Join(dir, "runs")
+	script := "#!/bin/sh\n" +
+		"OUT=\"$4\"\n" +
+		"echo run >> " + shellQuote(runs) + "\n" +
+		"if [ \"$(wc -l < " + shellQuote(runs) + ")\" -eq 1 ]; then printf 'Call graph:\\n' > \"$OUT\"; exit 0; fi\n" +
+		"printf '%s' " + shellQuote(report) + " > \"$OUT\"\n"
+	//nolint:gosec // fake sampler must be owner-executable; 0700 is the tightest mode that allows exec
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path, runs
+}
+
+func TestSampleTargetProfileRetriesAnEmptyCallGraph(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-only sampler path")
+	}
+	sampler, runs := writeFlakySampler(t, macSampleReport)
+	result, err := SampleTargetProfile(context.Background(), SampleTarget{
+		BinaryPath: "/bin/sleep", Args: []string{"3"},
+		OutputPath: filepath.Join(t.TempDir(), "out.txt"), Duration: time.Second, SampleBinary: sampler,
+	})
+	if err != nil {
+		t.Fatalf("a retried sample should succeed: %v", err)
+	}
+	if len(result.Functions) == 0 {
+		t.Fatal("expected the retry's functions")
+	}
+	data, err := os.ReadFile(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "run"); n != 2 {
+		t.Fatalf("sampler ran %d times, want 2", n)
+	}
+}
