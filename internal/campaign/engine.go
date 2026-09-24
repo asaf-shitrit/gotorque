@@ -771,8 +771,7 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	if len(e.state.Manifest.Workloads.Seeds) == 0 {
 		return errors.New("manifest defines no seed workloads to sample")
 	}
-	seed := e.state.Manifest.Workloads.Seeds[0]
-	result, err := e.sampleSeed(ctx, seed, "sample-report.txt")
+	seed, result, err := e.sampleFirstLiving(ctx)
 	if err != nil {
 		return err
 	}
@@ -780,6 +779,35 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", e.sampledHotNames(results...))
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
+}
+
+// sampleFirstLiving samples the first seed, and when that fails, each
+// stress-tier seed in manifest order, returning the first that sampled.
+//
+// Amplification only grows stdin, so a seed whose input is files runs as long
+// as its files make it. go-jsonnet evaluates a .jsonnet file in 90 ms, and the
+// macOS sampler cannot attach to a process that short: every attempt, even with
+// sample -wait, wrote an empty call graph. Discovery then fell back to the
+// module's benchmarks, which exercise unrelated code, and no target was chosen.
+// A stress seed is the manifest's own larger version of a workload, so it can
+// run long enough to sample.
+func (e *Engine) sampleFirstLiving(ctx context.Context) (manifest.SeedWorkload, profile.SampleResult, error) {
+	seeds := e.state.Manifest.Workloads.Seeds
+	candidates := []manifest.SeedWorkload{seeds[0]}
+	for _, seed := range seeds[1:] {
+		if seed.Tier == domain.TierStress {
+			candidates = append(candidates, seed)
+		}
+	}
+	var failures []string
+	for _, seed := range candidates {
+		result, err := e.sampleSeed(ctx, seed, "sample-report.txt")
+		if err == nil {
+			return seed, result, nil
+		}
+		failures = append(failures, seed.ID+": "+err.Error())
+	}
+	return manifest.SeedWorkload{}, profile.SampleResult{}, errors.New(strings.Join(failures, "; "))
 }
 
 // sampleSeed samples one workload under the platform sampler, with its input

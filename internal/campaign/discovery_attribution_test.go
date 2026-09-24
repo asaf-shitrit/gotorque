@@ -4,8 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
+	"example.com/gotorque/internal/domain"
+	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/profile"
 	"github.com/stretchr/testify/require"
 )
@@ -72,4 +75,30 @@ func TestResolveHotLocationsStopsAtTheBudget(t *testing.T) {
 	e := gronEngine()
 	e.state.Repository = t.TempDir()
 	require.Len(t, e.resolveHotLocations(context.Background(), "", names), hotFunctionBudget)
+}
+
+// TestSamplingFallsBackToALongerStressSeed: a seed whose input is files runs
+// only as long as its files make it, and the macOS sampler cannot attach to a
+// process that exits at once. Discovery then samples the manifest's stress
+// seed instead of giving up.
+func TestSamplingFallsBackToALongerStressSeed(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("exercises /usr/bin/sample")
+	}
+	e := &Engine{dir: t.TempDir()}
+	e.state.BinaryPath = "/bin/sh"
+	e.state.Manifest.Workloads.Seeds = []manifest.SeedWorkload{
+		{ID: "quick", Tier: domain.TierRepresentative, Args: []string{"-c", "true"}},
+		{ID: "medium", Tier: domain.TierPlausible, Args: []string{"-c", "true"}},
+		{ID: "long", Tier: domain.TierStress, Args: []string{"-c", "i=0; while [ $i -lt 5000000 ]; do i=$((i+1)); done"}},
+	}
+	seed, result, err := e.sampleFirstLiving(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "long", seed.ID)
+	require.NotEmpty(t, result.Functions)
+
+	e.state.Manifest.Workloads.Seeds = e.state.Manifest.Workloads.Seeds[:2]
+	_, _, err = e.sampleFirstLiving(context.Background())
+	require.ErrorContains(t, err, "quick: ", "with no stress seed the first seed's failure is reported")
+	require.NotContains(t, err.Error(), "medium", "only stress seeds are tried after the first")
 }
