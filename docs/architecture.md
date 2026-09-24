@@ -199,7 +199,15 @@ produced here or in policy.
    series (`confirmRegressions`, ADR 0016). All workloads are extended, not
    only the one that read high, because the pooled reading folds them per
    repetition. The second series has no budget of its own: it costs what
-   the first did, and the campaign deadline bounds both.
+   the first did, and the campaign deadline bounds both. The same thing
+   happens on the acceptance side: when the candidate would otherwise end
+   inconclusive only because an eligible reading improved by at least
+   `minimum_improvement_percent` without statistical support, and nothing is
+   about to reject it, every workload is measured again the same way
+   (`confirmImprovements`, ADR 0021). At most one extra series runs per
+   candidate in total — if the regression confirmation already extended
+   every seed, the improvement check reuses that series instead of running a
+   third.
 6. **Statistics.** Each metric gets a two-sample Welch t-test against a
    conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
    sample sizes); support is never reported from fewer than four samples per
@@ -271,6 +279,18 @@ the limit without significance does not reject, and the verdict names it
 is not statistically significant`). `policy.UnconfirmedRegressions` is the
 rule both the engine and the verdict use, so what the engine measures again
 is exactly what the policy would otherwise wave through.
+
+The same noise floor works the other way: an eligible reading that improved by
+at least `minimum_improvement_percent` but lacks statistical support leaves the
+candidate inconclusive rather than accepted, and 25 pairs often cannot resolve
+a 5-10% effect on a short CLI workload — three live yq candidates read 11.55%,
+9.51% and 5.39% improvements that were discarded this way. When the candidate
+would otherwise end inconclusive only for that reason, with nothing about to
+reject it, the engine measures every representative workload again the same
+way it does for a regression (`confirmImprovements`, ADR 0021), using
+`policy.UnconfirmedImprovements` as the mirrored predicate. At most one extra
+series runs per candidate: if the regression confirmation already extended
+every seed, the improvement check does not run a second.
 
 The pooled figure alone was the wrong instrument. A seed whose measured run is
 mostly process startup cannot be improved by any patch, so pooling it dilutes

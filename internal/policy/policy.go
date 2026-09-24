@@ -180,6 +180,36 @@ func overLimit(config Config, comparison domain.MetricComparison) bool {
 	return comparison.DeltaPercent > config.MaximumGuardrailRegressionPercent
 }
 
+// UnconfirmedImprovements returns the eligible readings that improved by at
+// least MinimumImprovementPercent but are not statistically supported: the
+// ones that would have accepted the candidate had they carried support, and
+// instead leave it inconclusive (decideOnImprovement). The engine measures
+// again when there are any (ADR 0021), mirroring UnconfirmedRegressions on
+// the acceptance side: a real win twenty-five pairs could not resolve still
+// has more samples to show up in, and one that stays unsupported is named in
+// the verdict's reasons instead. It is empty when the manifest does not ask
+// for statistical support, since the point estimate then decides alone.
+func UnconfirmedImprovements(config Config, eligible []domain.MetricComparison) []domain.MetricComparison {
+	config = withDefaults(config)
+	if !config.StatisticalSupportRequired {
+		return nil
+	}
+	var readings []domain.MetricComparison
+	for _, comparison := range comparisonResults(eligible) {
+		if improvedAtLeastMinimum(config, comparison) && !comparison.StatisticallyFit {
+			readings = append(readings, comparison)
+		}
+	}
+	return readings
+}
+
+// improvedAtLeastMinimum reports whether a comparison's delta is an
+// improvement (a negative delta) at least as large in magnitude as the
+// manifest's minimum_improvement_percent.
+func improvedAtLeastMinimum(config Config, comparison domain.MetricComparison) bool {
+	return finite(comparison.DeltaPercent) && -comparison.DeltaPercent >= config.MinimumImprovementPercent
+}
+
 // decideOnImprovement accepts on the best supported win in the eligible set.
 // The best unsupported improvement still shapes the reason, so an operator can
 // see how close an unsupported candidate came.
