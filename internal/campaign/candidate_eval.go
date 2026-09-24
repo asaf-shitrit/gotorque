@@ -54,18 +54,34 @@ const (
 // judgment stays here or in policy; the model never self-approves.
 // evaluateCandidate is invoked through the orchestrator CandidateService adapter.
 func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
-	id, patchPath, err := e.writeCandidatePatch(req)
+	patchText, transport, err := e.resolveCandidatePatch(ctx, req)
+	if err != nil {
+		// Building the diff from function_source failed before there was
+		// anything to write or apply: a pre-build rejection like a patch that
+		// does not parse, marked unmeasured so the target is offered once
+		// more (ADR 0017).
+		return orchestrator.CandidateEvidence{
+			Candidate:     domain.Candidate{BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, Transport: transport},
+			Summary:       fmt.Sprintf("candidate rejected before build: %v", err),
+			FailureDetail: tail(err.Error(), 400),
+			Unmeasured:    true,
+		}, nil
+	}
+	id, patchPath, err := e.writeCandidatePatch(req, patchText)
 	if err != nil {
 		return orchestrator.CandidateEvidence{}, err
 	}
 	evidence := orchestrator.CandidateEvidence{
-		Candidate:    domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, PatchPath: patchPath},
+		Candidate:    domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, PatchPath: patchPath, Transport: transport},
 		ArtifactURIs: []string{patchPath},
 	}
 	prepared, ok := e.prepareCandidate(ctx, req, patchPath, &evidence)
 	if !ok {
 		return evidence, nil
 	}
+	// prepareCandidate replaces evidence.Candidate wholesale with the one
+	// WorktreeManager.Prepare built, which does not know the transport.
+	evidence.Candidate.Transport = transport
 	// Worktree teardown runs even when the caller's context is already
 	// canceled (duration budget or Ctrl-C), but keeps its values.
 	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
@@ -86,14 +102,14 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	return evidence, nil
 }
 
-func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest) (id, patchPath string, err error) {
+func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest, patchText string) (id, patchPath string, err error) {
 	patchDir := filepath.Join(e.dir, "patches")
 	if err := os.MkdirAll(patchDir, 0o700); err != nil {
 		return "", "", err
 	}
-	id = stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), req.Proposal.Patch)
+	id = stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), patchText)
 	patchPath = filepath.Join(patchDir, id+".diff")
-	if err := os.WriteFile(patchPath, []byte(req.Proposal.Patch), 0o600); err != nil {
+	if err := os.WriteFile(patchPath, []byte(patchText), 0o600); err != nil {
 		return "", "", err
 	}
 	return id, patchPath, nil

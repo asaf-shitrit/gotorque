@@ -88,6 +88,25 @@ including the reviewer's recommendation, never decides acceptance by itself.
 candidate cycle. The model never self-approves: every terminal judgment is
 produced here or in policy.
 
+0. **Transport resolution (ADR 0022).** With a code-chosen target, the
+   optimizer may return `function_source` (the target function's complete new
+   declaration) and `imports` instead of a hand-written `patch`.
+   `resolveCandidatePatch` in `internal/campaign/function_source.go` chooses
+   which the rest of the loop sees: a non-empty `patch` always wins (it is
+   also the only transport when there is no target), otherwise a target plus a
+   non-empty `function_source` builds the diff deterministically. Building
+   parses the target's file at the base revision, finds the `FuncDecl` named
+   `target.Function` (the same format `causes.go`'s `funcName` produces),
+   splices the gofmt'd new declaration over it (keeping the old doc comment
+   unless the new source carries one), adds any missing imports, and diffs the
+   result against the original with `toolchain.DiffFiles`
+   (`git diff --no-index`, headers rewritten to the repository-relative path).
+   A step that fails — function not found, `function_source` that does not
+   parse as exactly one matching declaration, an empty diff — is a pre-build
+   rejection, `Unmeasured`, exactly like a hand-written patch that fails
+   `git apply --check`. What reaches step 1 is always a unified diff; nothing
+   past this point can tell which transport produced it, which is the point.
+   `domain.Candidate.Transport` records which one did, for the report.
 1. **Diff validation and normalization.** The proposed unified diff is
    normalized by `internal/candidate/normalize.go`, which repairs hunk line
    counts, truncates hunks at the first malformed body line, drops emptied
@@ -463,7 +482,14 @@ attacks (ADR 0013). The analysis carries its flags as structured `targets`
 (function, location, cause, remedy) in the order above, and `merge_analysis`
 picks the first one no earlier candidate tried (`planTarget`), writes its remedy
 as the coordinator's experiment, and cuts the source excerpts down to that
-function; the optimizer's instruction forbids patching any other. The
+function; the optimizer's instruction forbids patching any other. With a
+target, the optimizer's instruction also tells it to answer with
+`function_source` (the target function's whole new declaration) and
+`imports` instead of a hand-written `patch` (ADR 0022): deterministic code
+finds the function by name in the base revision and builds the diff itself,
+which removes context-line and header mismatches as a way to lose a
+candidate. `patch` stays the transport when there is no target, and remains
+an accepted fallback even with one. The
 optimizer's input is then an `OptimizerBrief` (the optimization mode, the
 target, its excerpts and the prior candidates) rather than the whole campaign
 state: discovery evidence, the full analysis and the repository inventory are

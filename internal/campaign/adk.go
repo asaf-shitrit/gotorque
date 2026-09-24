@@ -439,6 +439,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		Target:          input.Target,
 		ReviewConcerns:  input.Review.Concerns,
 		PatchPath:       input.Evidence.Candidate.PatchPath,
+		Transport:       input.Evidence.Candidate.Transport,
 		Summary:         input.Evidence.Summary,
 		Decision:        result.Decision,
 		Reasons:         result.Reasons,
