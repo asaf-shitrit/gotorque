@@ -64,6 +64,30 @@ func (c Collector) SummarizePprof(ctx context.Context, profilePath string, nodeC
 	return summary, nil
 }
 
+// SummarizePprofAllocSpace is SummarizePprof over a heap profile's
+// alloc_space sample index (see Toolchain.PprofTopAllocSpace), for ranking a
+// discovery hot list by allocation weight rather than CPU time.
+func (c Collector) SummarizePprofAllocSpace(ctx context.Context, profilePath string, nodeCount int) (Summary, error) {
+	if c.Toolchain == nil || c.Artifacts == nil {
+		return Summary{}, errors.New("toolchain and artifact store are required")
+	}
+	if !filepath.IsAbs(profilePath) {
+		return Summary{}, errors.New("profile path must be absolute")
+	}
+	result, err := c.Toolchain.PprofTopAllocSpace(ctx, profilePath, nodeCount)
+	if err != nil {
+		return Summary{}, err
+	}
+	_, reportPath, err := c.Artifacts.Put("pprof-top-alloc-space.txt", result.Stdout)
+	if err != nil {
+		return Summary{}, err
+	}
+	summary := parseTop(string(result.Stdout))
+	summary.SourcePath = profilePath
+	summary.RawReport = reportPath
+	return summary, nil
+}
+
 // SummarizeTrace uses go tool trace to extract an authoritative pprof stream,
 // stores it, then asks go tool pprof for the same normalized top report used
 // by ordinary CPU/heap profiles.

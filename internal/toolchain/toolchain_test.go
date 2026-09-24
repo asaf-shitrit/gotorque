@@ -123,3 +123,23 @@ func TestTestPassesAbsoluteCpuprofile(t *testing.T) {
 	}
 	t.Fatalf("-cpuprofile flag missing: %#v", args)
 }
+
+func TestTestPassesAbsoluteMemprofile(t *testing.T) {
+	repo := t.TempDir()
+	fake := &fakeExecutor{}
+	chain := New(Options{Executor: fake})
+	profile := filepath.Join(t.TempDir(), "mem.pb.gz")
+	if _, err := chain.Test(context.Background(), TestRequest{Repository: repo, Bench: ".", Memprofile: profile}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chain.Test(context.Background(), TestRequest{Repository: repo, Bench: ".", Memprofile: "relative/mem.out"}); err == nil {
+		t.Fatal("expected relative memprofile path rejection")
+	}
+	args := fake.invocations[0].Args
+	for i, arg := range args {
+		if arg == "-memprofile" && args[i+1] == profile {
+			return
+		}
+	}
+	t.Fatalf("-memprofile flag missing: %#v", args)
+}

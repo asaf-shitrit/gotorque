@@ -33,6 +33,19 @@ func TestDiscoverValidatesExplorerProposals(t *testing.T) {
 	require.Contains(t, evidence.Summary, "(1/2 explorer proposals valid)")
 }
 
+// TestCampaignRequestCarriesTheObjective: the CampaignRequest built for every
+// ADK node, including the analyst's CauseRequest.Campaign, carries the
+// manifest's resolved primary metric, so a campaign started with
+// --tradeoff lean reaches causeAnalyst.AnalyzeCauses as "peak_memory_bytes"
+// and a manifest left at its default reaches it as "wall_time_ns" (ADR 0024).
+func TestCampaignRequestCarriesTheObjective(t *testing.T) {
+	lean := &Engine{state: State{Manifest: manifest.Manifest{Performance: manifest.PerformancePolicy{PrimaryMetric: "peak_memory_bytes"}}}}
+	require.Equal(t, "peak_memory_bytes", lean.campaignRequest().Objective)
+
+	balanced := &Engine{state: State{Manifest: manifest.Manifest{Performance: manifest.PerformancePolicy{PrimaryMetric: "wall_time_ns"}}}}
+	require.Equal(t, "wall_time_ns", balanced.campaignRequest().Objective)
+}
+
 func TestPromoteCandidateWritesPatchAndMarksRecordAccepted(t *testing.T) {
 	e := pgoLaneTestEngine(t)
 	patchPath := filepath.Join(t.TempDir(), "cand.diff")

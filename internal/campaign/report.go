@@ -162,6 +162,9 @@ func writeReportHeader(b *strings.Builder, state State) {
 		fmt.Fprintf(b, "- Explorer: the target's own options, judged by Jev (`%s`); discovery also sampled: %s\n", jev.Model, orNone(strings.Join(state.DiscoveryWorkloads, "; ")))
 	}
 	fmt.Fprintf(b, "- Judged under: %s: %s\n", tradeoffName(state.Tradeoff), manifest.Describe(state.Manifest.Performance))
+	if state.DiscoveryProfileSource != "" {
+		fmt.Fprintf(b, "- Discovery profile: targets chosen from %s\n", state.DiscoveryProfileSource)
+	}
 	b.WriteString("\n")
 	writeSchemaNotice(b, state)
 }

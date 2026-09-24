@@ -136,6 +136,17 @@ func TestRenderMarkdownLabelsBaselineWorkloads(t *testing.T) {
 	require.Contains(t, report, "`"+unlabelledWorkload+"`", "a run recorded before labels must say so")
 }
 
+// TestRenderMarkdownNamesTheDiscoveryProfileSource: a lean campaign's
+// targets came from CPU evidence plus a benchmark alloc_space profile
+// (ADR 0024), and the report must say so; a campaign with no recorded source
+// carries no such line.
+func TestRenderMarkdownNamesTheDiscoveryProfileSource(t *testing.T) {
+	report := RenderMarkdown(State{DiscoveryProfileSource: "a target sample + a benchmark alloc_space profile"})
+	require.Contains(t, report, "- Discovery profile: targets chosen from a target sample + a benchmark alloc_space profile")
+
+	require.NotContains(t, RenderMarkdown(State{}), "Discovery profile", "no recorded source means no line")
+}
+
 // A campaign in which an agent node failed must say so in its report: the
 // candidate that degradation left empty is otherwise explained only as
 // "patch is empty", which names the symptom and not the cause.

@@ -304,7 +304,7 @@ func TestTargetsWeighEvidenceAgainstHotness(t *testing.T) {
 		flaggedSite("pushfork"),
 		flaggedSite("printValues", jev.Score{Cause: jev.CauseUnbufferedIO, Z: 3.41}, jev.Score{Cause: jev.CauseFastPath, Z: 2.13}),
 	}
-	got := targets(gojq)
+	got := targets(gojq, "")
 	require.Equal(t, "printValues", got[0].Function)
 	require.Equal(t, "unbuffered_io", got[0].Cause)
 	require.Equal(t, []string{"printValues", "marshal", "Next", "printValues", "marshal"}, functionsOf(got), "every first cause precedes any second cause")
@@ -316,7 +316,28 @@ func TestTargetsWeighEvidenceAgainstHotness(t *testing.T) {
 		flaggedSite("quoteString", jev.Score{Cause: jev.CausePrealloc, Z: 1.86}),
 		flaggedSite("statementsFromJSON", jev.Score{Cause: jev.CauseFastPath, Z: 3.97}),
 	}
-	require.Equal(t, "gron", targets(gron)[0].Function)
+	require.Equal(t, "gron", targets(gron, "")[0].Function)
+}
+
+// TestTargetsRankAllocationCausesFirstUnderMemoryObjective: under the
+// peak_memory_bytes objective (ADR 0024), a weaker allocation cause outranks
+// a stronger non-allocation cause in the same tier; under any other
+// objective, including empty (unset), the plain z/sqrt(1+rank) order from
+// TestTargetsWeighEvidenceAgainstHotness is unchanged.
+func TestTargetsRankAllocationCausesFirstUnderMemoryObjective(t *testing.T) {
+	verdicts := []siteVerdict{
+		flaggedSite("fastPath", jev.Score{Cause: jev.CauseFastPath, Z: 3.9}),
+		flaggedSite("allocHeavy", jev.Score{Cause: jev.CauseAlloc, Z: 1.2}),
+		flaggedSite("prealloc", jev.Score{Cause: jev.CausePrealloc, Z: 0.8}),
+	}
+
+	speed := targets(verdicts, "wall_time_ns")
+	require.Equal(t, "fastPath", speed[0].Function, "no reordering off the memory objective")
+
+	lean := targets(verdicts, objectivePeakMemory)
+	require.Equal(t, "allocHeavy", lean[0].Function, "stronger allocation cause leads the memory-ranked tier")
+	require.Equal(t, "prealloc", lean[1].Function, "weaker allocation cause still precedes any non-allocation cause")
+	require.Equal(t, "fastPath", lean[2].Function, "non-allocation cause, however strong, sorts after every allocation cause")
 }
 
 func functionsOf(ts []agents.Target) []string {

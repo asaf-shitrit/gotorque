@@ -29,5 +29,6 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0020](0020-tradeoffs-per-campaign.md) | A campaign may pick its own trade-offs | accepted |
 | [0021](0021-improvements-are-measured-again.md) | A promising improvement is measured again, mirroring a regression | accepted |
 | [0023](0023-nested-module-build-directory.md) | A target's build may run from a nested module directory | accepted |
+| [0024](0024-memory-objective-targets.md) | A memory objective chooses memory-relevant targets | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence).
