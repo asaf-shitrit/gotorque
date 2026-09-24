@@ -128,7 +128,58 @@ func checkFile(worktree, name string, change *fileChange, target *agents.Target)
 	if target == nil || targetPath(target.Location) != name {
 		return nil
 	}
-	return checkConfined(fset, file, change, target.Function)
+	if err := checkConfined(fset, file, change, target.Function); err != nil {
+		return err
+	}
+	return checkBypass(file, target.Function)
+}
+
+// checkBypass rejects a target function that wraps a writer in a
+// bufio.Writer and still writes to the writer directly: the direct writes
+// land before the buffered ones and the output is reordered. On a live gojq
+// campaign a patch buffered printValues' values and left its newline writes
+// on cli.outStream; it built, and the test gate caught it only after a full
+// build and test run, with the target then counted as tried.
+func checkBypass(file *ast.File, function string) error {
+	fd := findFunc(file, function)
+	if fd == nil || fd.Body == nil {
+		return nil
+	}
+	wrapped := bufferedWriters(fd.Body)
+	if len(wrapped) == 0 {
+		return nil
+	}
+	var bypassed []string
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if dst, ok := ioDestination(call); ok && wrapped[exprKey(dst)] && !slices.Contains(bypassed, exprKey(dst)) {
+			bypassed = append(bypassed, exprKey(dst))
+		}
+		return true
+	})
+	if len(bypassed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s still writes to %s directly after wrapping it in a bufio.Writer, so those writes would land before the buffered ones; route every write through the writer", function, strings.Join(bypassed, ", "))
+}
+
+// bufferedWriters names every writer the body wraps in a bufio.Writer.
+func bufferedWriters(body *ast.BlockStmt) map[string]bool {
+	wrapped := map[string]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || constructors[typeName(call.Fun)] != "bufio.Writer" || len(call.Args) == 0 {
+			return true
+		}
+		if key := exprKey(call.Args[0]); key != "" {
+			wrapped[key] = true
+		}
+		return true
+	})
+	return wrapped
 }
 
 func relativeError(err error, worktree string) error {
