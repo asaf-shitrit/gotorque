@@ -332,6 +332,9 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	if record.PatchPath != "" {
 		fmt.Fprintf(b, "- Patch: `%s`%s\n", record.PatchPath, acceptedMarker(record.Accepted))
 	}
+	if record.Transport == FunctionSourceTransport {
+		b.WriteString("- Transport: function_source (code built the diff from the optimizer's replacement function)\n")
+	}
 	if record.ProposalRepair != "" {
 		// A salvaged proposal is judged like any other; this line only keeps
 		// it from reading as the one the model sent.

@@ -219,6 +219,50 @@ func (t *Toolchain) ChangedLines(ctx context.Context, repository string) ([]byte
 	return result.Stdout, nil
 }
 
+// DiffFiles produces a unified diff between two files on disk, with a/ and
+// b/ headers rewritten to relPath, via `git diff --no-index`. It exists for
+// ADR 0022's function-source transport: deterministic code writes the base
+// revision's file and its replacement to two temporary paths, and this turns
+// their difference into the same diff shape a hand-written patch would have
+// produced, so the rest of the candidate pipeline (normalization, worktree
+// apply, shape check) never has to know which one it was given.
+//
+// oldPath and newPath must be absolute; relPath is the repository-relative,
+// forward-slash path the diff should name. `git diff --no-index` exits 1 when
+// the files differ, which is the ordinary case here, not a failure; only
+// other nonzero exits (a missing file, an invalid path) are returned as
+// errors.
+func (t *Toolchain) DiffFiles(ctx context.Context, oldPath, newPath, relPath string) (Result, error) {
+	if !filepath.IsAbs(oldPath) || !filepath.IsAbs(newPath) {
+		return Result{}, errors.New("diff inputs must be absolute paths")
+	}
+	if relPath == "" {
+		return Result{}, errors.New("diff relative path is required")
+	}
+	result, err := t.run(ctx, t.gitPath, []string{"diff", "--no-index", "--no-color", "--no-ext-diff", "--", oldPath, newPath}, "", nil, nil)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return Result{}, err
+		}
+	}
+	result.Stdout = relativizeDiffHeaders(result.Stdout, oldPath, newPath, relPath)
+	return result, nil
+}
+
+// relativizeDiffHeaders rewrites the literal absolute paths `git diff
+// --no-index` embeds in its a/ and b/ headers into a/<relPath> and
+// b/<relPath>. Git derives those headers by stripping the leading path
+// separator from each argument and prefixing it with the default --src-prefix
+// / --dst-prefix, which is otherwise the only place the temporary paths this
+// package invents would leak into the produced diff.
+func relativizeDiffHeaders(stdout []byte, oldPath, newPath, relPath string) []byte {
+	oldHeader := "a/" + strings.TrimPrefix(filepath.ToSlash(oldPath), "/")
+	newHeader := "b/" + strings.TrimPrefix(filepath.ToSlash(newPath), "/")
+	out := bytes.ReplaceAll(stdout, []byte(oldHeader), []byte("a/"+relPath))
+	return bytes.ReplaceAll(out, []byte(newHeader), []byte("b/"+relPath))
+}
+
 // parsePorcelainZ reads `git status --porcelain=v1 -z` output. Each entry is a
 // two-letter status, a space, and a path, NUL-terminated and never quoted; a
 // rename or copy entry is followed by a second NUL-terminated field holding

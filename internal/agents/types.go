@@ -170,9 +170,22 @@ type Target struct {
 // unified diff; flexPatch documents the wire shapes accepted for it. The field
 // stays a Go string and marshals back as one, so campaign state written by
 // either transport reads the same on resume.
+//
+// FunctionSource and Imports are the other transport (ADR 0022): with a
+// code-chosen target, the optimizer returns the target function's whole new
+// declaration instead of hand-writing a diff, and leaves Patch empty.
+// FunctionSource is the complete replacement declaration (doc comment
+// optional); Imports names any import paths it needs that the file does not
+// already have. Deterministic code (internal/campaign) finds the named
+// function in the base revision, splices FunctionSource in, adds the missing
+// imports, and turns the result into an ordinary unified diff before the rest
+// of the pipeline sees it. Patch takes precedence when both are set, and
+// remains the only transport when there is no target.
 type OptimizerResult struct {
 	Hypothesis     string   `json:"hypothesis"`
 	Patch          string   `json:"patch"`
+	FunctionSource string   `json:"function_source,omitempty"`
+	Imports        []string `json:"imports,omitempty"`
 	ExpectedEffect string   `json:"expected_effect"`
 	Risks          []string `json:"risks,omitempty"`
 	ValidationPlan []string `json:"validation_plan,omitempty"`
@@ -487,6 +500,8 @@ func (o *OptimizerResult) UnmarshalJSON(data []byte) error {
 	aux := struct {
 		*alias
 		Patch          flexPatch   `json:"patch"`
+		FunctionSource flexText    `json:"function_source,omitempty"`
+		Imports        flexStrings `json:"imports,omitempty"`
 		Risks          flexStrings `json:"risks,omitempty"`
 		ValidationPlan flexStrings `json:"validation_plan,omitempty"`
 	}{alias: (*alias)(o)}
@@ -494,6 +509,8 @@ func (o *OptimizerResult) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	o.Patch = string(aux.Patch)
+	o.FunctionSource = string(aux.FunctionSource)
+	o.Imports = aux.Imports
 	o.Risks = aux.Risks
 	o.ValidationPlan = aux.ValidationPlan
 	return nil

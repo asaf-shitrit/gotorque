@@ -78,6 +78,10 @@ type CandidateRecord struct {
 	// the analyst ranked causes.
 	Target    *agents.Target `json:"target,omitempty"`
 	PatchPath string         `json:"patch_path,omitempty"`
+	// Transport names how PatchPath's diff was produced: "patch" for an
+	// optimizer-authored unified diff, or "function_source" when code built
+	// it from the optimizer's replacement function declaration (ADR 0022).
+	Transport string `json:"transport,omitempty"`
 	// ReviewConcerns are the behaviour hazards the reviewer raised. They are
 	// recorded for the reader and the next cycle; the verdict never reads them.
 	ReviewConcerns []string                  `json:"review_concerns,omitempty"`

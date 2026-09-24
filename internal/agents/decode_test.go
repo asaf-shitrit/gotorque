@@ -275,6 +275,68 @@ func TestOptimizerPatchWireShapes(t *testing.T) {
 	}
 }
 
+// TestOptimizerFunctionSourceWireShapes: function_source and imports (ADR
+// 0022) decode leniently like every other optimizer field, including the
+// single-string-collapses-to-array shape imports shares with risks and
+// validation_plan.
+func TestOptimizerFunctionSourceWireShapes(t *testing.T) {
+	tests := []struct {
+		name, in, wantSource string
+		wantImports          []string
+	}{
+		{
+			name:        "plain string and array",
+			in:          `{"hypothesis":"h","function_source":"func f() {}","imports":["bufio","strings"]}`,
+			wantSource:  "func f() {}",
+			wantImports: []string{"bufio", "strings"},
+		},
+		{
+			name:        "single import string collapses to one element",
+			in:          `{"hypothesis":"h","function_source":"func f() {}","imports":"bufio"}`,
+			wantSource:  "func f() {}",
+			wantImports: []string{"bufio"},
+		},
+		{
+			name:        "wrapper object collapses to its content",
+			in:          `{"hypothesis":"h","function_source":{"content":"func f() {}"}}`,
+			wantSource:  "func f() {}",
+			wantImports: nil,
+		},
+		{
+			name:        "missing fields stay empty",
+			in:          `{"hypothesis":"h","patch":"diff"}`,
+			wantSource:  "",
+			wantImports: nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got OptimizerResult
+			if err := json.Unmarshal([]byte(tc.in), &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got.FunctionSource != tc.wantSource {
+				t.Fatalf("function_source = %q, want %q", got.FunctionSource, tc.wantSource)
+			}
+			requireStringSliceEqual(t, got.Imports, tc.wantImports)
+		})
+	}
+}
+
+// requireStringSliceEqual fails the test unless got and want hold the same
+// elements in order.
+func requireStringSliceEqual(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("imports = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("imports = %v, want %v", got, want)
+		}
+	}
+}
+
 // Patch text must survive the round trip through campaign state unchanged:
 // the field marshals as a plain string whichever wire shape produced it.
 func TestOptimizerPatchRoundTripsAsString(t *testing.T) {

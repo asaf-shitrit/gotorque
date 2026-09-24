@@ -180,6 +180,16 @@ Package map:
   re-measure with `TestLiveBaseline` rather than pasting a new digest. Never
   add the profile to Jev's state: it drags every answer toward what the
   profile is dominated by.
+- Function-source transport (`internal/campaign/function_source.go`, ADR
+  0022): `resolveCandidatePatch` reads the target's file from
+  `e.state.Repository` at the campaign's base revision, so a code path that
+  reaches it before that checkout exists, or after something has dirtied it,
+  builds a diff against the wrong source. `patch` on `OptimizerResult` always
+  wins over `function_source` when both are set; do not flip that precedence,
+  it is the fallback that keeps a model ignoring the instruction from losing
+  the attempt outright. `findFuncDecl` matches by `funcName`'s format
+  (`causes.go`), not by line number, so a target's `location` line going
+  stale between analysis and optimization does not break the match.
 
 ## Target manifests
 
