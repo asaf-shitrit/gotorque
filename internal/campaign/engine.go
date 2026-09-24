@@ -1045,7 +1045,7 @@ func (e *Engine) benchmarkCPUProfile(ctx context.Context) (string, error) {
 	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
 	var benched bool
 	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package) {
-		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Cpuprofile: cpuProfile, Env: []string{"GOTOOLCHAIN=local"}})
+		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Cpuprofile: cpuProfile, Output: filepath.Join(dir, "bench.test"), Env: []string{"GOTOOLCHAIN=local"}})
 		if err != nil {
 			continue
 		}

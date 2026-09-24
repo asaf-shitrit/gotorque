@@ -99,7 +99,10 @@ type TestRequest struct {
 	CoverDir   string
 	TraceFile  string
 	Cpuprofile string
-	Env        []string
+	// Output is where go test writes the test binary it keeps for a
+	// profile; it must be absolute. See testArgs.
+	Output string
+	Env    []string
 }
 
 func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
@@ -108,6 +111,9 @@ func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
 	}
 	if req.Cpuprofile != "" && !filepath.IsAbs(req.Cpuprofile) {
 		return Result{}, errors.New("cpuprofile path must be absolute")
+	}
+	if req.Output != "" && !filepath.IsAbs(req.Output) {
+		return Result{}, errors.New("test binary output path must be absolute")
 	}
 	env := append([]string(nil), req.Env...)
 	if req.CoverDir != "" {
@@ -136,6 +142,14 @@ func testArgs(req TestRequest) []string {
 	}
 	if req.Cpuprofile != "" {
 		args = append(args, "-cpuprofile", req.Cpuprofile)
+	}
+	// go test keeps the compiled test binary next to a profile, in the
+	// working directory, which is the repository: on go-jsonnet, the first
+	// target with benchmarks, that left ast.test and go-jsonnet.test in the
+	// canonical checkout, and the campaign stopped with "canonical checkout
+	// changed". -o sends it somewhere else.
+	if req.Output != "" {
+		args = append(args, "-o", req.Output)
 	}
 	if len(req.Packages) == 0 {
 		return append(args, "./...")
