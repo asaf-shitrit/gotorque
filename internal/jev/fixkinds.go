@@ -12,7 +12,7 @@ import (
 
 // FixKind is one mechanism that fixes a cause. Several causes are fixed in
 // more than one way, and the generic remedy names them all, so the optimizer
-// chooses; for three of them Jev can tell which one a function needs.
+// chooses; for two of them Jev can tell which one a function needs.
 type FixKind string
 
 const (
@@ -28,9 +28,13 @@ const (
 )
 
 // FixKinds is every fix-kind question, in the order they are asked. All nine
-// go in one request, as measured, including the redundant-work pair, which is
-// asked but never chosen: it picked the real fix 7 times in 12 against 6 for
-// always guessing, and no gate lifted it above chance.
+// go in one request, as measured, but only the allocation and string-building
+// kinds are chosen. The redundant-work pair picked the real fix 7 times in 12
+// against 6 for always guessing, and no gate lifted it above chance. The
+// fast-path pair did well on the fixes it was written from and badly on 15
+// held-out ones: right 8 of the 11 times the gate let it choose, against 14 of
+// 15 for always guessing the common-case kind, because the ASCII question
+// fires on any function that scans bytes.
 var FixKinds = []FixKind{KindBuilder, KindDropFmt, KindASCII, KindCommonCase, KindComputeOnce, KindRemoveUnused, KindConversion, KindStackScratch, KindSizeHint}
 
 type kindSpec struct {
@@ -55,12 +59,12 @@ var kindSpecs = map[FixKind]kindSpec{
 		"Does the Go function in `source` decode runes, consult unicode tables, or call a general rune or byte-set function on every character, when a byte-level test for ASCII input could handle the common case first?",
 		"Each character pays for rune decoding, unicode lookup, or a general character-set search that a plain byte comparison would answer for ASCII input.",
 		"The function already tests bytes directly for ASCII first, or it does not examine text character by character."),
-		"Add a byte-level ASCII check in %s (%s) that handles plain ASCII input before any rune decoding or unicode lookup.", true},
+		"Add a byte-level ASCII check in %s (%s) that handles plain ASCII input before any rune decoding or unicode lookup.", false},
 	KindCommonCase: {CauseFastPath, boolean(
 		"Does the Go function in `source` run its full general logic for an input that is common and trivially answered, such as identical operands, an empty or very small input, or a value that fits a simple form, where an early check could return the answer directly?",
 		"A common easy input goes through the whole general computation although a cheap test at the start could return its result at once.",
 		"Easy inputs are already answered by an early check, or every input needs the general computation."),
-		"Add an early check in %s (%s) that returns the result for the common easy input before the general computation.", true},
+		"Add an early check in %s (%s) that returns the result for the common easy input before the general computation.", false},
 	KindComputeOnce: {CauseRedundant, boolean(
 		"Does the Go function in `source` compute the same value more than once, such as calling the same function with the same arguments twice, rescanning data it has already scanned, or creating an identical value on every call that could be a package-level variable?",
 		"The same result is derived again, within one call or on every call, where computing it once and reusing it would give the same outcome.",
@@ -94,8 +98,10 @@ var kindSpecs = map[FixKind]kindSpec{
 // real fix for 16 of 21 allocation fixes (always guessing the commonest kind:
 // 9), 8 of 9 fast paths (6) and 8 of 12 string-building fixes (8); behind
 // KindGate it was right 14 of 18, 8 of 8 and 7 of 8 times it chose. The
-// questions were written after reading those fixes and scored on them, so
-// these are upper bounds until a campaign or a held-out set confirms them.
+// questions were written after reading those fixes, so a held-out set of 60
+// labelled fixes from 28 other repositories, labelled before any question was
+// asked, re-scored them unchanged: behind the gate allocation was right 16 of
+// 17 times (always guessing: 9 of 21) and string building 20 of 24 (13 of 24).
 var kindBaseline = map[FixKind]stats{
 	KindBuilder:      {mean: 0.1789, std: 0.2636},
 	KindDropFmt:      {mean: 0.1336, std: 0.2293},

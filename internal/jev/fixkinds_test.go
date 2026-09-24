@@ -24,7 +24,7 @@ func TestEveryKindHasAQuestionAndABaseline(t *testing.T) {
 		}
 	}
 	require.True(t, HasKinds(CauseAlloc))
-	require.True(t, HasKinds(CauseFastPath))
+	require.False(t, HasKinds(CauseFastPath), "asked, but worse than guessing on held-out fixes, so never chosen")
 	require.True(t, HasKinds(CauseStringBuild))
 	require.False(t, HasKinds(CauseRedundant), "asked, but near chance, so never chosen")
 	require.False(t, HasKinds(CauseUnbufferedIO))
@@ -42,19 +42,24 @@ func kindAnswers(p map[FixKind]float64) map[string]Answer {
 }
 
 func TestChooseKindNeedsAClearLeader(t *testing.T) {
-	kind, scores, ok, err := ChooseKind(CauseFastPath, kindAnswers(map[FixKind]float64{KindASCII: 0.6}))
+	kind, scores, ok, err := ChooseKind(CauseStringBuild, kindAnswers(map[FixKind]float64{KindDropFmt: 0.6}))
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, KindASCII, kind)
+	require.Equal(t, KindDropFmt, kind)
 	require.Len(t, scores, 2)
 
 	// Both at their usual answer: no leader.
-	_, _, ok, err = ChooseKind(CauseFastPath, kindAnswers(nil))
+	_, _, ok, err = ChooseKind(CauseStringBuild, kindAnswers(nil))
 	require.NoError(t, err)
 	require.False(t, ok)
 
 	// A leader below its own usual answer is not chosen, however far ahead.
-	_, _, ok, err = ChooseKind(CauseFastPath, kindAnswers(map[FixKind]float64{KindASCII: 0.1, KindCommonCase: 0.0}))
+	_, _, ok, err = ChooseKind(CauseStringBuild, kindAnswers(map[FixKind]float64{KindDropFmt: 0.1, KindBuilder: 0.0}))
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// Fast path is asked about but never chosen.
+	_, _, ok, err = ChooseKind(CauseFastPath, kindAnswers(map[FixKind]float64{KindASCII: 0.99}))
 	require.NoError(t, err)
 	require.False(t, ok)
 
@@ -64,7 +69,7 @@ func TestChooseKindNeedsAClearLeader(t *testing.T) {
 	require.False(t, ok)
 
 	missing := kindAnswers(nil)
-	delete(missing, string(KindASCII))
-	_, _, _, err = ChooseKind(CauseFastPath, missing)
-	require.ErrorContains(t, err, "no answer to the fp_ascii question")
+	delete(missing, string(KindBuilder))
+	_, _, _, err = ChooseKind(CauseStringBuild, missing)
+	require.ErrorContains(t, err, "no answer to the sb_builder question")
 }

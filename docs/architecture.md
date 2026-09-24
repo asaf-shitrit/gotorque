@@ -398,8 +398,9 @@ from the receiver's struct fields, the parameters and local declarations, and
 when every one is a `bytes.Buffer`, `strings.Builder`, reader or `bufio` value
 the unbuffered-I/O flag is dropped and named under `overruled` in the
 `cause_analysis` event. A destination it cannot resolve counts as real I/O, so
-doubt leaves Jev's flag standing. A site whose flagged causes include allocation, fast path or
-string building also gets one fix-kind request (ADR 0019): nine questions over
+doubt leaves Jev's flag standing. A site whose flagged causes include allocation or string
+building also gets one fix-kind request (ADR 0019; fast path was turned off
+after it did worse than guessing on held-out fixes): nine questions over
 the same state, each kind scored against its own baseline. When a kind leads
 its cause's next kind by at least `KindGate` (0.25 sd) at a z of at least 0,
 the target carries `fix_kind` and that kind's narrower remedy. Hot paths keep discovery's `path:line` verbatim, which the model
