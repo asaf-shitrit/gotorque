@@ -20,6 +20,12 @@ Pointing at live upstreams:
   about half its CPU time is in the upstream YAML parser, which patches cannot
   touch. A Jev campaign accepted a fix here: compiling a constant regexp once
   instead of once per printed document made `yaml-select-emails` 6.0% faster.
+- `chroma/` exercises a lexer-driven syntax highlighter. Its CLI is a separate
+  Go module (`cmd/chroma`, with a `replace` to the root library), so the
+  manifest sets `build.directory` (ADR 0023). About 40% of its CPU time is in
+  the `regexp2` dependency, which patches cannot touch; the first-party levers
+  are its lexer iterators and token allocation. Its first Jev campaign measured
+  three candidates, all inconclusive.
 - `go-jsonnet/` exercises an interpreter: field lookup, thunks, and
   allocation. Its workloads read `.jsonnet` files, which discovery cannot
   amplify, and a 90 ms run is too short for the macOS sampler, so the
