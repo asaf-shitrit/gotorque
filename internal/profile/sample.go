@@ -69,15 +69,29 @@ func SampleTargetProfile(ctx context.Context, req SampleTarget) (SampleResult, e
 	if req.Duration <= 0 {
 		req.Duration = 4 * time.Second
 	}
+	sample := sampleMacOS
 	switch runtime.GOOS {
 	case "darwin":
-		return sampleMacOS(ctx, req)
 	case "linux":
-		return sampleLinuxPerf(ctx, req)
+		sample = sampleLinuxPerf
 	default:
 		return SampleResult{}, fmt.Errorf("direct target sampling is unsupported on %s", runtime.GOOS)
 	}
+	result, err := sample(ctx, req)
+	if errors.Is(err, errNoFrames) {
+		// A sampler that attached to a live target and still recorded no
+		// frame failed transiently: on a dasel campaign /usr/bin/sample
+		// wrote an empty call graph for a target that ran 13 s, the
+		// campaign had no hot function and no benchmark to fall back on,
+		// and every candidate was written blind. The same binary and input
+		// sampled 102 functions when run again.
+		result, err = sample(ctx, req)
+	}
+	return result, err
 }
+
+// errNoFrames marks sampler output with no recognizable frame.
+var errNoFrames = errors.New("no recognizable frames in sampler output")
 
 // ParseMacOSSample extracts hot functions from `/usr/bin/sample` text output.
 // It prefers the "Sort by top of stack" section (self weights per frame) and
@@ -449,7 +463,7 @@ func finishSampleResult(sampler, outputPath, raw string) (SampleResult, error) {
 		functions, stacks = ParsePerfScript(limit), PerfScriptStacks(limit)
 	}
 	if len(functions) == 0 {
-		return SampleResult{}, errors.New("no recognizable frames in sampler output")
+		return SampleResult{}, errNoFrames
 	}
 	return SampleResult{Sampler: sampler, Functions: functions, Stacks: stacks, RawReport: outputPath}, nil
 }
