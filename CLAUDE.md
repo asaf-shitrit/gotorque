@@ -204,7 +204,8 @@ OpenRouter (`internal/agents/routing.go`). `OPENROUTER_BASE_URL` overrides the
 endpoint.
 Optional `GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}`
 (`low|medium|high`) sets per-role `reasoning.effort`. Unset sends nothing,
-and an invalid value fails the preflight. `--analyst jev`, `--reviewer jev`
+except that the optimizer defaults to `low` under `--analyst jev`, and an
+invalid value fails the preflight. `--analyst jev`, `--reviewer jev`
 and `--explorer jev` replace those roles with Jev questions, which need
 `AI_GATEWAY_API_KEY` instead (ADRs 0012, 0014, 0015).
 Credentials are never persisted into campaign state.

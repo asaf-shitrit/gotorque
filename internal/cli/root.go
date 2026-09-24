@@ -110,7 +110,7 @@ func configureFreshAgents(ctx context.Context, out io.Writer, f optimizeFlags) (
 		if f.manifestPath == "" {
 			return nil, nil, errors.New("--manifest is required with --adk")
 		}
-		return configureADK(ctx, out, f.manifestPath)
+		return configureADK(ctx, out, f.manifestPath, f.analyst == analystJev)
 	}
 	if !f.runADKStub {
 		return nil, nil, nil
@@ -168,7 +168,7 @@ func attachResumeADK(ctx context.Context, out io.Writer, engine *campaign.Engine
 // neither --adk nor --adk-stub was given.
 func resumeRoles(ctx context.Context, out io.Writer, engine *campaign.Engine, f optimizeFlags, roleSet *agents.Set, adkConfig *orchestrator.Config) (*agents.Set, *orchestrator.Config, error) {
 	if f.runADK {
-		return configureADK(ctx, out, engine.State().ManifestPath)
+		return configureADK(ctx, out, engine.State().ManifestPath, f.analyst == analystJev)
 	}
 	if !f.runADKStub {
 		return nil, nil, nil
@@ -297,11 +297,23 @@ func printCampaignComplete(out io.Writer, engine *campaign.Engine) error {
 	return err
 }
 
-func configureADK(ctx context.Context, out io.Writer, manifestPath string) (*agents.Set, *orchestrator.Config, error) {
+// configureADK builds the model roles. With --analyst jev, code chooses each
+// candidate's target and remedy, so the optimizer only writes one small diff;
+// its reasoning effort then defaults to low unless GOTORQUE_REASONING_OPTIMIZER
+// says otherwise. At the provider's default a live gojq campaign ran past the
+// 32k completion budget on all four attempts of one cycle and the breaker
+// ended it; at low every call answered in two to three minutes and the
+// campaign accepted a fix.
+func configureADK(ctx context.Context, out io.Writer, manifestPath string, codeChoosesTarget bool) (*agents.Set, *orchestrator.Config, error) {
 	if manifestPath == "" {
 		return nil, nil, errors.New("--manifest is required with --adk")
 	}
 	provider := agents.NewOpenAIProviderFromEnvironment()
+	if codeChoosesTarget && provider.Reasoning.Default(agents.RoleOptimizer, agents.ReasoningLow) {
+		if _, err := fmt.Fprintf(out, "optimizer: reasoning effort %s, because code chooses the target (set %s to change it)\n", agents.ReasoningLow, agents.EnvOptimizerReasoning); err != nil {
+			return nil, nil, err
+		}
+	}
 	// Role calls are the slowest and least observable part of a campaign;
 	// without per-attempt lines the run prints nothing between starting the
 	// workflow and the first role that completes.
