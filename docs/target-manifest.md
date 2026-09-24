@@ -84,6 +84,23 @@ optional deterministic `stdin`, optional fixture `files`, an optional
 inside the temporary sandbox. `target.command` is a fixed prefix or
 subcommand; it is empty for a root CLI.
 
+`target.build.directory` is optional and repository-relative (no `..`, no
+absolute paths). It names a nested Go module the CLI lives in, for a target
+that keeps `cmd/<name>` as its own module with a `replace ../../` back to the
+root library — `alecthomas/chroma`'s `cmd/chroma` is one (ADR 0023). Every
+build (baseline, candidate, coverage, PGO) then runs with that directory as
+the working directory, and `build.package` is resolved relative to it, e.g.
+`"directory": "cmd/chroma", "package": "."`. Leaving `directory` unset builds
+from the repository root, exactly as every manifest did before this field
+existed. The test gate still runs only the root module's `go test ./...`, so
+a nested module's own tests, if it has any, are not run by gotorque; a patch
+to the root library still reaches the CLI through its `replace` directive, so
+the gate still exercises the code the nested module depends on. Discovery's
+benchmark profiling is root-module-only for the same reason: the target
+package named by `build.package` is not reachable from the repository root
+when `directory` is set, so it is left out of the packages profiling tries,
+and profiling falls back to the root module's own benchmarks.
+
 The three tiers serve different roles:
 
 - `representative`: manifest-defined or known common usage. These are the only
@@ -156,8 +173,13 @@ regress at once. The effective limits are written into the campaign's copy of
 the manifest when it is created, so a resume keeps them and refuses new
 trade-off flags, and every report opens with a "Judged under" line.
 
-Targets are still chosen from a CPU profile, so a `lean` campaign finds memory
-wins only where CPU-hot code also allocates.
+Discovery still profiles CPU first, but under `lean` (or any trade-off whose
+resolved objective is `peak_memory_bytes`) it also runs the module's
+benchmarks, when it has any, under `-memprofile` and folds the heaviest
+allocators into the hot list ahead of CPU-only functions, and the analyst
+ranks each site's allocation causes ahead of its other causes (ADR 0024). A
+module with no benchmarks still finds memory wins only where CPU-hot code
+also happens to allocate.
 
 The deterministic policy returns:
 

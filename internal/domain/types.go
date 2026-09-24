@@ -104,6 +104,13 @@ type Candidate struct {
 	Hypothesis   string    `json:"hypothesis"`
 	PatchPath    string    `json:"patch_path"`
 	CreatedAt    time.Time `json:"created_at"`
+	// Transport names how the diff at PatchPath was produced: "patch" for an
+	// optimizer-authored unified diff (the default, and the fallback for a
+	// candidate with no target), or "function_source" when code built the
+	// diff from the optimizer's whole replacement function declaration
+	// (ADR 0022). Empty is equivalent to "patch" for records written before
+	// this field existed.
+	Transport string `json:"transport,omitempty"`
 }
 
 // WorkloadSamples records raw per-repetition wall times from one A/B

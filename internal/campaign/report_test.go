@@ -35,7 +35,7 @@ func TestCandidateEventSummaryNamesPrimaryMetricAndReason(t *testing.T) {
 		},
 		Reasons: []string{"wall_time_ns improved 1.25% but\nneeds 3.00%"},
 	}
-	got := candidateEventSummary(record)
+	got := candidateEventSummary(record, "")
 	want := "attempt 3: rejected — wall_time_ns -1.25% (unsupported): wall_time_ns improved 1.25% but needs 3.00%"
 	if got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
@@ -48,7 +48,7 @@ func TestCandidateEventSummaryFallsBackToFirstComparison(t *testing.T) {
 		Decision:    domain.DecisionAccepted,
 		Comparisons: []domain.MetricComparison{{Metric: "peak_memory_bytes", DeltaPercent: 0.5, StatisticallyFit: true}},
 	}
-	got := candidateEventSummary(record)
+	got := candidateEventSummary(record, "")
 	if !strings.HasPrefix(got, "attempt 1: accepted — peak_memory_bytes +0.50% (supported)") {
 		t.Fatalf("summary = %q", got)
 	}
@@ -60,7 +60,7 @@ func TestCandidateEventSummaryBoundsMultilineReasons(t *testing.T) {
 		Decision: domain.DecisionRejected,
 		Reasons:  []string{strings.Repeat("patch does not apply\n", 40)},
 	}
-	got := candidateEventSummary(record)
+	got := candidateEventSummary(record, "")
 	if strings.Contains(got, "\n") {
 		t.Fatalf("summary retains a newline: %q", got)
 	}
@@ -136,6 +136,17 @@ func TestRenderMarkdownLabelsBaselineWorkloads(t *testing.T) {
 	require.Contains(t, report, "`"+unlabelledWorkload+"`", "a run recorded before labels must say so")
 }
 
+// TestRenderMarkdownNamesTheDiscoveryProfileSource: a lean campaign's
+// targets came from CPU evidence plus a benchmark alloc_space profile
+// (ADR 0024), and the report must say so; a campaign with no recorded source
+// carries no such line.
+func TestRenderMarkdownNamesTheDiscoveryProfileSource(t *testing.T) {
+	report := RenderMarkdown(State{DiscoveryProfileSource: "a target sample + a benchmark alloc_space profile"})
+	require.Contains(t, report, "- Discovery profile: targets chosen from a target sample + a benchmark alloc_space profile")
+
+	require.NotContains(t, RenderMarkdown(State{}), "Discovery profile", "no recorded source means no line")
+}
+
 // A campaign in which an agent node failed must say so in its report: the
 // candidate that degradation left empty is otherwise explained only as
 // "patch is empty", which names the symptom and not the cause.
@@ -179,4 +190,15 @@ func TestRenderMarkdownMarksAnUnversionedReport(t *testing.T) {
 	legacy := RenderMarkdown(State{ID: "campaign-old"})
 	require.Contains(t, legacy, "Report schema: unversioned")
 	require.Contains(t, legacy, "written before reports carried a schema version")
+}
+
+// TestTheEventHeadlinesTheCampaignsOwnMetric: under --tradeoff lean a verdict
+// turns on peak memory, so that is the number the event line leads with.
+func TestTheEventHeadlinesTheCampaignsOwnMetric(t *testing.T) {
+	record := CandidateRecord{Attempt: 1, Decision: domain.DecisionInconclusive, Comparisons: []domain.MetricComparison{
+		{Metric: "wall_time_ns", DeltaPercent: -0.99},
+		{Metric: "peak_memory_bytes", DeltaPercent: -1.81},
+	}}
+	require.Contains(t, candidateEventSummary(record, "peak_memory_bytes"), "peak_memory_bytes -1.81% (unsupported)")
+	require.Contains(t, candidateEventSummary(record, ""), "wall_time_ns -0.99% (unsupported)")
 }

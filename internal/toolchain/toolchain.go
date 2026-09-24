@@ -51,6 +51,14 @@ func New(opts Options) *Toolchain {
 
 type BuildRequest struct {
 	Repository string
+	// Directory is repository-relative and names the Go module directory the
+	// build command runs from, for a target whose CLI lives in its own module
+	// inside the repository (ADR 0023: e.g. alecthomas/chroma's cmd/chroma,
+	// which carries its own go.mod with a `replace ../../`). Empty runs from
+	// Repository directly, which is every target before ADR 0023 and remains
+	// the default. Target is then resolved relative to this directory, not to
+	// Repository.
+	Directory  string
 	Target     string
 	Output     string
 	Tags       []string
@@ -70,6 +78,10 @@ func (t *Toolchain) Build(ctx context.Context, req BuildRequest) (Result, error)
 	if !filepath.IsAbs(req.Output) {
 		return Result{}, errors.New("build output must be an absolute path")
 	}
+	workDir, err := buildWorkDir(req.Repository, req.Directory)
+	if err != nil {
+		return Result{}, err
+	}
 	args := []string{"build", "-mod=readonly", "-trimpath", "-o", req.Output}
 	if req.Cover {
 		args = append(args, "-cover")
@@ -84,7 +96,26 @@ func (t *Toolchain) Build(ctx context.Context, req BuildRequest) (Result, error)
 		args = append(args, "-pgo", req.PGOProfile)
 	}
 	args = append(args, req.Target)
-	return t.run(ctx, t.goPath, args, req.Repository, req.Env, nil)
+	return t.run(ctx, t.goPath, args, workDir, req.Env, nil)
+}
+
+// buildWorkDir resolves the directory a build runs from. An empty directory
+// keeps the historical behavior of running at the repository root; otherwise
+// it must be repository-relative and stay inside the repository, matching the
+// manifest validation in internal/manifest, but re-checked here because
+// Toolchain is called directly by tests and must not trust a caller's input.
+func buildWorkDir(repository, directory string) (string, error) {
+	if directory == "" {
+		return repository, nil
+	}
+	if filepath.IsAbs(directory) {
+		return "", errors.New("build directory must be repository-relative")
+	}
+	clean := filepath.Clean(directory)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", errors.New("build directory must stay inside the repository")
+	}
+	return filepath.Join(repository, clean), nil
 }
 
 type TestRequest struct {
@@ -99,6 +130,9 @@ type TestRequest struct {
 	CoverDir   string
 	TraceFile  string
 	Cpuprofile string
+	// Memprofile asks `go test -memprofile` for a heap allocation profile,
+	// alongside Cpuprofile or on its own. Like Cpuprofile it must be absolute.
+	Memprofile string
 	// Output is where go test writes the test binary it keeps for a
 	// profile; it must be absolute. See testArgs.
 	Output string
@@ -111,6 +145,9 @@ func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
 	}
 	if req.Cpuprofile != "" && !filepath.IsAbs(req.Cpuprofile) {
 		return Result{}, errors.New("cpuprofile path must be absolute")
+	}
+	if req.Memprofile != "" && !filepath.IsAbs(req.Memprofile) {
+		return Result{}, errors.New("memprofile path must be absolute")
 	}
 	if req.Output != "" && !filepath.IsAbs(req.Output) {
 		return Result{}, errors.New("test binary output path must be absolute")
@@ -142,6 +179,9 @@ func testArgs(req TestRequest) []string {
 	}
 	if req.Cpuprofile != "" {
 		args = append(args, "-cpuprofile", req.Cpuprofile)
+	}
+	if req.Memprofile != "" {
+		args = append(args, "-memprofile", req.Memprofile)
 	}
 	// go test keeps the compiled test binary next to a profile, in the
 	// working directory, which is the repository: on go-jsonnet, the first
@@ -217,6 +257,50 @@ func (t *Toolchain) ChangedLines(ctx context.Context, repository string) ([]byte
 		return nil, err
 	}
 	return result.Stdout, nil
+}
+
+// DiffFiles produces a unified diff between two files on disk, with a/ and
+// b/ headers rewritten to relPath, via `git diff --no-index`. It exists for
+// ADR 0022's function-source transport: deterministic code writes the base
+// revision's file and its replacement to two temporary paths, and this turns
+// their difference into the same diff shape a hand-written patch would have
+// produced, so the rest of the candidate pipeline (normalization, worktree
+// apply, shape check) never has to know which one it was given.
+//
+// oldPath and newPath must be absolute; relPath is the repository-relative,
+// forward-slash path the diff should name. `git diff --no-index` exits 1 when
+// the files differ, which is the ordinary case here, not a failure; only
+// other nonzero exits (a missing file, an invalid path) are returned as
+// errors.
+func (t *Toolchain) DiffFiles(ctx context.Context, oldPath, newPath, relPath string) (Result, error) {
+	if !filepath.IsAbs(oldPath) || !filepath.IsAbs(newPath) {
+		return Result{}, errors.New("diff inputs must be absolute paths")
+	}
+	if relPath == "" {
+		return Result{}, errors.New("diff relative path is required")
+	}
+	result, err := t.run(ctx, t.gitPath, []string{"diff", "--no-index", "--no-color", "--no-ext-diff", "--", oldPath, newPath}, "", nil, nil)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return Result{}, err
+		}
+	}
+	result.Stdout = relativizeDiffHeaders(result.Stdout, oldPath, newPath, relPath)
+	return result, nil
+}
+
+// relativizeDiffHeaders rewrites the literal absolute paths `git diff
+// --no-index` embeds in its a/ and b/ headers into a/<relPath> and
+// b/<relPath>. Git derives those headers by stripping the leading path
+// separator from each argument and prefixing it with the default --src-prefix
+// / --dst-prefix, which is otherwise the only place the temporary paths this
+// package invents would leak into the produced diff.
+func relativizeDiffHeaders(stdout []byte, oldPath, newPath, relPath string) []byte {
+	oldHeader := "a/" + strings.TrimPrefix(filepath.ToSlash(oldPath), "/")
+	newHeader := "b/" + strings.TrimPrefix(filepath.ToSlash(newPath), "/")
+	out := bytes.ReplaceAll(stdout, []byte(oldHeader), []byte("a/"+relPath))
+	return bytes.ReplaceAll(out, []byte(newHeader), []byte("b/"+relPath))
 }
 
 // parsePorcelainZ reads `git status --porcelain=v1 -z` output. Each entry is a
@@ -371,6 +455,21 @@ func (t *Toolchain) PprofTop(ctx context.Context, profilePath string, nodeCount 
 		nodeCount = 50
 	}
 	return t.run(ctx, t.goPath, []string{"tool", "pprof", "-top", "-cum", fmt.Sprintf("-nodecount=%d", nodeCount), profilePath}, "", nil, nil)
+}
+
+// PprofTopAllocSpace is PprofTop over a heap profile's alloc_space sample
+// index: cumulative bytes ever allocated by a function, rather than the
+// default inuse_space (bytes still live when the profile was taken). A
+// discovery hot list built for peak memory wants the functions that do the
+// most allocating, not the ones whose allocations happen to still be live.
+func (t *Toolchain) PprofTopAllocSpace(ctx context.Context, profilePath string, nodeCount int) (Result, error) {
+	if !filepath.IsAbs(profilePath) {
+		return Result{}, errors.New("profile path must be absolute")
+	}
+	if nodeCount <= 0 {
+		nodeCount = 50
+	}
+	return t.run(ctx, t.goPath, []string{"tool", "pprof", "-top", "-alloc_space", "-cum", fmt.Sprintf("-nodecount=%d", nodeCount), profilePath}, "", nil, nil)
 }
 
 // PprofList returns the source-annotated listing for one function from a

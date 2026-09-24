@@ -37,6 +37,13 @@ const (
 	maxCauseSourceBytes = 16 * 1024
 )
 
+// objectivePeakMemory is manifest.PerformancePolicy.PrimaryMetric under
+// --tradeoff lean (see internal/manifest/tradeoff.go). A campaign judged by it
+// ranks allocation causes ahead of others within each targets() tier, since
+// discovery's hot list is CPU-derived by default and a CPU-hot function need
+// not allocate at all (ADR 0024).
+const objectivePeakMemory = "peak_memory_bytes"
+
 // causeAnalyst is the deterministic analyst selected by --analyst jev. It asks
 // Jev the same yes/no questions about every measured hot function, ranks each
 // function's answers against Jev's usual answers, and turns the causes that
@@ -89,7 +96,7 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	if classified == 0 {
 		return agents.AnalystResult{}, fmt.Errorf("jev classified none of %d hot functions; first failure: %s", len(sites), verdicts[0].Problem)
 	}
-	result := analystResult(verdicts)
+	result := analystResult(verdicts, req.Campaign.Objective)
 	result.AdditionalChecks = append(result.AdditionalChecks, skipped...)
 	return result, nil
 }
@@ -266,7 +273,7 @@ func receiverType(expr ast.Expr) string {
 // analystResult turns the verdicts into the analysis the optimizer reads. Hot
 // paths keep discovery's locations verbatim, which the excerpt collector
 // needs and a model analyst used to reformat.
-func analystResult(verdicts []siteVerdict) agents.AnalystResult {
+func analystResult(verdicts []siteVerdict, objective string) agents.AnalystResult {
 	var result agents.AnalystResult
 	for _, v := range verdicts {
 		result.HotPaths = append(result.HotPaths, hotPath(v))
@@ -281,7 +288,7 @@ func analystResult(verdicts []siteVerdict) agents.AnalystResult {
 			result.LikelyCauses = append(result.LikelyCauses, fmt.Sprintf("%s: %s (Jev yes %.2f, %+.1f sd from its usual answer)", site, s.Cause.Summary(), s.Probability, s.Z))
 		}
 	}
-	result.Targets = targets(verdicts)
+	result.Targets = targets(verdicts, objective)
 	for _, t := range result.Targets {
 		result.CandidateHypotheses = append(result.CandidateHypotheses, t.Remedy)
 	}
@@ -302,29 +309,63 @@ func analystResult(verdicts []siteVerdict) agents.AnalystResult {
 // a +3.97 sd fast path in statementsFromJSON before the +3.47 sd bufio fix of
 // its output loop, the patch accepted at -19%. The discounted order puts the
 // known fix first in every recorded analysis, on both targets.
-func targets(verdicts []siteVerdict) []agents.Target {
+//
+// When objective is peak memory (ADR 0024), each tier is additionally split
+// into allocation causes (alloc, prealloc, string_build; see
+// jev.Cause.IsAllocation) ahead of every other cause, the z/sqrt(1+rank) order
+// kept inside each half. Discovery's hot list is still built from CPU
+// evidence, so a lean campaign otherwise finds memory wins only where the
+// CPU-hot code it was handed also happens to allocate; this ranking puts a
+// site's allocation-flagged cause first whenever one was flagged at all.
+func targets(verdicts []siteVerdict, objective string) []agents.Target {
 	out := make([]agents.Target, 0, len(verdicts)*jev.MaxFlagged)
+	memory := objective == objectivePeakMemory
 	for rank := range jev.MaxFlagged {
-		type ranked struct {
-			target agents.Target
-			weight float64
-		}
-		var tier []ranked
-		for i, v := range verdicts {
-			if rank < len(v.Flagged) {
-				s := v.Flagged[rank]
-				tier = append(tier, ranked{
-					target: siteTarget(v, s),
-					weight: s.Z / math.Sqrt(float64(1+i)),
-				})
-			}
-		}
-		slices.SortStableFunc(tier, func(a, b ranked) int { return cmp.Compare(b.weight, a.weight) })
+		tier := rankTier(verdicts, rank)
+		slices.SortStableFunc(tier, func(a, b rankedTarget) int { return compareRanked(a, b, memory) })
 		for _, r := range tier {
 			out = append(out, r.target)
 		}
 	}
 	return out
+}
+
+// rankedTarget is one tier's candidate target, its z/sqrt(1+rank) weight, and
+// whether its cause is allocation-related, which compareRanked uses to sort
+// the tier under the peak-memory objective.
+type rankedTarget struct {
+	target agents.Target
+	weight float64
+	alloc  bool
+}
+
+// rankTier collects every verdict's rank'th flagged cause into one tier.
+func rankTier(verdicts []siteVerdict, rank int) []rankedTarget {
+	var tier []rankedTarget
+	for i, v := range verdicts {
+		if rank < len(v.Flagged) {
+			s := v.Flagged[rank]
+			tier = append(tier, rankedTarget{
+				target: siteTarget(v, s),
+				weight: s.Z / math.Sqrt(float64(1+i)),
+				alloc:  s.Cause.IsAllocation(),
+			})
+		}
+	}
+	return tier
+}
+
+// compareRanked orders a tier by weight, discounted z/sqrt(1+rank), unless
+// memory is set and the two targets disagree on IsAllocation, in which case
+// the allocation cause leads regardless of weight (ADR 0024).
+func compareRanked(a, b rankedTarget, memory bool) int {
+	if memory && a.alloc != b.alloc {
+		if a.alloc {
+			return -1
+		}
+		return 1
+	}
+	return cmp.Compare(b.weight, a.weight)
 }
 
 // siteTarget is one flagged cause as a target, with the remedy of the fix kind

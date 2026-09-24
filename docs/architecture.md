@@ -88,6 +88,25 @@ including the reviewer's recommendation, never decides acceptance by itself.
 candidate cycle. The model never self-approves: every terminal judgment is
 produced here or in policy.
 
+0. **Transport resolution (ADR 0022).** With a code-chosen target, the
+   optimizer may return `function_source` (the target function's complete new
+   declaration) and `imports` instead of a hand-written `patch`.
+   `resolveCandidatePatch` in `internal/campaign/function_source.go` chooses
+   which the rest of the loop sees: a non-empty `patch` always wins (it is
+   also the only transport when there is no target), otherwise a target plus a
+   non-empty `function_source` builds the diff deterministically. Building
+   parses the target's file at the base revision, finds the `FuncDecl` named
+   `target.Function` (the same format `causes.go`'s `funcName` produces),
+   splices the gofmt'd new declaration over it (keeping the old doc comment
+   unless the new source carries one), adds any missing imports, and diffs the
+   result against the original with `toolchain.DiffFiles`
+   (`git diff --no-index`, headers rewritten to the repository-relative path).
+   A step that fails — function not found, `function_source` that does not
+   parse as exactly one matching declaration, an empty diff — is a pre-build
+   rejection, `Unmeasured`, exactly like a hand-written patch that fails
+   `git apply --check`. What reaches step 1 is always a unified diff; nothing
+   past this point can tell which transport produced it, which is the point.
+   `domain.Candidate.Transport` records which one did, for the report.
 1. **Diff validation and normalization.** The proposed unified diff is
    normalized by `internal/candidate/normalize.go`, which repairs hunk line
    counts, truncates hunks at the first malformed body line, drops emptied
@@ -148,7 +167,16 @@ produced here or in policy.
    cannot produce the diff, the build decides as before.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
-   the compiler stderr attached to the candidate record.
+   the compiler stderr attached to the candidate record. When
+   `target.build.directory` names a nested Go module (ADR 0023, e.g.
+   `alecthomas/chroma`'s `cmd/chroma`, which keeps its own go.mod with a
+   `replace ../../`), the build runs with that directory as `go build`'s
+   working directory and `target.build.package` resolves relative to it;
+   every build in the campaign — baseline, its coverage twin, every
+   candidate, and the PGO lane's baseline/candidate pair — does the same.
+   Left unset, a build runs from the repository root exactly as before ADR
+   0023. The upstream test-suite gate below and discovery's benchmark
+   profiling stay root-module-only regardless.
 
    A candidate that fails in steps 1-3 is recorded as `unmeasured`: it says
    nothing about its target, so `planTarget` hands the same target to the
@@ -199,7 +227,15 @@ produced here or in policy.
    series (`confirmRegressions`, ADR 0016). All workloads are extended, not
    only the one that read high, because the pooled reading folds them per
    repetition. The second series has no budget of its own: it costs what
-   the first did, and the campaign deadline bounds both.
+   the first did, and the campaign deadline bounds both. The same thing
+   happens on the acceptance side: when the candidate would otherwise end
+   inconclusive only because an eligible reading improved by at least
+   `minimum_improvement_percent` without statistical support, and nothing is
+   about to reject it, every workload is measured again the same way
+   (`confirmImprovements`, ADR 0021). At most one extra series runs per
+   candidate in total — if the regression confirmation already extended
+   every seed, the improvement check reuses that series instead of running a
+   third.
 6. **Statistics.** Each metric gets a two-sample Welch t-test against a
    conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
    sample sizes); support is never reported from fewer than four samples per
@@ -242,7 +278,12 @@ metric=percent`, ADR 0020). `manifest.Tradeoff.Apply` resolves it once, in
 is the only reader of the performance block, so verdicts, the confirmation
 series and resume all see the same limits with no second code path.
 `State.Tradeoff` records where they came from, and the report's "Judged under"
-line states them.
+line states them. ADR 0020 left discovery targeting a manifest's memory
+objective as an open limitation: discovery profiled CPU regardless, so `lean`
+found memory wins only where CPU-hot code also allocated. ADR 0024 closes it
+(see the Jev cause analyst and discovery sections above): the resolved
+objective ranks allocation causes first and, when the module has benchmarks,
+adds a benchmark `alloc_space` profile's hot functions to discovery's list.
 
 Eligibility is encoded in the comparison, not in its name. A
 `domain.MetricComparison` carries the canonical `metric` plus the `workload` it
@@ -271,6 +312,18 @@ the limit without significance does not reject, and the verdict names it
 is not statistically significant`). `policy.UnconfirmedRegressions` is the
 rule both the engine and the verdict use, so what the engine measures again
 is exactly what the policy would otherwise wave through.
+
+The same noise floor works the other way: an eligible reading that improved by
+at least `minimum_improvement_percent` but lacks statistical support leaves the
+candidate inconclusive rather than accepted, and 25 pairs often cannot resolve
+a 5-10% effect on a short CLI workload — three live yq candidates read 11.55%,
+9.51% and 5.39% improvements that were discarded this way. When the candidate
+would otherwise end inconclusive only for that reason, with nothing about to
+reject it, the engine measures every representative workload again the same
+way it does for a regression (`confirmImprovements`, ADR 0021), using
+`policy.UnconfirmedImprovements` as the mirrored predicate. At most one extra
+series runs per candidate: if the regression confirmation already extended
+every seed, the improvement check does not run a second.
 
 The pooled figure alone was the wrong instrument. A seed whose measured run is
 mostly process startup cannot be improved by any patch, so pooling it dilutes
@@ -397,7 +450,14 @@ every function's first cause before any second cause, each tier ordered by
 the cause's z divided by the square root of one plus its function's hotness
 rank (ADR 0018), and a
 function with nothing flagged is named in `additional_checks` rather than
-guessed at.
+guessed at. When the campaign's resolved objective is `peak_memory_bytes`
+(`--tradeoff lean`, ADR 0020), each tier is additionally split in two before
+that z/sqrt(1+rank) sort: `jev.Cause.IsAllocation` causes (`alloc`,
+`prealloc`, `string_build`) lead every other cause, the discounted order kept
+inside each half (ADR 0024). The objective reaches the node on
+`CauseRequest.Campaign.Objective`, set once in `Engine.campaignRequest` from
+the manifest already resolved by `Tradeoff.Apply`, so this never re-reads the
+trade-off flags.
 Code overrules one kind of flag before any of that. Jev reads the source alone,
 so it cannot tell `e.w.WriteByte` on a `*bytes.Buffer` field from a write to a
 file; on gojq it flagged `(*encoder).writeByte` for unbuffered I/O at +2.9 sd,
@@ -422,7 +482,14 @@ attacks (ADR 0013). The analysis carries its flags as structured `targets`
 (function, location, cause, remedy) in the order above, and `merge_analysis`
 picks the first one no earlier candidate tried (`planTarget`), writes its remedy
 as the coordinator's experiment, and cuts the source excerpts down to that
-function; the optimizer's instruction forbids patching any other. The
+function; the optimizer's instruction forbids patching any other. With a
+target, the optimizer's instruction also tells it to answer with
+`function_source` (the target function's whole new declaration) and
+`imports` instead of a hand-written `patch` (ADR 0022): deterministic code
+finds the function by name in the base revision and builds the diff itself,
+which removes context-line and header mismatches as a way to lose a
+candidate. `patch` stays the transport when there is no target, and remains
+an accepted fallback even with one. The
 optimizer's input is then an `OptimizerBrief` (the optimization mode, the
 target, its excerpts and the prior candidates) rather than the whole campaign
 state: discovery evidence, the full analysis and the repository inventory are
@@ -658,6 +725,27 @@ The annotated locations are stored in campaign state as
 the analyst and coordinator as measured hot functions. Only when both sources
 fail does the engine record a `discovery_profile_skipped` event and leave
 discovery evidence empty, rather than failing the campaign.
+
+When the campaign's resolved objective is `peak_memory_bytes` and one of the
+two sources above succeeded, `Engine.profileAllocations` (ADR 0024) runs the
+same benchmark packages a second time, this time under `-memprofile`
+(`toolchain.TestRequest.Memprofile`, plumbed through `testArgs` exactly like
+`Cpuprofile`, including the `-o` fix that keeps the compiled test binary out
+of the canonical checkout). The heap profile is summarized by its
+`alloc_space` sample index — cumulative bytes ever allocated, not bytes still
+live at profile time — through a dedicated `Toolchain.PprofTopAllocSpace` /
+`Collector.SummarizePprofAllocSpace` pair, since `go tool pprof -top` defaults
+to `inuse_space`. The resulting functions are annotated with source positions
+the same way as the CPU profile's, then merged to the front of
+`discovery_hot_functions` (`mergeAllocFirst`): every allocation-heavy
+location first, in its own rank order, then whatever CPU-derived locations
+are not already present, deduplicated and capped at the same
+`hotFunctionBudget`. A module with no benchmarks is skipped silently beyond a
+`discovery_alloc_profile_skipped` event — discovery still has its CPU
+evidence, exactly as it did before this objective existed. Either way,
+`State.DiscoveryProfileSource` records which profile(s) chose the hot list
+("a target sample", "target benchmarks", or either plus "a benchmark
+alloc_space profile"), and the report's header states it.
 
 ## Run modes
 

@@ -94,3 +94,41 @@ func TestLoadAcceptsStopAfterInconclusive(t *testing.T) {
 		t.Fatal("expected the schema to reject an explicit zero bound")
 	}
 }
+
+// target.build.directory (ADR 0023) names a nested Go module the CLI lives
+// in, e.g. alecthomas/chroma's cmd/chroma. It is optional, repository-relative,
+// and must not escape the repository.
+func TestLoadValidatesBuildDirectory(t *testing.T) {
+	base := `{
+      "version":"v1", "name":"test", "target":{"repository":"repo","build":{"package":".","binary":"app"%s},"command":[]},
+      "workloads":{"seeds":[{"id":"seed","name":"seed","tier":"representative","args":[],"provenance":"manifest"}],"discovery":{"enabled":true,"sources":["help"],"strategies":["mutate"],"seed":1,"max_cases":2,"max_depth":1},"tiers":{"representative":{"weight":1,"acceptance_eligible":true},"plausible":{"weight":0.5,"acceptance_eligible":false},"stress":{"weight":0,"acceptance_eligible":false}}},
+      "sandbox":{"network":"deny","filesystem":{"read":"repo_and_assets","write":"temp_only"},"environment":{"allow":[],"passthrough":[]},"max_processes":1},
+      "normalization":{"stdout":{"mode":"exact"},"stderr":{"mode":"exact"},"files":[]},
+      "performance":{"primary_metric":"wall_time_ns","statistical_support_required":true,"guardrails":[]},
+      "campaign":{"max_concurrent_candidates":1},"optimization_policy":"idiomatic"
+    }`
+
+	loaded, err := Load([]byte(fmt.Sprintf(base, `,"directory":"cmd/chroma"`)))
+	if err != nil {
+		t.Fatalf("relative build directory should load: %v", err)
+	}
+	if loaded.Target.Build.Directory != "cmd/chroma" {
+		t.Fatalf("build.directory = %q, want cmd/chroma", loaded.Target.Build.Directory)
+	}
+
+	unset, err := Load([]byte(fmt.Sprintf(base, "")))
+	if err != nil {
+		t.Fatalf("omitted build directory should load: %v", err)
+	}
+	if unset.Target.Build.Directory != "" {
+		t.Fatalf("build.directory = %q, want empty", unset.Target.Build.Directory)
+	}
+
+	if _, err := Load([]byte(fmt.Sprintf(base, `,"directory":"/etc/cmd"`))); err == nil {
+		t.Fatal("expected an absolute build directory to be rejected")
+	}
+
+	if _, err := Load([]byte(fmt.Sprintf(base, `,"directory":"../escape"`))); err == nil {
+		t.Fatal("expected a repository-escaping build directory to be rejected")
+	}
+}

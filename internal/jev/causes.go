@@ -26,6 +26,16 @@ const (
 // Causes is the stable order used for questions, ties, and reports.
 var Causes = []Cause{CauseAlloc, CauseUnbufferedIO, CauseStringBuild, CauseFastPath, CauseSuperlinear, CausePrealloc, CauseRedundant}
 
+// IsAllocation reports whether a cause names a mechanism that grows the heap:
+// an unnecessary allocation, a slice or map grown without a size hint, or a
+// string built by repeated concatenation. A campaign targeting peak memory
+// ranks these causes first; every other cause (unbuffered I/O, a slow path,
+// superlinear work, redundant computation) can win time without moving
+// memory at all.
+func (c Cause) IsAllocation() bool {
+	return c == CauseAlloc || c == CausePrealloc || c == CauseStringBuild
+}
+
 // stateContext opens every state. It is part of what the baseline was measured
 // against, together with the field names in SiteState and the question text.
 const stateContext = "This Go function appears among the CPU-hot functions of a profiled run of its program."

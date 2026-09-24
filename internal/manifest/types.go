@@ -71,6 +71,12 @@ type Target struct {
 type BuildTarget struct {
 	Package string `json:"package"`
 	Binary  string `json:"binary"`
+	// Directory is repository-relative and names a nested Go module the CLI
+	// lives in (ADR 0023), for example "cmd/chroma" when the module root's
+	// go.mod does not contain the target package. Empty (the default) builds
+	// from the repository root, unchanged from pre-ADR-0023 behavior. Package
+	// is resolved relative to this directory, not to the repository root.
+	Directory string `json:"directory,omitempty"`
 }
 
 type WorkloadConfiguration struct {
@@ -274,6 +280,11 @@ func (m Manifest) validateIdentity() []string {
 	}
 	if strings.TrimSpace(m.Target.Repository) == "" || strings.TrimSpace(m.Target.Build.Package) == "" || strings.TrimSpace(m.Target.Build.Binary) == "" {
 		problems = append(problems, "target repository, build.package, and build.binary are required")
+	}
+	if m.Target.Build.Directory != "" {
+		if err := validateRelativePath(m.Target.Build.Directory); err != nil {
+			problems = append(problems, fmt.Sprintf("target build.directory: %v", err))
+		}
 	}
 	return problems
 }

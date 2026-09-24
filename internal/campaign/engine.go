@@ -78,6 +78,10 @@ type CandidateRecord struct {
 	// the analyst ranked causes.
 	Target    *agents.Target `json:"target,omitempty"`
 	PatchPath string         `json:"patch_path,omitempty"`
+	// Transport names how PatchPath's diff was produced: "patch" for an
+	// optimizer-authored unified diff, or "function_source" when code built
+	// it from the optimizer's replacement function declaration (ADR 0022).
+	Transport string `json:"transport,omitempty"`
 	// ReviewConcerns are the behaviour hazards the reviewer raised. They are
 	// recorded for the reader and the next cycle; the verdict never reads them.
 	ReviewConcerns []string                  `json:"review_concerns,omitempty"`
@@ -175,6 +179,17 @@ type State struct {
 	// the first seed, with Jev's processing-mode judgment of each.
 	DiscoveryWorkloads          []string `json:"discovery_workloads,omitempty"`
 	DiscoveryProfileSummaryPath string   `json:"discovery_profile_summary_path,omitempty"`
+	// DiscoveryProfileSource names which profile(s) chose
+	// DiscoveryHotFunctions: a target sample, target benchmarks, or a target
+	// sample/benchmark plus a benchmark alloc_space profile when the campaign's
+	// objective is peak memory (ADR 0024). Written for the report, which
+	// otherwise cannot say why a lean campaign's targets came out the way they
+	// did.
+	DiscoveryProfileSource string `json:"discovery_profile_source,omitempty"`
+	// DiscoveryAllocProfileSummaryPath is the artifact path of the `go tool
+	// pprof -top -alloc_space` report over the benchmark heap profile, set
+	// only when the objective is peak memory and the module has benchmarks.
+	DiscoveryAllocProfileSummaryPath string `json:"discovery_alloc_profile_summary_path,omitempty"`
 	// PGOProfilePath points at the raw pprof-format CPU profile produced by
 	// benchmark-based discovery (profiles/bench-cpu.pb.gz), or is empty when
 	// only a non-pprof sampler report exists. Only this file may seed the
@@ -354,7 +369,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 		Status: StatusPending, StartedAt: now, UpdatedAt: now, CompletedSteps: map[string]bool{}, LocalIsolation: !opts.TestingUnsafeDisableIsolation,
 		Environment: Environment{Authority: authority(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPU: cpuName(), GoVersion: goVersion, Revision: revision, BuildFlags: []string{"-mod=readonly", "-trimpath"}, CI: os.Getenv("CI") != "", CIEnvironment: ciEnvironment()},
 	}
-	state.DependencyDigests, err = dependencyDigests(repo)
+	state.DependencyDigests, err = dependencyDigests(repo, m.Target.Build.Directory)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
@@ -631,6 +646,7 @@ func (e *Engine) runDiscoveryStep(ctx context.Context) error {
 		return nil
 	}
 	source := e.collectDiscoveryProfile(ctx)
+	e.state.DiscoveryProfileSource = source
 	e.state.CompletedSteps["discovery_profile"] = true
 	return e.saveEvent("discovery_profile_completed", fmt.Sprintf("measured %d hot functions from %s", len(e.state.DiscoveryHotFunctions), source), nil)
 }
@@ -696,13 +712,13 @@ func (e *Engine) build(ctx context.Context) error {
 	}
 	e.state.BuildID = stableID("build", e.state.Environment.Revision, e.state.Manifest.Target.Build.Package, strings.Join(e.state.Environment.BuildFlags, " "))
 	e.state.BinaryPath = filepath.Join(binDir, e.state.BuildID+"-"+filepath.Base(e.state.Manifest.Target.Build.Binary))
-	_, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: e.state.Repository, Target: e.state.Manifest.Target.Build.Package, Output: e.state.BinaryPath, Env: []string{"GOTOOLCHAIN=local"}})
+	_, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: e.state.Repository, Directory: e.state.Manifest.Target.Build.Directory, Target: e.state.Manifest.Target.Build.Package, Output: e.state.BinaryPath, Env: []string{"GOTOOLCHAIN=local"}})
 	if err != nil {
 		return fmt.Errorf("build baseline: %w", err)
 	}
 	e.state.DiscoveryBuildID = stableID("build", e.state.Environment.Revision, e.state.Manifest.Target.Build.Package, "coverage")
 	e.state.DiscoveryBinaryPath = filepath.Join(binDir, e.state.DiscoveryBuildID+"-coverage-"+filepath.Base(e.state.Manifest.Target.Build.Binary))
-	_, err = e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: e.state.Repository, Target: e.state.Manifest.Target.Build.Package, Output: e.state.DiscoveryBinaryPath, Cover: true, Env: []string{"GOTOOLCHAIN=local"}})
+	_, err = e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: e.state.Repository, Directory: e.state.Manifest.Target.Build.Directory, Target: e.state.Manifest.Target.Build.Package, Output: e.state.DiscoveryBinaryPath, Cover: true, Env: []string{"GOTOOLCHAIN=local"}})
 	if err != nil {
 		return fmt.Errorf("build coverage baseline: %w", err)
 	}
@@ -753,19 +769,37 @@ const (
 // fail the campaign.
 func (e *Engine) collectDiscoveryProfile(ctx context.Context) string {
 	sampleErr := e.sampleTargetProfile(ctx)
-	if sampleErr == nil {
+	var source string
+	switch sampleErr {
+	case nil:
 		// Still collect the benchmark profile when the module has benchmarks:
 		// the informational PGO lane is built from it, and dropping that lane
 		// because sampling won would be a silent feature regression.
 		_, _ = e.benchmarkCPUProfile(ctx)
-		return profileSourceTargetSample
+		source = profileSourceTargetSample
+	default:
+		if benchErr := e.profileHotFunctions(ctx); benchErr == nil {
+			source = profileSourceBenchmark
+		} else {
+			_ = e.saveEvent("discovery_profile_skipped", fmt.Sprintf("direct target sampling unavailable (%s); benchmark CPU profile unavailable (%s)", sampleErr.Error(), benchErr.Error()), nil)
+			return profileSourceNone
+		}
 	}
-	benchErr := e.profileHotFunctions(ctx)
-	if benchErr == nil {
-		return profileSourceBenchmark
+	return source + e.collectAllocationEvidence(ctx)
+}
+
+// collectAllocationEvidence adds a benchmark alloc_space profile to
+// discovery's hot list when the campaign's objective is peak memory (ADR
+// 0024), and returns a suffix naming that source for the discovery event, or
+// "" when the objective is not memory or the module has no benchmarks.
+func (e *Engine) collectAllocationEvidence(ctx context.Context) string {
+	if e.state.Manifest.Performance.PrimaryMetric != objectivePeakMemory {
+		return ""
 	}
-	_ = e.saveEvent("discovery_profile_skipped", fmt.Sprintf("direct target sampling unavailable (%s); benchmark CPU profile unavailable (%s)", sampleErr.Error(), benchErr.Error()), nil)
-	return profileSourceNone
+	if allocSource := e.profileAllocations(ctx); allocSource != "" {
+		return " + " + allocSource
+	}
+	return ""
 }
 
 // sampleTargetProfile runs the first representative seed workload against the
@@ -1084,7 +1118,7 @@ func (e *Engine) benchmarkCPUProfile(ctx context.Context) (string, error) {
 	}
 	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
 	var benched bool
-	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package) {
+	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory) {
 		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Cpuprofile: cpuProfile, Output: filepath.Join(dir, "bench.test"), Env: []string{"GOTOOLCHAIN=local"}})
 		if err != nil {
 			continue
@@ -1117,12 +1151,107 @@ func (e *Engine) summarizeBenchmarkProfile(ctx context.Context, cpuProfile strin
 	return nil
 }
 
+// profileAllocations runs the module's benchmarks a second time under
+// -memprofile and folds the alloc_space profile's hottest allocators to the
+// front of discovery's hot list, ahead of any CPU-only function already
+// there. It returns the source name for the discovery_profile_completed
+// event, or "" when the module has no benchmarks — silent beyond the
+// discovery_alloc_profile_skipped event, since discovery still has its CPU
+// evidence to work from (ADR 0024).
+//
+// Only called under the peak_memory_bytes objective. The test binary this
+// writes must stay out of the canonical checkout, so Output is set exactly
+// as benchmarkCPUProfile sets it (see testArgs's -o handling in
+// internal/toolchain/toolchain.go).
+func (e *Engine) profileAllocations(ctx context.Context) string {
+	dir := filepath.Join(e.dir, "profiles")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	memProfile := filepath.Join(dir, "bench-mem.pb.gz")
+	if !e.benchAllocations(ctx, dir, memProfile) {
+		_ = e.saveEvent("discovery_alloc_profile_skipped", "no package in the module produced a benchmark allocation profile; hot list built from CPU evidence only", nil)
+		return ""
+	}
+	locations, summaryPath, err := e.summarizeAllocProfile(ctx, memProfile)
+	if err != nil {
+		_ = e.saveEvent("discovery_alloc_profile_skipped", "summarize benchmark allocation profile: "+err.Error(), nil)
+		return ""
+	}
+	e.state.DiscoveryHotFunctions = mergeAllocFirst(e.state.DiscoveryHotFunctions, locations, hotFunctionBudget)
+	e.state.DiscoveryAllocProfileSummaryPath = summaryPath
+	_ = e.saveEvent("discovery_alloc_profile_completed", fmt.Sprintf("measured %d allocation-heavy functions from the benchmark alloc_space profile", len(locations)), locations)
+	return "a benchmark alloc_space profile"
+}
+
+// benchAllocations runs every candidate package's benchmarks under
+// -memprofile, target package first, stopping at the first one that actually
+// benchmarked something.
+func (e *Engine) benchAllocations(ctx context.Context, dir, memProfile string) bool {
+	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory) {
+		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Memprofile: memProfile, Output: filepath.Join(dir, "bench-mem.test"), Env: []string{"GOTOOLCHAIN=local"}})
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(result.Stdout), "Benchmark") {
+			return true
+		}
+	}
+	return false
+}
+
+// summarizeAllocProfile turns a benchmark heap profile into hot functions,
+// ranked by the alloc_space sample index, with repository-relative source
+// positions.
+func (e *Engine) summarizeAllocProfile(ctx context.Context, memProfile string) ([]string, string, error) {
+	artifacts, err := runner.NewArtifactStore(filepath.Join(e.dir, "artifacts"))
+	if err != nil {
+		return nil, "", err
+	}
+	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprofAllocSpace(ctx, memProfile, hotFunctionScanDepth)
+	if err != nil {
+		return nil, "", err
+	}
+	locations := e.resolveHotLocations(ctx, memProfile, hotFunctionNames(summary.Functions, hotFunctionBudget))
+	return locations, summary.RawReport, nil
+}
+
+// mergeAllocFirst puts every allocation-heavy location ahead of the
+// CPU-derived hot list, preserving each list's own order, deduplicated and
+// capped at budget: an allocator that never surfaced in the CPU profile still
+// belongs in discovery's evidence, and one that did should not occupy two
+// slots.
+func mergeAllocFirst(cpu, alloc []string, budget int) []string {
+	seen := make(map[string]bool, len(cpu)+len(alloc))
+	merged := make([]string, 0, min(budget, len(cpu)+len(alloc)))
+	for _, list := range [][]string{alloc, cpu} {
+		for _, loc := range list {
+			if seen[loc] || len(merged) == budget {
+				continue
+			}
+			seen[loc] = true
+			merged = append(merged, loc)
+		}
+	}
+	return merged
+}
+
 // benchmarkPackageOrder lists the packages worth profiling, target package
 // first so a target that benchmarks its own command keeps that evidence, then
 // the module's benchmark-bearing packages richest first. Each is a single
 // package because the go command rejects -cpuprofile for more than one.
-func benchmarkPackageOrder(repository, targetPackage string) []string {
-	order := []string{targetPackage}
+// benchmarkPackageOrder tries the target package first, then the rest of the
+// module. When the target builds from a nested module directory (ADR 0023),
+// targetPackage is resolved relative to that directory, not to repository,
+// and `go test <targetPackage>` from the repository root would name the
+// wrong package or fail outright; it is left out of the root module's
+// benchmark order in that case, and the nested module's own benchmarks, like
+// its own tests, are not run (documented in docs/target-manifest.md).
+func benchmarkPackageOrder(repository, targetPackage, directory string) []string {
+	var order []string
+	if directory == "" {
+		order = append(order, targetPackage)
+	}
 	for _, pkg := range profile.BenchmarkPackages(repository) {
 		if pkg != targetPackage {
 			order = append(order, pkg)
@@ -1382,7 +1511,7 @@ func (e *Engine) verifyClean(ctx context.Context) error {
 	if strings.TrimSpace(string(rev.Stdout)) != e.state.Environment.Revision {
 		return errors.New("canonical checkout revision changed during campaign")
 	}
-	digests, err := dependencyDigests(e.state.Repository)
+	digests, err := dependencyDigests(e.state.Repository, e.state.Manifest.Target.Build.Directory)
 	if err != nil {
 		return err
 	}
@@ -1392,8 +1521,16 @@ func (e *Engine) verifyClean(ctx context.Context) error {
 	return nil
 }
 
-func dependencyDigests(repository string) (map[string]string, error) {
+// dependencyDigests digests the root module's go.mod, go.sum, and vendor
+// tree, plus, when the target builds from a nested module directory (ADR
+// 0023), that module's own go.mod and go.sum: a nested CLI module (e.g.
+// alecthomas/chroma's cmd/chroma) fixes the build the baseline was measured
+// against just as much as the root module's files do.
+func dependencyDigests(repository, directory string) (map[string]string, error) {
 	paths := []string{"go.mod", "go.sum"}
+	if directory != "" {
+		paths = append(paths, filepath.Join(directory, "go.mod"), filepath.Join(directory, "go.sum"))
+	}
 	vendor := filepath.Join(repository, "vendor")
 	info, err := os.Stat(vendor)
 	if err == nil && info.IsDir() {
