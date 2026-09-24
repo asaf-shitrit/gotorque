@@ -378,7 +378,21 @@ every function's first cause before any second cause, each tier ordered by
 the cause's z divided by the square root of one plus its function's hotness
 rank (ADR 0018), and a
 function with nothing flagged is named in `additional_checks` rather than
-guessed at. Hot paths keep discovery's `path:line` verbatim, which the model
+guessed at.
+Code overrules one kind of flag before any of that. Jev reads the source alone,
+so it cannot tell `e.w.WriteByte` on a `*bytes.Buffer` field from a write to a
+file; on gojq it flagged `(*encoder).writeByte` for unbuffered I/O at +2.9 sd,
+and two of a campaign's three candidates went to a function that makes no
+system call. `onlyInMemoryIO` resolves each read or write call's destination
+from the receiver's struct fields, the parameters and local declarations, and
+when every one is a `bytes.Buffer`, `strings.Builder`, reader or `bufio` value
+the unbuffered-I/O flag is dropped and named under `overruled` in the
+`cause_analysis` event. A destination it cannot resolve counts as real I/O, so
+doubt leaves Jev's flag standing. A site whose flagged causes include allocation, fast path or
+string building also gets one fix-kind request (ADR 0019): nine questions over
+the same state, each kind scored against its own baseline. When a kind leads
+its cause's next kind by at least `KindGate` (0.25 sd) at a z of at least 0,
+the target carries `fix_kind` and that kind's narrower remedy. Hot paths keep discovery's `path:line` verbatim, which the model
 analyst used to reformat. Per-function scores are persisted with a
 `cause_analysis` event, Jev's token usage is recorded under the analyst role,
 and the report header names the analyst. None of it reaches `apply_policy`.
@@ -759,7 +773,12 @@ Reasoning effort is optional per role:
 openaimodel maps only `MaxOutputTokens` onto the Responses API request, never
 `ThinkingConfig`, so a per-role transport (`reasoningTransport`) sets
 `reasoning.effort` on the request body. Unset sends nothing and leaves the
-provider's default. Campaign state does not record the routed model IDs or
+provider's default, with one exception: under `--analyst jev` code chooses the
+target and remedy, the optimizer only writes one small diff, and its effort
+defaults to `low`. At the provider's default a live gojq campaign ran past the
+32k completion budget on all four attempts of a cycle and the breaker ended
+it; at `low` every call answered in two to three minutes. An explicit
+`GOTORQUE_REASONING_OPTIMIZER` still wins. Campaign state does not record the routed model IDs or
 efforts.
 
 Model calls and that preflight resolve their base URL through the same

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/jev"
 	"example.com/gotorque/internal/orchestrator"
 	"example.com/gotorque/internal/toolchain"
 )
@@ -147,4 +148,30 @@ func TestEvaluateCandidateRejectsAMissingImportBeforeBuild(t *testing.T) {
 	require.Contains(t, evidence.FailureDetail, "uses bufio without importing it")
 	require.True(t, evidence.Unmeasured)
 	require.Len(t, evidence.ArtifactURIs, 1, "nothing was built")
+}
+
+// TestDroppingFmtIsItsOwnShape: the drop-fmt remedy replaces a fmt call and
+// may add no builder at all, so it is held to removing fmt or adding strconv.
+func TestDroppingFmtIsItsOwnShape(t *testing.T) {
+	target := printerTarget
+	target.Cause, target.FixKind = "string_build", string(jev.KindDropFmt)
+	withFmt := strings.Replace(printerSource, "func other() int { return 1 }", "func other() string { return fmt.Sprint(1) }", 1)
+	withFmt = strings.Replace(withFmt, `import "os"`, "import (\n\t\"fmt\"\n\t\"os\"\n)", 1)
+	dropped := strings.Replace(withFmt, "return fmt.Sprint(1)", `return "1"`, 1)
+	require.NoError(t, checkDroppedFmt(parseChanges(diffOf(t, withFmt, dropped))))
+	require.ErrorContains(t, checkDroppedFmt(parseChanges(diffOf(t, withFmt, strings.Replace(withFmt, "return 1", "return 2", 1)))), "removes no fmt call")
+}
+
+// diffOf is Git's zero-context diff of main.go from before to after.
+func diffOf(t *testing.T, before, after string) []byte {
+	t.Helper()
+	repo := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "main.go"), []byte(before), 0o600))
+	git(t, repo, "init")
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "main.go"), []byte(after), 0o600))
+	diff, err := toolchain.New(toolchain.Options{}).ChangedLines(context.Background(), repo)
+	require.NoError(t, err)
+	return diff
 }

@@ -161,6 +161,9 @@ type Target struct {
 	Cause    string  `json:"cause"`
 	Remedy   string  `json:"remedy"`
 	Z        float64 `json:"z"`
+	// FixKind names the mechanism Jev chose within the cause, when one stood
+	// out; Remedy is then that mechanism's, not the cause's generic one.
+	FixKind string `json:"fix_kind,omitempty"`
 }
 
 // OptimizerResult is one focused, reversible source candidate. Patch holds a

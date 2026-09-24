@@ -309,10 +309,8 @@ func configureADK(ctx context.Context, out io.Writer, manifestPath string, codeC
 		return nil, nil, errors.New("--manifest is required with --adk")
 	}
 	provider := agents.NewOpenAIProviderFromEnvironment()
-	if codeChoosesTarget && provider.Reasoning.Default(agents.RoleOptimizer, agents.ReasoningLow) {
-		if _, err := fmt.Fprintf(out, "optimizer: reasoning effort %s, because code chooses the target (set %s to change it)\n", agents.ReasoningLow, agents.EnvOptimizerReasoning); err != nil {
-			return nil, nil, err
-		}
+	if err := defaultOptimizerReasoning(out, provider.Reasoning, codeChoosesTarget); err != nil {
+		return nil, nil, err
 	}
 	// Role calls are the slowest and least observable part of a campaign;
 	// without per-attempt lines the run prints nothing between starting the
@@ -331,6 +329,16 @@ func configureADK(ctx context.Context, out io.Writer, manifestPath string, codeC
 	}
 	config := orchestratorConfigFromManifest(m)
 	return &roles, &config, nil
+}
+
+// defaultOptimizerReasoning lowers the optimizer's effort when code chooses
+// its target and the environment left it unset, and says so.
+func defaultOptimizerReasoning(out io.Writer, reasoning agents.Reasoning, codeChoosesTarget bool) error {
+	if !codeChoosesTarget || !reasoning.Default(agents.RoleOptimizer, agents.ReasoningLow) {
+		return nil
+	}
+	_, err := fmt.Fprintf(out, "optimizer: reasoning effort %s, because code chooses the target (set %s to change it)\n", agents.ReasoningLow, agents.EnvOptimizerReasoning)
+	return err
 }
 
 // orchestratorConfigFromManifest maps a loaded target manifest onto the ADK

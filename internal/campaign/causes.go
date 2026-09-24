@@ -62,7 +62,13 @@ type siteVerdict struct {
 	Site    hotFunction `json:"site"`
 	Scores  []jev.Score `json:"scores,omitempty"`
 	Flagged []jev.Score `json:"flagged,omitempty"`
-	Problem string      `json:"problem,omitempty"`
+	// Overruled names flags code removed after Jev raised them, with why.
+	Overruled []string `json:"overruled,omitempty"`
+	// Kinds is the fix kind Jev chose within each flagged cause that has
+	// kinds and whose leader cleared jev.KindGate; KindScores are the answers.
+	Kinds      map[jev.Cause]jev.FixKind `json:"kinds,omitempty"`
+	KindScores []jev.KindScore           `json:"kind_scores,omitempty"`
+	Problem    string                    `json:"problem,omitempty"`
 }
 
 func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseRequest) (agents.AnalystResult, error) {
@@ -73,7 +79,7 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	verdicts := make([]siteVerdict, 0, len(sites))
 	classified := 0
 	for _, site := range sites {
-		verdict := a.classify(ctx, site)
+		verdict := a.chooseKinds(ctx, overruleInMemoryIO(req.Campaign.Repository, a.classify(ctx, site)))
 		if verdict.Problem == "" {
 			classified++
 		}
@@ -95,16 +101,66 @@ func (a causeAnalyst) classify(ctx context.Context, site hotFunction) siteVerdic
 	}
 	// Jev bills input tokens only; recording them under the analyst role puts
 	// its requests in the report's usage table beside the model roles.
-	a.usage.Record(string(agents.RoleAnalyst), &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:     tokens32(resp.Usage.InputTokens),
-		CandidatesTokenCount: tokens32(resp.Usage.OutputTokens),
-		TotalTokenCount:      tokens32(resp.Usage.InputTokens + resp.Usage.OutputTokens),
-	})
+	a.recordUsage(resp.Usage)
 	scores, err := jev.Rank(resp.Answers)
 	if err != nil {
 		return siteVerdict{Site: site, Problem: err.Error()}
 	}
 	return siteVerdict{Site: site, Scores: scores, Flagged: jev.Flagged(scores)}
+}
+
+// chooseKinds asks the fix-kind questions for a site with a flagged cause that
+// has kinds, in one request over the same state the causes were asked about,
+// and keeps each cause's kind that clears jev.KindGate. A failed request, or no
+// kind standing out, leaves the cause's generic remedy: the answer narrows the
+// optimizer's instruction and nothing else.
+func (a causeAnalyst) chooseKinds(ctx context.Context, v siteVerdict) siteVerdict {
+	if v.Problem != "" || !slices.ContainsFunc(v.Flagged, func(s jev.Score) bool { return jev.HasKinds(s.Cause) }) {
+		return v
+	}
+	resp, err := a.evaluator.Evaluate(ctx, jev.Request{State: jev.SiteState(v.Site.Path, v.Site.Source), Questions: jev.KindQuestions()})
+	if err != nil {
+		return v
+	}
+	a.recordUsage(resp.Usage)
+	for _, s := range v.Flagged {
+		if !jev.HasKinds(s.Cause) {
+			continue
+		}
+		kind, scores, ok, err := jev.ChooseKind(s.Cause, resp.Answers)
+		if err != nil {
+			continue
+		}
+		v.KindScores = append(v.KindScores, scores...)
+		if ok {
+			if v.Kinds == nil {
+				v.Kinds = map[jev.Cause]jev.FixKind{}
+			}
+			v.Kinds[s.Cause] = kind
+		}
+	}
+	return v
+}
+
+// overruleInMemoryIO drops an unbuffered-I/O flag from a function whose every
+// read and write provably goes to an in-memory buffer (onlyInMemoryIO): no
+// buffering remedy can remove a system call it never makes.
+func overruleInMemoryIO(repo string, v siteVerdict) siteVerdict {
+	i := slices.IndexFunc(v.Flagged, func(s jev.Score) bool { return s.Cause == jev.CauseUnbufferedIO })
+	if i < 0 || !onlyInMemoryIO(repo, v.Site) {
+		return v
+	}
+	v.Flagged = slices.Delete(slices.Clone(v.Flagged), i, i+1)
+	v.Overruled = append(v.Overruled, "unbuffered_io: every read and write in the function goes to an in-memory buffer")
+	return v
+}
+
+func (a causeAnalyst) recordUsage(u jev.Usage) {
+	a.usage.Record(string(agents.RoleAnalyst), &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     tokens32(u.InputTokens),
+		CandidatesTokenCount: tokens32(u.OutputTokens),
+		TotalTokenCount:      tokens32(u.InputTokens + u.OutputTokens),
+	})
 }
 
 func tokens32(n int64) int32 {
@@ -258,7 +314,7 @@ func targets(verdicts []siteVerdict) []agents.Target {
 			if rank < len(v.Flagged) {
 				s := v.Flagged[rank]
 				tier = append(tier, ranked{
-					target: agents.Target{Location: v.Site.Location, Function: v.Site.Name, Cause: string(s.Cause), Remedy: s.Cause.Remedy(v.Site.Name, v.Site.Location), Z: s.Z},
+					target: siteTarget(v, s),
 					weight: s.Z / math.Sqrt(float64(1+i)),
 				})
 			}
@@ -269,6 +325,16 @@ func targets(verdicts []siteVerdict) []agents.Target {
 		}
 	}
 	return out
+}
+
+// siteTarget is one flagged cause as a target, with the remedy of the fix kind
+// Jev chose within it when one stood out.
+func siteTarget(v siteVerdict, s jev.Score) agents.Target {
+	t := agents.Target{Location: v.Site.Location, Function: v.Site.Name, Cause: string(s.Cause), Remedy: s.Cause.Remedy(v.Site.Name, v.Site.Location), Z: s.Z}
+	if kind, ok := v.Kinds[s.Cause]; ok {
+		t.FixKind, t.Remedy = string(kind), kind.Remedy(v.Site.Name, v.Site.Location)
+	}
+	return t
 }
 
 func hotPath(v siteVerdict) agents.HotPath {

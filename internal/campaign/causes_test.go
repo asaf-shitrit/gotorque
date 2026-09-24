@@ -125,6 +125,7 @@ func TestHotFunctionsStopsAtTheSiteBudget(t *testing.T) {
 // question, so only scripted causes can stand out.
 type scriptedEvaluator struct {
 	answers map[string]map[jev.Cause]float64
+	kinds   map[string]map[jev.FixKind]float64
 	fail    map[string]error
 	partial bool
 	calls   int
@@ -134,25 +135,45 @@ func (s *scriptedEvaluator) Evaluate(_ context.Context, req jev.Request) (jev.Re
 	s.calls++
 	source := req.State.(map[string]string)["source"]
 	for name, err := range s.fail {
-		if strings.Contains(source, "func "+name) || strings.Contains(source, ") "+name) {
+		if declares(source, name) {
 			return jev.Response{}, err
 		}
 	}
 	answers := map[string]jev.Answer{}
-	for _, cause := range jev.Causes {
-		answers[string(cause)] = jev.Answer{Type: "boolean", Probability: 0.05}
+	for id := range req.Questions {
+		answers[id] = jev.Answer{Type: "boolean", Probability: 0.05}
+	}
+	set := func(id string, p float64) {
+		if _, asked := req.Questions[id]; asked {
+			answers[id] = jev.Answer{Type: "boolean", Probability: p}
+		}
 	}
 	for name, script := range s.answers {
-		if strings.Contains(source, "func "+name) || strings.Contains(source, ") "+name) {
+		if declares(source, name) {
 			for cause, p := range script {
-				answers[string(cause)] = jev.Answer{Type: "boolean", Probability: p}
+				set(string(cause), p)
 			}
 		}
 	}
+	s.applyKinds(source, set)
 	if s.partial {
 		delete(answers, string(jev.CauseRedundant))
 	}
 	return jev.Response{Model: jev.Model, Answers: answers, Usage: jev.Usage{InputTokens: 900, OutputTokens: 70}}, nil
+}
+
+func (s *scriptedEvaluator) applyKinds(source string, set func(string, float64)) {
+	for name, script := range s.kinds {
+		if declares(source, name) {
+			for kind, p := range script {
+				set(string(kind), p)
+			}
+		}
+	}
+}
+
+func declares(source, name string) bool {
+	return strings.Contains(source, "func "+name) || strings.Contains(source, ") "+name)
 }
 
 func causeRequest(repo string, locations ...string) orchestrator.CauseRequest {
@@ -170,7 +191,10 @@ func TestCauseAnalystTurnsRankedAnswersIntoAnalysis(t *testing.T) {
 	result, err := analyst.AnalyzeCauses(context.Background(), causeRequest(repo, "fixture.go:14", "fixture.go:19", "fixture.go:24", "fixture.go:8"))
 	require.NoError(t, err)
 
-	require.Equal(t, 3, evaluator.calls)
+	// Three cause requests, and one fix-kind request for write, whose
+	// flagged allocation cause has kinds; no kind stands out, so its remedy
+	// stays the generic one.
+	require.Equal(t, 4, evaluator.calls)
 	require.Equal(t, []string{"fixture.go:14", "fixture.go:19", "fixture.go:24"}, []string{result.HotPaths[0].Location, result.HotPaths[1].Location, result.HotPaths[2].Location})
 	require.Contains(t, result.HotPaths[0].Evidence, "unbuffered_io")
 	require.InDelta(t, 0.9, result.HotPaths[0].Confidence, 1e-9)
@@ -194,8 +218,8 @@ func TestCauseAnalystTurnsRankedAnswersIntoAnalysis(t *testing.T) {
 	require.Contains(t, result.AdditionalChecks[1], "fixture.go:8: not classified")
 
 	recorded := usage.Snapshot()[string(agents.RoleAnalyst)]
-	require.Equal(t, int64(3), recorded.Requests)
-	require.Equal(t, int64(2700), recorded.PromptTokens)
+	require.Equal(t, int64(4), recorded.Requests, "the fix-kind request is billed under the analyst too")
+	require.Equal(t, int64(3600), recorded.PromptTokens)
 }
 
 func TestCauseAnalystKeepsGoingWhenOneSiteFails(t *testing.T) {
@@ -301,4 +325,45 @@ func functionsOf(ts []agents.Target) []string {
 		out = append(out, t.Function)
 	}
 	return out
+}
+
+// TestAClearFixKindNarrowsTheRemedy: when one kind of a flagged cause stands
+// out, the target carries that kind and its remedy; when two are close, the
+// cause's generic remedy stands.
+func TestAClearFixKindNarrowsTheRemedy(t *testing.T) {
+	repo := writeCauseFixture(t)
+	evaluator := &scriptedEvaluator{
+		answers: map[string]map[jev.Cause]float64{"write": {jev.CauseAlloc: 0.95}, "get": {jev.CauseAlloc: 0.95}},
+		kinds: map[string]map[jev.FixKind]float64{
+			"write": {jev.KindSizeHint: 0.9},
+			"get":   {jev.KindSizeHint: 0.6, jev.KindConversion: 0.65},
+		},
+	}
+	analyst := causeAnalyst{evaluator: evaluator, usage: agents.NewUsageCollector()}
+	result, err := analyst.AnalyzeCauses(context.Background(), causeRequest(repo, "fixture.go:14", "fixture.go:19"))
+	require.NoError(t, err)
+	byFunction := map[string]agents.Target{}
+	for _, target := range result.Targets {
+		byFunction[target.Function] = target
+	}
+	write, get := byFunction["write"], byFunction["(*box).get"]
+	require.Equal(t, string(jev.KindSizeHint), write.FixKind)
+	require.Equal(t, jev.KindSizeHint.Remedy("write", "fixture.go:14"), write.Remedy)
+	require.Empty(t, get.FixKind, "two close kinds leave the generic remedy")
+	require.Equal(t, jev.CauseAlloc.Remedy("(*box).get", "fixture.go:19"), get.Remedy)
+}
+
+// TestAFailedKindRequestKeepsTheGenericRemedy: the fix-kind request is an
+// extra; its failure changes nothing else about the analysis.
+func TestAFailedKindRequestKeepsTheGenericRemedy(t *testing.T) {
+	v := siteVerdict{Site: hotFunction{Name: "write", Location: "fixture.go:14"}, Flagged: []jev.Score{{Cause: jev.CauseAlloc, Z: 2}}}
+	got := causeAnalyst{evaluator: failingKinds{}, usage: agents.NewUsageCollector()}.chooseKinds(context.Background(), v)
+	require.Empty(t, got.Kinds)
+	require.Equal(t, jev.CauseAlloc.Remedy("write", "fixture.go:14"), siteTarget(got, got.Flagged[0]).Remedy)
+}
+
+type failingKinds struct{}
+
+func (failingKinds) Evaluate(context.Context, jev.Request) (jev.Response, error) {
+	return jev.Response{}, errors.New("HTTP 429")
 }
