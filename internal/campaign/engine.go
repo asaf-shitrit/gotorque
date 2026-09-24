@@ -354,7 +354,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 		Status: StatusPending, StartedAt: now, UpdatedAt: now, CompletedSteps: map[string]bool{}, LocalIsolation: !opts.TestingUnsafeDisableIsolation,
 		Environment: Environment{Authority: authority(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPU: cpuName(), GoVersion: goVersion, Revision: revision, BuildFlags: []string{"-mod=readonly", "-trimpath"}, CI: os.Getenv("CI") != "", CIEnvironment: ciEnvironment()},
 	}
-	state.DependencyDigests, err = dependencyDigests(repo)
+	state.DependencyDigests, err = dependencyDigests(repo, m.Target.Build.Directory)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
@@ -696,13 +696,13 @@ func (e *Engine) build(ctx context.Context) error {
 	}
 	e.state.BuildID = stableID("build", e.state.Environment.Revision, e.state.Manifest.Target.Build.Package, strings.Join(e.state.Environment.BuildFlags, " "))
 	e.state.BinaryPath = filepath.Join(binDir, e.state.BuildID+"-"+filepath.Base(e.state.Manifest.Target.Build.Binary))
-	_, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: e.state.Repository, Target: e.state.Manifest.Target.Build.Package, Output: e.state.BinaryPath, Env: []string{"GOTOOLCHAIN=local"}})
+	_, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: e.state.Repository, Directory: e.state.Manifest.Target.Build.Directory, Target: e.state.Manifest.Target.Build.Package, Output: e.state.BinaryPath, Env: []string{"GOTOOLCHAIN=local"}})
 	if err != nil {
 		return fmt.Errorf("build baseline: %w", err)
 	}
 	e.state.DiscoveryBuildID = stableID("build", e.state.Environment.Revision, e.state.Manifest.Target.Build.Package, "coverage")
 	e.state.DiscoveryBinaryPath = filepath.Join(binDir, e.state.DiscoveryBuildID+"-coverage-"+filepath.Base(e.state.Manifest.Target.Build.Binary))
-	_, err = e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: e.state.Repository, Target: e.state.Manifest.Target.Build.Package, Output: e.state.DiscoveryBinaryPath, Cover: true, Env: []string{"GOTOOLCHAIN=local"}})
+	_, err = e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: e.state.Repository, Directory: e.state.Manifest.Target.Build.Directory, Target: e.state.Manifest.Target.Build.Package, Output: e.state.DiscoveryBinaryPath, Cover: true, Env: []string{"GOTOOLCHAIN=local"}})
 	if err != nil {
 		return fmt.Errorf("build coverage baseline: %w", err)
 	}
@@ -1084,7 +1084,7 @@ func (e *Engine) benchmarkCPUProfile(ctx context.Context) (string, error) {
 	}
 	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
 	var benched bool
-	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package) {
+	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory) {
 		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Cpuprofile: cpuProfile, Output: filepath.Join(dir, "bench.test"), Env: []string{"GOTOOLCHAIN=local"}})
 		if err != nil {
 			continue
@@ -1121,8 +1121,18 @@ func (e *Engine) summarizeBenchmarkProfile(ctx context.Context, cpuProfile strin
 // first so a target that benchmarks its own command keeps that evidence, then
 // the module's benchmark-bearing packages richest first. Each is a single
 // package because the go command rejects -cpuprofile for more than one.
-func benchmarkPackageOrder(repository, targetPackage string) []string {
-	order := []string{targetPackage}
+// benchmarkPackageOrder tries the target package first, then the rest of the
+// module. When the target builds from a nested module directory (ADR 0023),
+// targetPackage is resolved relative to that directory, not to repository,
+// and `go test <targetPackage>` from the repository root would name the
+// wrong package or fail outright; it is left out of the root module's
+// benchmark order in that case, and the nested module's own benchmarks, like
+// its own tests, are not run (documented in docs/target-manifest.md).
+func benchmarkPackageOrder(repository, targetPackage, directory string) []string {
+	var order []string
+	if directory == "" {
+		order = append(order, targetPackage)
+	}
 	for _, pkg := range profile.BenchmarkPackages(repository) {
 		if pkg != targetPackage {
 			order = append(order, pkg)
@@ -1382,7 +1392,7 @@ func (e *Engine) verifyClean(ctx context.Context) error {
 	if strings.TrimSpace(string(rev.Stdout)) != e.state.Environment.Revision {
 		return errors.New("canonical checkout revision changed during campaign")
 	}
-	digests, err := dependencyDigests(e.state.Repository)
+	digests, err := dependencyDigests(e.state.Repository, e.state.Manifest.Target.Build.Directory)
 	if err != nil {
 		return err
 	}
@@ -1392,8 +1402,16 @@ func (e *Engine) verifyClean(ctx context.Context) error {
 	return nil
 }
 
-func dependencyDigests(repository string) (map[string]string, error) {
+// dependencyDigests digests the root module's go.mod, go.sum, and vendor
+// tree, plus, when the target builds from a nested module directory (ADR
+// 0023), that module's own go.mod and go.sum: a nested CLI module (e.g.
+// alecthomas/chroma's cmd/chroma) fixes the build the baseline was measured
+// against just as much as the root module's files do.
+func dependencyDigests(repository, directory string) (map[string]string, error) {
 	paths := []string{"go.mod", "go.sum"}
+	if directory != "" {
+		paths = append(paths, filepath.Join(directory, "go.mod"), filepath.Join(directory, "go.sum"))
+	}
 	vendor := filepath.Join(repository, "vendor")
 	info, err := os.Stat(vendor)
 	if err == nil && info.IsDir() {

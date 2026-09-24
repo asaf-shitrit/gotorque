@@ -35,6 +35,54 @@ func TestBuildUsesAllowlistedGoBuild(t *testing.T) {
 	}
 }
 
+// Directory (ADR 0023) points the build's working directory at a nested Go
+// module inside the repository, for a target whose CLI keeps its own go.mod
+// (alecthomas/chroma's cmd/chroma is one).
+func TestBuildRunsFromDirectory(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "chroma"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeExecutor{}
+	chain := New(Options{Executor: fake, GoPath: "go-test"})
+	output := filepath.Join(t.TempDir(), "chroma")
+	if _, err := chain.Build(context.Background(), BuildRequest{Repository: repo, Directory: "cmd/chroma", Target: ".", Output: output}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.invocations) != 1 {
+		t.Fatalf("invocations = %d", len(fake.invocations))
+	}
+	want := filepath.Join(repo, "cmd", "chroma")
+	if fake.invocations[0].Dir != want {
+		t.Fatalf("build dir = %q, want %q", fake.invocations[0].Dir, want)
+	}
+}
+
+func TestBuildEmptyDirectoryRunsFromRepository(t *testing.T) {
+	repo := t.TempDir()
+	fake := &fakeExecutor{}
+	chain := New(Options{Executor: fake, GoPath: "go-test"})
+	output := filepath.Join(t.TempDir(), "tool")
+	if _, err := chain.Build(context.Background(), BuildRequest{Repository: repo, Target: "./cmd/tool", Output: output}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.invocations[0].Dir != repo {
+		t.Fatalf("build dir = %q, want %q", fake.invocations[0].Dir, repo)
+	}
+}
+
+func TestBuildRejectsUnsafeDirectory(t *testing.T) {
+	repo := t.TempDir()
+	chain := New(Options{Executor: &fakeExecutor{}})
+	output := filepath.Join(t.TempDir(), "tool")
+	if _, err := chain.Build(context.Background(), BuildRequest{Repository: repo, Directory: "/etc", Target: ".", Output: output}); err == nil {
+		t.Fatal("expected absolute build directory to be rejected")
+	}
+	if _, err := chain.Build(context.Background(), BuildRequest{Repository: repo, Directory: "../escape", Target: ".", Output: output}); err == nil {
+		t.Fatal("expected repository-escaping build directory to be rejected")
+	}
+}
+
 func TestTracePprofRejectsUnknownKind(t *testing.T) {
 	chain := New(Options{Executor: &fakeExecutor{}})
 	if _, err := chain.TracePprof(context.Background(), filepath.Join(t.TempDir(), "trace.out"), "cpu"); err == nil {

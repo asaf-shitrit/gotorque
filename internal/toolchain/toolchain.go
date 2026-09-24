@@ -51,6 +51,14 @@ func New(opts Options) *Toolchain {
 
 type BuildRequest struct {
 	Repository string
+	// Directory is repository-relative and names the Go module directory the
+	// build command runs from, for a target whose CLI lives in its own module
+	// inside the repository (ADR 0023: e.g. alecthomas/chroma's cmd/chroma,
+	// which carries its own go.mod with a `replace ../../`). Empty runs from
+	// Repository directly, which is every target before ADR 0023 and remains
+	// the default. Target is then resolved relative to this directory, not to
+	// Repository.
+	Directory  string
 	Target     string
 	Output     string
 	Tags       []string
@@ -70,6 +78,10 @@ func (t *Toolchain) Build(ctx context.Context, req BuildRequest) (Result, error)
 	if !filepath.IsAbs(req.Output) {
 		return Result{}, errors.New("build output must be an absolute path")
 	}
+	workDir, err := buildWorkDir(req.Repository, req.Directory)
+	if err != nil {
+		return Result{}, err
+	}
 	args := []string{"build", "-mod=readonly", "-trimpath", "-o", req.Output}
 	if req.Cover {
 		args = append(args, "-cover")
@@ -84,7 +96,26 @@ func (t *Toolchain) Build(ctx context.Context, req BuildRequest) (Result, error)
 		args = append(args, "-pgo", req.PGOProfile)
 	}
 	args = append(args, req.Target)
-	return t.run(ctx, t.goPath, args, req.Repository, req.Env, nil)
+	return t.run(ctx, t.goPath, args, workDir, req.Env, nil)
+}
+
+// buildWorkDir resolves the directory a build runs from. An empty directory
+// keeps the historical behavior of running at the repository root; otherwise
+// it must be repository-relative and stay inside the repository, matching the
+// manifest validation in internal/manifest, but re-checked here because
+// Toolchain is called directly by tests and must not trust a caller's input.
+func buildWorkDir(repository, directory string) (string, error) {
+	if directory == "" {
+		return repository, nil
+	}
+	if filepath.IsAbs(directory) {
+		return "", errors.New("build directory must be repository-relative")
+	}
+	clean := filepath.Clean(directory)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", errors.New("build directory must stay inside the repository")
+	}
+	return filepath.Join(repository, clean), nil
 }
 
 type TestRequest struct {
