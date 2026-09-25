@@ -86,7 +86,7 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	verdicts := make([]siteVerdict, 0, len(sites))
 	classified := 0
 	for _, site := range sites {
-		verdict := a.chooseKinds(ctx, overruleInMemoryIO(req.Campaign.Repository, a.classify(ctx, site)))
+		verdict := a.chooseKinds(ctx, flagWithVetoes(req.Campaign.Repository, a.classify(ctx, site)))
 		if verdict.Problem == "" {
 			classified++
 		}
@@ -146,19 +146,6 @@ func (a causeAnalyst) chooseKinds(ctx context.Context, v siteVerdict) siteVerdic
 			v.Kinds[s.Cause] = kind
 		}
 	}
-	return v
-}
-
-// overruleInMemoryIO drops an unbuffered-I/O flag from a function whose every
-// read and write provably goes to an in-memory buffer (onlyInMemoryIO): no
-// buffering remedy can remove a system call it never makes.
-func overruleInMemoryIO(repo string, v siteVerdict) siteVerdict {
-	i := slices.IndexFunc(v.Flagged, func(s jev.Score) bool { return s.Cause == jev.CauseUnbufferedIO })
-	if i < 0 || !onlyInMemoryIO(repo, v.Site) {
-		return v
-	}
-	v.Flagged = slices.Delete(slices.Clone(v.Flagged), i, i+1)
-	v.Overruled = append(v.Overruled, "unbuffered_io: every read and write in the function goes to an in-memory buffer")
 	return v
 }
 
@@ -320,7 +307,7 @@ func analystResult(verdicts []siteVerdict, objective string) agents.AnalystResul
 func targets(verdicts []siteVerdict, objective string) []agents.Target {
 	out := make([]agents.Target, 0, len(verdicts)*jev.MaxFlagged)
 	memory := objective == objectivePeakMemory
-	for rank := range jev.MaxFlagged {
+	for rank := range jev.MaxFlagged + 1 {
 		tier := rankTier(verdicts, rank)
 		slices.SortStableFunc(tier, func(a, b rankedTarget) int { return compareRanked(a, b, memory) })
 		for _, r := range tier {
@@ -340,11 +327,13 @@ type rankedTarget struct {
 }
 
 // rankTier collects every verdict's rank'th flagged cause into one tier.
+//
+// The tier after the last rank holds every deferred cause (jev.Deferred), so
+// fast_path is attacked only once every other target has been tried (ADR 0025).
 func rankTier(verdicts []siteVerdict, rank int) []rankedTarget {
 	var tier []rankedTarget
 	for i, v := range verdicts {
-		if rank < len(v.Flagged) {
-			s := v.Flagged[rank]
+		for _, s := range tierFlags(v.Flagged, rank) {
 			tier = append(tier, rankedTarget{
 				target: siteTarget(v, s),
 				weight: s.Z / math.Sqrt(float64(1+i)),
@@ -353,6 +342,26 @@ func rankTier(verdicts []siteVerdict, rank int) []rankedTarget {
 		}
 	}
 	return tier
+}
+
+// tierFlags is a verdict's flag at the given rank among its non-deferred flags,
+// or, at rank MaxFlagged, its deferred ones.
+func tierFlags(flagged []jev.Score, rank int) []jev.Score {
+	var primary, deferred []jev.Score
+	for _, s := range flagged {
+		if jev.Deferred(s.Cause) {
+			deferred = append(deferred, s)
+		} else {
+			primary = append(primary, s)
+		}
+	}
+	switch {
+	case rank == jev.MaxFlagged:
+		return deferred
+	case rank < len(primary):
+		return primary[rank : rank+1]
+	}
+	return nil
 }
 
 // compareRanked orders a tier by weight, discounted z/sqrt(1+rank), unless

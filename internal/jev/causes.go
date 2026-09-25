@@ -202,24 +202,56 @@ func Rank(answers map[string]Answer) ([]Score, error) {
 // still flagging it on only 23% of the fixed versions, and left 26 of 93 fixed
 // functions with no flag at all against 13 of 93 unfixed. A zero threshold
 // raised the first figure to 63% but flagged a third of the fixed code.
+//
+// ProbabilityFloor is the second half of the gate (ADR 0025): a cause is
+// flagged only when Jev also says yes outright. z alone does not separate the
+// targets that led to accepted fixes from the ones that did not: over 38
+// targets attempted in live campaigns, every accepted fix had p >= 0.67 and
+// none of the 14 targets below 0.5 was accepted, while the highest z-scores in
+// the record, all fast_path, failed. On the held-out fixes the floor cut flags
+// on already-fixed code from 30% to 20% of labelled causes, and actions on
+// fixed functions from 78% to 47%, with recall held outside fast_path.
 const (
-	FlagThreshold = 0.5
-	MaxFlagged    = 2
+	FlagThreshold    = 0.5
+	ProbabilityFloor = 0.5
+	MaxFlagged       = 2
 )
 
-// Flagged keeps the causes that stand out: at most MaxFlagged, each at least
-// FlagThreshold standard deviations above Jev's usual answer. scores must come
+// Deferred reports a cause gotorque still flags but attacks only after every
+// other target (ADR 0025). fast_path is the one: 17 fast-path targets were
+// attempted in live campaigns and none was accepted, including 8 Jev answered
+// yes to, because the optimizer turns the flag into branches that rarely fire.
+func Deferred(c Cause) bool { return c == CauseFastPath }
+
+// Flag keeps the causes that clear both gates, in z order, skipping any the
+// caller excludes: at most MaxFlagged that are not Deferred, plus a Deferred
+// one when it clears the gates. An ineligible cause is skipped, not a stop, so
+// a lower cause that clears the gates still gets its slot. scores must come
 // from Rank.
-func Flagged(scores []Score) []Score {
+func Flag(scores []Score, excluded func(Cause) bool) []Score {
 	var flagged []Score
+	primary := 0
 	for _, s := range scores {
-		if s.Z < FlagThreshold || len(flagged) == MaxFlagged {
+		if s.Z < FlagThreshold {
 			break
 		}
-		flagged = append(flagged, s)
+		if s.Probability < ProbabilityFloor || (excluded != nil && excluded(s.Cause)) {
+			continue
+		}
+		if Deferred(s.Cause) {
+			flagged = append(flagged, s)
+			continue
+		}
+		if primary < MaxFlagged {
+			flagged = append(flagged, s)
+			primary++
+		}
 	}
 	return flagged
 }
+
+// Flagged is Flag with nothing excluded.
+func Flagged(scores []Score) []Score { return Flag(scores, nil) }
 
 type stats struct{ mean, std float64 }
 

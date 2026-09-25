@@ -94,14 +94,14 @@ func TestOnlyInMemoryIO(t *testing.T) {
 
 func TestInMemoryWritersLoseTheUnbufferedFlag(t *testing.T) {
 	repo := encoderRepo(t)
-	flags := []jev.Score{{Cause: jev.CauseUnbufferedIO, Z: 2.89}, {Cause: jev.CauseRedundant, Z: 0.54}}
+	scores := []jev.Score{{Cause: jev.CauseUnbufferedIO, Probability: 0.6, Z: 2.89}, {Cause: jev.CauseRedundant, Probability: 0.55, Z: 0.54}}
 
-	writer := overruleInMemoryIO(repo, siteVerdict{Site: hotFunction{Path: "cli/encoder.go", Name: "(*encoder).writeByte"}, Flagged: flags})
-	require.Equal(t, []jev.Score{{Cause: jev.CauseRedundant, Z: 0.54}}, writer.Flagged)
+	writer := flagWithVetoes(repo, siteVerdict{Site: hotFunction{Path: "cli/encoder.go", Name: "(*encoder).writeByte"}, Scores: scores})
+	require.Equal(t, []jev.Score{scores[1]}, writer.Flagged, "the vetoed cause frees its slot for the next one")
 	require.Len(t, writer.Overruled, 1)
-	require.Len(t, flags, 2, "the caller's scores are not modified")
+	require.Contains(t, writer.Overruled[0], "unbuffered_io: vetoed")
 
-	flusher := overruleInMemoryIO(repo, siteVerdict{Site: hotFunction{Path: "cli/encoder.go", Name: "(*encoder).flush"}, Flagged: flags})
-	require.Equal(t, flags, flusher.Flagged)
+	flusher := flagWithVetoes(repo, siteVerdict{Site: hotFunction{Path: "cli/encoder.go", Name: "(*encoder).flush"}, Scores: scores})
+	require.Equal(t, scores, flusher.Flagged, "a write to an io.Writer is real I/O")
 	require.Empty(t, flusher.Overruled)
 }
