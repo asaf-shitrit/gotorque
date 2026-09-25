@@ -142,3 +142,27 @@ func TestRenderMarkdownNamesASalvagedProposal(t *testing.T) {
 	record.ProposalRepair = ""
 	require.NotContains(t, RenderMarkdown(State{CandidateRecords: []CandidateRecord{record}}), "Proposal salvaged", "a proposal that parsed as sent must not carry the line")
 }
+
+// A build failure used to reach the record and the report as "exit status 1"
+// alone: the compiler's stderr was captured on the evidence and then dropped.
+func TestEvaluateRecordsTheBuildFailureDetail(t *testing.T) {
+	engine := pgoLaneTestEngine(t)
+	evidence := orchestrator.CandidateEvidence{
+		Candidate:     domain.Candidate{ID: "candidate-1", Hypothesis: "concatenate"},
+		Summary:       "candidate build failed: exit status 1",
+		FailureDetail: "execution/context.go:5:2: \"fmt\" imported and not used",
+		Unmeasured:    true,
+	}
+	_, err := adkServices{engine: engine}.Evaluate(context.Background(), orchestrator.PolicyInput{Evidence: evidence})
+	require.NoError(t, err)
+	require.Len(t, engine.state.CandidateRecords, 1)
+	require.Equal(t, evidence.FailureDetail, engine.state.CandidateRecords[0].FailureDetail)
+
+	report := RenderMarkdown(State{CandidateRecords: engine.state.CandidateRecords})
+	require.Contains(t, report, "- Failure detail:\n\n```text\nexecution/context.go:5:2: \"fmt\" imported and not used\n```")
+}
+
+func TestRenderMarkdownOmitsAnEmptyFailureDetail(t *testing.T) {
+	record := CandidateRecord{Attempt: 1, CandidateID: "cand-1", Decision: domain.DecisionInconclusive}
+	require.NotContains(t, RenderMarkdown(State{CandidateRecords: []CandidateRecord{record}}), "Failure detail")
+}

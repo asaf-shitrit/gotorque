@@ -104,6 +104,10 @@ type CandidateRecord struct {
 	// the output-token cap above all -- otherwise reads exactly like an
 	// intended one. It never changes the recorded decision.
 	ProposalRepair string `json:"proposal_repair,omitempty"`
+	// FailureDetail is the tail of the output behind a rejection before
+	// measurement: the compiler's stderr for a failed build, or the apply or
+	// shape error. Without it a build failure reads only "exit status 1".
+	FailureDetail string `json:"failure_detail,omitempty"`
 }
 
 // RoleUsageSnapshot is persisted per-role model token usage for one ADK run.
