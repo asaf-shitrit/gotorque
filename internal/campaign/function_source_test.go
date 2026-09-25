@@ -284,3 +284,29 @@ func TestAddedImportsKeepTheFileGroups(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "package a\n\nimport (\n\t\"bufio\"\n\t\"os\"\n)\n\nfunc f() {}\n", string(single))
 }
+
+// A function_source code cannot turn into a diff is a rejection, not a crash:
+// evidence without a candidate ID made the orchestrator stop a live dasel
+// campaign ("evaluate candidate: empty candidate ID").
+func TestEvaluateCandidateRejectsAnUnbuildableFunctionSourceWithAnID(t *testing.T) {
+	repo := makeRepository(t)
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+
+	target := &agents.Target{Location: "main.go:3", Function: "main", Cause: "unbuffered_io"}
+	evidence, err := engine.evaluateCandidate(context.Background(), orchestrator.CandidateRequest{
+		Campaign: orchestrator.CampaignRequest{BaseRevision: engine.State().Environment.Revision},
+		Attempt:  1,
+		Target:   target,
+		Proposal: agents.OptimizerResult{Hypothesis: "rename", FunctionSource: "func other() {}"},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, evidence.Candidate.ID)
+	require.True(t, evidence.Unmeasured)
+	require.Contains(t, evidence.Summary, "candidate rejected before build")
+	require.Contains(t, evidence.FailureDetail, "not the target main")
+}

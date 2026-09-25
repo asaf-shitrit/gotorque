@@ -341,6 +341,7 @@ func writeCandidateExperiments(b *strings.Builder, state State) {
 func writeCandidateRecord(b *strings.Builder, record CandidateRecord) {
 	fmt.Fprintf(b, "### Attempt %d: `%s` **%s**\n\n", record.Attempt, record.CandidateID, strings.ToUpper(string(record.Decision)))
 	writeCandidateMeta(b, record)
+	writeCandidateFailure(b, record)
 	writeCandidateSamples(b, record)
 	writeCandidateComparisons(b, record)
 	writeCandidatePGO(b, record)
@@ -373,6 +374,15 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	for _, concern := range record.ReviewConcerns {
 		fmt.Fprintf(b, "- Review: %s\n", concern)
 	}
+}
+
+func writeCandidateFailure(b *strings.Builder, record CandidateRecord) {
+	if record.FailureDetail == "" {
+		return
+	}
+	b.WriteString("- Failure detail:\n\n```text\n")
+	b.WriteString(strings.TrimRight(record.FailureDetail, "\n"))
+	b.WriteString("\n```\n\n")
 }
 
 func writeCandidateSamples(b *strings.Builder, record CandidateRecord) {

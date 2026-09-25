@@ -98,7 +98,8 @@ produced here or in policy.
    parses the target's file at the base revision, finds the `FuncDecl` named
    `target.Function` (the same format `causes.go`'s `funcName` produces),
    splices the gofmt'd new declaration over it (keeping the old doc comment
-   unless the new source carries one), adds any missing imports, and diffs the
+   unless the new source carries one), adds any missing imports, drops any
+   import the replacement took the file's last use of, and diffs the
    result against the original with `toolchain.DiffFiles`
    (`git diff --no-index`, headers rewritten to the repository-relative path).
    A step that fails — function not found, `function_source` that does not
