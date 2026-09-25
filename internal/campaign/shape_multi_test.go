@@ -112,7 +112,44 @@ func TestMultiConfinedIgnoresFilesOutsideTheCalleesDirectory(t *testing.T) {
 	git(t, repo, "add", ".")
 	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "add other package")
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "other", "c.go"), []byte("package other\n\nfunc Unrelated() int { return 2 }\n"), 0o600))
+	// The in-set caller changes too, so the remedy rule is satisfied and only
+	// confinement is under test.
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "b.go"), []byte("package fixture\n\nfunc (s *Store) IsPositive() bool {\n\treturn s.x > 0\n}\n\nfunc (s *Store) Double() int {\n\tb := s.Get()\n\treturn b.v * 2\n}\n"), 0o600))
 	diff, err := toolchain.New(toolchain.Options{}).ChangedLines(context.Background(), repo)
 	require.NoError(t, err)
 	require.NoError(t, checkShape(repo, diff, &shapeMultiTarget))
+}
+
+// TestThrowawayRemedyNeedsASwitchedCaller: the first live dasel campaign's
+// candidate rewrote only the callee's internals, so the callers kept
+// dropping a fresh allocation and it measured 0%. A patch that edits no
+// caller in the set has not applied the remedy and is rejected before build.
+func TestThrowawayRemedyNeedsASwitchedCaller(t *testing.T) {
+	calleeOnly := `package fixture
+
+type Box struct{ v int }
+
+func NewBox(v int) *Box { return &Box{v: v} }
+
+type Store struct{ x int }
+
+func (s *Store) Get() *Box {
+	v := s.x
+	return NewBox(v)
+}
+`
+	unchangedB := `package fixture
+
+func (s *Store) IsPositive() bool {
+	return s.Get().v > 0
+}
+
+func (s *Store) Double() int {
+	b := s.Get()
+	return b.v * 2
+}
+`
+	err := shapeOfMulti(t, calleeOnly, unchangedB, &shapeMultiTarget)
+	require.ErrorContains(t, err, "switching (*Store).Get's callers")
+	require.ErrorContains(t, err, "(*Store).IsPositive")
 }

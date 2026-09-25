@@ -482,9 +482,18 @@ func checkRemedy(worktree string, changes map[string]*fileChange, target *agents
 	if target == nil {
 		return nil
 	}
+	if target.Functions != "" {
+		return checkSwitchedCallers(worktree, changes, *target)
+	}
 	if target.FixKind == string(jev.KindDropFmt) {
 		return checkDroppedFmt(changes)
 	}
+	return checkCauseShape(worktree, changes, target)
+}
+
+// checkCauseShape asks the added lines for the mechanism remedyShapes names
+// for the target's cause, and a bufio.Writer for its flush.
+func checkCauseShape(worktree string, changes map[string]*fileChange, target *agents.Target) error {
 	shape, ok := remedyShapes[jev.Cause(target.Cause)]
 	if !ok {
 		return nil
@@ -504,6 +513,46 @@ func checkRemedy(worktree string, changes map[string]*fileChange, target *agents
 		return errors.New("the patch adds a bufio.Writer but never flushes it, so buffered output would be lost")
 	}
 	return nil
+}
+
+// checkSwitchedCallers holds a throwaway_result patch to its remedy: the
+// waste is in the callers that drop the callee's fresh allocation, so a patch
+// that edits none of them has not applied it. On the first live dasel
+// campaign with these targets the optimizer rewrote only UnpackKinds'
+// internals, measured 0%, and the target counted as tried; rejected here
+// before the build, the reason goes back with the target still open.
+func checkSwitchedCallers(worktree string, changes map[string]*fileChange, target agents.Target) error {
+	callers := agents.DecodeFunctionSet(target.Functions)
+	for _, ref := range callers {
+		if callerTouched(worktree, changes, ref) {
+			return nil
+		}
+	}
+	names := make([]string, 0, len(callers))
+	for _, ref := range callers {
+		names = append(names, ref.Name)
+	}
+	return fmt.Errorf("the target's remedy is switching %s's callers to a non-allocating variant, but the patch changes none of %s", target.Function, strings.Join(names, ", "))
+}
+
+// callerTouched reports whether the patch changed ref's declaration, read from
+// the patched file. A caller the parser cannot find counts as untouched.
+func callerTouched(worktree string, changes map[string]*fileChange, ref agents.FunctionRef) bool {
+	name := targetPath(ref.Location)
+	change, ok := changes[name]
+	if !ok {
+		return false
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(worktree, filepath.FromSlash(name)), nil, parser.SkipObjectResolution)
+	if err != nil {
+		return false
+	}
+	fd := findFuncDecl(file, ref.Name)
+	if fd == nil {
+		return false
+	}
+	return touched(change, fset.Position(fd.Pos()).Line, fset.Position(fd.End()).Line)
 }
 
 // checkDroppedFmt holds the drop-fmt remedy to its own shape: it replaces a

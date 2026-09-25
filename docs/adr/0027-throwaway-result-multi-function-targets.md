@@ -206,3 +206,7 @@ Method matching by name alone (not by receiver type) can conflate two unrelated 
 to share a name across different receivers in the same package directory — a false-positive risk this
 ADR accepts and documents rather than resolves, since resolving it needs type information the rest of
 `internal/campaign`'s AST-only analysis does not carry.
+
+## Addendum (2026-09-26): the remedy must switch a caller
+
+The first live dasel campaign on this prototype chose the `UnpackKinds` target with 11 consuming callers, and the optimizer rewrote only `UnpackKinds`' internals. That removes nothing the callers drop, and it measured +0.41%, inconclusive. The target then counted as tried. The shape check now holds a `throwaway_result` patch to its remedy: a patch that changes none of the set's callers is rejected before build as unmeasured. Like the other remedy rules (ADR 0017), the reason goes back to the optimizer with the target still open.
