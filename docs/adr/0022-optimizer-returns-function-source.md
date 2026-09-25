@@ -54,6 +54,11 @@ unified diff before anything downstream sees it:
    (where Go files keep the standard library), or to a new block, and gofmt that declaration alone.
    gofmt sorts within a group and never across the blank line between groups, so the file's
    standard-library and third-party groups and every other import line stay as they were.
+   Then drop each import in that block that the original file referred to and the new one no
+   longer does (added 2026-09-26): a remedy that swaps `fmt.Sprintf` for concatenation leaves `fmt`
+   unused, and Go refuses to build that file, which cost dasel a correct candidate. A package name
+   is read from the parser's unresolved selector bases, so a shadowing local never counts, and an
+   import whose name the path does not spell is never matched, so it is kept rather than dropped.
 6. Diff the old and new file contents with `toolchain.DiffFiles`, a typed wrapper around
    `git diff --no-index` whose a/ and b/ headers are rewritten from the scratch paths it used to the
    real repository-relative path. `git diff --no-index` exits 1 when the files differ; that is the

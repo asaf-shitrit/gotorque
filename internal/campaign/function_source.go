@@ -104,7 +104,7 @@ func (e *Engine) diffAgainstBase(ctx context.Context, relPath string, original, 
 // replaceFunctionSource splices functionSource over the declaration of
 // function in original, keeping the existing doc comment unless
 // functionSource carries its own, then adds any imports the file does not
-// already have.
+// already have and drops any the replacement left unused.
 func replaceFunctionSource(fullPath string, original []byte, function, functionSource string, imports []string) ([]byte, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, fullPath, original, parser.ParseComments)
@@ -123,7 +123,11 @@ func replaceFunctionSource(fullPath string, original []byte, function, functionS
 		return nil, fmt.Errorf("function_source declares %s, not the target %s", name, function)
 	}
 	spliced := spliceFunctionSource(fset, original, existing, newDecl, newText)
-	return addImports(fullPath, spliced, imports)
+	withImports, err := addImports(fullPath, spliced, imports)
+	if err != nil {
+		return nil, err
+	}
+	return dropOrphanedImports(fullPath, original, withImports)
 }
 
 // spliceFunctionSource replaces existing's byte range in original with
