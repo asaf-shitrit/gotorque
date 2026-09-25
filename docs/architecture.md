@@ -1096,10 +1096,7 @@ evidence gathered with degraded isolation is not equivalent.
 
 CI runs unit tests under the race detector, builds the CLI, validates the checked-in target
 manifests, and performs a deterministic stub-agent smoke campaign against a
-pinned gojq clone, with no model endpoint involved. Both CI and the nightly
-workflow run in a container granted `SYS_ADMIN` so bubblewrap can create
-namespaces where the host allows it. The nightly model-driven campaign is
-manual-dispatch only (`workflow_dispatch`): it consumes OpenRouter tokens,
-so no cron schedule is enabled. It runs gojq with live agents, uploads
-campaign evidence (reports, patches, accepted diffs, logs) as artifacts, and
-tolerates incomplete campaigns while reporting completion status.
+pinned gojq clone, with no model endpoint involved. It runs in a container
+granted `SYS_ADMIN` so bubblewrap can create namespaces where the host allows
+it. No workflow runs a model-driven campaign; live `--adk` campaigns are run
+by hand.
