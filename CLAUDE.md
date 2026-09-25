@@ -129,8 +129,8 @@ Package map:
   seven cause questions, their measured baseline, and the pure ranking used by
   `--analyst jev` (`internal/campaign/causes.go` is the analyst node itself),
   plus the reviewer's hazard questions and the explorer's option question.
-- `internal/workload`: validates explorer proposals, generates cases, and reads
-  the boolean options a target's source declares, which `--explorer jev`
+- `internal/workload`: validates explorer proposals and reads the boolean
+  options a target's source declares, which `--explorer jev`
   (`internal/campaign/explore.go`) turns into discovery variants.
 - `internal/policy`: pure acceptance decision. No filesystem, process, or
   network access; keep it that way.

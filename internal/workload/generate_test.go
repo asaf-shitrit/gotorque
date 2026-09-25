@@ -1,7 +1,6 @@
 package workload
 
 import (
-	"path/filepath"
 	"testing"
 
 	"example.com/gotorque/internal/agents"
@@ -9,16 +8,6 @@ import (
 	"example.com/gotorque/internal/manifest"
 	"github.com/stretchr/testify/require"
 )
-
-func TestSeedNamespacesAreDeterministicAndSeparate(t *testing.T) {
-	firstSeed := Seed(42, Ordinary)
-	secondSeed := Seed(42, Ordinary)
-	require.Equal(t, firstSeed, secondSeed)
-	require.NotEqual(t, Seed(42, Ordinary), Seed(42, HiddenHoldout))
-	firstSweep := SizeSweep(42, Ordinary, []int{1, 2, 3})
-	secondSweep := SizeSweep(42, Ordinary, []int{1, 2, 3})
-	require.Equal(t, firstSweep, secondSweep)
-}
 
 func TestValidateProposalRejectsShellIndependentEscape(t *testing.T) {
 	m := manifest.Manifest{Workloads: manifest.WorkloadConfiguration{Discovery: manifest.DiscoverySettings{MaxCases: 10, MaxDepth: 3}}}
@@ -175,68 +164,4 @@ func TestValidateScalingDimensionsMaxDepthZeroFallsBackToOne(t *testing.T) {
 	require.NoError(t, ValidateProposal(p, m))
 	p.ScalingDimensions["depth"] = 6
 	require.Error(t, ValidateProposal(p, m))
-}
-
-func TestJSONShapeProposals(t *testing.T) {
-	proposals := JSONShapeProposals(42, Ordinary, 3)
-	require.Len(t, proposals, 3)
-	seen := map[string]bool{}
-	for _, p := range proposals {
-		require.Equal(t, domain.TierPlausible, p.Tier)
-		require.Equal(t, "deterministic-json-shape", p.Provenance)
-		require.True(t, p.ExpectedValid)
-		require.Equal(t, []string{"."}, p.Arguments)
-		require.NotEmpty(t, p.Stdin)
-		require.False(t, seen[p.Name], "duplicate proposal name %q", p.Name)
-		seen[p.Name] = true
-	}
-
-	// Deterministic: same base/namespace produce the same proposals.
-	again := JSONShapeProposals(42, Ordinary, 3)
-	require.Equal(t, proposals, again)
-
-	// A different namespace must diverge (independent seed stream).
-	holdout := JSONShapeProposals(42, HiddenHoldout, 3)
-	require.NotEqual(t, proposals, holdout)
-}
-
-func TestJSONShapeProposalsClampsMaxCases(t *testing.T) {
-	proposals := JSONShapeProposals(1, Ordinary, 1000)
-	require.Len(t, proposals, 5) // bounded by the number of known shapes
-}
-
-func TestFileTreeProposals(t *testing.T) {
-	proposals := FileTreeProposals(7, Ordinary, 3, 4)
-	require.Len(t, proposals, 3)
-	// Result is sorted by name.
-	for i := 1; i < len(proposals); i++ {
-		require.LessOrEqual(t, proposals[i-1].Name, proposals[i].Name)
-	}
-	for _, p := range proposals {
-		require.Equal(t, domain.TierPlausible, p.Tier)
-		require.Equal(t, "deterministic-file-tree", p.Provenance)
-		require.True(t, p.ExpectedValid)
-		require.Len(t, p.Fixtures, 1)
-		fixture := p.Fixtures[0]
-		require.False(t, filepath.IsAbs(fixture.Path))
-		require.NotContains(t, fixture.Path, "..")
-		depth, ok := p.ScalingDimensions["depth"]
-		require.True(t, ok)
-		require.GreaterOrEqual(t, depth, 1)
-		require.LessOrEqual(t, depth, 4)
-	}
-
-	again := FileTreeProposals(7, Ordinary, 3, 4)
-	require.Equal(t, proposals, again)
-}
-
-func TestFileTreeProposalsClampsMaxCases(t *testing.T) {
-	proposals := FileTreeProposals(1, Ordinary, 1000, 2)
-	require.Len(t, proposals, 4) // bounded by the number of known extensions
-}
-
-func TestFileTreeProposalsMaxDepthZeroFallsBackToOne(t *testing.T) {
-	proposals := FileTreeProposals(1, Ordinary, 1, 0)
-	require.Len(t, proposals, 1)
-	require.Equal(t, 1, proposals[0].ScalingDimensions["depth"])
 }
