@@ -421,9 +421,16 @@ performance fixes, each asked about before and after the fix:
   Its mean yes runs from 0.10 (unbuffered I/O) to 0.53 (allocation), so the
   highest raw answer named the right cause 36% of the time; in baseline
   standard deviations it named it 50% of the time and put it in the top two
-  69% of the time (chance is 14%). A cause is flagged at +0.5 sd, two at most
-  per function, which flagged the fixing commit's cause on 59% of unfixed
-  functions and on 23% of the fixed versions.
+  69% of the time (chance is 14%). A cause is flagged when it stands +0.5 sd
+  above that usual answer *and* Jev's own probability is at least 0.5, two at
+  most per function (ADR 0025). The z gate alone flagged the fixing commit's
+  cause on 59% of unfixed functions and on 23% of the fixed versions; the
+  probability floor exists because z alone did not separate winners from
+  losers in live campaigns, where every accepted fix had p >= 0.67 and the
+  highest z-scores, all fast_path, never led to one. A cause that fails either
+  gate, or a code veto below, is skipped rather than ending the list, so a
+  lower cause that clears them still gets the slot. fast_path is kept but
+  deferred: its targets form a final tier after every other cause.
 - Each question names the state field it judges (`` `source` ``), as
   TypeSafe's guidance asks because Jev reads literally; that measured neutral.
   Three questions judge a relationship rather than one fact (allocates per
@@ -458,16 +465,21 @@ inside each half (ADR 0024). The objective reaches the node on
 `CauseRequest.Campaign.Objective`, set once in `Engine.campaignRequest` from
 the manifest already resolved by `Tradeoff.Apply`, so this never re-reads the
 trade-off flags.
-Code overrules one kind of flag before any of that. Jev reads the source alone,
-so it cannot tell `e.w.WriteByte` on a `*bytes.Buffer` field from a write to a
+Code vetoes two causes whose mechanism it can see in the source, before
+flagging (`internal/campaign/veto.go`, ADR 0025). unbuffered_io is vetoed
+unless some read or write in the function reaches a real file or stream: a
+print to the process's own streams, or a call whose destination is not
+provably an in-memory buffer. Destinations are resolved from the receiver's
+struct fields, the parameters and local declarations as `onlyInMemoryIO` does,
+and one it cannot resolve counts as real I/O. Jev reads the source alone, so
+it cannot tell `e.w.WriteByte` on a `*bytes.Buffer` field from a write to a
 file; on gojq it flagged `(*encoder).writeByte` for unbuffered I/O at +2.9 sd,
 and two of a campaign's three candidates went to a function that makes no
-system call. `onlyInMemoryIO` resolves each read or write call's destination
-from the receiver's struct fields, the parameters and local declarations, and
-when every one is a `bytes.Buffer`, `strings.Builder`, reader or `bufio` value
-the unbuffered-I/O flag is dropped and named under `overruled` in the
-`cause_analysis` event. A destination it cannot resolve counts as real I/O, so
-doubt leaves Jev's flag standing. A site whose flagged causes include allocation or string
+system call. prealloc is vetoed unless something grows inside a loop: an
+append or map write to a container the function did not make with a size
+(`make([]T, 0)` still grows). A function the parser cannot find is never
+vetoed. Vetoed causes, and causes skipped for Jev's own probability, are named
+under `overruled` in the `cause_analysis` event. A site whose flagged causes include allocation or string
 building also gets one fix-kind request (ADR 0019; fast path was turned off
 after it did worse than guessing on held-out fixes): nine questions over
 the same state, each kind scored against its own baseline. When a kind leads

@@ -307,7 +307,8 @@ func TestTargetsWeighEvidenceAgainstHotness(t *testing.T) {
 	got := targets(gojq, "")
 	require.Equal(t, "printValues", got[0].Function)
 	require.Equal(t, "unbuffered_io", got[0].Cause)
-	require.Equal(t, []string{"printValues", "marshal", "Next", "printValues", "marshal"}, functionsOf(got), "every first cause precedes any second cause")
+	require.Equal(t, []string{"printValues", "marshal", "marshal", "Next", "printValues"}, functionsOf(got), "every first cause precedes any second cause, and fast_path waits until every other cause was tried (ADR 0025)")
+	require.Equal(t, []string{"unbuffered_io", "unbuffered_io", "fast_path", "fast_path", "fast_path"}, causesOf(got))
 
 	gron := []siteVerdict{
 		flaggedSite("gron", jev.Score{Cause: jev.CauseUnbufferedIO, Z: 3.47}),
@@ -326,18 +327,26 @@ func TestTargetsWeighEvidenceAgainstHotness(t *testing.T) {
 // TestTargetsWeighEvidenceAgainstHotness is unchanged.
 func TestTargetsRankAllocationCausesFirstUnderMemoryObjective(t *testing.T) {
 	verdicts := []siteVerdict{
-		flaggedSite("fastPath", jev.Score{Cause: jev.CauseFastPath, Z: 3.9}),
+		flaggedSite("redundantWork", jev.Score{Cause: jev.CauseRedundant, Z: 3.9}),
 		flaggedSite("allocHeavy", jev.Score{Cause: jev.CauseAlloc, Z: 1.2}),
 		flaggedSite("prealloc", jev.Score{Cause: jev.CausePrealloc, Z: 0.8}),
 	}
 
 	speed := targets(verdicts, "wall_time_ns")
-	require.Equal(t, "fastPath", speed[0].Function, "no reordering off the memory objective")
+	require.Equal(t, "redundantWork", speed[0].Function, "no reordering off the memory objective")
 
 	lean := targets(verdicts, objectivePeakMemory)
 	require.Equal(t, "allocHeavy", lean[0].Function, "stronger allocation cause leads the memory-ranked tier")
 	require.Equal(t, "prealloc", lean[1].Function, "weaker allocation cause still precedes any non-allocation cause")
-	require.Equal(t, "fastPath", lean[2].Function, "non-allocation cause, however strong, sorts after every allocation cause")
+	require.Equal(t, "redundantWork", lean[2].Function, "non-allocation cause, however strong, sorts after every allocation cause")
+}
+
+func causesOf(ts []agents.Target) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, t.Cause)
+	}
+	return out
 }
 
 func functionsOf(ts []agents.Target) []string {
