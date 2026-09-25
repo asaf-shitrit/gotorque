@@ -59,9 +59,11 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 		// Building the diff from function_source failed before there was
 		// anything to write or apply: a pre-build rejection like a patch that
 		// does not parse, marked unmeasured so the target is offered once
-		// more (ADR 0017).
+		// more (ADR 0017). It still needs an ID: the orchestrator stops the
+		// whole campaign on evidence without one.
+		id := stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), transport, err.Error())
 		return orchestrator.CandidateEvidence{
-			Candidate:     domain.Candidate{BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, Transport: transport},
+			Candidate:     domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, Transport: transport},
 			Summary:       fmt.Sprintf("candidate rejected before build: %v", err),
 			FailureDetail: tail(err.Error(), 400),
 			Unmeasured:    true,
