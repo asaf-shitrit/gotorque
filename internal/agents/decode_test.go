@@ -192,9 +192,9 @@ func TestRepairMissingClosers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		parsed := false
-		for _, candidate := range RepairCandidates(tc.broken) {
+		for _, candidate := range repairCandidates(tc.broken) {
 			var v any
-			if err := json.Unmarshal([]byte(RepairCommonMalformations(candidate)), &v); err == nil {
+			if err := json.Unmarshal([]byte(RepairCommonMalformations(candidate.text)), &v); err == nil {
 				parsed = true
 				break
 			}

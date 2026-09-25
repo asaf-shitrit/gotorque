@@ -89,16 +89,6 @@ type change struct {
 	line int
 }
 
-// firstChange returns the old-side file and line of the patch's first removed
-// or added line.
-func firstChange(patch string) (string, int, bool) {
-	changes := hunkChanges(patch)
-	if len(changes) == 0 {
-		return "", 0, false
-	}
-	return changes[0].path, changes[0].line, true
-}
-
 // hunkChanges returns, for every hunk, the old-side file and line of its first
 // removed or added line.
 func hunkChanges(patch string) []change {

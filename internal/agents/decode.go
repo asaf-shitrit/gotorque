@@ -561,21 +561,11 @@ func trimSpaceBytes(data []byte) []byte {
 	return data[start:end]
 }
 
-// RepairCandidates returns plausible repaired forms of a malformed JSON
+// repairCandidates returns plausible repaired forms of a malformed JSON
 // payload: the standard closer completion plus, when the payload ends in
 // an unterminated string, a variant that drops that stray opening quote
-// before completing closers. Callers try each until one parses.
-func RepairCandidates(text string) []string {
-	attempts := repairCandidates(text)
-	candidates := make([]string, len(attempts))
-	for i, attempt := range attempts {
-		candidates[i] = attempt.text
-	}
-	return candidates
-}
-
-// repairCandidates is RepairCandidates with each candidate named by the repair
-// that produced it.
+// before completing closers. Callers try each until one parses. Each
+// candidate is named by the repair that produced it.
 func repairCandidates(text string) []repairAttempt {
 	first, _ := RepairMissingClosers(text)
 	candidates := []repairAttempt{{text: first, repair: RepairAddedClosers}}

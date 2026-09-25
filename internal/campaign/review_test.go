@@ -90,13 +90,12 @@ func TestReviewPassesOnGatewayAndRankingFailures(t *testing.T) {
 	require.ErrorContains(t, err, "outside [0, 1]")
 }
 
-func TestFirstChangeFindsTheOldSideLine(t *testing.T) {
-	path, line, ok := firstChange(writePatch)
-	require.True(t, ok)
-	require.Equal(t, "fixture.go", path)
-	require.Equal(t, 13, line)
-	_, _, ok = firstChange("not a diff")
-	require.False(t, ok)
+func TestHunkChangesFindsTheOldSideLine(t *testing.T) {
+	changes := hunkChanges(writePatch)
+	require.NotEmpty(t, changes)
+	require.Equal(t, "fixture.go", changes[0].path)
+	require.Equal(t, 13, changes[0].line)
+	require.Empty(t, hunkChanges("not a diff"))
 	require.Equal(t, hotFunction{}, patchedFunction(t.TempDir(), writePatch))
 }
 
