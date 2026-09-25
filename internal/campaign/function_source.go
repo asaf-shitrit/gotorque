@@ -27,21 +27,38 @@ const (
 	// FunctionSourceTransport marks a diff deterministic code built from the
 	// optimizer's whole replacement function declaration.
 	FunctionSourceTransport = "function_source"
+	// MultiFunctionSourceTransport marks a diff deterministic code built from
+	// several whole function declarations, for a throwaway_result target
+	// (ADR 0027): the callee and any of its consuming callers the optimizer
+	// rewrote, possibly spanning several files of the callee's package.
+	MultiFunctionSourceTransport = "function_sources"
 )
 
 // resolveCandidatePatch chooses the diff text evaluateCandidate writes and
 // applies, and the transport that produced it. A non-empty Patch always wins:
 // it is the fallback transport, and an optimizer that ignores its
 // instruction still produces something the deterministic gates can judge.
-// Without a patch, a code-chosen target and a non-empty FunctionSource build
-// the diff deterministically; every other case, including no target at all,
-// passes Patch through unchanged (empty or not) exactly as before this
-// transport existed.
+// Next, a multi-function target (Target.Functions set) with FunctionSources
+// (or a lone FunctionSource naming the callee, accepted the way every other
+// list field here accepts a scalar) builds a multi-file diff. Otherwise, a
+// code-chosen target and a non-empty FunctionSource build the single-file
+// diff exactly as before ADR 0027. Every other case, including no target at
+// all, passes Patch through unchanged (empty or not).
 func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.CandidateRequest) (patch, transport string, err error) {
 	if req.Proposal.Patch != "" {
 		return req.Proposal.Patch, PatchTransport, nil
 	}
-	if req.Target != nil && req.Proposal.FunctionSource != "" {
+	if req.Target == nil {
+		return req.Proposal.Patch, PatchTransport, nil
+	}
+	if sources := multiFunctionSources(*req.Target, req.Proposal); len(sources) > 0 {
+		diff, err := e.buildMultiFunctionSourceDiff(ctx, *req.Target, sources, req.Proposal.Imports)
+		if err != nil {
+			return "", MultiFunctionSourceTransport, err
+		}
+		return diff, MultiFunctionSourceTransport, nil
+	}
+	if req.Proposal.FunctionSource != "" {
 		diff, err := e.buildFunctionSourceDiff(ctx, *req.Target, req.Proposal.FunctionSource, req.Proposal.Imports)
 		if err != nil {
 			return "", FunctionSourceTransport, err
@@ -49,6 +66,24 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 		return diff, FunctionSourceTransport, nil
 	}
 	return req.Proposal.Patch, PatchTransport, nil
+}
+
+// multiFunctionSources is the function_sources list to use for target,
+// or nil when target is not a multi-function (throwaway_result) target or
+// the optimizer sent nothing usable for it. A lone FunctionSource naming the
+// callee is accepted as a one-element list, the way every other list field
+// on OptimizerResult accepts a scalar (internal/agents/decode.go).
+func multiFunctionSources(target agents.Target, proposal agents.OptimizerResult) []string {
+	if target.Functions == "" {
+		return nil
+	}
+	if len(proposal.FunctionSources) > 0 {
+		return proposal.FunctionSources
+	}
+	if proposal.FunctionSource != "" {
+		return []string{proposal.FunctionSource}
+	}
+	return nil
 }
 
 // buildFunctionSourceDiff reads the target function's file at the campaign's
