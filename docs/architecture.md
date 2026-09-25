@@ -520,6 +520,34 @@ target on its second attempt: the bufio writer around the output loop, accepted
 at -15.1% wall time. A model analyst ranks nothing, so none of this changes its
 path.
 
+**Multi-function targets (ADR 0027, proposed, `internal/campaign/callers.go`).** Every
+target above is confined to one function. A separate, code-only signal —
+never asked of Jev, never in its question set or baseline — can instead pick
+a *set*: for a profiled hot function that always returns a fresh allocation
+(every `return` is `&T{...}`, `new(T)`, or a same-package call checked one
+level deep), it finds every call to it within the same package directory and
+classifies each site as discarded, consumed (used only as the `X` of a
+selector, a field read or a cheap method call, never stored or returned), or
+escaping. `throwaway_result` fires when the callee allocates fresh and at
+least half its call sites, two or more, are consumed or discarded — the dasel
+case this was built against: `(*Value).UnpackKinds` ends every call with
+`NewValue(res)`, and about a dozen of its own package's callers use the
+result only to read a `Kind`. A firing signal produces a target in the first
+tier, ahead of every Jev-ranked one, carrying the callee plus its ranked
+consuming callers (capped at twelve total) as `Target.Functions`, a
+JSON-encoded string rather than a slice field so `Target` stays comparable
+with `==`. The optimizer answers with `function_sources` (several whole
+declarations, ADR 0022's decode leniency applied to the plural field too),
+and `internal/campaign/multi_function_source.go` builds one multi-file diff:
+a declaration matching a name in the set replaces that function wherever it
+is declared; one matching nothing in the set, and nowhere else in the
+package, is a new function appended after the callee in its own file; one
+matching a name that exists elsewhere in the package but outside the set is
+rejected. The shape check's `checkMultiConfined` applies the same
+per-function confinement across every file in the callee's directory rather
+than one file. The single-function path (`Target.Functions` unset) is
+unchanged, byte for byte.
+
 `AI_GATEWAY_API_KEY` (and optionally `AI_GATEWAY_BASE_URL`) configure the
 client. `--adk` spends one preflight request before repository work, because a
 gateway account without a card on file refuses every request and the analyst
