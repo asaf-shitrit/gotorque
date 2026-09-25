@@ -454,7 +454,7 @@ func planTarget(state *CampaignState) {
 		NextExperiment: target.Remedy,
 		Rationale:      []string{fmt.Sprintf("the analysis flagged %s in %s at %+.1f sd; %d target(s) already tried", target.Cause, target.Function, target.Z, len(tried))},
 	}
-	if excerpts := excerptsAt(state.SourceExcerpts, target.Location); len(excerpts) > 0 {
+	if excerpts := excerptsAt(state.SourceExcerpts, target); len(excerpts) > 0 {
 		state.SourceExcerpts = excerpts
 	}
 }
@@ -501,22 +501,33 @@ func nextTarget(targets []agents.Target, tried map[string]bool) (agents.Target, 
 	return agents.Target{}, false
 }
 
-// excerptsAt keeps the excerpts for one location, and the header of its file
-// (the excerpt that starts at line 1), which carries the imports a remedy may
-// have to extend whichever hot path of that file it was collected for.
-func excerptsAt(excerpts []SourceExcerpt, location string) []SourceExcerpt {
+// excerptsAt keeps the excerpts for the target's location, and, for a
+// throwaway_result target (ADR 0027), every function in its Functions set
+// too: the optimizer needs to see every caller it may rewrite, not only the
+// callee. It also keeps the header of each such location's file (the excerpt
+// that starts at line 1), which carries the imports a remedy may have to
+// extend whichever hot path of that file it was collected for.
+func excerptsAt(excerpts []SourceExcerpt, target agents.Target) []SourceExcerpt {
+	locations := map[string]bool{target.Location: true}
+	for _, f := range agents.DecodeFunctionSet(target.Functions) {
+		locations[f.Location] = true
+	}
 	var kept []SourceExcerpt
 	for _, e := range excerpts {
-		if e.HotPath == location {
+		if locations[e.HotPath] {
 			kept = append(kept, e)
 		}
 	}
 	if len(kept) == 0 {
 		return nil
 	}
-	file, _, _ := strings.Cut(location, ":")
+	files := map[string]bool{}
+	for location := range locations {
+		file, _, _ := strings.Cut(location, ":")
+		files[file] = true
+	}
 	for _, e := range excerpts {
-		if e.Path == file && e.StartLine == 1 && e.HotPath != location {
+		if files[e.Path] && e.StartLine == 1 && !locations[e.HotPath] {
 			kept = append([]SourceExcerpt{e}, kept...)
 		}
 	}

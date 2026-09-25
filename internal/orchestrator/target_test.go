@@ -278,6 +278,45 @@ func allTargets(got []*agents.Target, want agents.Target, n int) bool {
 	return len(got) == n && !slices.ContainsFunc(got, func(t *agents.Target) bool { return t == nil || *t != want })
 }
 
+// TestPlanTargetKeepsExcerptsForEveryFunctionInASet: a throwaway_result
+// target (Functions set) keeps the excerpts for the callee and every caller
+// in its set, from whichever files they live in, plus each such file's
+// header, and drops excerpts belonging to neither.
+func TestPlanTargetKeepsExcerptsForEveryFunctionInASet(t *testing.T) {
+	multi := agents.Target{
+		Location: "a.go:9", Function: "(*Store).Get", Cause: "throwaway_result",
+		Functions: agents.EncodeFunctionSet([]agents.FunctionRef{
+			{Name: "(*Store).IsPositive", Location: "b.go:3"},
+		}),
+	}
+	state := CampaignState{
+		Analysis: agents.AnalystResult{Targets: []agents.Target{multi}},
+		SourceExcerpts: []SourceExcerpt{
+			{Path: "a.go", StartLine: 1, HotPath: "a.go:1", Content: "package fixture"},
+			{Path: "a.go", StartLine: 5, HotPath: "a.go:9"},
+			{Path: "b.go", StartLine: 1, HotPath: "b.go:1", Content: "package fixture"},
+			{Path: "b.go", StartLine: 1, HotPath: "b.go:3"},
+			{Path: "c.go", StartLine: 1, HotPath: "c.go:1"},
+		},
+	}
+	planTarget(&state)
+	if state.Target == nil {
+		t.Fatal("target = nil, want the multi-function target")
+	}
+	kept := make([]string, 0, len(state.SourceExcerpts))
+	for _, e := range state.SourceExcerpts {
+		kept = append(kept, e.HotPath)
+	}
+	for _, want := range []string{"a.go:9", "b.go:3"} {
+		if !slices.Contains(kept, want) {
+			t.Errorf("excerpts %v missing %q", kept, want)
+		}
+	}
+	if slices.Contains(kept, "c.go:1") {
+		t.Errorf("excerpts %v should not carry a file outside the set", kept)
+	}
+}
+
 // TestPlanTargetKeepsTheFileHeader: the header of the target's file travels
 // with the target's window, whichever hot path of that file it was collected
 // for, and headers of other files do not.
