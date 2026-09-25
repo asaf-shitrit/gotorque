@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"example.com/gotorque/internal/runner"
 )
 
 // SampleTarget profiles an already-built target binary directly, without
@@ -45,6 +47,16 @@ type SampleTarget struct {
 
 	// SampleBinary overrides /usr/bin/sample (tests only).
 	SampleBinary string
+
+	// Sandbox is the campaign's sandbox policy (the target manifest's
+	// sandbox block). Direct sampling cannot apply network or filesystem
+	// isolation -- it needs a live PID to attach a sampler to, which the
+	// sandboxed runner's exec wrapping is not built for -- but it does apply
+	// the same environment allow/passthrough filtering and resource limits,
+	// so a sampled run does not see variables or headroom a measured run
+	// would not have. The zero value grants only the sampler's own minimal
+	// HOME/TMPDIR base.
+	Sandbox runner.SandboxPolicy
 }
 
 type SampleResult struct {
@@ -54,6 +66,10 @@ type SampleResult struct {
 	// to the function that made the calls (AttributeToOwn).
 	Stacks    []Stack
 	RawReport string
+	// IsolationNotes records anything the sandbox policy's environment or
+	// resource limits could not be fully enforced for this sampled run, in
+	// the same style as runner.RunResult.IsolationNotes.
+	IsolationNotes []string
 }
 
 func SampleTargetProfile(ctx context.Context, req SampleTarget) (SampleResult, error) {
@@ -294,12 +310,14 @@ func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 	// exits. Cancellation still reaches the target: the sampler runs under ctx,
 	// and every path out of this function reaps the target.
 	//
+	binaryPath, args, limitNotes := runner.WrapWithResourceLimits(ctx, req.Sandbox.Limits, req.BinaryPath, req.Args)
 	//nolint:noctx // reaped by terminate(), not Cmd.Wait; CommandContext would leak a watcher goroutine
-	target := exec.Command(req.BinaryPath, req.Args...)
+	target := exec.Command(binaryPath, args...)
 	target.Dir = workDir
 	target.Stdin = bytes.NewReader(req.Stdin)
 	target.Stdout = nil
 	target.Stderr = nil
+	target.Env = sampleEnv(req, workDir)
 	target.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := target.Start(); err != nil {
 		return SampleResult{}, fmt.Errorf("start target binary: %w", err)
@@ -332,7 +350,19 @@ func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 	if err != nil {
 		return SampleResult{}, fmt.Errorf("read sample report: %w", err)
 	}
-	return finishSampleResult("macos-sample", req.OutputPath, string(raw))
+	return finishSampleResult("macos-sample", req.OutputPath, string(raw), limitNotes)
+}
+
+// sampleEnv builds the target's environment from the sandbox policy's
+// allow/passthrough variables plus a minimal HOME/TMPDIR base rooted at the
+// sample's own scratch directory, the same shape runner.Sandbox.Env uses.
+// Leaving Cmd.Env unset would inherit gotorque's own process environment,
+// including model provider credentials such as OPENROUTER_API_KEY or
+// AI_GATEWAY_API_KEY; this keeps a sampled run's environment no broader than
+// a measured run's.
+func sampleEnv(req SampleTarget, workDir string) []string {
+	base := []string{"HOME=" + workDir, "TMPDIR=" + workDir, "TMP=" + workDir, "TEMP=" + workDir}
+	return runner.BuildEnv(req.Sandbox.Environment, base, nil)
 }
 
 func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error) {
@@ -352,11 +382,17 @@ func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error
 	dataFile := filepath.Join(filepath.Dir(req.OutputPath), "perf.data.tmp")
 	defer func() { _ = os.Remove(dataFile) }()
 
-	args := append([]string{"record", "-q", "-F", "999", "-e", "cpu-clock",
+	// perf record is never wrapped in the memory rlimit shell: it profiles
+	// the target directly, and the sandbox's max_memory_bytes is left
+	// unenforced for the duration of a sampled run -- recorded below --
+	// rather than bounding perf's own address space alongside the target's.
+	limitNotes := runner.ProfilingResourceLimitNotes(req.Sandbox.Limits)
+	recordArgs := append([]string{"record", "-q", "-F", "999", "-e", "cpu-clock",
 		"-o", dataFile, "--", req.BinaryPath}, req.Args...)
-	record := exec.CommandContext(ctx, perf, args...)
+	record := exec.CommandContext(ctx, perf, recordArgs...)
 	record.Dir = workDir
 	record.Stdin = bytes.NewReader(req.Stdin)
+	record.Env = sampleEnv(req, workDir)
 	output, recordErr := runBounded(record)
 	if recordErr != nil {
 		return SampleResult{}, fmt.Errorf("perf record: %w: %s", recordErr, truncateForError(output))
@@ -366,7 +402,7 @@ func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error
 	if scriptErr != nil {
 		return SampleResult{}, fmt.Errorf("perf script: %w: %s", scriptErr, truncateForError(scriptOutput))
 	}
-	return finishSampleResult("linux-perf", req.OutputPath, string(scriptOutput))
+	return finishSampleResult("linux-perf", req.OutputPath, string(scriptOutput), limitNotes)
 }
 
 // prepareWorkDir materializes seed fixtures into a scratch directory the
@@ -441,7 +477,7 @@ func terminate(process *os.Process) error {
 	}
 }
 
-func finishSampleResult(sampler, outputPath, raw string) (SampleResult, error) {
+func finishSampleResult(sampler, outputPath, raw string, isolationNotes []string) (SampleResult, error) {
 	if strings.TrimSpace(raw) == "" {
 		return SampleResult{}, errors.New("sampler produced no output")
 	}
@@ -465,7 +501,7 @@ func finishSampleResult(sampler, outputPath, raw string) (SampleResult, error) {
 	if len(functions) == 0 {
 		return SampleResult{}, errNoFrames
 	}
-	return SampleResult{Sampler: sampler, Functions: functions, Stacks: stacks, RawReport: outputPath}, nil
+	return SampleResult{Sampler: sampler, Functions: functions, Stacks: stacks, RawReport: outputPath, IsolationNotes: isolationNotes}, nil
 }
 
 func truncateForError(output []byte) string {

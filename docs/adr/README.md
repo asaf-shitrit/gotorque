@@ -31,5 +31,6 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0022](0022-optimizer-returns-function-source.md) | With a code-chosen target, the optimizer returns the function's new source, and code builds the diff | accepted |
 | [0023](0023-nested-module-build-directory.md) | A target's build may run from a nested module directory | accepted |
 | [0024](0024-memory-objective-targets.md) | A memory objective chooses memory-relevant targets | accepted |
+| [0026](0026-manifest-sandbox-is-enforced.md) | The manifest's `sandbox` block is enforced, not just documented | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence).

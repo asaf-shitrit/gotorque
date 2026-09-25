@@ -120,7 +120,69 @@ and tier in its provenance record.
 
 The default target policy denies network access, allows repository and asset
 reads, and restricts writes to a temporary directory. Environment variables
-must be explicitly listed. `max_processes` bounds child-process fan-out.
+must be explicitly listed. `max_processes` bounds child-process fan-out. This
+block is enforced by `internal/runner` (ADR 0026), not only documented; what
+each field does per platform, and what it degrades to when the platform
+cannot honor it, is:
+
+- `network: "deny"` (default) blocks network for every workload run and
+  sampled profiling run, using `sandbox-exec` on macOS or bubblewrap's
+  `--unshare-net` on Linux. `"allow"` skips that. If bubblewrap cannot create
+  a network namespace in this environment (some nested-container hosts), a
+  `deny` request degrades to filesystem-only isolation; this is recorded as
+  a sandbox isolation note on the affected run, not applied silently.
+- `filesystem.write: "temp_only"` (default) and `"manifest_paths"` both
+  restrict writes to the run's own temporary sandbox directory; the schema
+  does not yet carry a path list for `manifest_paths` to bind to, so it is
+  enforced identically to `temp_only`, and that gap is recorded as a note.
+  `"any"` disables the write restriction.
+- `filesystem.read: "repo_and_assets"` (default) is what local isolation
+  already grants (broad read access — a read-only bind of `/` on Linux,
+  `(allow default)` on macOS): there is no manifest-declared path list to
+  narrow reads to, so `"manifest_paths"` and `"none"` cannot be enforced any
+  more tightly than the default today, and each is recorded as a note.
+- `environment.allow`/`passthrough`: the workload process receives only the
+  union of these two lists, copied by name from gotorque's own process
+  environment when set, plus gotorque's own infrastructure variables (for
+  example `GOTOOLCHAIN`). Nothing else does — including model provider
+  credentials such as `OPENROUTER_API_KEY` or `AI_GATEWAY_API_KEY` that
+  gotorque itself may have set. This applies to every run gotorque makes of
+  the target, including the profiler's direct-sampling path.
+- `max_processes` is **not enforced, on any platform.** An earlier version of
+  this document said it was attempted via `RLIMIT_NPROC` (`ulimit -u`); that
+  undersold the problem it caused. `RLIMIT_NPROC` is scoped per user account,
+  not per process tree, and on Linux it also counts *threads*, not just
+  processes. Every target manifest sets `max_processes: 1`, and bounding
+  `RLIMIT_NPROC` to 1 crashes the Go runtime itself before it can even start
+  the target: `bash -c 'ulimit -u 1; exec ./gobin'` fails every run with
+  `runtime: failed to create new OS thread ... fatal error: newosproc`,
+  reproduced as an unprivileged user in a Debian container. The field is
+  still validated (`>= 1`) and still recorded — every run where it is set
+  gets a sandbox isolation note naming why it is not enforced — but nothing
+  in gotorque ever wraps a command in `ulimit -u`.
+- `max_memory_bytes` is attempted via the *soft* `RLIMIT_AS` (`ulimit -S -v`)
+  for a measured or discovery run on Linux only; macOS has no reliable
+  virtual-memory rlimit for an unprivileged process and is not attempted,
+  always recorded as a note when set. It is never applied while profiling
+  (macOS `sample` or Linux `perf record`): the profiler attaches to or runs
+  the target directly rather than through an exec wrapper, and wrapping
+  `perf record` itself in the rlimit would bound `perf`'s address space
+  alongside the target's for no enforcement benefit, so a profiling run
+  always records `max_memory_bytes` as unenforced regardless of platform.
+  Setting the rlimit fails loudly rather than silently: the wrapper shell
+  runs `ulimit -S -v K || exit 125`, and a run that exits 125 through that
+  wrapper is reported as the rlimit itself failing to apply, not as the
+  workload's own exit code. It is validated (must not be negative) both by
+  the JSON schema and by `Manifest.SemanticValidate`. The wrapper's fixed
+  bash startup cost is identical on both sides of an A/B pair — either both
+  baseline and candidate are wrapped the same way (Linux, memory limit set,
+  measured/discovery mode) or neither is — so it does not bias a
+  measurement.
+
+A campaign's report has a "Sandbox isolation" section, in the same style as
+"Degraded roles", listing every gap above that actually applied to a run:
+evidence gathered under a listed note is not equivalent to a fully isolated
+run.
 
 Normalization is explicit and defaults to exact stdout/stderr and file
 comparison. A target may name a specific timestamp, temporary path, identifier,

@@ -335,6 +335,9 @@ func (m Manifest) validateSandbox() []string {
 	if m.Sandbox.MaxProcesses <= 0 {
 		problems = append(problems, "sandbox.max_processes must be positive")
 	}
+	if m.Sandbox.MaxMemoryBytes < 0 {
+		problems = append(problems, "sandbox.max_memory_bytes must not be negative")
+	}
 	return problems
 }
 

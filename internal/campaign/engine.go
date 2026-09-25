@@ -201,6 +201,15 @@ type State struct {
 	Error             string             `json:"error,omitempty"`
 	LocalIsolation    bool               `json:"local_isolation"`
 	DependencyDigests map[string]string  `json:"dependency_digests,omitempty"`
+	// SandboxIsolationNotes records, deduplicated, anything the manifest's
+	// sandbox policy asked for that some run in this campaign could not
+	// fully enforce on this host -- a probe-based local-isolation
+	// degradation, a filesystem scope gotorque does not narrow, or a
+	// resource limit with no enforceable rlimit on this platform. Evidence
+	// gathered while this is non-empty is not equivalent to a fully
+	// isolated run; the report surfaces it for the same reason it surfaces
+	// DegradedRoles.
+	SandboxIsolationNotes []string `json:"sandbox_isolation_notes,omitempty"`
 	// BaselineTestFailures holds the tests that already fail on the unpatched
 	// revision, keyed `package::Test`. The behavior gate only rejects a
 	// candidate for failures absent from this set.
@@ -432,12 +441,55 @@ func Resume(dir string, progress io.Writer) (*Engine, error) {
 	return compose(abs, store, state, progress, func() time.Time { return time.Now().UTC() })
 }
 
+// recordIsolationNotes folds a run's isolation notes into the campaign-wide,
+// deduplicated set the report prints. See State.SandboxIsolationNotes.
+func (e *Engine) recordIsolationNotes(notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(e.state.SandboxIsolationNotes))
+	for _, existing := range e.state.SandboxIsolationNotes {
+		seen[existing] = true
+	}
+	for _, note := range notes {
+		if note == "" || seen[note] {
+			continue
+		}
+		seen[note] = true
+		e.state.SandboxIsolationNotes = append(e.state.SandboxIsolationNotes, note)
+	}
+}
+
+// sandboxPolicy translates a target manifest's sandbox block into the
+// primitives internal/runner enforces. It is built once per campaign
+// (compose runs on both a fresh Start and a Resume) so every run the
+// campaign makes -- discovery, candidate A/B, confirmation, PGO -- shares
+// identical isolation, keeping the A/B comparison fair.
+func sandboxPolicy(s manifest.Sandbox) runner.SandboxPolicy {
+	return runner.SandboxPolicy{
+		NetworkAllowed: s.Network == "allow",
+		WriteScope:     s.Filesystem.Write,
+		ReadScope:      s.Filesystem.Read,
+		Environment: runner.EnvironmentPolicy{
+			Allow:       s.Environment.Allow,
+			Passthrough: s.Environment.Passthrough,
+		},
+		Limits: runner.ResourceLimits{
+			MaxProcesses:   s.MaxProcesses,
+			MaxMemoryBytes: s.MaxMemoryBytes,
+		},
+	}
+}
+
 func compose(dir string, store *Store, state State, progress io.Writer, now func() time.Time) (*Engine, error) {
 	artifacts, err := runner.NewArtifactStore(filepath.Join(dir, "artifacts"))
 	if err != nil {
 		return nil, err
 	}
-	r, err := runner.New(runner.Options{Artifacts: artifacts, SandboxRoot: filepath.Join(dir, "sandboxes"), LocalIsolation: state.LocalIsolation})
+	r, err := runner.New(runner.Options{
+		Artifacts: artifacts, SandboxRoot: filepath.Join(dir, "sandboxes"), LocalIsolation: state.LocalIsolation,
+		Sandbox: sandboxPolicy(state.Manifest.Sandbox),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -736,9 +788,10 @@ func (e *Engine) runSeed(ctx context.Context, seed manifest.SeedWorkload) error 
 	}
 	wid := stableID("workload", e.state.ID, seed.ID)
 	workload := domain.Workload{ID: wid, Name: seed.Name, Seed: seed.ID, Tier: seed.Tier, Command: domain.Command{Path: e.state.DiscoveryBinaryPath, Args: append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...)}, Timeout: timeout, Provenance: seed.Provenance, Description: seed.Description}
-	result, runErr := e.runner.Run(ctx, runner.RunRequest{Build: runner.Build{ID: e.state.DiscoveryBuildID, BinaryPath: e.state.DiscoveryBinaryPath}, Workload: workload, Mode: domain.RunModeDiscovery, NetworkAllowed: !e.state.LocalIsolation, FilesystemAllowed: !e.state.LocalIsolation, AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"}, Stdin: []byte(seed.Stdin), Fixtures: fixtures})
+	result, runErr := e.runner.Run(ctx, runner.RunRequest{Build: runner.Build{ID: e.state.DiscoveryBuildID, BinaryPath: e.state.DiscoveryBinaryPath}, Workload: workload, Mode: domain.RunModeDiscovery, AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"}, Stdin: []byte(seed.Stdin), Fixtures: fixtures})
 	result.ID = stableID("run", e.state.DiscoveryBuildID, wid, "baseline")
 	e.state.Runs = append(e.state.Runs, result)
+	e.recordIsolationNotes(result.IsolationNotes)
 	if runErr != nil {
 		return fmt.Errorf("baseline workload %q was invalid: %w", seed.ID, runErr)
 	}
@@ -868,14 +921,17 @@ func (e *Engine) sampleWith(ctx context.Context, seed manifest.SeedWorkload, std
 	for _, f := range seed.Files {
 		fixtures[f.Path] = []byte(f.Content)
 	}
-	return profile.SampleTargetProfile(ctx, profile.SampleTarget{
+	result, err := profile.SampleTargetProfile(ctx, profile.SampleTarget{
 		BinaryPath: e.state.BinaryPath,
 		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),
 		Stdin:      stdin,
 		Fixtures:   fixtures,
 		Duration:   4 * time.Second,
 		OutputPath: filepath.Join(e.dir, "profile-sample", reportName),
+		Sandbox:    sandboxPolicy(e.state.Manifest.Sandbox),
 	})
+	e.recordIsolationNotes(result.IsolationNotes)
+	return result, err
 }
 
 // sampledHotNames ranks the target's own functions by the samples spent on

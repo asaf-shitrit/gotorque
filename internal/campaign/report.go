@@ -146,6 +146,7 @@ func RenderMarkdown(state State) string {
 	writeInventory(&b, state)
 	writeBehaviorGate(&b, state)
 	writeBaselineWorkloads(&b, state)
+	writeSandboxIsolationNotes(&b, state)
 	writeDegradedRoles(&b, state)
 	writeCandidateExperiments(&b, state)
 	writeTokenUsage(&b, state)
@@ -286,6 +287,21 @@ func writeBaselineWorkloads(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "\n## Baseline workloads\n\n| Workload | Exit | Wall time | Evidence |\n|---|---:|---:|---|\n")
 	for _, run := range state.Runs {
 		fmt.Fprintf(b, "| `%s` | %d | %s | `%s` |\n", labelOrUnlabelled(run.Workload), run.ExitCode, run.Duration, run.ID)
+	}
+}
+
+// writeSandboxIsolationNotes explains, next to the runs it affected, any gap
+// between what the manifest's sandbox block asked for and what this host
+// could actually enforce. Evidence gathered while this section is non-empty
+// is not equivalent to a fully isolated run (see docs/architecture.md's
+// isolation section), so it belongs beside the runs, not buried in a log.
+func writeSandboxIsolationNotes(b *strings.Builder, state State) {
+	if len(state.SandboxIsolationNotes) == 0 {
+		return
+	}
+	b.WriteString("\n## Sandbox isolation\n\nThe manifest's `sandbox` block asked for isolation this host could not fully provide. Evidence collected under these notes is not equivalent to a fully isolated run.\n\n")
+	for _, note := range state.SandboxIsolationNotes {
+		fmt.Fprintf(b, "- %s\n", note)
 	}
 }
 

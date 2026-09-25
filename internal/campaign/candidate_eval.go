@@ -270,6 +270,21 @@ func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload,
 	return true
 }
 
+// abIsolationNotes collects isolation notes from every baseline and
+// candidate run in one interleaved series. Baseline and candidate share one
+// SandboxPolicy (see runner.SandboxPolicy), so any degradation applies to
+// both legs identically; this just surfaces it once for the report.
+func abIsolationNotes(ab runner.ABResult) []string {
+	var notes []string
+	for _, r := range ab.Baseline {
+		notes = append(notes, r.IsolationNotes...)
+	}
+	for _, r := range ab.Candidate {
+		notes = append(notes, r.IsolationNotes...)
+	}
+	return notes
+}
+
 func (e *Engine) abRequests(seed manifest.SeedWorkload, id, candidateBinary string) (runner.RunRequest, runner.RunRequest) {
 	baseReq := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
 	candReq := baseReq
@@ -286,6 +301,7 @@ func (e *Engine) abRequests(seed manifest.SeedWorkload, id, candidateBinary stri
 func (e *Engine) runSeries(ctx context.Context, runs *seedRuns, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
 	baseReq, candReq := e.abRequests(runs.seed, id, candidateBinary)
 	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
+	e.recordIsolationNotes(abIsolationNotes(ab))
 	if err != nil {
 		evidence.BehaviorMatches = false
 		evidence.Summary = fmt.Sprintf("measurement failed on workload %q: %v", runs.seed.ID, err)
@@ -535,11 +551,11 @@ func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, bin
 		Stdin:         []byte(seed.Stdin),
 		Fixtures:      fixtures,
 		AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"},
-		// Isolated campaigns grant neither. Without local isolation
-		// (TestingUnsafeDisableIsolation) there is no guard to enforce either
-		// restriction, so the request grants both, as discovery's does.
-		NetworkAllowed:    !e.state.LocalIsolation,
-		FilesystemAllowed: !e.state.LocalIsolation,
+		// Network and filesystem access are governed by the manifest's
+		// sandbox policy at the Runner level (runner.SandboxPolicy), so
+		// every seed measurement -- baseline, candidate, confirmation, and
+		// the PGO lane, all of which build this request through
+		// seedMeasurementRequest -- shares identical isolation.
 	}
 	return req
 }

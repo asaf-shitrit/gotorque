@@ -497,7 +497,7 @@ func (t *Toolchain) TracePprof(ctx context.Context, tracePath, kind string) (Res
 }
 
 func (t *Toolchain) run(ctx context.Context, path string, args []string, dir string, env []string, stdin io.Reader) (Result, error) {
-	base := os.Environ()
+	base := withoutCredentials(os.Environ())
 	// git resolves a repository, index, and worktree from these variables ahead
 	// of the working directory, so an inherited value would silently redirect a
 	// command at a different checkout than the one Dir names.
@@ -509,6 +509,50 @@ func (t *Toolchain) run(ctx context.Context, path string, args []string, dir str
 		return result, fmt.Errorf("%s %s: %w", path, strings.Join(args, " "), err)
 	}
 	return result, nil
+}
+
+// credentialSuffixes and credentialSubstrings name the shapes a model
+// provider credential's environment variable name takes. Every command this
+// package runs -- including `go build`/`go test`/benchstat on model-written
+// candidate code under --adk -- would otherwise inherit gotorque's own
+// process environment, putting OPENROUTER_API_KEY and AI_GATEWAY_API_KEY
+// within reach of code the harness does not trust.
+var (
+	explicitCredentialVars = map[string]bool{
+		"OPENROUTER_API_KEY": true,
+		"AI_GATEWAY_API_KEY": true,
+	}
+	credentialSuffixes  = []string{"_API_KEY", "_TOKEN", "_SECRET"}
+	credentialSubstring = "PASSWORD"
+)
+
+// withoutCredentials drops every environment variable that looks like a
+// credential, keeping everything else -- PATH, HOME, GOCACHE, GOPATH,
+// GOFLAGS, CGO_*, and so on -- untouched, since the Go toolchain needs those
+// to build and test a target at all.
+func withoutCredentials(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && isCredentialVar(name) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+func isCredentialVar(name string) bool {
+	if explicitCredentialVars[name] {
+		return true
+	}
+	upper := strings.ToUpper(name)
+	for _, suffix := range credentialSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	return strings.Contains(upper, credentialSubstring)
 }
 
 // gitScopingEnv lists the variables git uses to select a repository, index, or

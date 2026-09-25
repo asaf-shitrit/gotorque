@@ -172,10 +172,7 @@ func (e *Engine) sampleVariant(ctx context.Context, seed manifest.SeedWorkload, 
 // variantRequest runs a workload on the release binary under the isolation
 // discovery runs the seed with.
 func (e *Engine) variantRequest(seed manifest.SeedWorkload) runner.RunRequest {
-	req := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
-	req.NetworkAllowed = !e.state.LocalIsolation
-	req.FilesystemAllowed = !e.state.LocalIsolation
-	return req
+	return e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
 }
 
 // helpText runs the target with --help through the sandboxed runner and keeps

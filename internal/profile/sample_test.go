@@ -256,20 +256,20 @@ func TestTerminateStopsRunningProcess(t *testing.T) {
 }
 
 func TestFinishSampleResultRejectsEmptyOutput(t *testing.T) {
-	if _, err := finishSampleResult("macos-sample", filepath.Join(t.TempDir(), "out.txt"), "   "); err == nil {
+	if _, err := finishSampleResult("macos-sample", filepath.Join(t.TempDir(), "out.txt"), "   ", nil); err == nil {
 		t.Fatal("expected error for empty sampler output")
 	}
 }
 
 func TestFinishSampleResultRejectsNoRecognizableFrames(t *testing.T) {
-	if _, err := finishSampleResult("linux-perf", filepath.Join(t.TempDir(), "out.txt"), "no frames here\n"); err == nil {
+	if _, err := finishSampleResult("linux-perf", filepath.Join(t.TempDir(), "out.txt"), "no frames here\n", nil); err == nil {
 		t.Fatal("expected error when no frames are recognizable")
 	}
 }
 
 func TestFinishSampleResultLinuxPerfHappyPath(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "nested", "out.txt")
-	result, err := finishSampleResult("linux-perf", outputPath, perfScriptOutput)
+	result, err := finishSampleResult("linux-perf", outputPath, perfScriptOutput, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
