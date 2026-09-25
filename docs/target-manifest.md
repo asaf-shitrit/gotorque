@@ -120,7 +120,49 @@ and tier in its provenance record.
 
 The default target policy denies network access, allows repository and asset
 reads, and restricts writes to a temporary directory. Environment variables
-must be explicitly listed. `max_processes` bounds child-process fan-out.
+must be explicitly listed. `max_processes` bounds child-process fan-out. This
+block is enforced by `internal/runner` (ADR 0026), not only documented; what
+each field does per platform, and what it degrades to when the platform
+cannot honor it, is:
+
+- `network: "deny"` (default) blocks network for every workload run and
+  sampled profiling run, using `sandbox-exec` on macOS or bubblewrap's
+  `--unshare-net` on Linux. `"allow"` skips that. If bubblewrap cannot create
+  a network namespace in this environment (some nested-container hosts), a
+  `deny` request degrades to filesystem-only isolation; this is recorded as
+  a sandbox isolation note on the affected run, not applied silently.
+- `filesystem.write: "temp_only"` (default) and `"manifest_paths"` both
+  restrict writes to the run's own temporary sandbox directory; the schema
+  does not yet carry a path list for `manifest_paths` to bind to, so it is
+  enforced identically to `temp_only`, and that gap is recorded as a note.
+  `"any"` disables the write restriction.
+- `filesystem.read: "repo_and_assets"` (default) is what local isolation
+  already grants (broad read access — a read-only bind of `/` on Linux,
+  `(allow default)` on macOS): there is no manifest-declared path list to
+  narrow reads to, so `"manifest_paths"` and `"none"` cannot be enforced any
+  more tightly than the default today, and each is recorded as a note.
+- `environment.allow`/`passthrough`: the workload process receives only the
+  union of these two lists, copied by name from gotorque's own process
+  environment when set, plus gotorque's own infrastructure variables (for
+  example `GOTOOLCHAIN`). Nothing else does — including model provider
+  credentials such as `OPENROUTER_API_KEY` or `AI_GATEWAY_API_KEY` that
+  gotorque itself may have set. This applies to every run gotorque makes of
+  the target, including the profiler's direct-sampling path.
+- `max_processes` is attempted via `RLIMIT_NPROC` (`ulimit -u`) on both
+  macOS and Linux. This is a per-user-account limit, not a per-process-tree
+  one — the OS scopes it that way — so concurrent work under the same
+  account shares the bound; this caveat is recorded on every run where the
+  limit is requested, whether or not the shell could set it.
+- `max_memory_bytes` is attempted via `RLIMIT_AS` (`ulimit -v`) on Linux
+  only; macOS has no reliable virtual-memory rlimit for an unprivileged
+  process and is not attempted, always recorded as a note when set. It is
+  validated (must not be negative) both by the JSON schema and by
+  `Manifest.SemanticValidate`.
+
+A campaign's report has a "Sandbox isolation" section, in the same style as
+"Degraded roles", listing every gap above that actually applied to a run:
+evidence gathered under a listed note is not equivalent to a fully isolated
+run.
 
 Normalization is explicit and defaults to exact stdout/stderr and file
 comparison. A target may name a specific timestamp, temporary path, identifier,

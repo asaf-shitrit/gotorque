@@ -95,6 +95,12 @@ type RunResult struct {
 	Metrics           []Metric          `json:"metrics,omitempty"`
 	Artifacts         map[string]string `json:"artifacts,omitempty"`
 	Error             string            `json:"error,omitempty"`
+	// IsolationNotes records anything the manifest's sandbox policy asked
+	// for that this run's platform or environment could not fully enforce
+	// (for example a network-namespace probe failing, or a filesystem scope
+	// gotorque does not yet narrow). Empty means the policy was fully
+	// honored for this run.
+	IsolationNotes []string `json:"isolation_notes,omitempty"`
 }
 
 type Candidate struct {

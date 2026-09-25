@@ -35,8 +35,8 @@ func TestRunInterleavesBaselineAndCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	workload := domain.Workload{ID: "w", Command: domain.Command{Args: []string{"--input", "sample"}}}
-	baseline := RunRequest{Build: Build{ID: "base", BinaryPath: binary}, Workload: workload, Mode: domain.RunModeMeasurement, NetworkAllowed: true, FilesystemAllowed: true}
-	candidate := RunRequest{Build: Build{ID: "candidate", BinaryPath: binary}, Workload: workload, Mode: domain.RunModeMeasurement, NetworkAllowed: true, FilesystemAllowed: true}
+	baseline := RunRequest{Build: Build{ID: "base", BinaryPath: binary}, Workload: workload, Mode: domain.RunModeMeasurement}
+	candidate := RunRequest{Build: Build{ID: "candidate", BinaryPath: binary}, Workload: workload, Mode: domain.RunModeMeasurement}
 	result, err := r.RunInterleaved(context.Background(), ABRequest{Baseline: baseline, Candidate: candidate, Repetitions: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestRunUsesPolicyMetricNames(t *testing.T) {
 	}
 	result, err := runner.Run(context.Background(), RunRequest{
 		Build: Build{ID: "base", BinaryPath: binary}, Workload: domain.Workload{ID: "w"},
-		Mode: domain.RunModeMeasurement, NetworkAllowed: true, FilesystemAllowed: true,
+		Mode: domain.RunModeMeasurement,
 	})
 	if err != nil {
 		t.Fatal(err)

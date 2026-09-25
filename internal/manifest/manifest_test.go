@@ -45,6 +45,22 @@ func TestLoadRejectsUnsafeFixturePath(t *testing.T) {
 	}
 }
 
+// TestSemanticValidateRejectsNegativeMaxMemoryBytes locks in the check added
+// alongside runtime sandbox enforcement: the JSON schema already bounds
+// max_memory_bytes at the wire, but SemanticValidate is the second line of
+// defense for a Manifest built in Go (for example by a future migration or a
+// test fixture) rather than decoded from JSON.
+func TestSemanticValidateRejectsNegativeMaxMemoryBytes(t *testing.T) {
+	m, err := LoadFile(filepath.Join("..", "..", "targets", "gojq", "manifest.json"))
+	if err != nil {
+		t.Fatalf("load fixture manifest: %v", err)
+	}
+	m.Sandbox.MaxMemoryBytes = -1
+	if err := m.SemanticValidate(); err == nil {
+		t.Fatal("expected error for negative sandbox.max_memory_bytes")
+	}
+}
+
 func TestValidationTargetAssets(t *testing.T) {
 	root := filepath.Join("..", "..", "targets")
 	for _, name := range []string{"gojq", "scc"} {

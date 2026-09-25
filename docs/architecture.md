@@ -1070,8 +1070,25 @@ internal t-test.
 ## Security boundary and isolation probing
 
 Target commands run without network access and with writes confined to a
-fresh temporary directory unless a target manifest explicitly grants
-additional capabilities. The runner only launches a configured build artifact
+fresh temporary directory unless a target manifest's `sandbox` block
+explicitly grants additional capabilities (ADR 0026). That block is
+translated once per campaign into a `runner.SandboxPolicy`
+(`internal/campaign/engine.go`'s `sandboxPolicy`) and set on the `Runner` at
+construction, not per request: every run the campaign makes — discovery,
+candidate A/B, the confirmation series, the PGO lane, explore variants, and
+the profiler's sampled runs — shares one policy, so a baseline and a
+candidate are never isolated differently. `sandbox.network` drives network
+denial (previously this was tied only to whether local isolation was
+available at all, ignoring what the manifest asked for);
+`sandbox.filesystem.write` drives whether writes stay confined to the
+sandbox; `sandbox.environment.allow`/`passthrough` drive which environment
+variables a workload process receives, so gotorque's own credentials (model
+provider API keys) never reach a target; `sandbox.max_processes`/
+`max_memory_bytes` are attempted via rlimits (`ulimit -u`/`-v`) wrapped
+around the command before any local-isolation exec wrapper, so the limit
+survives into whatever runs beneath it. See `docs/target-manifest.md`'s
+sandbox section for what each field enforces per platform and what it
+degrades to. The runner only launches a configured build artifact
 and rejects workload command paths that differ from it. Candidate changes are
 isolated in Git worktrees; accepted patches are copied to the campaign's
 `accepted/` directory and are never pushed anywhere by the harness.

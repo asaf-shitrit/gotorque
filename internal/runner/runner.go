@@ -29,6 +29,7 @@ type Runner struct {
 	filesystemGuard FilesystemGuard
 	keepFailedRuns  bool
 	localIsolation  bool
+	sandbox         SandboxPolicy
 	now             func() time.Time
 }
 
@@ -40,6 +41,13 @@ type Options struct {
 	FilesystemGuard FilesystemGuard
 	KeepFailedRuns  bool
 	LocalIsolation  bool
+	// Sandbox is the target manifest's sandbox block, translated into the
+	// primitives this runner enforces. It applies to every run this Runner
+	// makes -- one manifest per campaign -- so baseline and candidate runs
+	// share identical policy. The zero value denies network and restricts
+	// writes to the sandbox directory, matching the manifest loader's
+	// defaults.
+	Sandbox SandboxPolicy
 }
 
 func New(opts Options) (*Runner, error) {
@@ -52,7 +60,7 @@ func New(opts Options) (*Runner, error) {
 	if !filepath.IsAbs(opts.SandboxRoot) {
 		return nil, errors.New("sandbox root must be absolute")
 	}
-	return &Runner{executor: opts.Executor, artifacts: opts.Artifacts, sandboxRoot: opts.SandboxRoot, networkGuard: opts.NetworkGuard, filesystemGuard: opts.FilesystemGuard, keepFailedRuns: opts.KeepFailedRuns, localIsolation: opts.LocalIsolation, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &Runner{executor: opts.Executor, artifacts: opts.Artifacts, sandboxRoot: opts.SandboxRoot, networkGuard: opts.NetworkGuard, filesystemGuard: opts.FilesystemGuard, keepFailedRuns: opts.KeepFailedRuns, localIsolation: opts.LocalIsolation, sandbox: opts.Sandbox, now: func() time.Time { return time.Now().UTC() }}, nil
 }
 
 type Build struct {
@@ -61,23 +69,19 @@ type Build struct {
 }
 
 type RunRequest struct {
-	Build             Build
-	Workload          domain.Workload
-	Mode              domain.RunMode
-	NetworkAllowed    bool // default is false; set only with a manifest grant.
-	FilesystemAllowed bool // default is false; set only with a manifest grant.
-	AdditionalEnv     map[string]string
-	Stdin             []byte
-	Fixtures          map[string][]byte
+	Build         Build
+	Workload      domain.Workload
+	Mode          domain.RunMode
+	AdditionalEnv map[string]string
+	Stdin         []byte
+	Fixtures      map[string][]byte
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, error) {
 	if err := validateRunRequest(req); err != nil {
 		return domain.RunResult{}, err
 	}
-	networkDisabled := !req.NetworkAllowed
-	localIsolation := r.useLocalIsolation(req, networkDisabled)
-	sandbox, err := NewSandbox(r.sandboxOptions(req, networkDisabled, localIsolation))
+	sandbox, plan, err := r.newRunSandbox()
 	if err != nil {
 		return domain.RunResult{}, err
 	}
@@ -93,14 +97,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 	if closer != nil {
 		defer func() { _ = closer.Close() }()
 	}
-	env, err := discoveryEnv(sandbox, req)
+	env, err := discoveryEnv(sandbox, r.sandbox.Environment, req)
 	if err != nil {
 		return domain.RunResult{}, err
 	}
 	workloadCtx, cancel := withWorkloadTimeout(ctx, req.Workload.Timeout)
 	defer cancel()
 	started := r.now()
-	commandPath, commandArgs, err := maybeIsolate(ctx, localIsolation, sandbox, networkDisabled, req)
+	commandPath, commandArgs, isolationNotes, err := r.prepareCommand(ctx, sandbox, plan, req)
 	if err != nil {
 		return domain.RunResult{}, err
 	}
@@ -109,6 +113,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 		Dir: sandbox.WorkDir, Env: env, Stdin: stdinReader,
 	})
 	result := buildRunResult(req, started, commandResult, runErr)
+	result.IsolationNotes = isolationNotes
 	if err := r.collectRunArtifacts(&result, sandbox, commandResult, req.Mode); err != nil {
 		return result, err
 	}
@@ -116,14 +121,71 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 	return result, runErr
 }
 
-func (r *Runner) useLocalIsolation(req RunRequest, networkDisabled bool) bool {
-	return r.localIsolation && (networkDisabled || !req.FilesystemAllowed)
+// runPlan is what the Runner's sandbox policy resolves to for one run:
+// whether network and filesystem access are granted, and whether local
+// isolation (sandbox-exec/bwrap exec wrapping) applies. It exists so
+// newRunSandbox and prepareCommand -- which need the same three booleans --
+// do not each recompute them, which was the source of Run's complexity.
+type runPlan struct {
+	networkDisabled     bool
+	filesystemAllowed   bool
+	usingLocalIsolation bool
 }
 
-func (r *Runner) sandboxOptions(req RunRequest, networkDisabled, localIsolation bool) SandboxOptions {
+// newRunSandbox resolves the Runner's sandbox policy (the manifest) into a
+// runPlan and builds the sandbox directory for one run. Policy comes from
+// the Runner, not the request: every run this Runner makes shares one
+// policy, so a baseline and a candidate are never isolated differently.
+// r.localIsolation false means no enforcement mechanism is available at all
+// (tests, or TestingUnsafeDisableIsolation); in that mode both network and
+// filesystem are granted because there is no guard to enforce a denial.
+func (r *Runner) newRunSandbox() (*Sandbox, runPlan, error) {
+	networkAllowed := !r.localIsolation || r.sandbox.NetworkAllowed
+	filesystemAllowed := !r.localIsolation || r.sandbox.filesystemUnrestricted()
+	plan := runPlan{networkDisabled: !networkAllowed, filesystemAllowed: filesystemAllowed}
+	plan.usingLocalIsolation = r.useLocalIsolation(plan.networkDisabled, filesystemAllowed)
+	sandbox, err := NewSandbox(r.sandboxOptions(filesystemAllowed, plan.networkDisabled, plan.usingLocalIsolation))
+	return sandbox, plan, err
+}
+
+// prepareCommand resolves the command a run plan and request produce: the
+// local-isolation wrapping (if any), then rlimit wrapping, plus every
+// isolation note either step recorded.
+func (r *Runner) prepareCommand(ctx context.Context, sandbox *Sandbox, plan runPlan, req RunRequest) (string, []string, []string, error) {
+	commandPath, commandArgs, err := maybeIsolate(ctx, plan.usingLocalIsolation, sandbox, plan.networkDisabled, req)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	notes := r.isolationNotes(ctx, plan.usingLocalIsolation, plan.networkDisabled, !plan.filesystemAllowed)
+	commandPath, commandArgs, limitNotes := WrapWithResourceLimits(ctx, r.sandbox.Limits, commandPath, commandArgs)
+	return commandPath, commandArgs, append(notes, limitNotes...), nil
+}
+
+// isolationNotes surfaces anything the sandbox policy asked for that this
+// platform or environment could not fully honor: probe-based local
+// isolation degradation plus the filesystem scopes gotorque cannot yet
+// narrow to a manifest path list. It runs after maybeIsolate so the
+// bubblewrap capability probes it reads are already warm.
+func (r *Runner) isolationNotes(ctx context.Context, localIsolation, networkDisabled, filesystemRestricted bool) []string {
+	var notes []string
+	if localIsolation {
+		notes = append(notes, localIsolationNotes(ctx, runtime.GOOS, networkDisabled, filesystemRestricted)...)
+	}
+	if filesystemRestricted {
+		notes = append(notes, writeScopeNotes(r.sandbox)...)
+	}
+	notes = append(notes, readScopeNotes(r.sandbox)...)
+	return notes
+}
+
+func (r *Runner) useLocalIsolation(networkDisabled, filesystemAllowed bool) bool {
+	return r.localIsolation && (networkDisabled || !filesystemAllowed)
+}
+
+func (r *Runner) sandboxOptions(filesystemAllowed, networkDisabled, localIsolation bool) SandboxOptions {
 	return SandboxOptions{
 		Root: r.sandboxRoot, NetworkDisabled: networkDisabled && !localIsolation, NetworkGuard: r.networkGuard,
-		FilesystemRestricted: !req.FilesystemAllowed && !localIsolation, FilesystemGuard: r.filesystemGuard,
+		FilesystemRestricted: !filesystemAllowed && !localIsolation, FilesystemGuard: r.filesystemGuard,
 		KeepOnFailure: r.keepFailedRuns,
 	}
 }
@@ -149,8 +211,8 @@ func openStdin(req RunRequest) (io.Reader, io.Closer, error) {
 	return nil, nil, nil
 }
 
-func discoveryEnv(sandbox *Sandbox, req RunRequest) ([]string, error) {
-	env := append(sandbox.Env(), mapEnvironment(req.AdditionalEnv)...)
+func discoveryEnv(sandbox *Sandbox, policy EnvironmentPolicy, req RunRequest) ([]string, error) {
+	env := BuildEnv(policy, sandbox.Env(), req.AdditionalEnv)
 	if req.Mode != domain.RunModeDiscovery {
 		return env, nil
 	}
