@@ -125,13 +125,80 @@ func checkFile(worktree, name string, change *fileChange, target *agents.Target)
 	if err := checkImports(fset, filepath.Dir(full), file, change); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
-	if target == nil || targetPath(target.Location) != name {
+	if target == nil {
+		return nil
+	}
+	if target.Functions != "" {
+		return checkMultiConfined(fset, file, change, name, *target)
+	}
+	if targetPath(target.Location) != name {
 		return nil
 	}
 	if err := checkConfined(fset, file, change, target.Function); err != nil {
 		return err
 	}
 	return checkBypass(file, target.Function)
+}
+
+// checkMultiConfined is checkConfined's counterpart for a throwaway_result
+// target's function set (ADR 0027): the callee plus its consuming callers,
+// which commonly live in files other than the callee's own, since a callee's
+// callers are a package-wide search, not a single-file one. It applies the
+// same confinement checkConfined applies to the target's own file to every
+// file in the callee's package directory; a file outside that directory is
+// not checked at all, exactly like the single-function path, which never
+// confines a file other than the target's own.
+func checkMultiConfined(fset *token.FileSet, file *ast.File, change *fileChange, name string, target agents.Target) error {
+	calleeDir := path.Dir(targetPath(target.Location))
+	if path.Dir(name) != calleeDir {
+		return nil
+	}
+	allowed := map[string]bool{target.Function: true}
+	var names []string
+	for _, f := range agents.DecodeFunctionSet(target.Functions) {
+		allowed[f.Name] = true
+		names = append(names, f.Name)
+	}
+	var others []string
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || allowed[funcName(fd)] {
+			continue
+		}
+		first, last := fset.Position(fd.Pos()).Line, fset.Position(fd.End()).Line
+		if touched(change, first, last) && !whollyNewDecl(fset, fd, change) {
+			others = append(others, funcName(fd))
+		}
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the patch edits %s, outside the throwaway_result set (%s, %s); change only those functions or add a wholly new one",
+		strings.Join(others, ", "), target.Function, strings.Join(names, ", "))
+}
+
+// whollyNewDecl reports whether fd's declaration did not exist under this
+// name before the patch: its own signature line is itself changed content
+// (present in change.lines, the zero-context diff's new-side line numbers),
+// and no removed line elsewhere in the file declared a function of the same
+// name (which would mean this name existed and was rewritten, not added).
+//
+// checkConfined's own added() instead requires every line of the
+// declaration to be added, which a throwaway_result remedy routinely fails:
+// dasel's fix1 adds unpackKindsValue by moving UnpackKinds' unchanged loop
+// body under a new name and signature, so most of the new declaration's
+// lines are identical, unmarked context in a zero-context diff, not added
+// lines. Checking only the signature line is enough to tell "this name is
+// new" from "this name's body was edited in place", which is what
+// checkMultiConfined actually needs to know.
+func whollyNewDecl(fset *token.FileSet, fd *ast.FuncDecl, change *fileChange) bool {
+	first := fset.Position(fd.Pos()).Line
+	if !change.lines[first] {
+		return false
+	}
+	return !slices.ContainsFunc(change.removed, func(line string) bool {
+		return strings.HasPrefix(strings.TrimSpace(line), "func ") && strings.Contains(line, " "+fd.Name.Name+"(")
+	})
 }
 
 // checkBypass rejects a target function that wraps a writer in a
