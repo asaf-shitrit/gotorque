@@ -112,6 +112,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 		Path: commandPath, Args: commandArgs,
 		Dir: sandbox.WorkDir, Env: env, Stdin: stdinReader,
 	})
+	if IsResourceLimitFailure(commandPath, commandResult.ExitCode) {
+		note := "the sandbox's memory rlimit (ulimit -S -v) could not be set for this run; it exited before the workload started rather than running unbounded"
+		isolationNotes = append(isolationNotes, note)
+		runErr = errors.New(note)
+	}
 	result := buildRunResult(req, started, commandResult, runErr)
 	result.IsolationNotes = isolationNotes
 	if err := r.collectRunArtifacts(&result, sandbox, commandResult, req.Mode); err != nil {

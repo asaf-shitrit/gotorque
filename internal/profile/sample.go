@@ -382,10 +382,14 @@ func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error
 	dataFile := filepath.Join(filepath.Dir(req.OutputPath), "perf.data.tmp")
 	defer func() { _ = os.Remove(dataFile) }()
 
-	recordPath, recordArgs, limitNotes := runner.WrapWithResourceLimits(ctx, req.Sandbox.Limits, perf,
-		append([]string{"record", "-q", "-F", "999", "-e", "cpu-clock",
-			"-o", dataFile, "--", req.BinaryPath}, req.Args...))
-	record := exec.CommandContext(ctx, recordPath, recordArgs...)
+	// perf record is never wrapped in the memory rlimit shell: it profiles
+	// the target directly, and the sandbox's max_memory_bytes is left
+	// unenforced for the duration of a sampled run -- recorded below --
+	// rather than bounding perf's own address space alongside the target's.
+	limitNotes := runner.ProfilingResourceLimitNotes(req.Sandbox.Limits)
+	recordArgs := append([]string{"record", "-q", "-F", "999", "-e", "cpu-clock",
+		"-o", dataFile, "--", req.BinaryPath}, req.Args...)
+	record := exec.CommandContext(ctx, perf, recordArgs...)
 	record.Dir = workDir
 	record.Stdin = bytes.NewReader(req.Stdin)
 	record.Env = sampleEnv(req, workDir)

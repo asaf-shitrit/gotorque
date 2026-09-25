@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // EnvironmentPolicy lists which environment variable names a workload
@@ -130,24 +131,53 @@ func toSet(values []string) map[string]bool {
 }
 
 // WrapWithResourceLimits wraps a command so it runs under the requested
-// rlimits, applied by a shell before it execs into path so the limits are
-// inherited by any local-isolation wrapper (sandbox-exec, bwrap) between the
-// shell and the target: rlimits survive exec, and none of those wrappers
-// resets them. It returns notes describing anything it could not enforce, in
-// the same style as the local-isolation degradation notes: a requested limit
-// that cannot be honored on this platform is recorded, never silently
-// dropped.
+// memory rlimit, applied by a shell before it execs into path so the limit
+// is inherited by any local-isolation wrapper (sandbox-exec, bwrap) between
+// the shell and the target: rlimits survive exec, and none of those
+// wrappers resets them. It returns notes describing anything it could not
+// enforce, in the same style as the local-isolation degradation notes: a
+// requested limit that cannot be honored on this platform is recorded,
+// never silently dropped.
+//
+// sandbox.max_processes is never enforced here (see processLimitNote): on
+// Linux RLIMIT_NPROC is scoped per user account rather than per process
+// tree and counts threads, so `ulimit -u` bounds the whole account's thread
+// count, not this run's process tree. Verified in a Debian container as an
+// unprivileged user: `bash -c 'ulimit -u 1; exec ./gobin'` crashes every Go
+// binary with `runtime: failed to create new OS thread ... fatal error:
+// newosproc`, because the Go runtime's own worker threads count against the
+// same limit as every other process on the account.
+//
+// When no clause is produced -- which is always true on a platform other
+// than Linux, since memory is the only rlimit this function ever wraps --
+// path and args are returned unchanged: callers that attach to a live PID
+// immediately after starting it (the macOS sampler) depend on that, because
+// a shell wrapper delays the target's exec past the moment the sampler
+// attaches.
 func WrapWithResourceLimits(ctx context.Context, limits ResourceLimits, path string, args []string) (string, []string, []string) {
-	procClause, procNote := processLimitClause(ctx, limits.MaxProcesses)
+	procNote := processLimitNote(limits.MaxProcesses)
 	memClause, memNote := memoryLimitClause(ctx, runtime.GOOS, limits.MaxMemoryBytes)
 	notes := appendNonEmpty(nil, procNote, memNote)
-	clauses := appendNonEmpty(nil, procClause, memClause)
-	if len(clauses) == 0 {
+	if memClause == "" {
 		return path, args, notes
 	}
-	script := strings.Join(clauses, "; ") + `; exec "$0" "$@"`
+	script := memClause + `; exec "$0" "$@"`
 	wrapped := append([]string{"-c", script, path}, args...)
 	return resourceLimitShell, wrapped, notes
+}
+
+// ProfilingResourceLimitNotes describes what a manifest's resource limits
+// ask for without wrapping a command in a memory rlimit. The Linux sampler
+// (perf record) must attach directly to the target's own process rather than
+// running it under a shell wrapper's rlimit, so a requested memory limit is
+// recorded here as not enforced while profiling instead of silently applied
+// or silently dropped.
+func ProfilingResourceLimitNotes(limits ResourceLimits) []string {
+	notes := appendNonEmpty(nil, processLimitNote(limits.MaxProcesses))
+	if limits.MaxMemoryBytes > 0 {
+		notes = append(notes, fmt.Sprintf("sandbox.max_memory_bytes=%d requested but not enforced while profiling: perf record runs the target unwrapped, so a candidate's peak memory during a Linux profiling sample is not bounded", limits.MaxMemoryBytes))
+	}
+	return notes
 }
 
 func appendNonEmpty(dst []string, values ...string) []string {
@@ -164,17 +194,39 @@ func appendNonEmpty(dst []string, values ...string) []string {
 // portable way to bound process memory without a container runtime.
 const resourceLimitShell = "/bin/bash"
 
-func processLimitClause(ctx context.Context, n int) (clause, note string) {
+// resourceLimitExitCode is what the shell built by memoryLimitClause exits
+// with when `ulimit -S -v` itself fails, before the target ever execs. A
+// run that exits with this code never ran the workload at all, so callers
+// must not confuse it with a workload exit code; see
+// isResourceLimitFailure.
+const resourceLimitExitCode = 125
+
+// processLimitNote explains why sandbox.max_processes is never translated
+// into an rlimit, on any platform: RLIMIT_NPROC is scoped per user account,
+// not per process tree, and on Linux it counts threads rather than
+// processes. Bounding it to the manifest's small values (every manifest in
+// targets/ sets 1) crashes the Go runtime itself, which starts more than
+// one OS thread before main runs -- verified in a Debian container as an
+// unprivileged user: `bash -c 'ulimit -u 1; exec ./gobin'` fails every time
+// with `runtime: failed to create new OS thread ... fatal error:
+// newosproc`. There is no unprivileged mechanism that bounds one run's
+// process tree without also risking the harness's own process, so the
+// request is recorded and left unenforced instead.
+func processLimitNote(n int) string {
 	if n <= 0 {
-		return "", ""
+		return ""
 	}
-	if !processLimitSupportedFn(ctx) {
-		return "", fmt.Sprintf("sandbox.max_processes=%d requested but RLIMIT_NPROC could not be set in this environment; not enforced for this run", n)
-	}
-	return fmt.Sprintf("ulimit -u %d 2>/dev/null", n),
-		fmt.Sprintf("sandbox.max_processes=%d enforced via RLIMIT_NPROC (ulimit -u), which Unix scopes per user account rather than per process tree; concurrent work under the same account shares this bound", n)
+	return fmt.Sprintf("sandbox.max_processes=%d requested but not enforced: RLIMIT_NPROC is scoped per user account (not per process tree) and on Linux it counts threads, so bounding it can crash any multi-threaded process -- including the Go runtime itself -- without bounding this run's process tree; not enforced on any platform", n)
 }
 
+// memoryLimitClause builds the shell clause that bounds a Linux run's
+// address space, and fails loudly rather than silently running unbounded:
+// a `2>/dev/null`-suppressed `ulimit -v` that fails leaves the target
+// running with no limit at all and no sign anything went wrong. `-S` sets
+// the soft limit only, so the shell that applies it (not just the exec'd
+// target) can still raise it back up to the hard limit if something needs
+// to; `|| exit resourceLimitExitCode` turns a failed ulimit into a distinct,
+// recognizable exit code instead of a silently-unbounded run.
 func memoryLimitClause(ctx context.Context, goos string, bytes int64) (clause, note string) {
 	if bytes <= 0 {
 		return "", ""
@@ -189,52 +241,52 @@ func memoryLimitClause(ctx context.Context, goos string, bytes int64) (clause, n
 	if kib < 1 {
 		kib = 1
 	}
-	return fmt.Sprintf("ulimit -v %d 2>/dev/null", kib),
-		fmt.Sprintf("sandbox.max_memory_bytes=%d enforced via RLIMIT_AS (ulimit -v)", bytes)
+	return fmt.Sprintf("ulimit -S -v %d || exit %d", kib, resourceLimitExitCode),
+		fmt.Sprintf("sandbox.max_memory_bytes=%d enforced via the soft RLIMIT_AS (ulimit -S -v)", bytes)
 }
 
-// processLimitSupportedFn/memoryLimitSupportedFn are package variables (not
-// plain functions) so tests can force the unsupported path without
-// depending on the real host's rlimit behavior, the same technique already
-// used for the bwrap capability probes below.
-var (
-	processLimitSupportedFn = probeProcessLimit
-	memoryLimitSupportedFn  = probeMemoryLimit
-)
-
-var (
-	procLimitProbeOnce sync.Once
-	procLimitProbeOK   bool
-)
-
-func probeProcessLimit(ctx context.Context) bool {
-	procLimitProbeOnce.Do(func() {
-		cmd := exec.CommandContext(ctx, resourceLimitShell, "-c", "ulimit -u 256 2>/dev/null")
-		procLimitProbeOK = cmd.Run() == nil
-	})
-	return procLimitProbeOK
-}
+// memoryLimitSupportedFn is a package variable (not a plain function) so
+// tests can force the unsupported path without depending on the real
+// host's rlimit behavior, the same technique already used for the bwrap
+// capability probes below.
+var memoryLimitSupportedFn = probeMemoryLimit
 
 var (
 	memLimitProbeOnce sync.Once
 	memLimitProbeOK   bool
 )
 
-func probeMemoryLimit(ctx context.Context) bool {
+// probeMemoryLimit runs its capability check against its own short-lived
+// context.Background() derivative rather than the caller's ctx: this probe
+// is cached once for the process (sync.Once), so if it ran under the first
+// caller's ctx, that caller cancelling or timing out its context while the
+// probe command is still starting would poison the cached result for every
+// later caller, on an unrelated request.
+func probeMemoryLimit(context.Context) bool {
 	memLimitProbeOnce.Do(func() {
-		cmd := exec.CommandContext(ctx, resourceLimitShell, "-c", "ulimit -v 1048576 2>/dev/null")
+		probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(probeCtx, resourceLimitShell, "-c", "ulimit -S -v 1048576 2>/dev/null")
 		memLimitProbeOK = cmd.Run() == nil
 	})
 	return memLimitProbeOK
 }
 
-// resetResourceLimitProbes clears the process-wide capability caches;
+// resetResourceLimitProbes clears the process-wide capability cache;
 // exported for tests in this package only via internal visibility.
 func resetResourceLimitProbes() {
-	procLimitProbeOnce = sync.Once{}
-	procLimitProbeOK = false
 	memLimitProbeOnce = sync.Once{}
 	memLimitProbeOK = false
+}
+
+// IsResourceLimitFailure reports whether a run's command path and exit code
+// indicate that WrapWithResourceLimits's memory-rlimit shell failed before
+// the workload ever started, rather than the workload itself exiting with
+// this code. Runner.Run uses it to turn that failure into a clear error
+// instead of reporting it as an ordinary (and coincidentally identical)
+// workload exit code.
+func IsResourceLimitFailure(commandPath string, exitCode int) bool {
+	return commandPath == resourceLimitShell && exitCode == resourceLimitExitCode
 }
 
 // localIsolationNotes explains when local isolation (bubblewrap on Linux)

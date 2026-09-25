@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,50 @@ func TestBuildUsesAllowlistedGoBuild(t *testing.T) {
 // Directory (ADR 0023) points the build's working directory at a nested Go
 // module inside the repository, for a target whose CLI keeps its own go.mod
 // (alecthomas/chroma's cmd/chroma is one).
+// TestBuildStripsCredentialsFromEnv is the fix for the audited leak: `go
+// build`/`go test`/benchstat run model-written candidate code with
+// OPENROUTER_API_KEY and AI_GATEWAY_API_KEY set on gotorque's own process
+// under --adk. Neither those two names nor any variable shaped like a
+// credential (_API_KEY/_TOKEN/_SECRET suffix, or containing PASSWORD) may
+// reach the child process; everything else the Go toolchain needs must
+// survive.
+func TestBuildStripsCredentialsFromEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "sk-live-secret")
+	t.Setenv("AI_GATEWAY_API_KEY", "gw-live-secret")
+	t.Setenv("SOME_SERVICE_TOKEN", "tok-secret")
+	t.Setenv("DB_PASSWORD", "hunter2")
+	t.Setenv("STRIPE_SECRET", "sk-stripe")
+	t.Setenv("GOTORQUE_TOOLCHAIN_TEST_MARKER", "kept")
+
+	repo := t.TempDir()
+	fake := &fakeExecutor{}
+	chain := New(Options{Executor: fake, GoPath: "go-test"})
+	output := filepath.Join(t.TempDir(), "target")
+	if _, err := chain.Build(context.Background(), BuildRequest{Repository: repo, Target: "./cmd/tool", Output: output}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.invocations) != 1 {
+		t.Fatalf("invocations = %d", len(fake.invocations))
+	}
+	env := fake.invocations[0].Env
+	for _, leaked := range []string{"OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "SOME_SERVICE_TOKEN", "DB_PASSWORD", "STRIPE_SECRET"} {
+		for _, kv := range env {
+			if strings.HasPrefix(kv, leaked+"=") {
+				t.Fatalf("build env leaked %s: %v", leaked, env)
+			}
+		}
+	}
+	found := false
+	for _, kv := range env {
+		if kv == "GOTORQUE_TOOLCHAIN_TEST_MARKER=kept" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a non-credential variable to survive, got %v", env)
+	}
+}
+
 func TestBuildRunsFromDirectory(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "cmd", "chroma"), 0o750); err != nil {

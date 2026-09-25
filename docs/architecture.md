@@ -1083,15 +1083,37 @@ available at all, ignoring what the manifest asked for);
 `sandbox.filesystem.write` drives whether writes stay confined to the
 sandbox; `sandbox.environment.allow`/`passthrough` drive which environment
 variables a workload process receives, so gotorque's own credentials (model
-provider API keys) never reach a target; `sandbox.max_processes`/
-`max_memory_bytes` are attempted via rlimits (`ulimit -u`/`-v`) wrapped
-around the command before any local-isolation exec wrapper, so the limit
-survives into whatever runs beneath it. See `docs/target-manifest.md`'s
-sandbox section for what each field enforces per platform and what it
-degrades to. The runner only launches a configured build artifact
-and rejects workload command paths that differ from it. Candidate changes are
-isolated in Git worktrees; accepted patches are copied to the campaign's
-`accepted/` directory and are never pushed anywhere by the harness.
+provider API keys) never reach a target. `sandbox.max_processes` is declared
+and validated but never enforced, on any platform: `RLIMIT_NPROC` counts
+threads on Linux and is scoped per user account rather than per process
+tree, so bounding it to the value every manifest sets (1) crashes the Go
+runtime's own thread creation rather than bounding a run's process tree.
+`sandbox.max_memory_bytes` is attempted via the soft `RLIMIT_AS`
+(`ulimit -S -v`, failing loudly with `|| exit 125` rather than silently
+running unbounded) wrapped around the command before any local-isolation
+exec wrapper, on Linux only, and only for a measured or discovery run —
+never while profiling, where the profiler attaches to or runs the target
+directly. When nothing is enforceable the command is returned completely
+unwrapped, which the macOS sampler depends on: it attaches to the target's
+PID immediately after starting it, and a shell wrapper in between delays
+the `exec` past that attach. See `docs/target-manifest.md`'s sandbox section
+for what each field enforces per platform and what it degrades to. The
+runner only launches a configured build artifact and rejects workload
+command paths that differ from it. Candidate changes are isolated in Git
+worktrees; accepted patches are copied to the campaign's `accepted/`
+directory and are never pushed anywhere by the harness.
+
+Separately, `internal/toolchain.Toolchain.run` — which every `go build`/
+`go test`/benchstat invocation goes through, including the test gate and
+measurement builds that compile and run a model-written candidate patch —
+strips any environment variable shaped like a credential
+(`OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, or any name ending in
+`_API_KEY`/`_TOKEN`/`_SECRET` or containing `PASSWORD`) from gotorque's own
+process environment before passing the rest through. That is a different
+leak from the sandbox's `environment.allow`/`passthrough`: it is not
+manifest-controlled, and it closes off candidate code compiled and executed
+as part of the test gate from reading a model provider credential that was
+only ever meant for gotorque's own calls to the model API.
 
 On Linux, isolation uses bubblewrap: read-only bind of `/`, writable sandbox
 root, and `--unshare-net` when network is denied. On macOS it uses
