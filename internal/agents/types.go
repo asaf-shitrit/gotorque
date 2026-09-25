@@ -164,6 +164,47 @@ type Target struct {
 	// FixKind names the mechanism Jev chose within the cause, when one stood
 	// out; Remedy is then that mechanism's, not the cause's generic one.
 	FixKind string `json:"fix_kind,omitempty"`
+	// Functions is set only for a throwaway_result target (ADR 0027): the
+	// callee's consuming callers, ranked, as a JSON-encoded []FunctionRef
+	// (EncodeFunctionSet/DecodeFunctionSet). It is a string, not []FunctionRef,
+	// so Target stays comparable with ==: planTarget, targetKey and their
+	// tests compare Target values directly, and a slice field would make that
+	// a compile error.
+	Functions string `json:"functions,omitempty"`
+}
+
+// FunctionRef names one function of a throwaway_result target's set, in the
+// path/receiver-qualified format internal/campaign/causes.go's funcName
+// produces, with its repository-relative "path.go:line" location.
+type FunctionRef struct {
+	Name     string `json:"name"`
+	Location string `json:"location"`
+}
+
+// EncodeFunctionSet and DecodeFunctionSet are Target.Functions' wire format:
+// a JSON array, kept as a string so Target stays a comparable struct. An
+// empty or unparseable string decodes to nil rather than erroring, since
+// Target's json tag already makes the field optional.
+func EncodeFunctionSet(fns []FunctionRef) string {
+	if len(fns) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(fns)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func DecodeFunctionSet(s string) []FunctionRef {
+	if s == "" {
+		return nil
+	}
+	var out []FunctionRef
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // OptimizerResult is one focused, reversible source candidate. Patch holds a
@@ -181,14 +222,23 @@ type Target struct {
 // imports, and turns the result into an ordinary unified diff before the rest
 // of the pipeline sees it. Patch takes precedence when both are set, and
 // remains the only transport when there is no target.
+//
+// FunctionSources is the throwaway_result transport (ADR 0027): with a
+// multi-function target (Target.Functions set), the optimizer returns one
+// whole declaration per function it changes, callee and callers together,
+// instead of one FunctionSource. Decoding is as lenient as every other list
+// field here: a single string decodes as a one-element list. FunctionSource
+// remains a fallback naming just the callee when FunctionSources is empty,
+// for an optimizer that ignores the plural field.
 type OptimizerResult struct {
-	Hypothesis     string   `json:"hypothesis"`
-	Patch          string   `json:"patch"`
-	FunctionSource string   `json:"function_source,omitempty"`
-	Imports        []string `json:"imports,omitempty"`
-	ExpectedEffect string   `json:"expected_effect"`
-	Risks          []string `json:"risks,omitempty"`
-	ValidationPlan []string `json:"validation_plan,omitempty"`
+	Hypothesis      string   `json:"hypothesis"`
+	Patch           string   `json:"patch"`
+	FunctionSource  string   `json:"function_source,omitempty"`
+	FunctionSources []string `json:"function_sources,omitempty"`
+	Imports         []string `json:"imports,omitempty"`
+	ExpectedEffect  string   `json:"expected_effect"`
+	Risks           []string `json:"risks,omitempty"`
+	ValidationPlan  []string `json:"validation_plan,omitempty"`
 }
 
 // ReviewerResult challenges a candidate before the policy engine sees it.
@@ -499,17 +549,19 @@ func (o *OptimizerResult) UnmarshalJSON(data []byte) error {
 	type alias OptimizerResult
 	aux := struct {
 		*alias
-		Patch          flexPatch   `json:"patch"`
-		FunctionSource flexText    `json:"function_source,omitempty"`
-		Imports        flexStrings `json:"imports,omitempty"`
-		Risks          flexStrings `json:"risks,omitempty"`
-		ValidationPlan flexStrings `json:"validation_plan,omitempty"`
+		Patch           flexPatch   `json:"patch"`
+		FunctionSource  flexText    `json:"function_source,omitempty"`
+		FunctionSources flexStrings `json:"function_sources,omitempty"`
+		Imports         flexStrings `json:"imports,omitempty"`
+		Risks           flexStrings `json:"risks,omitempty"`
+		ValidationPlan  flexStrings `json:"validation_plan,omitempty"`
 	}{alias: (*alias)(o)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	o.Patch = string(aux.Patch)
 	o.FunctionSource = string(aux.FunctionSource)
+	o.FunctionSources = aux.FunctionSources
 	o.Imports = aux.Imports
 	o.Risks = aux.Risks
 	o.ValidationPlan = aux.ValidationPlan

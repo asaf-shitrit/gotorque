@@ -98,7 +98,28 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	}
 	result := analystResult(verdicts, req.Campaign.Objective)
 	result.AdditionalChecks = append(result.AdditionalChecks, skipped...)
+	addThrowawayTargets(req.Campaign.Repository, sites, &result)
 	return result, nil
+}
+
+// addThrowawayTargets runs the code-only throwaway_result signal (ADR 0027)
+// over the same hot functions Jev classified and puts every target it fires
+// on first, ahead of every Jev-ranked target: the evidence is structural and
+// deterministic, not a probability estimate, so it does not wait its turn in
+// Jev's tiers (ADR 0018). It is never asked of Jev and never touches a
+// siteVerdict, so it cannot reach Jev's state or baseline.
+func addThrowawayTargets(repo string, sites []hotFunction, result *agents.AnalystResult) {
+	tw := throwawayTargets(repo, sites)
+	if len(tw) == 0 {
+		return
+	}
+	result.Targets = append(tw, result.Targets...)
+	remedies := make([]string, 0, len(tw))
+	for _, t := range tw {
+		remedies = append(remedies, t.Remedy)
+	}
+	result.CandidateHypotheses = append(remedies, result.CandidateHypotheses...)
+	result.HotPaths = append(result.HotPaths, throwawayExcerptPaths(tw)...)
 }
 
 func (a causeAnalyst) classify(ctx context.Context, site hotFunction) siteVerdict {
