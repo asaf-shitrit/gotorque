@@ -96,6 +96,14 @@ func importName(spec *ast.ImportSpec) string {
 	if err != nil || p == "C" {
 		return ""
 	}
+	return packageNameForPath(p)
+}
+
+// packageNameForPath is importName's path guess, factored out so
+// multi_function_source.go's per-file import placement (ADR 0027) can guess a
+// name for a path that has no ast.ImportSpec yet -- one the optimizer's
+// imports list named but no file has added.
+func packageNameForPath(p string) string {
 	elem := path.Base(p)
 	if majorVersion.MatchString(elem) {
 		elem = path.Base(path.Dir(p))

@@ -108,9 +108,10 @@ single string is accepted where the list is expected, exactly as `imports` alrea
 4. A declaration whose name exists elsewhere in the package but outside the set is a rejection: it
    would let the optimizer rewrite a function the shape check never agreed to confine.
 5. Per file, edits (splices over existing declarations, or an insertion after the callee) are applied
-   as a byte-range rewrite processed in descending offset order (`applyEdits`), `addImports` runs
-   against the callee's own file only, and `dropOrphanedImports` (ADR 0022, unmodified) runs against
-   every touched file.
+   as a byte-range rewrite processed in descending offset order (`applyEdits`). `importsForFile`
+   (added 2026-09-26, see Addendum) then picks, out of the optimizer's one shared `imports` list, only
+   the paths that file's own new code references, and `addImports` (ADR 0022, unmodified) adds those;
+   `dropOrphanedImports` (ADR 0022, unmodified) runs against every touched file regardless.
 6. Each changed file is diffed against the base revision (`diffAgainstBase`, reused) and the results
    concatenated into one multi-file unified diff.
 
@@ -200,9 +201,10 @@ budget they would cost, or a second structural signal), is future work this ADR 
 `function_sources` inherits `function_source`'s risk surface: a misnamed declaration, a parse
 failure, or a declaration for a function outside the set is a pre-build rejection (ADR 0017's retry
 policy), same as before, just now with more ways to name the wrong thing across more files.
-`addImports` still only reaches the callee's own file; a caller in a different file that needs a new
-import of its own is not supported by this prototype and would fail to build, caught by the ordinary
-build gate one step later, same as an unsupported import always has been.
+A caller in a different file that needs a new import of its own is now supported (see the 2026-09-26
+addendum below); what remains unsupported is a *third-party* import a caller needs that the optimizer
+did not list in `imports` — that still falls through to the build gate, same as an unsupported import
+always has for the single-function path.
 
 Method matching by name alone (not by receiver type) can conflate two unrelated methods that happen
 to share a name across different receivers in the same package directory — a false-positive risk this
@@ -212,3 +214,48 @@ ADR accepts and documents rather than resolves, since resolving it needs type in
 ## Addendum (2026-09-26): the remedy must switch a caller
 
 The first live dasel campaign on this prototype chose the `UnpackKinds` target with 11 consuming callers, and the optimizer rewrote only `UnpackKinds`' internals. That removes nothing the callers drop, and it measured +0.41%, inconclusive. The target then counted as tried. The shape check now holds a `throwaway_result` patch to its remedy: a patch that changes none of the set's callers is rejected before build as unmeasured. Like the other remedy rules (ADR 0017), the reason goes back to the optimizer with the target still open.
+
+## Addendum (2026-09-26): put each import in the file that needs it
+
+The decision above (step 5) had `addImports` run against the callee's own file only, because that
+was the only file `imports` was ever tried against for a function-set target. In practice a
+throwaway_result remedy routinely switches a caller in a *different* file to something that needs a
+new package — `strconv`, `slices` — that the callee itself never touches. The callee's file got the
+import; the caller's file, which is what actually used it, did not, and the candidate failed the build
+with an undefined name. `dropOrphanedImports` already ran per file; only the adding half was
+single-file.
+
+`internal/campaign/multi_function_source.go` gains `importsForFile(fullPath, data, wanted)`: for a
+given touched file's post-splice content, it reads `wanted` (still one shared list on
+`OptimizerResult` — the wire format does not change) down to the paths that file's own code actually
+references, using the same "unresolved selector base" reading (`packageRefs`, `unused_imports.go`)
+`dropOrphanedImports` and the shape check's `checkImports` already use, so a shadowing local is never
+mistaken for a package and an import a file already has is never added twice. `spliceOneFile` now
+calls it for every touched file, not only the callee's — the only change to step 5's edit order.
+
+**Leniency: infer an unlisted standard-library import.** `importsForFile` also adds a path the
+optimizer never listed when a touched file references a name that resolves, unambiguously, to a
+standard-library package: `stdlibImportPath` is a fixed table built from `checkImports`'s own
+`standardPackages` set (`bufio`, `bytes`, `cmp`, `errors`, `fmt`, `io`, `maps`, `math`, `os`, `slices`,
+`sort`, `strconv`, `strings`, `sync`, `unicode`, `utf8` via `unicode/utf8`), the same names the shape
+check already treats as an unambiguous missing-import signal in a hand-written patch. This is judged
+sound because it is a lookup, not a guess: every entry's import path is fixed and known in advance, it
+never fires on a name outside that table, and it can therefore never propose a third-party path (a
+package named `foo` could live at any of a thousand module paths; nothing here attempts that). Keeping
+it in the same table `checkImports` uses also means the shape check and this transport can never
+disagree about which missing imports are safe to infer. `imports` empty and a caller newly using
+`strconv` is exactly the case this closes: without it, that caller would need the optimizer to name
+`strconv` explicitly even though nothing about the wire format changed to make that reliable.
+
+The single-function `function_source` path (`buildFunctionSourceDiff`, `addImports`,
+`missingImports`) is untouched: it has exactly one file to add to, so there is nothing for
+`importsForFile` to improve there, and this addendum does not give it the standard-library leniency
+either — extending that is future work, not something this change needed.
+
+`internal/campaign/multi_function_source_test.go` adds three cases:
+`TestMultiFunctionSourceAddsImportToTheFileThatNeedsIt` (a caller in a second file newly uses
+`strconv`, listed in `imports`; the diff applies, `go build ./...` succeeds, and the callee's file does
+not gain the import), `TestMultiFunctionSourceInfersStdlibImportWithNoImportsListed` (the same case
+with `imports` empty, relying on the stdlib inference), and
+`TestMultiFunctionSourceNeverAddsAnUnusedImport` (an import listed but referenced by no touched file
+is added nowhere).

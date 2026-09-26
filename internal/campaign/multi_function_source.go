@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"example.com/gotorque/internal/agents"
@@ -176,12 +177,13 @@ func applyEdits(original []byte, edits []sourceEdit) []byte {
 // buildOneFileDiff replaces every known declaration in rel and appends every
 // wholly new one after the callee's declaration (rel must be the callee's own
 // file for a new declaration to be valid; buildFileEdits enforces that), then
-// runs the same import bookkeeping buildFunctionSourceDiff uses: imports is
-// added only to the callee's own file (the only file the optimizer's brief
-// names imports for), and dropOrphanedImports runs against every touched
-// file. changed is false, with no error, when rel's content after every edit
-// is byte-identical to its original -- a file diffAgainstBase would refuse
-// rather than skip.
+// runs the same import bookkeeping buildFunctionSourceDiff uses, per file:
+// importsForFile picks, out of the optimizer's one shared imports list, only
+// the paths rel's own new code actually references (ADR 0027 addendum,
+// 2026-09-26 -- a rewritten caller in a file of its own used to get none of
+// them), and dropOrphanedImports runs against every touched file. changed is
+// false, with no error, when rel's content after every edit is byte-identical
+// to its original -- a file diffAgainstBase would refuse rather than skip.
 func (e *Engine) buildOneFileDiff(ctx context.Context, rel, calleeFunction, calleeRel string, decls []parsedFunctionSource, imports []string) (diff string, changed bool, err error) {
 	fullPath := filepath.Join(e.state.Repository, filepath.FromSlash(rel))
 	original, err := os.ReadFile(fullPath)
@@ -217,8 +219,12 @@ func spliceOneFile(fullPath, rel, calleeFunction, calleeRel string, original []b
 		return nil, false, nil
 	}
 	updated := applyEdits(original, edits)
-	if rel == calleeRel && len(imports) > 0 {
-		updated, err = addImports(fullPath, updated, imports)
+	needed, err := importsForFile(fullPath, updated, imports)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(needed) > 0 {
+		updated, err = addImports(fullPath, updated, needed)
 		if err != nil {
 			return nil, false, err
 		}
@@ -281,4 +287,73 @@ func buildFileEdits(fset *token.FileSet, file *ast.File, rel, calleeFunction, ca
 	}
 	edits = append(edits, sourceEdit{start: at, end: at, text: b.String()})
 	return edits, nil
+}
+
+// importsForFile is the subset of wanted, plus any leniently inferred
+// standard-library import (stdlibImportPath), that data's spliced code
+// actually references and does not already import: put each needed import in
+// exactly the files that need it (ADR 0027 addendum, 2026-09-26), rather than
+// only in the callee's own file. A package name is read from data's
+// unresolved selector bases (packageRefs, unused_imports.go) -- the same
+// reading dropOrphanedImports and the shape check's checkImports already use
+// -- so a shadowing local is never mistaken for a package, and a name a file
+// already imports is never added twice.
+func importsForFile(fullPath string, data []byte, wanted []string) ([]string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, fullPath, data, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("%s does not parse after splicing its function(s): %w", filepath.Base(fullPath), err)
+	}
+	have := importedPaths(file)
+	refs := packageRefs(file)
+	added := map[string]bool{}
+	var needed []string
+	consider := func(imp string) {
+		imp = strings.TrimSpace(imp)
+		if imp == "" || have[imp] || added[imp] {
+			return
+		}
+		if name := packageNameForPath(imp); name != "" && refs[name] {
+			added[imp] = true
+			needed = append(needed, imp)
+		}
+	}
+	for _, imp := range wanted {
+		consider(imp)
+	}
+	for name := range refs {
+		if imp, ok := stdlibImportPath(name); ok {
+			consider(imp)
+		}
+	}
+	slices.Sort(needed)
+	return needed, nil
+}
+
+// importedPaths is every import path data's import block already has.
+func importedPaths(file *ast.File) map[string]bool {
+	have := map[string]bool{}
+	for _, spec := range file.Imports {
+		if p, err := strconv.Unquote(spec.Path.Value); err == nil {
+			have[p] = true
+		}
+	}
+	return have
+}
+
+// stdlibImportPath maps a standard-library package name to its import path,
+// for the same names shape.go's checkImports (standardPackages) already
+// treats as an unambiguous missing-import signal in a hand-written patch:
+// reusing that set here keeps the shape check and this transport agreeing on
+// what a missing standard-library import looks like. It is a fixed table, not
+// a guess -- a name outside it (any third-party package) is left alone, for
+// the optimizer's own imports list to name or the build gate to catch.
+func stdlibImportPath(name string) (string, bool) {
+	if !standardPackages[name] {
+		return "", false
+	}
+	if name == "utf8" {
+		return "unicode/utf8", true
+	}
+	return name, true
 }

@@ -137,3 +137,140 @@ func TestBuildMultiFunctionSourceDiffRejectsANameOutsideTheSet(t *testing.T) {
 	require.ErrorContains(t, err, "Double")
 	require.ErrorContains(t, err, "outside the throwaway_result set")
 }
+
+// throwawayImportFixtureRepo is throwawayFixtureRepo's shape, except b.go's
+// caller does not yet need any import -- the tests below rewrite it to need
+// strconv, in a file distinct from the callee's own (a.go).
+func throwawayImportFixtureRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	aSrc := `package fixture
+
+type Box struct{ v int }
+
+func NewBox(v int) *Box { return &Box{v: v} }
+
+type Store struct{ x int }
+
+func (s *Store) Get() *Box {
+	return NewBox(s.x)
+}
+`
+	bSrc := `package fixture
+
+func (s *Store) Describe() int {
+	return s.Get().v
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module test.local/fixture\n\ngo 1.26\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte(aSrc), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "b.go"), []byte(bSrc), 0o600))
+	git(t, repo, "init")
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial")
+	return repo
+}
+
+// throwawayImportTarget and throwawayImportSources are shared by the two
+// per-file import tests below: Describe (b.go) is rewritten to call
+// strconv.Itoa, a package a.go's callee never needs.
+func throwawayImportTarget() agents.Target {
+	return agents.Target{
+		Location: "a.go:9",
+		Function: "(*Store).Get",
+		Cause:    causeThrowawayResult,
+		Kind:     agents.TargetFunctionSet,
+		Callers: []agents.FunctionRef{
+			{Name: "(*Store).Describe", Location: "b.go:3"},
+		},
+	}
+}
+
+func throwawayImportSources() []string {
+	return []string{
+		"func (s *Store) Get() *Box {\n\treturn NewBox(s.x)\n}",
+		"func (s *Store) Describe() int {\n\treturn len(strconv.Itoa(s.Get().v))\n}",
+	}
+}
+
+// TestMultiFunctionSourceAddsImportToTheFileThatNeedsIt: a caller in a file
+// other than the callee's newly uses strconv, listed in imports. The diff
+// must add the import to b.go, not a.go, and the result must build.
+func TestMultiFunctionSourceAddsImportToTheFileThatNeedsIt(t *testing.T) {
+	repo := throwawayImportFixtureRepo(t)
+	engine := newFuncSourceTestEngine(repo)
+
+	diff, err := engine.buildMultiFunctionSourceDiff(context.Background(), throwawayImportTarget(), throwawayImportSources(), []string{"strconv"})
+	require.NoError(t, err)
+
+	patchPath := filepath.Join(t.TempDir(), "candidate.diff")
+	require.NoError(t, os.WriteFile(patchPath, []byte(diff), 0o600))
+	cmd := exec.CommandContext(t.Context(), "git", "apply", patchPath)
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git apply: %s\ndiff:\n%s", out, diff)
+
+	aContent, err := os.ReadFile(filepath.Join(repo, "a.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(aContent), `"strconv"`)
+
+	bContent, err := os.ReadFile(filepath.Join(repo, "b.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(bContent), `"strconv"`)
+
+	buildCmd := exec.CommandContext(t.Context(), "go", "build", "./...")
+	buildCmd.Dir = repo
+	buildOut, err := buildCmd.CombinedOutput()
+	require.NoErrorf(t, err, "go build: %s", buildOut)
+}
+
+// TestMultiFunctionSourceInfersStdlibImportWithNoImportsListed: the same
+// rewrite, but the optimizer sent no imports at all. The deterministic
+// standard-library inference (stdlibImportPath) must still add strconv to
+// b.go so the candidate builds.
+func TestMultiFunctionSourceInfersStdlibImportWithNoImportsListed(t *testing.T) {
+	repo := throwawayImportFixtureRepo(t)
+	engine := newFuncSourceTestEngine(repo)
+
+	diff, err := engine.buildMultiFunctionSourceDiff(context.Background(), throwawayImportTarget(), throwawayImportSources(), nil)
+	require.NoError(t, err)
+
+	patchPath := filepath.Join(t.TempDir(), "candidate.diff")
+	require.NoError(t, os.WriteFile(patchPath, []byte(diff), 0o600))
+	cmd := exec.CommandContext(t.Context(), "git", "apply", patchPath)
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git apply: %s\ndiff:\n%s", out, diff)
+
+	buildCmd := exec.CommandContext(t.Context(), "go", "build", "./...")
+	buildCmd.Dir = repo
+	buildOut, err := buildCmd.CombinedOutput()
+	require.NoErrorf(t, err, "go build: %s", buildOut)
+}
+
+// TestMultiFunctionSourceNeverAddsAnUnusedImport: an import listed but
+// referenced by no touched file's new code is added nowhere.
+func TestMultiFunctionSourceNeverAddsAnUnusedImport(t *testing.T) {
+	repo := throwawayFixtureRepo(t)
+	engine := newFuncSourceTestEngine(repo)
+
+	target := agents.Target{
+		Location: "a.go:9",
+		Function: "(*Store).Get",
+		Cause:    causeThrowawayResult,
+		Kind:     agents.TargetFunctionSet,
+		Callers: []agents.FunctionRef{
+			{Name: "(*Store).IsPositive", Location: "b.go:3"},
+			{Name: "(*Store).Double", Location: "b.go:7"},
+		},
+	}
+	sources := []string{
+		"func (s *Store) Get() *Box {\n\treturn NewBox(s.x)\n}",
+		"func (s *Store) IsPositive() bool {\n\treturn s.Get().v > 0\n}",
+		"func (s *Store) Double() int {\n\treturn s.Get().v * 2\n}",
+	}
+
+	diff, err := engine.buildMultiFunctionSourceDiff(context.Background(), target, sources, []string{"strconv"})
+	require.NoError(t, err)
+	require.NotContains(t, diff, "strconv")
+}
