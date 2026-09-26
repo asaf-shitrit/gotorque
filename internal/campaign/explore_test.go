@@ -80,9 +80,11 @@ type modeEvaluator struct {
 	modes map[string]float64
 	state map[string]string
 	err   error
+	calls int
 }
 
 func (m *modeEvaluator) Evaluate(_ context.Context, req jev.Request) (jev.Response, error) {
+	m.calls++
 	m.state, _ = req.State.(map[string]string)
 	answers := map[string]jev.Answer{}
 	for id := range req.Questions {
@@ -109,6 +111,26 @@ func TestExploreKeepsTheLikeliestModesThatChangeTheOutput(t *testing.T) {
 	require.Len(t, engine.state.DiscoveryWorkloads, 3)
 	require.Contains(t, RenderMarkdown(engine.State()), "- Explorer: the target's own options, judged by Jev (`typesafe-ai/jev`); discovery also sampled: fixture --upper (Jev mode 0.97); fixture --reverse (Jev mode 0.90); fixture --count (Jev mode 0.80)")
 	require.Contains(t, evaluator.state["help"], "print in upper case", "the help text comes from the target's own --help")
+}
+
+// TestExploreIsCachedAcrossRepeatedCycles: discovery re-runs each cycle at
+// the same base revision, so the target's command and --help text, and the
+// options declared against them, are identical every time until a candidate
+// is accepted. Wrapping the explore evaluator in the campaign cache (ADR
+// 0028, SetADK/attachADK -> noteAnalyst) must turn a second cycle's rankModes
+// request into a cache hit instead of a second call to Jev.
+func TestExploreIsCachedAcrossRepeatedCycles(t *testing.T) {
+	evaluator := &modeEvaluator{modes: map[string]float64{"--upper": 0.97}}
+	engine := optionsEngine(t, evaluator)
+	seed := engine.state.Manifest.Workloads.Seeds[0]
+	seed.Args = []string{"fixture.txt"}
+
+	first := engine.exploreWorkloads(context.Background(), seed)
+	require.Equal(t, 1, evaluator.calls)
+	second := engine.exploreWorkloads(context.Background(), seed)
+	require.Equal(t, 1, evaluator.calls, "an identical second cycle must be served from the cache")
+	require.Equal(t, first, second)
+	require.Equal(t, JevCacheSnapshot{Hits: 1, Misses: 1}, engine.state.JevCache["explorer"])
 }
 
 func TestExploreDoesNothingWithoutJev(t *testing.T) {

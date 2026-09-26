@@ -150,6 +150,7 @@ func RenderMarkdown(state State) string {
 	writeDegradedRoles(&b, state)
 	writeCandidateExperiments(&b, state)
 	writeTokenUsage(&b, state)
+	writeJevCache(&b, state)
 	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q%s\n```\n", state.Repository, state.ManifestPath, tradeoffFlags(state.Tradeoff))
 	return b.String()
 }
@@ -456,6 +457,27 @@ func writeTokenUsage(b *strings.Builder, state State) {
 	for _, role := range roles {
 		usage := state.TokenUsage[role]
 		fmt.Fprintf(b, "| `%s` | %d | %d | %d | %d |\n", role, usage.Requests, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+	}
+	b.WriteString("\n")
+}
+
+// writeJevCache reports how many of this campaign's Jev requests were
+// answered from the cache rather than the network (ADR 0028): a role missing
+// from the map ran without a Jev evaluator, or cached nothing because none of
+// its requests repeated.
+func writeJevCache(b *strings.Builder, state State) {
+	if len(state.JevCache) == 0 {
+		return
+	}
+	b.WriteString("## Jev cache\n\n| Role | Hits | Misses |\n|---|---:|---:|\n")
+	roles := make([]string, 0, len(state.JevCache))
+	for role := range state.JevCache {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	for _, role := range roles {
+		snapshot := state.JevCache[role]
+		fmt.Fprintf(b, "| `%s` | %d | %d |\n", role, snapshot.Hits, snapshot.Misses)
 	}
 	b.WriteString("\n")
 }

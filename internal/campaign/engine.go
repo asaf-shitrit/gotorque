@@ -227,6 +227,9 @@ type State struct {
 	BaselineTestPasses []string `json:"baseline_test_passes,omitempty"`
 	// TokenUsage holds per-role model token totals collected during ADK runs.
 	TokenUsage map[string]RoleUsageSnapshot `json:"token_usage,omitempty"`
+	// JevCache holds per-role Jev cache hit/miss counts across this campaign's
+	// requests (ADR 0028), keyed the same way as TokenUsage.
+	JevCache map[string]JevCacheSnapshot `json:"jev_cache,omitempty"`
 }
 
 type Event struct {
@@ -419,12 +422,22 @@ func (e *Engine) noteAnalyst(roleSet *agents.Set) {
 	}
 	if roleSet.CauseEvaluator != nil {
 		e.state.Analyst = AnalystJev
+		// The analyst re-runs every cycle against the same base revision and,
+		// until a candidate is accepted, the same hot functions: caching its
+		// answers is what turns a 16-request cycle into zero requests on every
+		// cycle after the first (ADR 0028).
+		roleSet.CauseEvaluator = cacheEvaluator(e, jevCacheRoleAnalyst, roleSet.CauseEvaluator)
 	}
 	if roleSet.ReviewEvaluator != nil {
 		e.state.Reviewer = ReviewerJev
+		// Not cached: the reviewer's state carries the candidate's own patch
+		// text, which differs by construction from one candidate to the next.
 	}
 	if roleSet.ExploreEvaluator != nil {
 		e.state.Explorer = ExplorerJev
+		// The explorer asks about the target's command and --help text, which
+		// do not change between cycles at the same base revision either.
+		roleSet.ExploreEvaluator = cacheEvaluator(e, jevCacheRoleExplorer, roleSet.ExploreEvaluator)
 	}
 }
 

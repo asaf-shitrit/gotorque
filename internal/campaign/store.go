@@ -8,14 +8,16 @@ import (
 	"path/filepath"
 	"time"
 
+	"example.com/gotorque/internal/jev"
 	bolt "go.etcd.io/bbolt"
 	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 var (
-	stateBucket = []byte("state")
-	eventBucket = []byte("events")
-	stateKey    = []byte("campaign")
+	stateBucket    = []byte("state")
+	eventBucket    = []byte("events")
+	jevCacheBucket = []byte("jev_cache")
+	stateKey       = []byte("campaign")
 )
 
 type Store struct{ db *bolt.DB }
@@ -43,7 +45,10 @@ func OpenStore(path string) (*Store, error) {
 		if _, err := tx.CreateBucketIfNotExists(stateBucket); err != nil {
 			return err
 		}
-		_, err := tx.CreateBucketIfNotExists(eventBucket)
+		if _, err := tx.CreateBucketIfNotExists(eventBucket); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(jevCacheBucket)
 		return err
 	}); err != nil {
 		_ = db.Close()
@@ -88,6 +93,36 @@ func (s *Store) Append(event Event) error {
 		key := []byte(fmt.Sprintf("%020d", sequence))
 		return bucket.Put(key, data)
 	})
+}
+
+// JevCacheGet returns a previously cached Jev response for the given digest
+// (see jev.Digest), keyed by request rather than by role: a state and
+// question set the analyst and, say, a resumed campaign both build the same
+// way answers identically either way. A miss is reported by ok == false with
+// a nil error.
+func (s *Store) JevCacheGet(digest string) (jev.Response, bool, error) {
+	var resp jev.Response
+	found := false
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(jevCacheBucket).Get([]byte(digest))
+		if data == nil {
+			return nil
+		}
+		found = true
+		return json.Unmarshal(data, &resp)
+	})
+	return resp, found, err
+}
+
+// JevCachePut persists resp under digest. Callers must never call this for a
+// failed or partial response: a cached error would deny every later request
+// the retry that might have succeeded.
+func (s *Store) JevCachePut(digest string, resp jev.Response) error {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(jevCacheBucket).Put([]byte(digest), data) })
 }
 
 func (s *Store) Events() ([]Event, error) {
