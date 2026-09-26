@@ -86,7 +86,8 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	verdicts := make([]siteVerdict, 0, len(sites))
 	classified := 0
 	for _, site := range sites {
-		verdict := a.chooseKinds(ctx, flagWithVetoes(req.Campaign.Repository, a.classify(ctx, site)))
+		verdict, answers := a.classify(ctx, site)
+		verdict = chooseKinds(flagWithVetoes(req.Campaign.Repository, verdict), answers)
 		if verdict.Problem == "" {
 			classified++
 		}
@@ -101,40 +102,55 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	return result, nil
 }
 
-func (a causeAnalyst) classify(ctx context.Context, site hotFunction) siteVerdict {
-	resp, err := a.evaluator.Evaluate(ctx, jev.Request{State: jev.SiteState(site.Path, site.Source), Questions: jev.Questions()})
+// combinedQuestions asks the 7 cause questions and the 9 fix-kind questions
+// in one request per site (ADR 0028): TypeSafe's docs and this package's own
+// replay agree that an answer does not move when other questions join the
+// request, so nothing is lost by always asking every kind question and
+// reading the ones a flagged cause actually needs. The two sets never share a
+// question id (causes are named "alloc", "string_build", ...; kinds
+// "sb_builder", "al_size_hint", ...), so merging them cannot collide. The
+// digests in baseline.go still hash Questions() and KindQuestions()
+// separately, so this merge does not touch either baseline.
+func combinedQuestions() map[string]jev.Question {
+	questions := jev.Questions()
+	for id, q := range jev.KindQuestions() {
+		questions[id] = q
+	}
+	return questions
+}
+
+// classify asks every cause and fix-kind question about the site in one
+// request and ranks the cause answers. It also returns the raw answers so the
+// caller can read the fix-kind ones without a second round trip.
+func (a causeAnalyst) classify(ctx context.Context, site hotFunction) (siteVerdict, map[string]jev.Answer) {
+	resp, err := a.evaluator.Evaluate(ctx, jev.Request{State: jev.SiteState(site.Path, site.Source), Questions: combinedQuestions()})
 	if err != nil {
-		return siteVerdict{Site: site, Problem: err.Error()}
+		return siteVerdict{Site: site, Problem: err.Error()}, nil
 	}
 	// Jev bills input tokens only; recording them under the analyst role puts
 	// its requests in the report's usage table beside the model roles.
 	a.recordUsage(resp.Usage)
 	scores, err := jev.Rank(resp.Answers)
 	if err != nil {
-		return siteVerdict{Site: site, Problem: err.Error()}
+		return siteVerdict{Site: site, Problem: err.Error()}, nil
 	}
-	return siteVerdict{Site: site, Scores: scores, Flagged: jev.Flagged(scores)}
+	return siteVerdict{Site: site, Scores: scores, Flagged: jev.Flagged(scores)}, resp.Answers
 }
 
-// chooseKinds asks the fix-kind questions for a site with a flagged cause that
-// has kinds, in one request over the same state the causes were asked about,
-// and keeps each cause's kind that clears jev.KindGate. A failed request, or no
-// kind standing out, leaves the cause's generic remedy: the answer narrows the
-// optimizer's instruction and nothing else.
-func (a causeAnalyst) chooseKinds(ctx context.Context, v siteVerdict) siteVerdict {
+// chooseKinds reads, from the answers classify already collected, the kind
+// that stands out within each flagged cause that has kinds, and keeps it when
+// it clears jev.KindGate. A missing or inconclusive answer leaves the cause's
+// generic remedy: the answer narrows the optimizer's instruction and nothing
+// else.
+func chooseKinds(v siteVerdict, answers map[string]jev.Answer) siteVerdict {
 	if v.Problem != "" || !slices.ContainsFunc(v.Flagged, func(s jev.Score) bool { return jev.HasKinds(s.Cause) }) {
 		return v
 	}
-	resp, err := a.evaluator.Evaluate(ctx, jev.Request{State: jev.SiteState(v.Site.Path, v.Site.Source), Questions: jev.KindQuestions()})
-	if err != nil {
-		return v
-	}
-	a.recordUsage(resp.Usage)
 	for _, s := range v.Flagged {
 		if !jev.HasKinds(s.Cause) {
 			continue
 		}
-		kind, scores, ok, err := jev.ChooseKind(s.Cause, resp.Answers)
+		kind, scores, ok, err := jev.ChooseKind(s.Cause, answers)
 		if err != nil {
 			continue
 		}

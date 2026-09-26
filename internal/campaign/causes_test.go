@@ -191,10 +191,10 @@ func TestCauseAnalystTurnsRankedAnswersIntoAnalysis(t *testing.T) {
 	result, err := analyst.AnalyzeCauses(context.Background(), causeRequest(repo, "fixture.go:14", "fixture.go:19", "fixture.go:24", "fixture.go:8"))
 	require.NoError(t, err)
 
-	// Three cause requests, and one fix-kind request for write, whose
-	// flagged allocation cause has kinds; no kind stands out, so its remedy
-	// stays the generic one.
-	require.Equal(t, 4, evaluator.calls)
+	// One request per site, cause and fix-kind questions batched together
+	// (ADR 0028): write's flagged allocation cause has kinds, but no kind
+	// stands out among its answers, so its remedy stays the generic one.
+	require.Equal(t, 3, evaluator.calls)
 	require.Equal(t, []string{"fixture.go:14", "fixture.go:19", "fixture.go:24"}, []string{result.HotPaths[0].Location, result.HotPaths[1].Location, result.HotPaths[2].Location})
 	require.Contains(t, result.HotPaths[0].Evidence, "unbuffered_io")
 	require.InDelta(t, 0.9, result.HotPaths[0].Confidence, 1e-9)
@@ -218,8 +218,8 @@ func TestCauseAnalystTurnsRankedAnswersIntoAnalysis(t *testing.T) {
 	require.Contains(t, result.AdditionalChecks[1], "fixture.go:8: not classified")
 
 	recorded := usage.Snapshot()[string(agents.RoleAnalyst)]
-	require.Equal(t, int64(4), recorded.Requests, "the fix-kind request is billed under the analyst too")
-	require.Equal(t, int64(3600), recorded.PromptTokens)
+	require.Equal(t, int64(3), recorded.Requests, "one batched request per site, not one per site plus a fix-kind request")
+	require.Equal(t, int64(2700), recorded.PromptTokens)
 }
 
 func TestCauseAnalystKeepsGoingWhenOneSiteFails(t *testing.T) {
@@ -237,6 +237,29 @@ func TestCauseAnalystFailsWhenItClassifiesNothing(t *testing.T) {
 	_, err := causeAnalyst{evaluator: evaluator}.AnalyzeCauses(context.Background(), causeRequest(repo, "fixture.go:14"))
 	require.ErrorContains(t, err, "classified none of 1 hot functions")
 	require.ErrorContains(t, err, "redundant")
+}
+
+// TestCachedAnalystMakesNoJevCallsOnARepeatedCycle: the analyst re-runs every
+// cycle against the same base revision and, until a candidate is accepted,
+// the same hot functions (ADR 0028), so wrapping its evaluator in the campaign
+// cache must turn the second identical cycle into zero calls.
+func TestCachedAnalystMakesNoJevCallsOnARepeatedCycle(t *testing.T) {
+	repo := writeCauseFixture(t)
+	engine := newCacheTestEngine(t)
+	evaluator := &scriptedEvaluator{answers: map[string]map[jev.Cause]float64{"write": {jev.CauseUnbufferedIO: 0.9}}}
+	cached := cacheEvaluator(engine, "analyst", evaluator)
+	analyst := causeAnalyst{evaluator: cached, usage: agents.NewUsageCollector()}
+	req := causeRequest(repo, "fixture.go:14")
+
+	first, err := analyst.AnalyzeCauses(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, 1, evaluator.calls)
+
+	second, err := analyst.AnalyzeCauses(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, 1, evaluator.calls, "the second cycle must be served entirely from the cache")
+	require.Equal(t, first, second)
+	require.Equal(t, JevCacheSnapshot{Hits: 1, Misses: 1}, engine.state.JevCache["analyst"])
 }
 
 func TestCauseAnalystWithNothingToClassify(t *testing.T) {
@@ -383,17 +406,13 @@ func TestAClearFixKindNarrowsTheRemedy(t *testing.T) {
 	require.Equal(t, jev.CauseAlloc.Remedy("(*box).get", "fixture.go:19"), get.Remedy)
 }
 
-// TestAFailedKindRequestKeepsTheGenericRemedy: the fix-kind request is an
-// extra; its failure changes nothing else about the analysis.
-func TestAFailedKindRequestKeepsTheGenericRemedy(t *testing.T) {
+// TestMissingKindAnswersKeepTheGenericRemedy: with cause and fix-kind
+// questions batched into one request (ADR 0028), a fix-kind answer can only
+// go missing if the response itself is missing it; that leaves the cause's
+// generic remedy exactly as a failed second request used to.
+func TestMissingKindAnswersKeepTheGenericRemedy(t *testing.T) {
 	v := siteVerdict{Site: hotFunction{Name: "write", Location: "fixture.go:14"}, Flagged: []jev.Score{{Cause: jev.CauseAlloc, Z: 2}}}
-	got := causeAnalyst{evaluator: failingKinds{}, usage: agents.NewUsageCollector()}.chooseKinds(context.Background(), v)
+	got := chooseKinds(v, map[string]jev.Answer{})
 	require.Empty(t, got.Kinds)
 	require.Equal(t, jev.CauseAlloc.Remedy("write", "fixture.go:14"), siteTarget(got, got.Flagged[0]).Remedy)
-}
-
-type failingKinds struct{}
-
-func (failingKinds) Evaluate(context.Context, jev.Request) (jev.Response, error) {
-	return jev.Response{}, errors.New("HTTP 429")
 }

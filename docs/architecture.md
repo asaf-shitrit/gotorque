@@ -419,10 +419,16 @@ performance fixes, each asked about before and after the fix:
   misleading profile derailed; per-cause Scores on a shared scale lost the
   ability to tell fixed code from unfixed.
 - Answers are compared against Jev's usual answer to each question, not raw.
-  Its mean yes runs from 0.10 (unbuffered I/O) to 0.53 (allocation), so the
-  highest raw answer named the right cause 36% of the time; in baseline
-  standard deviations it named it 50% of the time and put it in the top two
-  69% of the time (chance is 14%). A cause is flagged when it stands +0.5 sd
+  Its mean yes runs from 0.10 (unbuffered I/O) to 0.53 (allocation). With
+  the current questions, raw answers and baseline z name the right cause
+  about equally often (44% and 42% top-1 on the 93-fix benchmark; raw puts it
+  in the top two more often, 78% against 62%), but z is what the flag rule
+  needs: under it the ordering key makes no measurable difference, raw
+  ordering over-picks allocation (55% of top picks against 38% of labels),
+  and a raw 0.5 floor without z nearly doubles flags on fixed code (0.22
+  against 0.12). The study is in `gotorque-work/jev-z-vs-raw.md`; the
+  36%/50% figures quoted here before came from an earlier question wording.
+  A cause is flagged when it stands +0.5 sd
   above that usual answer *and* Jev's own probability is at least 0.5, two at
   most per function (ADR 0025). The z gate alone flagged the fixing commit's
   cause on 59% of unfixed functions and on 23% of the fixed versions; the
@@ -480,10 +486,18 @@ system call. prealloc is vetoed unless something grows inside a loop: an
 append or map write to a container the function did not make with a size
 (`make([]T, 0)` still grows). A function the parser cannot find is never
 vetoed. Vetoed causes, and causes skipped for Jev's own probability, are named
-under `overruled` in the `cause_analysis` event. A site whose flagged causes include allocation or string
-building also gets one fix-kind request (ADR 0019; fast path was turned off
-after it did worse than guessing on held-out fixes): nine questions over
-the same state, each kind scored against its own baseline. When a kind leads
+under `overruled` in the `cause_analysis` event. The nine fix-kind questions
+(ADR 0019; fast path was turned off after it did worse than guessing on
+held-out fixes) are batched into the same request as the seven cause
+questions rather than sent as a second one (ADR 0028): `combinedQuestions` in
+`causes.go` merges `jev.Questions()` and `jev.KindQuestions()`, whose ids never
+collide, and code reads the fix-kind answers only for a site whose flagged
+causes include allocation or string building, exactly as before. TypeSafe's
+docs state that an answer does not depend on the other questions in the same
+request, and a 20-function live replay against the real gateway
+(`jev-batch-replay.md`) measured a mean |Δp| of 0.0107 and no changed fix-kind
+pick between asking the two sets separately and asking them together, so only
+the number of requests changed. When a kind leads
 its cause's next kind by at least `KindGate` (0.25 sd) at a z of at least 0,
 the target carries `fix_kind` and that kind's narrower remedy. Hot paths keep discovery's `path:line` verbatim, which the model
 analyst used to reformat. Per-function scores are persisted with a
@@ -622,6 +636,39 @@ The variants only widen discovery: they are never measured workloads, and no
 verdict reads them. The chosen variants are kept in campaign state
 (`discovery_workloads`), in the discovery step's metadata
 (`explored_workloads`), and in the report header.
+
+## Jev answer cache
+
+The graph loops (`route_campaign` back to `coordinator` -> `explorer` ->
+`run_discovery` -> `analyst`) until a candidate is accepted or a bound is hit,
+and at the same base revision every one of those cycles asks the analyst about
+the same hot functions and the explorer about the same command and `--help`
+text: recorded campaigns made 64 analyst requests for 4 optimizer calls on
+go-jsonnet and 42 for 3 on dasel, almost all of them a rerun of the previous
+cycle's question. `internal/campaign/jevcache.go` (ADR 0028) memoizes a Jev
+response by `jev.Digest(req)` — the exact model id, state, and question set a
+request carries, the same three things `Evaluate` sends over the wire — so a
+repeated request is answered without a round trip. `noteAnalyst`
+(`engine.go`, called from both `attachADK` on a fresh campaign and `SetADK` on
+resume) wraps `roleSet.CauseEvaluator` and `roleSet.ExploreEvaluator` in a
+`cachingEvaluator` before either reaches the graph; the reviewer is not
+wrapped, because its state carries the candidate's own patch text, which
+differs by construction from one candidate to the next, so it was checked and
+found not to repeat.
+
+The cache lives in the campaign's bbolt store (`Store.JevCacheGet`/`JevCachePut`,
+bucket `jev_cache`), not in engine memory, so `--resume` reuses it: anything
+that must survive resume goes in bbolt, because in-graph `CampaignState` is
+rebuilt on every entry. A failed or partial response is never cached — a
+cached error would deny every later request the retry that might have
+succeeded — and a request whose state cannot be marshaled (never expected to
+happen with `jev.Request`'s field types) is asked directly rather than
+crashing the campaign over what is only ever an optimization. Hit and miss
+counts are kept per role in `State.JevCache` (`JevCacheSnapshot`), updated
+in-process and persisted the same way `TokenUsage` is: they ride along on the
+next `saveEvent`, so a killed process still leaves its counts in bbolt. The
+report's "Jev cache" table (`writeJevCache` in `report.go`) reads them back,
+mirroring the "Model usage" table's shape.
 
 ## Discovery benchmark profiling
 
