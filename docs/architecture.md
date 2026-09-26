@@ -534,6 +534,54 @@ target on its second attempt: the bufio writer around the output loop, accepted
 at -15.1% wall time. A model analyst ranks nothing, so none of this changes its
 path.
 
+**Multi-function targets (ADR 0027, proposed, `internal/campaign/callers.go`).** Every
+target above is confined to one function. A separate, code-only signal —
+never asked of Jev, never in its question set or baseline — can instead pick
+a *set*: for a profiled hot function that always returns a fresh allocation
+(every `return` is `&T{...}`, `new(T)`, or a same-package call checked one
+level deep), it finds every call to it within the same package directory and
+classifies each site as discarded, consumed (used only as the `X` of a
+selector, a field read or a cheap method call, never stored or returned), or
+escaping. `throwaway_result` fires when the callee allocates fresh and at
+least half its call sites, two or more, are consumed or discarded — the dasel
+case this was built against: `(*Value).UnpackKinds` ends every call with
+`NewValue(res)`, and about a dozen of its own package's callers use the
+result only to read a `Kind`. A firing signal produces a target in the first
+tier, ahead of every Jev-ranked one, carrying the callee plus its ranked
+consuming callers (capped at twelve total): `Kind` is
+`agents.TargetFunctionSet` and the callers are `Target.Callers`. Callers are
+ranked by discovery's profile weight first, then call-site count, then name
+(`consumingCallers`, `internal/campaign/callers.go`) — call-site count alone
+is a weak key once most callers tie at one site, as dasel's do, so the cap
+used to keep whichever caller happened to sort first rather than whichever
+one mattered. `Engine` builds `DiscoveryHotFunctionWeights` (function name to
+profile hotness, uncapped by the fifteen-function hot list) alongside
+`DiscoveryHotFunctions` at every point discovery profiles, threaded through
+`orchestrator.DiscoveryEvidence` to the cause analyst; a caller absent from
+the profile ranks after every profiled one, and an empty or nil weight map
+(a benchmark-only or otherwise empty discovery) falls back to the pre-ranking
+call-site-count order exactly. Every branch
+that differs by kind asks `Target.IsFunctionSet()`. The optimizer answers with `function_sources` (several whole
+declarations, ADR 0022's decode leniency applied to the plural field too),
+and `internal/campaign/multi_function_source.go` builds one multi-file diff:
+a declaration matching a name in the set replaces that function wherever it
+is declared; one matching nothing in the set, and nowhere else in the
+package, is a new function appended after the callee in its own file; one
+matching a name that exists elsewhere in the package but outside the set is
+rejected. The shape check's `checkMultiConfined` applies the same
+per-function confinement across every file in the callee's directory rather
+than one file. `imports` still comes back as one shared list, but each
+touched file gets only the paths its own new code references
+(`importsForFile`): a package name is read from the file's unresolved
+selector bases, the same reading `dropOrphanedImports` and the shape check's
+`checkImports` already use, so a rewritten caller in a file of its own gets
+the import it needs instead of only the callee's file getting it. A name the
+optimizer never listed but that resolves to an unambiguous standard-library
+package (`stdlibImportPath`, the same fixed set `checkImports` treats as safe
+to infer) is added the same way; nothing outside that table is ever guessed.
+The single-function path (the zero `TargetFunction` kind) is unchanged, byte
+for byte.
+
 `AI_GATEWAY_API_KEY` (and optionally `AI_GATEWAY_BASE_URL`) configure the
 client. `--adk` spends one preflight request before repository work, because a
 gateway account without a card on file refuses every request and the analyst

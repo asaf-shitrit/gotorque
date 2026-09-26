@@ -69,6 +69,14 @@ type DiscoveryEvidence struct {
 	Measurements       []domain.Metric   `json:"measurements,omitempty"`
 	Summary            string            `json:"summary"`
 	Metadata           map[string]string `json:"metadata,omitempty"`
+	// HotFunctionWeights is discovery's per-function profile hotness, keyed by
+	// pprof's package-qualified symbol name. It ranks a throwaway_result
+	// target's consuming callers (ADR 0027's addendum): call-site count alone
+	// is a weak key when almost every caller ties at one site, as most of
+	// dasel's do. Absent when discovery carried no profile (a benchmark-only
+	// or otherwise empty discovery), in which case the ranking that consumes
+	// it falls back to call-site count exactly as before this field existed.
+	HotFunctionWeights map[string]float64 `json:"hot_function_weights,omitempty"`
 }
 
 // CauseRequest carries what a CauseAnalyst needs: the repository to read source

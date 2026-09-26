@@ -340,7 +340,7 @@ func (s adkServices) Discover(_ context.Context, req orchestrator.DiscoveryReque
 		metadata["proposal_rejections"] = strings.Join(rejections, "; ")
 	}
 	summary := fmt.Sprintf("baseline discovery evidence (%d/%d explorer proposals valid)", accepted, len(req.Explorer.Proposals))
-	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: summary, Metadata: metadata}, nil
+	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: summary, Metadata: metadata, HotFunctionWeights: s.engine.state.DiscoveryHotFunctionWeights}, nil
 }
 func (s adkServices) EvaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
 	return s.engine.evaluateCandidate(ctx, req)

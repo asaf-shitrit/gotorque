@@ -125,13 +125,80 @@ func checkFile(worktree, name string, change *fileChange, target *agents.Target)
 	if err := checkImports(fset, filepath.Dir(full), file, change); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
-	if target == nil || targetPath(target.Location) != name {
+	if target == nil {
+		return nil
+	}
+	if target.IsFunctionSet() {
+		return checkMultiConfined(fset, file, change, name, *target)
+	}
+	if targetPath(target.Location) != name {
 		return nil
 	}
 	if err := checkConfined(fset, file, change, target.Function); err != nil {
 		return err
 	}
 	return checkBypass(file, target.Function)
+}
+
+// checkMultiConfined is checkConfined's counterpart for a throwaway_result
+// target's function set (ADR 0027): the callee plus its consuming callers,
+// which commonly live in files other than the callee's own, since a callee's
+// callers are a package-wide search, not a single-file one. It applies the
+// same confinement checkConfined applies to the target's own file to every
+// file in the callee's package directory; a file outside that directory is
+// not checked at all, exactly like the single-function path, which never
+// confines a file other than the target's own.
+func checkMultiConfined(fset *token.FileSet, file *ast.File, change *fileChange, name string, target agents.Target) error {
+	calleeDir := path.Dir(targetPath(target.Location))
+	if path.Dir(name) != calleeDir {
+		return nil
+	}
+	allowed := map[string]bool{target.Function: true}
+	var names []string
+	for _, f := range target.Callers {
+		allowed[f.Name] = true
+		names = append(names, f.Name)
+	}
+	var others []string
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || allowed[funcName(fd)] {
+			continue
+		}
+		first, last := fset.Position(fd.Pos()).Line, fset.Position(fd.End()).Line
+		if touched(change, first, last) && !whollyNewDecl(fset, fd, change) {
+			others = append(others, funcName(fd))
+		}
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the patch edits %s, outside the throwaway_result set (%s, %s); change only those functions or add a wholly new one",
+		strings.Join(others, ", "), target.Function, strings.Join(names, ", "))
+}
+
+// whollyNewDecl reports whether fd's declaration did not exist under this
+// name before the patch: its own signature line is itself changed content
+// (present in change.lines, the zero-context diff's new-side line numbers),
+// and no removed line elsewhere in the file declared a function of the same
+// name (which would mean this name existed and was rewritten, not added).
+//
+// checkConfined's own added() instead requires every line of the
+// declaration to be added, which a throwaway_result remedy routinely fails:
+// dasel's fix1 adds unpackKindsValue by moving UnpackKinds' unchanged loop
+// body under a new name and signature, so most of the new declaration's
+// lines are identical, unmarked context in a zero-context diff, not added
+// lines. Checking only the signature line is enough to tell "this name is
+// new" from "this name's body was edited in place", which is what
+// checkMultiConfined actually needs to know.
+func whollyNewDecl(fset *token.FileSet, fd *ast.FuncDecl, change *fileChange) bool {
+	first := fset.Position(fd.Pos()).Line
+	if !change.lines[first] {
+		return false
+	}
+	return !slices.ContainsFunc(change.removed, func(line string) bool {
+		return strings.HasPrefix(strings.TrimSpace(line), "func ") && strings.Contains(line, " "+fd.Name.Name+"(")
+	})
 }
 
 // checkBypass rejects a target function that wraps a writer in a
@@ -415,9 +482,18 @@ func checkRemedy(worktree string, changes map[string]*fileChange, target *agents
 	if target == nil {
 		return nil
 	}
+	if target.IsFunctionSet() {
+		return checkSwitchedCallers(worktree, changes, *target)
+	}
 	if target.FixKind == string(jev.KindDropFmt) {
 		return checkDroppedFmt(changes)
 	}
+	return checkCauseShape(worktree, changes, target)
+}
+
+// checkCauseShape asks the added lines for the mechanism remedyShapes names
+// for the target's cause, and a bufio.Writer for its flush.
+func checkCauseShape(worktree string, changes map[string]*fileChange, target *agents.Target) error {
 	shape, ok := remedyShapes[jev.Cause(target.Cause)]
 	if !ok {
 		return nil
@@ -437,6 +513,46 @@ func checkRemedy(worktree string, changes map[string]*fileChange, target *agents
 		return errors.New("the patch adds a bufio.Writer but never flushes it, so buffered output would be lost")
 	}
 	return nil
+}
+
+// checkSwitchedCallers holds a throwaway_result patch to its remedy: the
+// waste is in the callers that drop the callee's fresh allocation, so a patch
+// that edits none of them has not applied it. On the first live dasel
+// campaign with these targets the optimizer rewrote only UnpackKinds'
+// internals, measured 0%, and the target counted as tried; rejected here
+// before the build, the reason goes back with the target still open.
+func checkSwitchedCallers(worktree string, changes map[string]*fileChange, target agents.Target) error {
+	callers := target.Callers
+	for _, ref := range callers {
+		if callerTouched(worktree, changes, ref) {
+			return nil
+		}
+	}
+	names := make([]string, 0, len(callers))
+	for _, ref := range callers {
+		names = append(names, ref.Name)
+	}
+	return fmt.Errorf("the target's remedy is switching %s's callers to a non-allocating variant, but the patch changes none of %s", target.Function, strings.Join(names, ", "))
+}
+
+// callerTouched reports whether the patch changed ref's declaration, read from
+// the patched file. A caller the parser cannot find counts as untouched.
+func callerTouched(worktree string, changes map[string]*fileChange, ref agents.FunctionRef) bool {
+	name := targetPath(ref.Location)
+	change, ok := changes[name]
+	if !ok {
+		return false
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(worktree, filepath.FromSlash(name)), nil, parser.SkipObjectResolution)
+	if err != nil {
+		return false
+	}
+	fd := findFuncDecl(file, ref.Name)
+	if fd == nil {
+		return false
+	}
+	return touched(change, fset.Position(fd.Pos()).Line, fset.Position(fd.End()).Line)
 }
 
 // checkDroppedFmt holds the drop-fmt remedy to its own shape: it replaces a
