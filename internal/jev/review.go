@@ -1,9 +1,6 @@
 package jev
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -183,10 +180,5 @@ func FlaggedHazards(scores []HazardScore) []HazardScore {
 // reviewDigest identifies the hazard questions and review state template the
 // review baseline was measured with.
 func reviewDigest() string {
-	payload, err := json.Marshal(map[string]any{"context": reviewContext, "questions": ReviewQuestions()})
-	if err != nil {
-		panic(err) // static strings always marshal
-	}
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
+	return digestPayload(map[string]any{"context": reviewContext, "questions": ReviewQuestions()})
 }

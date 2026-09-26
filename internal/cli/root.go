@@ -235,7 +235,7 @@ func selectJev(ctx context.Context, out io.Writer, roles *agents.Set, f optimize
 	if roles == nil || (f.analyst != analystJev && f.reviewer != analystJev && f.explorer != analystJev) {
 		return nil
 	}
-	evaluator, err := jevEvaluator(ctx, f)
+	evaluator, err := jevEvaluator(ctx, out, f)
 	if err != nil {
 		return err
 	}
@@ -274,13 +274,19 @@ func assignJev(roles *agents.Set, evaluator jev.Evaluator, f optimizeFlags) ([]s
 	return lines, nil
 }
 
-func jevEvaluator(ctx context.Context, f optimizeFlags) (jev.Evaluator, error) {
+func jevEvaluator(ctx context.Context, out io.Writer, f optimizeFlags) (jev.Evaluator, error) {
 	if f.runADKStub {
 		return jev.Stub{}, nil
 	}
 	client := jev.NewClientFromEnvironment()
-	if err := client.Preflight(ctx); err != nil {
+	warnings, err := client.Preflight(ctx)
+	if err != nil {
 		return nil, err
+	}
+	for _, warning := range warnings {
+		if _, err := fmt.Fprintf(out, "jev preflight warning: %s\n", warning); err != nil {
+			return nil, err
+		}
 	}
 	return client, nil
 }

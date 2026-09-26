@@ -31,3 +31,17 @@ func Digest(req Request) (string, error) {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
 }
+
+// digestPayload hashes any static question-set-and-state payload the same
+// way Digest hashes a live request: causes.go's digest, review.go's
+// reviewDigest, and canary.go's checkCanaryDigest all pin a baseline or
+// recorded values to the exact text they were measured with, and all three
+// should go stale the same way when that text changes.
+func digestPayload(payload any) string {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		panic(err) // static strings and questions always marshal
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}

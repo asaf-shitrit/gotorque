@@ -453,11 +453,31 @@ performance fixes, each asked about before and after the fix:
 text and state template: `TestBaselineMatchesQuestions` compares a digest of
 both and fails on any edit, and `TestLiveBaseline` re-measures it (opt-in, one
 request per function). It is also valid only for the model version it was
-measured on, and nothing can check that: TypeSafe advises pinning a version
-once thresholds are tuned against it, but the gateway serves only the alias
-`typesafe-ai/jev` (pinned IDs such as `jev-1.13.0` return 404) and reports no
-version in its responses. The baseline was measured on Jev 1.13; re-run
-`TestLiveBaseline` when TypeSafe ships a release.
+measured on, and nothing can fully check that: TypeSafe advises pinning a
+version once thresholds are tuned against it, but the gateway serves only the
+alias `typesafe-ai/jev` (pinned IDs such as `jev-1.13.0` return 404) and
+reports no version in its `/v1/evaluate` responses. The baseline was measured
+on Jev 1.13; re-run `TestLiveBaseline` when TypeSafe ships a release.
+
+ADR 0029 narrows what code can check instead of pinning a version. The
+gateway was found serving `typesafe-ai/jev` from a second upstream
+(`digitalocean`, as a fallback) with nothing confirming it runs the same
+build, so `Client.Evaluate` sends `providerOptions.gateway.only:
+["typesafe-ai"]` on every request and refuses an answer whose
+`providerMetadata.gateway.routing.finalProvider` names anything else.
+`Client.Preflight` makes one free `GET /typesafe/v1/models` call and compares
+its `release_date` for `jev` against `baselineModelRelease` (`baseline.go`),
+the only version signal the gateway exposes; a mismatch fails the campaign
+before it starts, naming `TestLiveBaseline`, unless
+`GOTORQUE_JEV_ALLOW_DRIFT` is set, which downgrades it to a warning (the
+provider pin has no such override). Because nothing documents whether
+`release_date` changes on every release behind the alias, that same preflight
+spends its one request on a canary (`internal/jev/canary.go`) instead of a
+plain connectivity check: a fixed synthetic function and five of the seven
+cause questions, with answers recorded once (`TestLiveCanary`) and guarded by
+a digest the same way the baseline is. An answer that moved by more than
+`CanaryTolerance` (0.05) fails the preflight the same way, naming
+`TestLiveCanary`.
 
 Each flagged cause becomes a one-sentence remedy in `candidate_hypotheses`,
 every function's first cause before any second cause, each tier ordered by

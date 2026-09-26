@@ -64,6 +64,13 @@ func TestSelectAnalystPreflightsTheGateway(t *testing.T) {
 	defer srv.Close()
 	t.Setenv(jev.EnvAPIKey, "key")
 	t.Setenv(jev.EnvBaseURL, srv.URL)
+	// This stub answers every question with the same fixed probability, so
+	// Preflight's canary and release-date checks see drift against jev's
+	// real recorded values; the override downgrades that to a warning, which
+	// is all this test cares about proving (the gateway is reached and the
+	// role gets wired up), not the drift guards themselves (covered in
+	// internal/jev).
+	t.Setenv(jev.EnvAllowDrift, "1")
 	var out bytes.Buffer
 	roles := &agents.Set{}
 	require.NoError(t, selectJev(context.Background(), &out, roles, optimizeFlags{runADK: true, analyst: analystJev}))

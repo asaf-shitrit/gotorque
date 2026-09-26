@@ -35,5 +35,6 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0026](0026-manifest-sandbox-is-enforced.md) | The manifest's `sandbox` block is enforced, not just documented | accepted |
 | [0027](0027-throwaway-result-multi-function-targets.md) | A throwaway-result signal picks a multi-function target, and the optimizer returns several function sources | accepted |
 | [0028](0028-jev-answer-cache-and-batched-fix-kinds.md) | Jev answers are cached per campaign, and fix-kind questions are batched into the cause request | accepted |
+| [0029](0029-jev-provider-pin-and-drift-guards.md) | Jev requests are pinned to TypeSafe's own provider, and Preflight guards against drift | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence).
