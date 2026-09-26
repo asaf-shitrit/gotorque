@@ -98,7 +98,7 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	}
 	result := analystResult(verdicts, req.Campaign.Objective)
 	result.AdditionalChecks = append(result.AdditionalChecks, skipped...)
-	addThrowawayTargets(req.Campaign.Repository, sites, &result)
+	addThrowawayTargets(req.Campaign.Repository, sites, req.Discovery.HotFunctionWeights, &result)
 	return result, nil
 }
 
@@ -107,9 +107,12 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 // on first, ahead of every Jev-ranked target: the evidence is structural and
 // deterministic, not a probability estimate, so it does not wait its turn in
 // Jev's tiers (ADR 0018). It is never asked of Jev and never touches a
-// siteVerdict, so it cannot reach Jev's state or baseline.
-func addThrowawayTargets(repo string, sites []hotFunction, result *agents.AnalystResult) {
-	tw := throwawayTargets(repo, sites)
+// siteVerdict, so it cannot reach Jev's state or baseline. weights is
+// discovery's per-function profile hotness, used only to rank a target's
+// consuming callers before the cap (see consumingCallers); a nil or empty map
+// leaves the ranking exactly as it was before this field existed.
+func addThrowawayTargets(repo string, sites []hotFunction, weights map[string]float64, result *agents.AnalystResult) {
+	tw := throwawayTargets(repo, sites, weights)
 	if len(tw) == 0 {
 		return
 	}

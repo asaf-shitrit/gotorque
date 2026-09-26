@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/profile"
 	"example.com/gotorque/internal/toolchain"
 )
 
@@ -66,7 +68,7 @@ func TestThrowawaySignalFiresOnDaselUnpackKinds(t *testing.T) {
 		"(*Value).Append", "(*Value).SliceLen", "(*Value).GetSliceIndex", "(*Value).SetSliceIndex",
 	}
 	found := map[string]bool{}
-	for _, c := range analysis.consumingCallers() {
+	for _, c := range analysis.consumingCallers(nil) {
 		found[c.Caller] = true
 	}
 	var missing []string
@@ -76,6 +78,62 @@ func TestThrowawaySignalFiresOnDaselUnpackKinds(t *testing.T) {
 		}
 	}
 	require.Empty(t, missing, "the caller set must cover every function fix1 edits; found %v", found)
+}
+
+// TestThrowawayCallerRankingOnDaselRealProfile is the replay gate's fourth
+// assertion (ADR 0027's addendum on caller ranking): with a real profile,
+// (*Value).Append and (*Value).isDencodingMap -- both callers fix1 edits --
+// outrank every caller the profile never measured, instead of losing to
+// whatever call-site count or source position happened to give them.
+//
+// testdata/dasel-sample-profile.txt was captured with the platform sampler
+// this engine actually uses (/usr/bin/sample) against a real dasel binary
+// built from this same clone, running `dasel query --unstable -o json
+// 'data.filter(active==true).map(name)...'` over a 1.2M-element synthetic
+// JSON array for 4 seconds -- the same shape of workload discovery's own
+// sampleTargetProfile runs, just captured once and committed so this test
+// needs no live process. It does not reach every one of fix1's eleven
+// callers (this query never touches the int, float, bool or slice-index
+// accessors), which is expected and recorded rather than worked around: the
+// two it does reach are exactly the evidence this test checks.
+func TestThrowawayCallerRankingOnDaselRealProfile(t *testing.T) {
+	repo := daselRepo(t)
+	site := hotFunction{Path: "model/value.go", Name: "(*Value).UnpackKinds", Location: "model/value.go:187"}
+
+	analysis, err := analyzeThrowaway(repo, site)
+	require.NoError(t, err)
+	require.True(t, analysis.signal())
+
+	report, err := os.ReadFile(filepath.Join("testdata", "dasel-sample-profile.txt"))
+	require.NoError(t, err)
+	stacks := profile.MacOSSampleStacks(string(report))
+	require.NotEmpty(t, stacks, "the fixture must actually parse into stacks, or this test proves nothing")
+	own := func(s string) bool { return strings.HasPrefix(s, "github.com/tomwright/dasel/v3") }
+	weights := hotFunctionWeights(profile.AttributeToOwn(stacks, own))
+	require.NotEmpty(t, weights)
+
+	ranked := analysis.consumingCallers(weights)
+	rank := make(map[string]int, len(ranked))
+	for i, c := range ranked {
+		rank[c.Caller] = i
+	}
+	appendRank, ok := rank["(*Value).Append"]
+	require.True(t, ok, "Append must be in the consuming caller set")
+	mapRank, ok := rank["(*Value).isDencodingMap"]
+	require.True(t, ok, "isDencodingMap must be in the consuming caller set")
+
+	// Every caller this real profile never measured -- most of the ~18-strong
+	// caller set -- must rank behind both profiled ones.
+	for _, c := range ranked {
+		if c.Caller == "(*Value).Append" || c.Caller == "(*Value).isDencodingMap" {
+			continue
+		}
+		if _, profiled := callerWeight(weights, c.Caller); profiled {
+			continue
+		}
+		require.Greater(t, rank[c.Caller], appendRank, "%s was never profiled and must rank behind Append", c.Caller)
+		require.Greater(t, rank[c.Caller], mapRank, "%s was never profiled and must rank behind isDencodingMap", c.Caller)
+	}
 }
 
 // TestShapeCheckAcceptsFix1UnderTheFullCallerSet is the replay gate's third
@@ -102,8 +160,8 @@ func TestShapeCheckAcceptsFix1UnderTheFullCallerSet(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, analysis.signal())
 
-	fns := make([]agents.FunctionRef, 0, len(analysis.consumingCallers()))
-	for _, c := range analysis.consumingCallers() {
+	fns := make([]agents.FunctionRef, 0, len(analysis.consumingCallers(nil)))
+	for _, c := range analysis.consumingCallers(nil) {
 		fns = append(fns, agents.FunctionRef{Name: c.Caller, Location: c.Location})
 	}
 	target := agents.Target{

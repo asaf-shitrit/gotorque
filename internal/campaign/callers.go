@@ -76,10 +76,20 @@ func (a throwawayAnalysis) consumingCount() int {
 	return n
 }
 
-// consumingCallers is every consumed or discarded call site, ranked by call
-// count (a caller with more than one call site to the callee ranks first)
-// and then by source position, for a stable and reproducible target set.
-func (a throwawayAnalysis) consumingCallers() []callSite {
+// consumingCallers is every consumed or discarded call site, ranked so the
+// cap in throwawayTarget keeps the callers that matter most (ADR 0027's
+// addendum on ranking): by profile weight first (the hotter caller ranks
+// first; a caller the profile never measured ranks after every one it did),
+// then by call-site count (a caller with more than one call site to the
+// callee ranks first), then by name, for a total order that never depends on
+// map iteration or slice-sort stability.
+//
+// weights is discovery's per-function hotness (engine.hotFunctionWeights),
+// keyed by pprof's package-qualified symbol name; callerWeight matches a bare
+// funcName-format caller against it. An empty or nil weights map (a
+// benchmark-only or otherwise empty discovery) falls back to the pre-ranking
+// order exactly: call-site count only, stable on source position.
+func (a throwawayAnalysis) consumingCallers(weights map[string]float64) []callSite {
 	counts := map[string]int{}
 	for _, s := range a.Sites {
 		if s.Usage == usageConsumed || s.Usage == usageDiscarded {
@@ -98,10 +108,63 @@ func (a throwawayAnalysis) consumingCallers() []callSite {
 		seen[s.Caller] = true
 		out = append(out, s)
 	}
-	slices.SortStableFunc(out, func(x, y callSite) int {
-		return cmp.Compare(counts[y.Caller], counts[x.Caller])
-	})
+	if len(weights) == 0 {
+		slices.SortStableFunc(out, func(x, y callSite) int {
+			return cmp.Compare(counts[y.Caller], counts[x.Caller])
+		})
+		return out
+	}
+	rankByWeight(out, counts, weights)
 	return out
+}
+
+// rankByWeight sorts callers by profile weight, then call-site count, then
+// name, in place. It is a separate function from consumingCallers so that
+// function stays under the complexity gate.
+func rankByWeight(out []callSite, counts map[string]int, weights map[string]float64) {
+	weight := make(map[string]float64, len(out))
+	hasWeight := make(map[string]bool, len(out))
+	for _, s := range out {
+		w, ok := callerWeight(weights, s.Caller)
+		weight[s.Caller], hasWeight[s.Caller] = w, ok
+	}
+	slices.SortFunc(out, func(x, y callSite) int {
+		if hasWeight[x.Caller] != hasWeight[y.Caller] {
+			if hasWeight[x.Caller] {
+				return -1
+			}
+			return 1
+		}
+		if c := cmp.Compare(weight[y.Caller], weight[x.Caller]); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(counts[y.Caller], counts[x.Caller]); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.Caller, y.Caller)
+	})
+}
+
+// callerWeight looks up a caller's profile weight. callSite.Caller is
+// funcName's format ("(*Type).Method" or "FuncName", never package-qualified,
+// see funcName); discovery's weight map is keyed by pprof's package-qualified
+// symbol ("importpath.(*Type).Method"). A suffix match on "."+caller bridges
+// the two, the same method-by-name-only ambiguity callers.go's package doc
+// already accepts for call-site discovery (two identically named methods on
+// different receivers, or in different packages, can collide); the hottest
+// match wins the tie.
+func callerWeight(weights map[string]float64, caller string) (float64, bool) {
+	if w, ok := weights[caller]; ok {
+		return w, true
+	}
+	suffix := "." + caller
+	best, found := 0.0, false
+	for name, w := range weights {
+		if strings.HasSuffix(name, suffix) && (!found || w > best) {
+			best, found = w, true
+		}
+	}
+	return best, found
 }
 
 // analyzeThrowaway finds every call to site within its package directory
@@ -435,9 +498,10 @@ func locationLine(loc string) int {
 // throwawayTarget builds the multi-function target for a throwaway_result
 // signal: the callee plus its ranked consuming callers, capped at
 // maxThrowawayFunctions functions total (ADR 0027 raises this above the
-// six originally proposed; see the ADR for why).
-func throwawayTarget(site hotFunction, a throwawayAnalysis) agents.Target {
-	callers := a.consumingCallers()
+// six originally proposed; see the ADR for why). weights ranks the callers by
+// profile hotness before the cap is applied; see consumingCallers.
+func throwawayTarget(site hotFunction, a throwawayAnalysis, weights map[string]float64) agents.Target {
+	callers := a.consumingCallers(weights)
 	if limit := maxThrowawayFunctions - 1; len(callers) > limit {
 		callers = callers[:limit]
 	}
@@ -474,7 +538,7 @@ const maxThrowawayFunctions = 12
 // many consuming callers were found (the strongest structural evidence
 // first). It is code-derived and independent of Jev: it reads the same
 // sources hotFunctions already resolved, and never asks Jev anything.
-func throwawayTargets(repo string, sites []hotFunction) []agents.Target {
+func throwawayTargets(repo string, sites []hotFunction, weights map[string]float64) []agents.Target {
 	type found struct {
 		target agents.Target
 		count  int
@@ -485,7 +549,7 @@ func throwawayTargets(repo string, sites []hotFunction) []agents.Target {
 		if err != nil || !a.signal() {
 			continue
 		}
-		hits = append(hits, found{target: throwawayTarget(site, a), count: a.consumingCount()})
+		hits = append(hits, found{target: throwawayTarget(site, a, weights), count: a.consumingCount()})
 	}
 	slices.SortStableFunc(hits, func(a, b found) int { return cmp.Compare(b.count, a.count) })
 	out := make([]agents.Target, 0, len(hits))
