@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"example.com/gotorque/internal/manifest"
 	"github.com/stretchr/testify/require"
 	bolterrors "go.etcd.io/bbolt/errors"
 )
@@ -37,4 +39,24 @@ func TestOpenStorePropagatesOtherErrors(t *testing.T) {
 	_, err := OpenStore(path)
 	require.Error(t, err)
 	require.NotErrorIs(t, err, bolterrors.ErrTimeout)
+}
+
+// TestLoadReportFromDatabaseIsVersioned pins the fix for `gotorque report DIR`
+// labelling a campaign the current engine just wrote as "unversioned": the
+// command reads the database, and only report.json carried the stamp.
+func TestLoadReportFromDatabaseIsVersioned(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, DatabaseName))
+	require.NoError(t, err)
+	// Load decodes through the manifest's duration type, which rejects zero.
+	require.NoError(t, store.Save(State{ID: "c1", Manifest: manifest.Manifest{Campaign: manifest.CampaignLimits{
+		MaxDuration:           manifest.Duration(time.Minute),
+		DiscoveryStallTimeout: manifest.Duration(time.Minute),
+		MinimumCommandTimeout: manifest.Duration(time.Second),
+	}}}))
+	require.NoError(t, store.Close())
+
+	state, err := LoadReport(dir)
+	require.NoError(t, err)
+	require.Equal(t, ReportSchemaVersion, state.SchemaVersion)
 }
