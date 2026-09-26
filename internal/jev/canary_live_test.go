@@ -45,8 +45,8 @@ func TestLiveCanary(t *testing.T) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "// measured over %d repeats\nvar canaryRecorded = map[string]float64{\n", repeats)
 	for _, cause := range canaryCauses {
-		mean, _ := meanStd(samples[string(cause)])
-		fmt.Fprintf(&b, "\t%q: %.4f,\n", string(cause), mean)
+		mean, std := meanStd(samples[string(cause)])
+		fmt.Fprintf(&b, "\t%q: %.4f, // sd %.4f\n", string(cause), mean, std)
 	}
 	fmt.Fprintf(&b, "}\n\nconst canaryDigest = %q\n", checkCanaryDigest())
 	t.Log("\n" + b.String())

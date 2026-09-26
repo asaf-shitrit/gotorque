@@ -13,10 +13,10 @@ func TestCanaryMatchesQuestions(t *testing.T) {
 	}
 }
 
-func TestCanaryHasFiveQuestions(t *testing.T) {
+func TestCanaryAsksEveryCause(t *testing.T) {
 	questions := canaryQuestionSet()
-	if len(questions) != 5 {
-		t.Fatalf("canary question count = %d, want 5", len(questions))
+	if len(questions) != len(Causes) {
+		t.Fatalf("canary question count = %d, want %d", len(questions), len(Causes))
 	}
 	for _, cause := range canaryCauses {
 		if _, ok := canaryRecorded[string(cause)]; !ok {

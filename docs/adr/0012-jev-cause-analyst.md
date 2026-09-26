@@ -58,7 +58,7 @@ account and key. ADR 0029 narrows what it can, in code rather than by pinning a 
 request is pinned to the `typesafe-ai` provider (the gateway was found serving the same alias from a
 second upstream, `digitalocean`, with no guarantee it runs the same build), `Client.Preflight` checks
 `GET /typesafe/v1/models`' `release_date` against the date the baselines were measured on, and that
-same preflight spends its one request on a canary — a fixed function and five of the seven cause
+same preflight spends its one request on a canary — a fixed function and all seven cause
 questions with recorded answers — so a release that moves Jev's answers without moving
 `release_date` is still caught.
 

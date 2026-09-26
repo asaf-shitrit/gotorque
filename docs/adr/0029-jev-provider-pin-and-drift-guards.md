@@ -58,12 +58,16 @@ Neither problem can be fixed by pinning a model ID. Both can be narrowed in code
   naming `TestLiveBaseline`. An unreachable or malformed listing only ever warns: not knowing the
   date is not evidence the model drifted.
 - `Preflight`'s one request is now the canary (`internal/jev/canary.go`) rather than a plain
-  connectivity question: a fixed synthetic function and five of the seven cause questions
+  connectivity question: a fixed synthetic function and all seven cause questions
   (`causes.go`'s own text, so a reworded question forces a re-measure here too), with recorded
-  answers measured once (`TestLiveCanary`) and guarded by a digest exactly like
-  `TestBaselineMatchesQuestions`. An answer that moved by more than `CanaryTolerance` (0.05, roughly
-  five standard deviations against TypeSafe's reported 0.0102 per-question sd) fails the preflight,
-  naming `TestLiveCanary`.
+  answers measured once (`TestLiveCanary`, 6 repeats) and guarded by a digest exactly like
+  `TestBaselineMatchesQuestions`. An answer that moved by more than `CanaryTolerance` (0.05) fails
+  the preflight, naming `TestLiveCanary`. The measured per-answer sd was 0.006–0.015, so 0.05 is
+  at least 3.3 sd.
+- The canary function is chosen for mid-range answers. An answer near 0 or 1 barely moves when
+  the model changes, and a first draft (a nested-loop `sumPairs`) answered 0.02–0.085 on four
+  questions and 0.98 on the fifth, which made it nearly blind. The shipped function (read,
+  optionally sort, format and print entries) answers 0.16–0.85, five of seven between 0.25 and 0.78.
 - Both drift guards — the release date and the canary — are downgraded from a failure to a warning
   by `GOTORQUE_JEV_ALLOW_DRIFT` (any non-empty value). The provider pin has no such override: no
   baseline or canary value here is valid for a provider other than TypeSafe's own, so accepting a
@@ -79,8 +83,8 @@ or hazard rankings. `GOTORQUE_JEV_ALLOW_DRIFT=1` exists for a deliberate run aga
 example, while re-measuring `TestLiveBaseline` after a release) without editing code.
 
 This still does not pin a model version — that remains TypeSafe's own API, per ADR 0012 — and the
-canary's five questions cover five of seven causes; a release that only moved the other two (fast
-path, redundant work) would pass both guards. The release-date check is opportunistic: its only
+canary covers only the cause questions: a release that moved only the reviewer's hazard questions
+or the fix-kind questions would pass both guards. The release-date check is opportunistic: its only
 basis is that the field existed and held a plausible date at measurement time, not a documented
 guarantee that TypeSafe changes it on every release.
 
@@ -89,10 +93,8 @@ guarantee that TypeSafe changes it on every release.
 - Switching to TypeSafe's own `POST /v1/systemone`, which accepts pinned version IDs: still needs a
   second account and key, and its `noul` answer shape is not what `internal/jev` decodes today; ADR
   0012 already named this as the real fix and deferred it.
-- A canary covering all seven cause questions plus the eight hazard questions: triples the request
-  cost of the one preflight call for coverage this ADR's evidence did not show was needed; the five
-  chosen questions already span allocation, I/O, string building, fast-path, and superlinear
-  mechanisms.
+- A canary adding the hazard and fix-kind questions to the seven cause questions: triples the
+  request cost of the one preflight call for coverage this ADR's evidence did not show was needed.
 - Refusing a response with no routing metadata at all, on the theory that the pin should be
   provably in effect: rejected, because a stub or a gateway response shape change would then read as
   a wrong provider, which it is not.

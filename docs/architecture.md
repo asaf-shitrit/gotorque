@@ -473,7 +473,7 @@ before it starts, naming `TestLiveBaseline`, unless
 provider pin has no such override). Because nothing documents whether
 `release_date` changes on every release behind the alias, that same preflight
 spends its one request on a canary (`internal/jev/canary.go`) instead of a
-plain connectivity check: a fixed synthetic function and five of the seven
+plain connectivity check: a fixed synthetic function and all seven
 cause questions, with answers recorded once (`TestLiveCanary`) and guarded by
 a digest the same way the baseline is. An answer that moved by more than
 `CanaryTolerance` (0.05) fails the preflight the same way, naming
