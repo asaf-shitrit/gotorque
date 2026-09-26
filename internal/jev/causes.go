@@ -173,11 +173,16 @@ type Score struct {
 //
 // Raw probabilities are not comparable across questions: each question is
 // calibrated on its own, and the allocation question says yes to most Go
-// functions, so the highest raw answer named the right cause only 36% of the
-// time in the benchmark. Measured against each question's own baseline the
-// same answers named it 50% of the time and put it in the top two 69% of the
-// time (chance is 14%), with no labels involved. Ties keep the Causes order so
-// the ranking is reproducible.
+// functions. With the current questions, on the 93-fix benchmark, ranking by
+// raw answer and by baseline z name the right cause about equally often (44%
+// and 42% top-1, not significantly different) and raw puts it in the top two
+// more often (78% against 62%). z is kept for what Flag does with it: under
+// ADR 0025's rule the ordering key makes no measurable difference, raw
+// ordering sends 55% of top picks to allocation (38% of the labels), and
+// dropping z for a raw 0.5 floor alone nearly doubles flags on already-fixed
+// code (0.22 against 0.12). The 36%/50% figures once quoted here came from an
+// earlier wording of the questions. Ties keep the Causes order so the ranking
+// is reproducible.
 func Rank(answers map[string]Answer) ([]Score, error) {
 	scores := make([]Score, 0, len(Causes))
 	for _, cause := range Causes {

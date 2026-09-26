@@ -419,10 +419,16 @@ performance fixes, each asked about before and after the fix:
   misleading profile derailed; per-cause Scores on a shared scale lost the
   ability to tell fixed code from unfixed.
 - Answers are compared against Jev's usual answer to each question, not raw.
-  Its mean yes runs from 0.10 (unbuffered I/O) to 0.53 (allocation), so the
-  highest raw answer named the right cause 36% of the time; in baseline
-  standard deviations it named it 50% of the time and put it in the top two
-  69% of the time (chance is 14%). A cause is flagged when it stands +0.5 sd
+  Its mean yes runs from 0.10 (unbuffered I/O) to 0.53 (allocation). With
+  the current questions, raw answers and baseline z name the right cause
+  about equally often (44% and 42% top-1 on the 93-fix benchmark; raw puts it
+  in the top two more often, 78% against 62%), but z is what the flag rule
+  needs: under it the ordering key makes no measurable difference, raw
+  ordering over-picks allocation (55% of top picks against 38% of labels),
+  and a raw 0.5 floor without z nearly doubles flags on fixed code (0.22
+  against 0.12). The study is in `gotorque-work/jev-z-vs-raw.md`; the
+  36%/50% figures quoted here before came from an earlier question wording.
+  A cause is flagged when it stands +0.5 sd
   above that usual answer *and* Jev's own probability is at least 0.5, two at
   most per function (ADR 0025). The z gate alone flagged the fixing commit's
   cause on 59% of unfixed functions and on 23% of the fixed versions; the
