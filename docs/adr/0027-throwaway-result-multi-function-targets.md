@@ -1,6 +1,6 @@
 # 0027. A throwaway-result signal picks a multi-function target, and the optimizer returns several function sources
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-09-26
 
 ## Context
@@ -332,3 +332,9 @@ describes `function_sources` (one declaration per changed function: the callee, 
 callee's file, and each switched caller), confines changes to `target.function`, `target.callers`
 and the new helper, and names the field in the closing list.
 `TestOptimizerInstructionDescribesFunctionSets` pins those three statements.
+
+Live check (`multifn-dasel-4`, bounded at 4 candidates): the optimizer answered the `UnpackKinds`
+target with `function_sources` on its first attempt. It added `unpackKindsValue` and switched
+`IsNull`, `IsString`, `IsInt`, `Append` and `GetSliceIndex` across three files, and the change
+was accepted at wall time −2.93% (json-filter-map −3.62%) with the full test suite passing. It is
+the same mechanism as run 2's accepted fix, which was checked by hand for output equivalence.

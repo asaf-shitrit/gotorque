@@ -33,7 +33,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0024](0024-memory-objective-targets.md) | A memory objective chooses memory-relevant targets | accepted |
 | [0025](0025-flag-on-yes-veto-and-defer-fast-path.md) | A cause is flagged only when Jev says yes; code vetoes what it can rule out; fast path goes last | accepted |
 | [0026](0026-manifest-sandbox-is-enforced.md) | The manifest's `sandbox` block is enforced, not just documented | accepted |
-| [0027](0027-throwaway-result-multi-function-targets.md) | A throwaway-result signal picks a multi-function target, and the optimizer returns several function sources | proposed |
+| [0027](0027-throwaway-result-multi-function-targets.md) | A throwaway-result signal picks a multi-function target, and the optimizer returns several function sources | accepted |
 | [0028](0028-jev-answer-cache-and-batched-fix-kinds.md) | Jev answers are cached per campaign, and fix-kind questions are batched into the cause request | accepted |
 
-Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence), `proposed` (prototype, not yet on the default path).
+Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence).
