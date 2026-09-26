@@ -317,3 +317,18 @@ not gain the import), `TestMultiFunctionSourceInfersStdlibImportWithNoImportsLis
 with `imports` empty, relying on the stdlib inference), and
 `TestMultiFunctionSourceNeverAddsAnUnusedImport` (an import listed but referenced by no touched file
 is added nowhere).
+
+## Addendum: the optimizer is told about function sets
+
+The third live dasel run (`multifn-dasel-3`, after merging ADR 0028) rewrote the callee alone in
+both attempts on the `UnpackKinds` target, and the switched-caller rule rejected both before they
+were built. The optimizer's instruction had never mentioned the plural transport. It said "do not
+patch any other function", and its closing field list named only `function_source`. So the only
+thing pointing at the callers was `target.remedy`, and run 2's success came from the model reading
+the remedy over the instruction.
+
+The instruction now makes a `function_set` target the stated exception to "one function". It
+describes `function_sources` (one declaration per changed function: the callee, a new helper in the
+callee's file, and each switched caller), confines changes to `target.function`, `target.callers`
+and the new helper, and names the field in the closing list.
+`TestOptimizerInstructionDescribesFunctionSets` pins those three statements.
