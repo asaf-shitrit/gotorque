@@ -60,6 +60,11 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) Save(state State) error {
+	// `gotorque report DIR` renders from this record, not from report.json,
+	// so it carries the same stamp WriteReports puts on the artifact. Without
+	// it every campaign read back from its database was labelled as
+	// predating report versioning.
+	state.SchemaVersion = ReportSchemaVersion
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
