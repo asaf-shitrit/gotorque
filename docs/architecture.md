@@ -535,7 +535,18 @@ case this was built against: `(*Value).UnpackKinds` ends every call with
 result only to read a `Kind`. A firing signal produces a target in the first
 tier, ahead of every Jev-ranked one, carrying the callee plus its ranked
 consuming callers (capped at twelve total): `Kind` is
-`agents.TargetFunctionSet` and the callers are `Target.Callers`. Every branch
+`agents.TargetFunctionSet` and the callers are `Target.Callers`. Callers are
+ranked by discovery's profile weight first, then call-site count, then name
+(`consumingCallers`, `internal/campaign/callers.go`) — call-site count alone
+is a weak key once most callers tie at one site, as dasel's do, so the cap
+used to keep whichever caller happened to sort first rather than whichever
+one mattered. `Engine` builds `DiscoveryHotFunctionWeights` (function name to
+profile hotness, uncapped by the fifteen-function hot list) alongside
+`DiscoveryHotFunctions` at every point discovery profiles, threaded through
+`orchestrator.DiscoveryEvidence` to the cause analyst; a caller absent from
+the profile ranks after every profiled one, and an empty or nil weight map
+(a benchmark-only or otherwise empty discovery) falls back to the pre-ranking
+call-site-count order exactly. Every branch
 that differs by kind asks `Target.IsFunctionSet()`. The optimizer answers with `function_sources` (several whole
 declarations, ADR 0022's decode leniency applied to the plural field too),
 and `internal/campaign/multi_function_source.go` builds one multi-file diff:

@@ -59,8 +59,10 @@ measured baseline (`internal/jev/baseline.go`) — `TestBaselineMatchesQuestions
 exact digest it always has.
 
 **A multi-function target.** When the signal fires, `internal/campaign/causes.go` builds a target
-whose `Cause` is `"throwaway_result"`: the callee plus its consuming callers, ranked by call-site
-count. The target says so explicitly: `Kind` is `agents.TargetFunctionSet`, a typed `TargetKind`
+whose `Cause` is `"throwaway_result"`: the callee plus its consuming callers, ranked by discovery's
+profile weight first, then by call-site count, then by name (see the 2026-09-26 addendum below for
+why call-site count alone was not enough). The target says so explicitly: `Kind` is
+`agents.TargetFunctionSet`, a typed `TargetKind`
 whose zero value, `TargetFunction`, is the ordinary one-function target, so state saved before
 kinds existed reads unchanged. The callers are `Callers []FunctionRef`. Every branch that treats
 the two kinds differently (the shape check, the transport, the brief, the excerpt paths) asks
@@ -191,11 +193,14 @@ stays exactly as strict, applied to a set instead of one function.
 The twelve-function cap is a real limitation, demonstrated rather than assumed: dasel's own fix
 needs all twelve slots, and a package with more legitimate consuming callers than that (dasel's full
 list is closer to eighteen, once accessors like `IsNull`, `StringValue`, `Set` are counted) would have
-some of them ranked out. Call-site count is a weak ranking key when — as in dasel — almost every
-caller ties at exactly one call site; the replay gate exercises the *uncapped* signal for exactly
-this reason, and a live campaign's capped target is not guaranteed to reach the same coverage. Raising
-the cap further, or ranking callers by something better than raw count (e.g. how much of the excerpt
-budget they would cost, or a second structural signal), is future work this ADR does not attempt.
+some of them ranked out. Call-site count alone was a weak ranking key when — as in dasel — almost
+every caller ties at exactly one call site; the 2026-09-26 addendum below replaces it with a
+profile-weighted ranking, which narrows this gap but does not close it: a caller the campaign's
+profiled workload never exercised still ranks by count and name alone, same as before that addendum,
+and a package whose legitimate caller count exceeds twelve can still lose a caller the profile happened
+not to cover. The replay gate exercises the *uncapped* signal for the same reason it always did, and a
+live campaign's capped target is still not guaranteed to reach the same coverage as the uncapped one.
+Raising the cap further is future work this ADR does not attempt.
 
 `function_sources` inherits `function_source`'s risk surface: a misnamed declaration, a parse
 failure, or a declaration for a function outside the set is a pre-build rejection (ADR 0017's retry
@@ -212,3 +217,56 @@ ADR accepts and documents rather than resolves, since resolving it needs type in
 ## Addendum (2026-09-26): the remedy must switch a caller
 
 The first live dasel campaign on this prototype chose the `UnpackKinds` target with 11 consuming callers, and the optimizer rewrote only `UnpackKinds`' internals. That removes nothing the callers drop, and it measured +0.41%, inconclusive. The target then counted as tried. The shape check now holds a `throwaway_result` patch to its remedy: a patch that changes none of the set's callers is rejected before build as unmeasured. Like the other remedy rules (ADR 0017), the reason goes back to the optimizer with the target still open.
+
+## Addendum (2026-09-26): rank consuming callers by profile weight, not call-site count alone
+
+A live campaign against dasel chose `UnpackKinds` and listed 11 consuming callers: `IsScalar`, `IsNull`,
+`IsString`, `StringValue`, `IsInt`, `IntValue`, `IsFloat`, `FloatValue`, `IsBool`, `BoolValue`, and
+`isStandardMap`. Every one of these ties at exactly one call site, so `consumingCallers`' original
+ranking — call-site count, then source position — had nothing but source position to break the tie on.
+That order left out `Append`, `SliceLen`, `GetSliceIndex`, and `SetSliceIndex`, all of which fix1
+(the verified hand fix this ADR was written against) does edit, purely because they happen to be
+declared later in `model/value.go` than the eleven that made the cap.
+
+`consumingCallers` (`internal/campaign/callers.go`) now ranks by discovery's profile weight first,
+call-site count second, name third — a total order with no dependency on map iteration or sort
+stability. `Engine` builds `DiscoveryHotFunctionWeights` (`internal/campaign/engine.go`), a
+`map[string]float64` from pprof-qualified symbol name to hotness, at every point discovery already
+computes a profile summary: `hotFunctionWeights` reads it off `profile.Function`'s cumulative percent,
+falling back to flat percent, falling back to the sample-based path's raw attributed count — uncapped
+by `hotFunctionBudget`, unlike `DiscoveryHotFunctions`, because a caller can matter to the ranking
+without being one of the fifteen hottest functions in the whole binary. `mergeWeights` folds the CPU
+and allocation passes together, keeping the higher weight on a name both measured. The map is threaded
+through `orchestrator.DiscoveryEvidence.HotFunctionWeights` to the cause analyst unchanged, the same
+path `HotFunctions` already took.
+
+`callerWeight` bridges the two naming conventions: `callSite.Caller` is `funcName`'s bare, unqualified
+form (`"(*Value).UnpackKinds"`, no import path), while a profile names the same symbol import-path
+qualified (`"github.com/tomwright/dasel/v3/model.(*Value).UnpackKinds"`). A suffix match on
+`"."+caller` bridges them; more than one package exposing an identically named function is an accepted
+ambiguity, the same one `callSitesIn`'s method-by-name-only matching already lives with (see the
+Consequences section above), and the hottest match wins the tie rather than an arbitrary one.
+
+A caller the profile never measured ranks after every one it did, and an empty or nil weight map — a
+benchmark-only discovery, or one where profiling failed outright — falls back to the exact
+pre-addendum order: call-site count, then source position, verified by
+`TestConsumingCallersFallsBackToCallSiteCountWithoutProfileData`.
+`TestConsumingCallersRankedByProfileWeight` is the synthetic unit fixture (13 tied callers, two
+profiled and named last in source order, both survive an 11-slot cap that would otherwise have dropped
+them for two earlier in the file), and `TestConsumingCallersTieBreakIsStableAndDeterministic` checks
+the tie-break has no dependency on map iteration order across repeated calls.
+
+`TestThrowawayCallerRankingOnDaselRealProfile` (`internal/campaign/dasel_replay_test.go`, gated on the
+dasel clone the same way the other replay tests are) extends the replay gate with a real profile:
+`internal/campaign/testdata/dasel-sample-profile.txt` was captured with `/usr/bin/sample` — the exact
+platform sampler `internal/campaign/engine.go`'s discovery uses — against a real dasel binary built
+from the same clone, running `dasel query --unstable -o json 'data.filter(active==true).map(name)...'`
+over a 1.2M-element synthetic JSON array for 4 seconds, the same shape of workload discovery's own
+`sampleTargetProfile` runs. It measured two of fix1's eleven edited callers, `(*Value).Append` and
+`(*Value).isDencodingMap` (this query never exercises the int, float, bool, or slice-index accessors,
+so the other nine never got samples); the test checks that both outrank every caller the profile did
+not measure. This is real evidence, not a claim that the addendum recovers all eleven of fix1's callers
+on every workload: a caller a campaign's actual profiled workload never exercises still has nothing but
+call-site count and name to rank by, exactly as before this addendum, and dasel's own package still has
+more legitimate consuming callers than the twelve-function cap allows. The cap stays at twelve; nothing
+here argues it should move.

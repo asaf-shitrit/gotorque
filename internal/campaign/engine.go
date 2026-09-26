@@ -179,6 +179,16 @@ type State struct {
 	DiscoveryBuildID      string        `json:"discovery_build_id,omitempty"`
 	DiscoveryBinaryPath   string        `json:"discovery_binary_path,omitempty"`
 	DiscoveryHotFunctions []string      `json:"discovery_hot_functions,omitempty"`
+	// DiscoveryHotFunctionWeights is discovery's per-function profile
+	// hotness, keyed by pprof's package-qualified symbol name (the same names
+	// hotFunctionNames ranked, before the hotFunctionBudget cut and before
+	// resolveHotLocations folds symbols to source positions). A
+	// throwaway_result target's caller ranking (callers.go) reads it to rank
+	// consuming callers by measured hotness rather than call-site count
+	// alone, which is a weak key once most callers tie at one site each (ADR
+	// 0027's addendum). Absent when discovery never profiled (a
+	// benchmark-only or otherwise empty discovery).
+	DiscoveryHotFunctionWeights map[string]float64 `json:"discovery_hot_function_weights,omitempty"`
 	// DiscoveryWorkloads names the option variants discovery sampled next to
 	// the first seed, with Jev's processing-mode judgment of each.
 	DiscoveryWorkloads          []string `json:"discovery_workloads,omitempty"`
@@ -879,7 +889,9 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 		return err
 	}
 	results := append([]profile.SampleResult{result}, e.sampleExplored(ctx, seed)...)
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", e.sampledHotNames(results...))
+	names, weights := e.sampledHotNamesAndWeights(results...)
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", names)
+	e.state.DiscoveryHotFunctionWeights = mergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
 }
@@ -967,6 +979,18 @@ func (e *Engine) sampledHotNames(results ...profile.SampleResult) []string {
 		}
 	}
 	return names
+}
+
+// sampledHotNamesAndWeights is sampledHotNames plus the per-function weight
+// that ranking (the same names, unranked and untruncated) carried, so a
+// throwaway_result target's caller ranking (callers.go) has real profile
+// hotness to rank by instead of call-site count alone.
+func (e *Engine) sampledHotNamesAndWeights(results ...profile.SampleResult) ([]string, map[string]float64) {
+	weights := hotFunctionWeights(mergeAttributed(results, e.ownSymbol))
+	for _, result := range results {
+		weights = mergeWeights(weights, hotFunctionWeights(result.Functions))
+	}
+	return e.sampledHotNames(results...), weights
 }
 
 // mergeAttributed sums each sample's attributed weights as fractions of that
@@ -1207,6 +1231,7 @@ func (e *Engine) summarizeBenchmarkProfile(ctx context.Context, cpuProfile strin
 		return fmt.Errorf("summarize benchmark CPU profile: %w", err)
 	}
 	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, cpuProfile, hotFunctionNames(summary.Functions, hotFunctionBudget))
+	e.state.DiscoveryHotFunctionWeights = mergeWeights(e.state.DiscoveryHotFunctionWeights, hotFunctionWeights(summary.Functions))
 	e.state.DiscoveryProfileSummaryPath = summary.RawReport
 	return nil
 }
@@ -1233,12 +1258,13 @@ func (e *Engine) profileAllocations(ctx context.Context) string {
 		_ = e.saveEvent("discovery_alloc_profile_skipped", "no package in the module produced a benchmark allocation profile; hot list built from CPU evidence only", nil)
 		return ""
 	}
-	locations, summaryPath, err := e.summarizeAllocProfile(ctx, memProfile)
+	locations, weights, summaryPath, err := e.summarizeAllocProfile(ctx, memProfile)
 	if err != nil {
 		_ = e.saveEvent("discovery_alloc_profile_skipped", "summarize benchmark allocation profile: "+err.Error(), nil)
 		return ""
 	}
 	e.state.DiscoveryHotFunctions = mergeAllocFirst(e.state.DiscoveryHotFunctions, locations, hotFunctionBudget)
+	e.state.DiscoveryHotFunctionWeights = mergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
 	e.state.DiscoveryAllocProfileSummaryPath = summaryPath
 	_ = e.saveEvent("discovery_alloc_profile_completed", fmt.Sprintf("measured %d allocation-heavy functions from the benchmark alloc_space profile", len(locations)), locations)
 	return "a benchmark alloc_space profile"
@@ -1263,17 +1289,17 @@ func (e *Engine) benchAllocations(ctx context.Context, dir, memProfile string) b
 // summarizeAllocProfile turns a benchmark heap profile into hot functions,
 // ranked by the alloc_space sample index, with repository-relative source
 // positions.
-func (e *Engine) summarizeAllocProfile(ctx context.Context, memProfile string) ([]string, string, error) {
+func (e *Engine) summarizeAllocProfile(ctx context.Context, memProfile string) ([]string, map[string]float64, string, error) {
 	artifacts, err := runner.NewArtifactStore(filepath.Join(e.dir, "artifacts"))
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprofAllocSpace(ctx, memProfile, hotFunctionScanDepth)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	locations := e.resolveHotLocations(ctx, memProfile, hotFunctionNames(summary.Functions, hotFunctionBudget))
-	return locations, summary.RawReport, nil
+	return locations, hotFunctionWeights(summary.Functions), summary.RawReport, nil
 }
 
 // mergeAllocFirst puts every allocation-heavy location ahead of the
@@ -1526,6 +1552,55 @@ func hotFunctionNames(functions []profile.Function, limit int) []string {
 		}
 	}
 	return names
+}
+
+// hotFunctionWeights maps every actionable function name in functions to a
+// comparable hotness score, uncapped by hotFunctionBudget: pprof's cumulative
+// percent, falling back to flat percent, falling back to the sample-based
+// path's raw attributed count (mergeAttributed sets Flat only, both percents
+// zero). It feeds a throwaway_result target's caller ranking (callers.go),
+// which needs real weight for more functions than the truncated hot list
+// keeps: dasel's own callers mostly tie at one call site each, so the profile
+// is the only thing that can tell them apart (ADR 0027's addendum).
+func hotFunctionWeights(functions []profile.Function) map[string]float64 {
+	out := map[string]float64{}
+	for _, fn := range functions {
+		name := strings.TrimSpace(fn.Name)
+		if name == "" || strings.HasPrefix(name, "runtime.") || !actionableSymbol(name) {
+			continue
+		}
+		w := fn.CumulativePercent
+		if w == 0 {
+			w = fn.FlatPercent
+		}
+		if w == 0 {
+			w = float64(atoiOrZero(fn.Flat))
+		}
+		if existing, ok := out[name]; !ok || w > existing {
+			out[name] = w
+		}
+	}
+	return out
+}
+
+// mergeWeights folds src into dst, keeping the higher weight on a name both
+// carry, and returns dst (built if nil). Several profiles can name the same
+// function (CPU and allocation passes, seed and explored workloads); keeping
+// the max is a conservative merge that never lets a smaller pass understate a
+// function's true hotness.
+func mergeWeights(dst, src map[string]float64) map[string]float64 {
+	if len(src) == 0 {
+		return dst
+	}
+	if dst == nil {
+		dst = make(map[string]float64, len(src))
+	}
+	for name, w := range src {
+		if existing, ok := dst[name]; !ok || w > existing {
+			dst[name] = w
+		}
+	}
+	return dst
 }
 
 // actionableSymbol rejects frames no source change can address.
