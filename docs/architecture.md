@@ -556,8 +556,17 @@ package, is a new function appended after the callee in its own file; one
 matching a name that exists elsewhere in the package but outside the set is
 rejected. The shape check's `checkMultiConfined` applies the same
 per-function confinement across every file in the callee's directory rather
-than one file. The single-function path (the zero `TargetFunction` kind) is
-unchanged, byte for byte.
+than one file. `imports` still comes back as one shared list, but each
+touched file gets only the paths its own new code references
+(`importsForFile`): a package name is read from the file's unresolved
+selector bases, the same reading `dropOrphanedImports` and the shape check's
+`checkImports` already use, so a rewritten caller in a file of its own gets
+the import it needs instead of only the callee's file getting it. A name the
+optimizer never listed but that resolves to an unambiguous standard-library
+package (`stdlibImportPath`, the same fixed set `checkImports` treats as safe
+to infer) is added the same way; nothing outside that table is ever guessed.
+The single-function path (the zero `TargetFunction` kind) is unchanged, byte
+for byte.
 
 `AI_GATEWAY_API_KEY` (and optionally `AI_GATEWAY_BASE_URL`) configure the
 client. `--adk` spends one preflight request before repository work, because a
