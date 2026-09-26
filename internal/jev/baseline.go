@@ -23,3 +23,13 @@ var baseline = map[Cause]stats{
 }
 
 const baselineDigest = "8030163fc4fcbfcf50c4589ba8154d83b094573e0e4a9c9ea9716058fdbc5932"
+
+// baselineModelRelease is the release_date GET <gateway base>/typesafe/v1/models
+// reported for the "jev" entry when this baseline (and reviewBaseline in
+// review_baseline.go, measured the same day) were recorded. It is the only
+// version signal the gateway exposes (see ADR 0012, ADR 0029): Client.Preflight
+// compares it on every run under --analyst/--reviewer/--explorer jev and fails
+// on a mismatch (EnvAllowDrift downgrades that to a warning), because nothing
+// else here would notice a Jev release shipped behind the unversioned
+// "typesafe-ai/jev" alias.
+const baselineModelRelease = "2026-09-15"

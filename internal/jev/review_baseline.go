@@ -17,3 +17,9 @@ var reviewBaseline = map[Hazard]stats{
 }
 
 const reviewBaselineDigest = "653e2414ab09a20bcbec035aa289ffd818d4fb652a6e053ff4894b44150b757b"
+
+// This baseline was measured the same day, against the same Jev release, as
+// the cause baseline in baseline.go: see baselineModelRelease there for the
+// release_date Client.Preflight checks against on every --reviewer jev run.
+// It is not duplicated here because there is only one Jev version to check,
+// not one per role.

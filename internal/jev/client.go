@@ -26,6 +26,20 @@ const (
 	EnvAPIKey      = "AI_GATEWAY_API_KEY" //nolint:gosec // environment variable name, not a credential value
 	EnvBaseURL     = "AI_GATEWAY_BASE_URL"
 	DefaultBaseURL = "https://ai-gateway.vercel.sh/v1"
+	// EnvAllowDrift, set to any non-empty value, downgrades the release-date
+	// and canary drift guards in Preflight from a failure to a warning. It
+	// does not affect the provider pin below: a wrong provider is refused
+	// unconditionally, since nothing recorded is valid for a provider other
+	// than TypeSafe's own.
+	EnvAllowDrift = "GOTORQUE_JEV_ALLOW_DRIFT"
+	// pinnedProvider is the only gateway provider gotorque accepts an answer
+	// from. The gateway serves the "typesafe-ai/jev" alias from more than one
+	// upstream: a live probe (see ADR 0029) found requests also routed to
+	// "digitalocean", with typesafe-ai answering only as its fallback.
+	// Nothing confirms that route runs the same build TypeSafe serves, so
+	// every baseline and canary in this package is only valid for
+	// pinnedProvider.
+	pinnedProvider = "typesafe-ai"
 )
 
 // Question is one typed question. gotorque sends only "boolean" questions, whose
@@ -37,10 +51,30 @@ type Question struct {
 }
 
 // Request asks every question against the same state in one round trip.
+// ProviderOptions is filled in by Evaluate when the caller leaves it nil; a
+// caller never needs to set it.
 type Request struct {
-	Model     string              `json:"model"`
-	State     any                 `json:"state"`
-	Questions map[string]Question `json:"questions"`
+	Model           string              `json:"model"`
+	State           any                 `json:"state"`
+	Questions       map[string]Question `json:"questions"`
+	ProviderOptions *ProviderOptions    `json:"providerOptions,omitempty"`
+}
+
+// ProviderOptions restricts which upstream serves a request. See pinnedProvider.
+type ProviderOptions struct {
+	Gateway GatewayOptions `json:"gateway"`
+}
+
+// GatewayOptions is the gateway-specific slice of ProviderOptions the
+// AI Gateway's evaluation modality documents.
+type GatewayOptions struct {
+	Only []string `json:"only,omitempty"`
+}
+
+// pinnedProviderOptions restricts every request this client sends to
+// pinnedProvider, unless a caller already set its own ProviderOptions.
+func pinnedProviderOptions() *ProviderOptions {
+	return &ProviderOptions{Gateway: GatewayOptions{Only: []string{pinnedProvider}}}
 }
 
 // Answer is one boolean answer: the probability that the answer is yes.
@@ -57,9 +91,38 @@ type Usage struct {
 
 // Response carries one answer per question id.
 type Response struct {
-	Model   string            `json:"model"`
-	Answers map[string]Answer `json:"answers"`
-	Usage   Usage             `json:"usage"`
+	Model            string            `json:"model"`
+	Answers          map[string]Answer `json:"answers"`
+	Usage            Usage             `json:"usage"`
+	ProviderMetadata *ProviderMetadata `json:"providerMetadata,omitempty"`
+}
+
+// ProviderMetadata carries the gateway's own record of how a request was
+// routed, alongside the answer.
+type ProviderMetadata struct {
+	Gateway *GatewayMetadata `json:"gateway,omitempty"`
+}
+
+// GatewayMetadata is the gateway-specific slice of ProviderMetadata.
+type GatewayMetadata struct {
+	Routing *GatewayRouting `json:"routing,omitempty"`
+}
+
+// GatewayRouting is what the gateway reports about how it routed one
+// request. FinalProvider is the provider whose answer the response actually
+// carries; it can differ from the plan when a preferred provider fails over
+// to another (see pinnedProvider).
+type GatewayRouting struct {
+	FinalProvider string `json:"finalProvider,omitempty"`
+}
+
+// finalProvider reports which provider actually answered, or "" when the
+// gateway did not report it.
+func (r Response) finalProvider() string {
+	if r.ProviderMetadata == nil || r.ProviderMetadata.Gateway == nil || r.ProviderMetadata.Gateway.Routing == nil {
+		return ""
+	}
+	return r.ProviderMetadata.Gateway.Routing.FinalProvider
 }
 
 // Evaluator answers typed questions. Client reaches the gateway; Stub answers
@@ -122,6 +185,9 @@ func (c Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 	if req.Model == "" {
 		req.Model = Model
 	}
+	if req.ProviderOptions == nil {
+		req.ProviderOptions = pinnedProviderOptions()
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return Response{}, fmt.Errorf("encode Jev request: %w", err)
@@ -176,6 +242,9 @@ func (c Client) post(ctx context.Context, body []byte) (Response, bool, error) {
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return Response{}, false, fmt.Errorf("decode Jev response: %w", err)
 	}
+	if final := resp.finalProvider(); final != "" && final != pinnedProvider {
+		return Response{}, false, fmt.Errorf("answered through provider %q, not %q; refusing an answer the baseline was never measured against", final, pinnedProvider)
+	}
 	return resp, false, nil
 }
 
@@ -202,22 +271,119 @@ func gatewayMessage(data []byte) string {
 	return text
 }
 
-// Preflight spends one minimal request to prove the key, the account's billing
-// state, and the model all work before a campaign starts repository work. A new
-// gateway account refuses every request until a card is on file, and learning
-// that at the analyst node would cost the whole baseline first.
-func (c Client) Preflight(ctx context.Context) error {
-	resp, err := c.Evaluate(ctx, Request{
-		State:     "gotorque connectivity check",
-		Questions: map[string]Question{"ok": {Type: "boolean", Instructions: "Is this a connectivity check?"}},
-	})
+// Preflight spends one minimal request to prove the key, the account's
+// billing state, and the model all work before a campaign starts repository
+// work. A new gateway account refuses every request until a card is on file,
+// and learning that at the analyst node would cost the whole baseline first.
+// That one request carries the canary questions (canary.go) instead of a
+// plain connectivity check, so the same call also catches a Jev version
+// behind the gateway's unversioned alias moving enough to matter.
+//
+// Preflight also makes one free GET against the models listing to compare
+// its release_date against baselineModelRelease. Both that check and the
+// canary check fail the preflight on a mismatch; EnvAllowDrift downgrades
+// both to a warning, returned alongside a nil error. An unreachable listing
+// only ever warns: it is not evidence of drift, just of not knowing.
+func (c Client) Preflight(ctx context.Context) ([]string, error) {
+	resp, err := c.Evaluate(ctx, Request{State: canaryState, Questions: canaryQuestionSet()})
 	if err != nil {
-		return fmt.Errorf("preflight against Jev: %w", err)
+		return nil, fmt.Errorf("preflight against Jev: %w", err)
 	}
-	if _, ok := resp.Answers["ok"]; !ok {
-		return errors.New("preflight against Jev: response carried no answer")
+	if len(resp.Answers) == 0 {
+		return nil, errors.New("preflight against Jev: response carried no answer")
 	}
-	return nil
+	var warnings []string
+	if msg, hardFail := c.releaseCheck(ctx); msg != "" {
+		if err := driftGuard(msg, hardFail, &warnings); err != nil {
+			return warnings, err
+		}
+	}
+	if drift := canaryDrift(resp.Answers); len(drift) > 0 {
+		msg := fmt.Sprintf("Jev's canary answers moved: %s; re-measure with TestLiveCanary", strings.Join(drift, "; "))
+		if err := driftGuard(msg, true, &warnings); err != nil {
+			return warnings, err
+		}
+	}
+	return warnings, nil
+}
+
+// driftGuard applies EnvAllowDrift to one preflight finding: msg is appended
+// as a warning either when hardFail is false (an unreachable listing is
+// never a hard failure) or when the override is set; otherwise msg becomes
+// the preflight's error.
+func driftGuard(msg string, hardFail bool, warnings *[]string) error {
+	if !hardFail || os.Getenv(EnvAllowDrift) != "" {
+		*warnings = append(*warnings, msg)
+		return nil
+	}
+	return fmt.Errorf("%s (set %s=1 to run anyway)", msg, EnvAllowDrift)
+}
+
+// releaseCheck compares the gateway's listed release_date for "jev" against
+// baselineModelRelease. hardFail is false for an unreachable listing (a
+// warning either way) and true for a listed date that disagrees with the
+// baseline.
+func (c Client) releaseCheck(ctx context.Context) (msg string, hardFail bool) {
+	release, err := c.modelRelease(ctx)
+	if err != nil {
+		return fmt.Sprintf("could not check Jev's model release date: %v", err), false
+	}
+	if release == baselineModelRelease {
+		return "", false
+	}
+	return fmt.Sprintf("Jev's listed release_date is %q, the baseline was measured against %q; re-measure with TestLiveBaseline", release, baselineModelRelease), true
+}
+
+// modelsListing is the shape of GET <base>/typesafe/v1/models.
+type modelsListing struct {
+	Models []struct {
+		Name        string `json:"name"`
+		ReleaseDate string `json:"release_date"`
+	} `json:"models"`
+}
+
+// modelsEndpoint derives the TypeSafe-compatible models listing URL from the
+// configured evaluate endpoint's base, e.g.
+// "https://ai-gateway.vercel.sh/v1" -> "https://ai-gateway.vercel.sh/typesafe/v1/models".
+func (c Client) modelsEndpoint() string {
+	base := strings.TrimRight(c.BaseURL, "/")
+	if base == "" {
+		base = DefaultBaseURL
+	}
+	base = strings.TrimSuffix(base, "/v1")
+	return base + "/typesafe/v1/models"
+}
+
+// modelRelease fetches the "jev" entry's release_date. The listing is free
+// (no tokens spent), so this is safe to call on every preflight.
+func (c Client) modelRelease(ctx context.Context) (string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.modelsEndpoint(), nil)
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	httpResp, err := c.httpClient().Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("list Jev models: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("read Jev models listing: %w", err)
+	}
+	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
+		return "", fmt.Errorf("gateway returned HTTP %d for the Jev models listing: %s", httpResp.StatusCode, gatewayMessage(data))
+	}
+	var listing modelsListing
+	if err := json.Unmarshal(data, &listing); err != nil {
+		return "", fmt.Errorf("decode Jev models listing: %w", err)
+	}
+	for _, m := range listing.Models {
+		if m.Name == "jev" {
+			return m.ReleaseDate, nil
+		}
+	}
+	return "", errors.New(`models listing carried no "jev" entry`)
 }
 
 // Stub answers every question with probability one half. It never represents

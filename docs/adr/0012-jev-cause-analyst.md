@@ -54,7 +54,13 @@ The baseline cannot be pinned to a model version. TypeSafe advises pinning once 
 tuned, but the Vercel gateway serves only the alias `typesafe-ai/jev` and reports no version, so a
 Jev release (1.13 at measurement) silently moves every answer the baseline describes. Re-measure
 on each release; switching to TypeSafe's own endpoint, which accepts pinned IDs, needs a second
-account and key.
+account and key. ADR 0029 narrows what it can, in code rather than by pinning a version: every
+request is pinned to the `typesafe-ai` provider (the gateway was found serving the same alias from a
+second upstream, `digitalocean`, with no guarantee it runs the same build), `Client.Preflight` checks
+`GET /typesafe/v1/models`' `release_date` against the date the baselines were measured on, and that
+same preflight spends its one request on a canary — a fixed function and all seven cause
+questions with recorded answers — so a release that moves Jev's answers without moving
+`release_date` is still caught.
 
 Jev only classifies what discovery lists. On gron the output loop behind the accepted `bufio` patch
 shows up only as `fmt.(*pp).doPrintln`, a standard-library frame discovery drops, so the analyst is

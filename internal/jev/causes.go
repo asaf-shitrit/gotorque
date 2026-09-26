@@ -1,9 +1,6 @@
 package jev
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -263,10 +260,5 @@ type stats struct{ mean, std float64 }
 // digest identifies the question set and state template. The baseline below is
 // only valid for the exact text it was measured with.
 func digest() string {
-	payload, err := json.Marshal(map[string]any{"context": stateContext, "questions": Questions()})
-	if err != nil {
-		panic(err) // static strings always marshal
-	}
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
+	return digestPayload(map[string]any{"context": stateContext, "questions": Questions()})
 }
