@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -53,7 +54,7 @@ func TestReviewAnalystReplacesTheReviewerAgent(t *testing.T) {
 	if reviewerCalls != 0 {
 		t.Errorf("reviewer model called %d times, want never", reviewerCalls)
 	}
-	if len(review.requests) != 2 || review.requests[0].Proposal.Hypothesis != "buffer output" || review.requests[0].Target == nil || *review.requests[0].Target != targetLoop {
+	if len(review.requests) != 2 || review.requests[0].Proposal.Hypothesis != "buffer output" || review.requests[0].Target == nil || !reflect.DeepEqual(*review.requests[0].Target, targetLoop) {
 		t.Fatalf("review requests = %+v, want the patch and its target each cycle", review.requests)
 	}
 	if len(prior) == 0 || !slices.Equal(prior[0].ReviewConcerns, []string{"an error from a call that can fail is discarded"}) {

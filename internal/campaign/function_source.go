@@ -38,7 +38,7 @@ const (
 // applies, and the transport that produced it. A non-empty Patch always wins:
 // it is the fallback transport, and an optimizer that ignores its
 // instruction still produces something the deterministic gates can judge.
-// Next, a multi-function target (Target.Functions set) with FunctionSources
+// Next, a function-set target (Target.IsFunctionSet) with FunctionSources
 // (or a lone FunctionSource naming the callee, accepted the way every other
 // list field here accepts a scalar) builds a multi-file diff. Otherwise, a
 // code-chosen target and a non-empty FunctionSource build the single-file
@@ -74,7 +74,7 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 // callee is accepted as a one-element list, the way every other list field
 // on OptimizerResult accepts a scalar (internal/agents/decode.go).
 func multiFunctionSources(target agents.Target, proposal agents.OptimizerResult) []string {
-	if target.Functions == "" {
+	if !target.IsFunctionSet() {
 		return nil
 	}
 	if len(proposal.FunctionSources) > 0 {

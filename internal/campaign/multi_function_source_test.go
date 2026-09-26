@@ -65,10 +65,11 @@ func TestBuildMultiFunctionSourceDiffAppliesAndBuilds(t *testing.T) {
 		Location: "a.go:9",
 		Function: "(*Store).Get",
 		Cause:    causeThrowawayResult,
-		Functions: agents.EncodeFunctionSet([]agents.FunctionRef{
+		Kind:     agents.TargetFunctionSet,
+		Callers: []agents.FunctionRef{
 			{Name: "(*Store).IsPositive", Location: "b.go:3"},
 			{Name: "(*Store).Double", Location: "b.go:7"},
-		}),
+		},
 	}
 	sources := []string{
 		// A wholly new function: not the callee, not in Functions, and not
@@ -122,9 +123,10 @@ func TestBuildMultiFunctionSourceDiffRejectsANameOutsideTheSet(t *testing.T) {
 		Location: "a.go:9",
 		Function: "(*Store).Get",
 		Cause:    causeThrowawayResult,
-		Functions: agents.EncodeFunctionSet([]agents.FunctionRef{
+		Kind:     agents.TargetFunctionSet,
+		Callers: []agents.FunctionRef{
 			{Name: "(*Store).IsPositive", Location: "b.go:3"},
-		}),
+		},
 	}
 	sources := []string{
 		"func (s *Store) Get() *Box {\n\treturn NewBox(s.x)\n}",

@@ -128,7 +128,7 @@ func checkFile(worktree, name string, change *fileChange, target *agents.Target)
 	if target == nil {
 		return nil
 	}
-	if target.Functions != "" {
+	if target.IsFunctionSet() {
 		return checkMultiConfined(fset, file, change, name, *target)
 	}
 	if targetPath(target.Location) != name {
@@ -155,7 +155,7 @@ func checkMultiConfined(fset *token.FileSet, file *ast.File, change *fileChange,
 	}
 	allowed := map[string]bool{target.Function: true}
 	var names []string
-	for _, f := range agents.DecodeFunctionSet(target.Functions) {
+	for _, f := range target.Callers {
 		allowed[f.Name] = true
 		names = append(names, f.Name)
 	}
@@ -482,7 +482,7 @@ func checkRemedy(worktree string, changes map[string]*fileChange, target *agents
 	if target == nil {
 		return nil
 	}
-	if target.Functions != "" {
+	if target.IsFunctionSet() {
 		return checkSwitchedCallers(worktree, changes, *target)
 	}
 	if target.FixKind == string(jev.KindDropFmt) {
@@ -522,7 +522,7 @@ func checkCauseShape(worktree string, changes map[string]*fileChange, target *ag
 // internals, measured 0%, and the target counted as tried; rejected here
 // before the build, the reason goes back with the target still open.
 func checkSwitchedCallers(worktree string, changes map[string]*fileChange, target agents.Target) error {
-	callers := agents.DecodeFunctionSet(target.Functions)
+	callers := target.Callers
 	for _, ref := range callers {
 		if callerTouched(worktree, changes, ref) {
 			return nil

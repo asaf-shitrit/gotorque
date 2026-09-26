@@ -107,10 +107,11 @@ func TestShapeCheckAcceptsFix1UnderTheFullCallerSet(t *testing.T) {
 		fns = append(fns, agents.FunctionRef{Name: c.Caller, Location: c.Location})
 	}
 	target := agents.Target{
-		Location:  site.Location,
-		Function:  site.Name,
-		Cause:     causeThrowawayResult,
-		Functions: agents.EncodeFunctionSet(fns),
+		Location: site.Location,
+		Function: site.Name,
+		Cause:    causeThrowawayResult,
+		Kind:     agents.TargetFunctionSet,
+		Callers:  fns,
 	}
 
 	worktree := scratchDaselModel(t, repo)

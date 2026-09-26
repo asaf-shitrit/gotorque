@@ -19,9 +19,10 @@ var shapeMultiTarget = agents.Target{
 	Location: "a.go:9",
 	Function: "(*Store).Get",
 	Cause:    causeThrowawayResult,
-	Functions: agents.EncodeFunctionSet([]agents.FunctionRef{
+	Kind:     agents.TargetFunctionSet,
+	Callers: []agents.FunctionRef{
 		{Name: "(*Store).IsPositive", Location: "b.go:3"},
-	}),
+	},
 }
 
 // shapeOfMulti commits throwawayFixtureRepo's two files, overwrites them with

@@ -502,14 +502,14 @@ func nextTarget(targets []agents.Target, tried map[string]bool) (agents.Target, 
 }
 
 // excerptsAt keeps the excerpts for the target's location, and, for a
-// throwaway_result target (ADR 0027), every function in its Functions set
+// throwaway_result target (ADR 0027), every function in its Callers
 // too: the optimizer needs to see every caller it may rewrite, not only the
 // callee. It also keeps the header of each such location's file (the excerpt
 // that starts at line 1), which carries the imports a remedy may have to
 // extend whichever hot path of that file it was collected for.
 func excerptsAt(excerpts []SourceExcerpt, target agents.Target) []SourceExcerpt {
 	locations := map[string]bool{target.Location: true}
-	for _, f := range agents.DecodeFunctionSet(target.Functions) {
+	for _, f := range target.Callers {
 		locations[f.Location] = true
 	}
 	var kept []SourceExcerpt

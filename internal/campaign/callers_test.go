@@ -108,7 +108,7 @@ func TestThrowawayTargetCapsAndRemedies(t *testing.T) {
 	require.Equal(t, "pkg.go:14", target.Location)
 	require.Contains(t, target.Remedy, "(*T).Get")
 
-	fns := agents.DecodeFunctionSet(target.Functions)
+	fns := target.Callers
 	names := make([]string, 0, len(fns))
 	for _, f := range fns {
 		names = append(names, f.Name)

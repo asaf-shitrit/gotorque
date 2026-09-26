@@ -534,9 +534,9 @@ case this was built against: `(*Value).UnpackKinds` ends every call with
 `NewValue(res)`, and about a dozen of its own package's callers use the
 result only to read a `Kind`. A firing signal produces a target in the first
 tier, ahead of every Jev-ranked one, carrying the callee plus its ranked
-consuming callers (capped at twelve total) as `Target.Functions`, a
-JSON-encoded string rather than a slice field so `Target` stays comparable
-with `==`. The optimizer answers with `function_sources` (several whole
+consuming callers (capped at twelve total): `Kind` is
+`agents.TargetFunctionSet` and the callers are `Target.Callers`. Every branch
+that differs by kind asks `Target.IsFunctionSet()`. The optimizer answers with `function_sources` (several whole
 declarations, ADR 0022's decode leniency applied to the plural field too),
 and `internal/campaign/multi_function_source.go` builds one multi-file diff:
 a declaration matching a name in the set replaces that function wherever it
@@ -545,7 +545,7 @@ package, is a new function appended after the callee in its own file; one
 matching a name that exists elsewhere in the package but outside the set is
 rejected. The shape check's `checkMultiConfined` applies the same
 per-function confinement across every file in the callee's directory rather
-than one file. The single-function path (`Target.Functions` unset) is
+than one file. The single-function path (the zero `TargetFunction` kind) is
 unchanged, byte for byte.
 
 `AI_GATEWAY_API_KEY` (and optionally `AI_GATEWAY_BASE_URL`) configure the

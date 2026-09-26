@@ -27,7 +27,7 @@ type parsedFunctionSource struct {
 
 // buildMultiFunctionSourceDiff turns several whole function declarations into
 // one multi-file unified diff for a throwaway_result target (ADR 0027). Every
-// declaration whose name matches the callee or one of target.Functions
+// declaration whose name matches the callee or one of target.Callers
 // replaces that function, in whichever repository file it is declared in.
 // A declaration whose name matches neither, and does not exist anywhere else
 // in the callee's package, is a wholly new function, appended to the end of
@@ -62,7 +62,7 @@ func (e *Engine) buildMultiFunctionSourceDiff(ctx context.Context, target agents
 // repository-relative file it is declared in.
 func knownFunctions(target agents.Target, calleeRel string) map[string]string {
 	known := map[string]string{target.Function: calleeRel}
-	for _, f := range agents.DecodeFunctionSet(target.Functions) {
+	for _, f := range target.Callers {
 		known[f.Name] = targetPath(f.Location)
 	}
 	return known

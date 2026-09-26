@@ -449,11 +449,12 @@ func throwawayTarget(site hotFunction, a throwawayAnalysis) agents.Target {
 	}
 	remedy := throwawayRemedy(site.Name, names)
 	return agents.Target{
-		Location:  site.Location,
-		Function:  site.Name,
-		Cause:     causeThrowawayResult,
-		Remedy:    remedy,
-		Functions: agents.EncodeFunctionSet(fns),
+		Location: site.Location,
+		Function: site.Name,
+		Cause:    causeThrowawayResult,
+		Remedy:   remedy,
+		Kind:     agents.TargetFunctionSet,
+		Callers:  fns,
 	}
 }
 
@@ -501,11 +502,11 @@ func throwawayTargets(repo string, sites []hotFunction) []agents.Target {
 func throwawayExcerptPaths(targets []agents.Target) []agents.HotPath {
 	var out []agents.HotPath
 	for _, t := range targets {
-		if t.Cause != causeThrowawayResult {
+		if !t.IsFunctionSet() {
 			continue
 		}
 		out = append(out, agents.HotPath{Location: t.Location, Evidence: "code-derived: throwaway_result"})
-		for _, f := range agents.DecodeFunctionSet(t.Functions) {
+		for _, f := range t.Callers {
 			out = append(out, agents.HotPath{Location: f.Location, Evidence: "code-derived: throwaway_result caller"})
 		}
 	}

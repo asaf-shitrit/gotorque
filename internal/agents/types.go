@@ -164,47 +164,37 @@ type Target struct {
 	// FixKind names the mechanism Jev chose within the cause, when one stood
 	// out; Remedy is then that mechanism's, not the cause's generic one.
 	FixKind string `json:"fix_kind,omitempty"`
-	// Functions is set only for a throwaway_result target (ADR 0027): the
-	// callee's consuming callers, ranked, as a JSON-encoded []FunctionRef
-	// (EncodeFunctionSet/DecodeFunctionSet). It is a string, not []FunctionRef,
-	// so Target stays comparable with ==: planTarget, targetKey and their
-	// tests compare Target values directly, and a slice field would make that
-	// a compile error.
-	Functions string `json:"functions,omitempty"`
+	// Kind says how much code the target lets a patch change. The zero value
+	// is one function, which is also what a target saved before kinds existed
+	// reads as.
+	Kind TargetKind `json:"kind,omitempty"`
+	// Callers is set only on a TargetFunctionSet target (ADR 0027): the
+	// callee's consuming callers, ranked, which the patch may change alongside
+	// Function.
+	Callers []FunctionRef `json:"callers,omitempty"`
 }
 
-// FunctionRef names one function of a throwaway_result target's set, in the
+// TargetKind names how much of the code a target lets a patch change.
+type TargetKind string
+
+const (
+	// TargetFunction confines a patch to Target.Function.
+	TargetFunction TargetKind = ""
+	// TargetFunctionSet confines a patch to Target.Function plus
+	// Target.Callers, for a remedy that spans a callee and its callers
+	// (ADR 0027).
+	TargetFunctionSet TargetKind = "function_set"
+)
+
+// IsFunctionSet reports whether the target spans a callee and its callers.
+func (t Target) IsFunctionSet() bool { return t.Kind == TargetFunctionSet }
+
+// FunctionRef names one function of a function-set target, in the
 // path/receiver-qualified format internal/campaign/causes.go's funcName
 // produces, with its repository-relative "path.go:line" location.
 type FunctionRef struct {
 	Name     string `json:"name"`
 	Location string `json:"location"`
-}
-
-// EncodeFunctionSet and DecodeFunctionSet are Target.Functions' wire format:
-// a JSON array, kept as a string so Target stays a comparable struct. An
-// empty or unparseable string decodes to nil rather than erroring, since
-// Target's json tag already makes the field optional.
-func EncodeFunctionSet(fns []FunctionRef) string {
-	if len(fns) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(fns)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-func DecodeFunctionSet(s string) []FunctionRef {
-	if s == "" {
-		return nil
-	}
-	var out []FunctionRef
-	if err := json.Unmarshal([]byte(s), &out); err != nil {
-		return nil
-	}
-	return out
 }
 
 // OptimizerResult is one focused, reversible source candidate. Patch holds a
@@ -224,7 +214,7 @@ func DecodeFunctionSet(s string) []FunctionRef {
 // remains the only transport when there is no target.
 //
 // FunctionSources is the throwaway_result transport (ADR 0027): with a
-// multi-function target (Target.Functions set), the optimizer returns one
+// function-set target (Target.IsFunctionSet), the optimizer returns one
 // whole declaration per function it changes, callee and callers together,
 // instead of one FunctionSource. Decoding is as lenient as every other list
 // field here: a single string decodes as a one-element list. FunctionSource

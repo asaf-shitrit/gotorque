@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"iter"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -36,7 +37,7 @@ func TestPlanTargetPicksTheFirstUntriedTarget(t *testing.T) {
 		PriorCandidates: []PriorCandidate{{Attempt: 1, Target: &targetLoop}},
 	}
 	planTarget(&state)
-	if state.Target == nil || *state.Target != targetAlloc {
+	if state.Target == nil || !reflect.DeepEqual(*state.Target, targetAlloc) {
 		t.Fatalf("target = %+v, want the untried alloc target", state.Target)
 	}
 	if state.Coordinator.NextExperiment != targetAlloc.Remedy || state.Coordinator.Objective != targetObjective {
@@ -115,8 +116,8 @@ func TestCodeChoosesEachCycleTarget(t *testing.T) {
 	if coordinatorCalls != 0 {
 		t.Errorf("coordinator model called %d times, want never", coordinatorCalls)
 	}
-	if len(policy.targets) != 3 || policy.targets[0] == nil || *policy.targets[0] != targetLoop ||
-		policy.targets[1] == nil || *policy.targets[1] != targetAlloc || policy.targets[2] != nil {
+	if len(policy.targets) != 3 || policy.targets[0] == nil || !reflect.DeepEqual(*policy.targets[0], targetLoop) ||
+		policy.targets[1] == nil || !reflect.DeepEqual(*policy.targets[1], targetAlloc) || policy.targets[2] != nil {
 		t.Errorf("targets per verdict = %v, want the loop, then the allocation, then none", policy.targets)
 	}
 }
@@ -207,13 +208,13 @@ func TestAnUnmeasuredTargetGetsOneMoreAttempt(t *testing.T) {
 		PriorCandidates: []PriorCandidate{{Attempt: 1, Target: &targetLoop, Unmeasured: true, FailureDetail: "the patch uses bufio without importing it"}},
 	}
 	planTarget(&state)
-	if state.Target == nil || *state.Target != targetLoop {
+	if state.Target == nil || !reflect.DeepEqual(*state.Target, targetLoop) {
 		t.Fatalf("target = %+v, want the loop again after an unmeasured attempt", state.Target)
 	}
 
 	state.PriorCandidates = append(state.PriorCandidates, PriorCandidate{Attempt: 2, Target: &targetLoop, Unmeasured: true})
 	planTarget(&state)
-	if state.Target == nil || *state.Target != targetAlloc {
+	if state.Target == nil || !reflect.DeepEqual(*state.Target, targetAlloc) {
 		t.Fatalf("target = %+v, want the next target after two unmeasured attempts", state.Target)
 	}
 
@@ -222,7 +223,7 @@ func TestAnUnmeasuredTargetGetsOneMoreAttempt(t *testing.T) {
 		PriorCandidates: []PriorCandidate{{Attempt: 1, Target: &targetLoop}},
 	}
 	planTarget(&measured)
-	if measured.Target == nil || *measured.Target != targetAlloc {
+	if measured.Target == nil || !reflect.DeepEqual(*measured.Target, targetAlloc) {
 		t.Fatalf("target = %+v, want a measured target closed at once", measured.Target)
 	}
 }
@@ -275,7 +276,7 @@ func TestTheGraphRetriesATargetItNeverMeasured(t *testing.T) {
 }
 
 func allTargets(got []*agents.Target, want agents.Target, n int) bool {
-	return len(got) == n && !slices.ContainsFunc(got, func(t *agents.Target) bool { return t == nil || *t != want })
+	return len(got) == n && !slices.ContainsFunc(got, func(t *agents.Target) bool { return t == nil || !reflect.DeepEqual(*t, want) })
 }
 
 // TestPlanTargetKeepsExcerptsForEveryFunctionInASet: a throwaway_result
@@ -285,9 +286,10 @@ func allTargets(got []*agents.Target, want agents.Target, n int) bool {
 func TestPlanTargetKeepsExcerptsForEveryFunctionInASet(t *testing.T) {
 	multi := agents.Target{
 		Location: "a.go:9", Function: "(*Store).Get", Cause: "throwaway_result",
-		Functions: agents.EncodeFunctionSet([]agents.FunctionRef{
+		Kind: agents.TargetFunctionSet,
+		Callers: []agents.FunctionRef{
 			{Name: "(*Store).IsPositive", Location: "b.go:3"},
-		}),
+		},
 	}
 	state := CampaignState{
 		Analysis: agents.AnalystResult{Targets: []agents.Target{multi}},

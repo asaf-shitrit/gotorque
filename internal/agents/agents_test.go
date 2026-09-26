@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"reflect"
@@ -74,5 +75,31 @@ func TestRoleResponseSchemaCoversEveryRole(t *testing.T) {
 func TestRoleResponseSchemaRejectsUnknownRole(t *testing.T) {
 	if _, err := roleResponseSchema(Role("nonexistent")); err == nil {
 		t.Fatal("roleResponseSchema(nonexistent) error = nil, want registration failure")
+	}
+}
+
+// A target's kind rides in its JSON, and a target saved before kinds existed
+// (no "kind" key) reads back as the one-function kind.
+func TestTargetKindRoundTripsAndDefaultsToOneFunction(t *testing.T) {
+	set := Target{Location: "a.go:9", Function: "(*Store).Get", Cause: "throwaway_result", Kind: TargetFunctionSet,
+		Callers: []FunctionRef{{Name: "(*Store).IsPositive", Location: "b.go:3"}}}
+	data, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Target
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !back.IsFunctionSet() || !reflect.DeepEqual(back, set) {
+		t.Fatalf("round trip = %#v, want %#v", back, set)
+	}
+
+	var old Target
+	if err := json.Unmarshal([]byte(`{"location":"a.go:9","function":"f","cause":"alloc","remedy":"r","z":1}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.IsFunctionSet() || old.Kind != TargetFunction || old.Callers != nil {
+		t.Fatalf("a target without a kind must read as one function: %#v", old)
 	}
 }

@@ -60,10 +60,12 @@ exact digest it always has.
 
 **A multi-function target.** When the signal fires, `internal/campaign/causes.go` builds a target
 whose `Cause` is `"throwaway_result"`: the callee plus its consuming callers, ranked by call-site
-count. It carries the set as `Target.Functions`, a JSON-encoded `[]FunctionRef` string rather than a
-`[]FunctionRef` field, because `agents.Target` is compared with `==` throughout `planTarget`,
-`targetKey`, and their tests (`internal/orchestrator/target_test.go`); a slice field would make that
-a compile error. `EncodeFunctionSet`/`DecodeFunctionSet` are the wire format.
+count. The target says so explicitly: `Kind` is `agents.TargetFunctionSet`, a typed `TargetKind`
+whose zero value, `TargetFunction`, is the ordinary one-function target, so state saved before
+kinds existed reads unchanged. The callers are `Callers []FunctionRef`. Every branch that treats
+the two kinds differently (the shape check, the transport, the brief, the excerpt paths) asks
+`Target.IsFunctionSet()`, never the cause label or whether a field is empty. `Target` is no longer
+comparable with `==`, and nothing outside tests compared it; tests use `reflect.DeepEqual`.
 
 These targets are put in the **first tier**, ahead of every Jev-ranked target
 (`addThrowawayTargets` in `causes.go`, prepended before `analystResult`'s own `Targets`): the
@@ -88,7 +90,7 @@ cap, which is not guaranteed by call-site count alone when most callers tie at o
 carries excerpts for every function in the set, not just the callee: `addThrowawayTargets` adds a
 synthetic `agents.HotPath` per caller location, which the existing, unmodified `extractExcerpts`
 (driven entirely by `HotPath.Location`) picks up on its own, and `excerptsAt` (used by `planTarget`)
-now keeps the excerpts, and each involved file's header, for every location in `target.Functions`,
+now keeps the excerpts, and each involved file's header, for every location in `target.Callers`,
 not only `target.Location`.
 
 `agents.OptimizerResult` gains `function_sources []string` (ADR 0022's decode leniency style: a
@@ -113,9 +115,9 @@ single string is accepted where the list is expected, exactly as `imports` alrea
    concatenated into one multi-file unified diff.
 
 `resolveCandidatePatch` picks this transport (`MultiFunctionSourceTransport = "function_sources"`)
-only when `patch` is empty and `target.Functions` is set; a lone `function_source` naming the callee
+only when `patch` is empty and the target is a function set; a lone `function_source` naming the callee
 is accepted as a one-element list, the same leniency every other list field on `OptimizerResult`
-already has. The ordinary single-function `function_source` path (`target.Functions == ""`) is
+already has. The ordinary single-function `function_source` path (`TargetFunction`) is
 untouched — same code, same tests, same behaviour. `patch` still wins over either function-source
 transport (ADR 0022's precedence is unchanged).
 
