@@ -43,14 +43,22 @@ const (
 // (or a lone FunctionSource naming the callee, accepted the way every other
 // list field here accepts a scalar) builds a multi-file diff. Otherwise, a
 // code-chosen target and a non-empty FunctionSource build the single-file
-// diff exactly as before ADR 0027. Every other case, including no target at
-// all, passes Patch through unchanged (empty or not).
+// diff exactly as before ADR 0027. With no target, a FunctionSource is
+// located by the function it declares (untargetedFunctionSourceDiff). A
+// proposal with none of these is errEmptyProposal.
 func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.CandidateRequest) (patch, transport string, err error) {
 	if req.Proposal.Patch != "" {
 		return req.Proposal.Patch, PatchTransport, nil
 	}
 	if req.Target == nil {
-		return req.Proposal.Patch, PatchTransport, nil
+		if req.Proposal.FunctionSource == "" {
+			return "", PatchTransport, errEmptyProposal
+		}
+		diff, err := e.untargetedFunctionSourceDiff(ctx, req.Proposal)
+		if err != nil {
+			return "", FunctionSourceTransport, err
+		}
+		return diff, FunctionSourceTransport, nil
 	}
 	if sources := multiFunctionSources(*req.Target, req.Proposal); len(sources) > 0 {
 		diff, err := e.buildMultiFunctionSourceDiff(ctx, *req.Target, sources, req.Proposal.Imports)
@@ -66,7 +74,7 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 		}
 		return diff, FunctionSourceTransport, nil
 	}
-	return req.Proposal.Patch, PatchTransport, nil
+	return "", PatchTransport, errEmptyProposal
 }
 
 // multiFunctionSources is the function_sources list to use for target,

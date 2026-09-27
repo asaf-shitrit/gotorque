@@ -234,15 +234,67 @@ func TestResolveCandidatePatchPrefersPatchOverFunctionSource(t *testing.T) {
 	require.Equal(t, PatchTransport, transport)
 }
 
-func TestResolveCandidatePatchWithoutTargetLeavesPatchAlone(t *testing.T) {
-	engine := &Engine{}
-	req := orchestrator.CandidateRequest{
-		Proposal: agents.OptimizerResult{FunctionSource: "func f() {}"},
+// TestResolveCandidatePatchLocatesAnUntargetedFunctionSource covers free
+// choice: with no target, a function_source is found by the function it
+// declares and built into a diff, instead of being dropped as an empty patch.
+func TestResolveCandidatePatchLocatesAnUntargetedFunctionSource(t *testing.T) {
+	repo := methodRepo(t)
+	engine := newFuncSourceTestEngine(repo)
+	req := orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: `func (c *cli) printValues(vs []string) error {
+	w := bufio.NewWriter(c.out)
+	defer w.Flush()
+	for _, v := range vs {
+		w.WriteString(v)
 	}
+	return nil
+}`, Imports: []string{"bufio"}}}
 	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
-	require.Empty(t, patch, "no target means function_source is never used, matching the pre-ADR-0022 behavior")
-	require.Equal(t, PatchTransport, transport)
+	require.Equal(t, FunctionSourceTransport, transport)
+	require.Contains(t, applyDiff(t, repo, patch, "main.go"), "bufio.NewWriter")
+}
+
+func TestResolveCandidatePatchRejectsAnUnknownUntargetedFunction(t *testing.T) {
+	engine := newFuncSourceTestEngine(methodRepo(t))
+	req := orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "func nowhere() {}"}}
+	_, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	require.ErrorContains(t, err, "no non-test file declares")
+	require.Equal(t, FunctionSourceTransport, transport)
+
+	_, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "not go"}})
+	require.ErrorContains(t, err, "does not parse")
+}
+
+func TestResolveCandidatePatchNamesAnEmptyProposal(t *testing.T) {
+	engine := &Engine{}
+	_, _, err := engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{Hypothesis: "h"}})
+	require.ErrorIs(t, err, errEmptyProposal)
+	target := &agents.Target{Location: "main.go:8", Function: "f"}
+	_, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Hypothesis: "h"}})
+	require.ErrorIs(t, err, errEmptyProposal)
+}
+
+func TestLocateFunctionSkipsTestsVendorAndTestdataAndRefusesAmbiguity(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		full := filepath.Join(repo, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o700))
+		require.NoError(t, os.WriteFile(full, []byte(src), 0o600))
+	}
+	write("a/a.go", "package a\n\nfunc only() {}\n\nfunc twice() {}\n")
+	write("b/b.go", "package b\n\nfunc twice() {}\n")
+	write("a/a_test.go", "package a\n\nfunc only() {}\n")
+	write("vendor/v/v.go", "package v\n\nfunc only() {}\n")
+	write("a/testdata/t.go", "package t\n\nfunc only() {}\n")
+	write(".hidden/h.go", "package h\n\nfunc only() {}\n")
+	write("broken.go", "package main\nfunc {")
+
+	loc, err := locateFunction(repo, "only")
+	require.NoError(t, err)
+	require.Equal(t, "a/a.go:3", loc)
+
+	_, err = locateFunction(repo, "twice")
+	require.ErrorContains(t, err, "2 files declare")
 }
 
 func TestResolveCandidatePatchBuildsFromFunctionSourceWithTarget(t *testing.T) {
