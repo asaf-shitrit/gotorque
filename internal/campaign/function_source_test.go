@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -150,6 +151,35 @@ func TestReplaceFunctionSourceInsertsAFreshImportBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(updated), "import (\n\t\"strings\"\n)")
 	require.Contains(t, string(updated), "strings.Builder")
+}
+
+// TestReplaceFunctionSourceInfersAStdlibImport pins the single-function
+// path's standard-library inference: a replacement that uses strconv and
+// strings with no imports listed still gets both, and an import the file
+// already binds under an alias is not added twice.
+func TestReplaceFunctionSourceInfersAStdlibImport(t *testing.T) {
+	src := "package main\n\nimport str \"strings\"\n\nvar _ = str.ToUpper\n\nfunc f(n int) string {\n\treturn \"\"\n}\n"
+	path := filepath.Join(t.TempDir(), "main.go")
+	newSrc := `func f(n int) string {
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(n))
+	return str.ToLower(b.String())
+}`
+	updated, err := replaceFunctionSource(path, []byte(src), "f", newSrc, nil)
+	require.NoError(t, err)
+	require.Contains(t, string(updated), "\"strconv\"")
+	require.Contains(t, string(updated), "str \"strings\"")
+	require.Equal(t, 1, strings.Count(string(updated), "\"strings\""), "the aliased import already provides the path")
+}
+
+func TestInferredStdlibImportsLeavesUnknownNamesAlone(t *testing.T) {
+	src := []byte("package main\n\nimport \"bytes\"\n\nfunc f() { _ = bytes.NewBuffer; _ = yaml.Marshal; _ = sort.Ints }\n")
+	got, err := inferredStdlibImports("main.go", src)
+	require.NoError(t, err)
+	require.Equal(t, []string{"sort"}, got)
+
+	_, err = inferredStdlibImports("main.go", []byte("package main\nfunc {"))
+	require.ErrorContains(t, err, "does not parse")
 }
 
 func TestReplaceFunctionSourceRejectsMultipleDecls(t *testing.T) {
