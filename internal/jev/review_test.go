@@ -23,7 +23,7 @@ func TestEveryHazardHasAQuestionAConcernACheckAndABaseline(t *testing.T) {
 
 func checkHazard(t *testing.T, h Hazard, q Question) {
 	t.Helper()
-	if q.Type != "boolean" || !strings.Contains(q.Instructions, "`patch`") {
+	if q.Type != "noul" || !strings.Contains(q.Instructions, "`patch`") {
 		t.Errorf("%s question = %+v, want a yes/no question naming `patch`", h, q)
 	}
 	if h.Concern() == "" || h.Check() == "" {
@@ -48,7 +48,7 @@ func hazardAnswers(p map[Hazard]float64) map[string]Answer {
 		if !ok {
 			prob = reviewBaseline[h].mean
 		}
-		answers[string(h)] = Answer{Type: "boolean", Probability: prob}
+		answers[string(h)] = Answer{Type: "noul", Probability: prob}
 	}
 	return answers
 }

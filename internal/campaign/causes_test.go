@@ -307,7 +307,7 @@ func TestRunADKWithJevAnalyst(t *testing.T) {
 		}
 	}
 	require.True(t, classified, "no cause_analysis event")
-	require.Contains(t, RenderMarkdown(engine.State()), "Analyst: Jev cause classification (`typesafe-ai/jev`)")
+	require.Contains(t, RenderMarkdown(engine.State()), "Analyst: Jev cause classification (`typesafe/jev-1.13-20260917`)")
 }
 
 func flaggedSite(name string, flags ...jev.Score) siteVerdict {

@@ -75,7 +75,7 @@ func TestSelectAnalystPreflightsTheGateway(t *testing.T) {
 	roles := &agents.Set{}
 	require.NoError(t, selectJev(context.Background(), &out, roles, optimizeFlags{runADK: true, analyst: analystJev}))
 	require.IsType(t, jev.Client{}, roles.CauseEvaluator)
-	require.Contains(t, out.String(), "analyst: Jev cause classification (typesafe-ai/jev)")
+	require.Contains(t, out.String(), "analyst: Jev cause classification (typesafe/jev-1.13-20260917)")
 }
 
 func TestSelectAnalystStopsOnAFailedPreflight(t *testing.T) {
