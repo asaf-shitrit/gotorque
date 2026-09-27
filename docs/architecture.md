@@ -454,9 +454,9 @@ text and state template: `TestBaselineMatchesQuestions` compares a digest of
 both and fails on any edit, and `TestLiveBaseline` re-measures it (opt-in, one
 request per function). It is also valid only for the exact Jev build it was
 measured on. OpenRouter's System One API accepts a fully pinned build id
-(`jev.Model`, currently `typesafe/jev-1.13-20260917`) where the earlier Vercel
-AI Gateway path only ever exposed an unversioned alias (ADR 0012, ADR 0029);
-that gap is closed by ADR 0030, which this baseline, the fix-kind baseline
+(`jev.Model`, currently `typesafe/jev-1.13-20260917`) where the earlier
+endpoint only ever exposed an unversioned alias (ADR 0012, ADR 0029); that gap
+is closed by ADR 0030, which this baseline, the fix-kind baseline
 (`fixkinds.go`), and the review baseline (`review_baseline.go`) were all
 re-measured against.
 
