@@ -143,6 +143,11 @@ type State struct {
 	// report carries the shape it was written in. It stays zero for state that
 	// predates versioning, which readers report rather than assume.
 	SchemaVersion int `json:"schema_version,omitempty"`
+	// HistoryTargets are targets earlier campaigns of this revision already
+	// measured (--history); priorTargets counts them as tried. They are
+	// persisted because the flag is only read when the campaign is created.
+	HistoryTargets []agents.Target `json:"history_targets,omitempty"`
+	HistorySources []HistorySource `json:"history_sources,omitempty"`
 
 	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
 	// ConsecutiveFailures mirrors the orchestrator's run of rejected or
@@ -261,6 +266,9 @@ type Options struct {
 	// Tradeoff overrides the manifest's performance block for this
 	// campaign; the zero value leaves it as written.
 	Tradeoff manifest.Tradeoff
+	// History names earlier campaign directories whose measured targets
+	// this campaign counts as already tried (loadHistory).
+	History []string
 }
 
 type Engine struct {
@@ -396,6 +404,11 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 		Environment: Environment{Authority: authority(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPU: cpuName(), GoVersion: goVersion, Revision: revision, BuildFlags: []string{"-mod=readonly", "-trimpath"}, CI: os.Getenv("CI") != "", CIEnvironment: ciEnvironment()},
 	}
 	state.DependencyDigests, err = dependencyDigests(repo, m.Target.Build.Directory)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	state.HistoryTargets, state.HistorySources, err = loadHistory(opts.History, revision)
 	if err != nil {
 		_ = store.Close()
 		return nil, err

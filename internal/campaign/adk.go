@@ -152,9 +152,10 @@ func (e *Engine) campaignRequest() orchestrator.CampaignRequest {
 }
 
 // priorTargets are the targets earlier candidates tried, read back from the
-// persisted records, so a resumed campaign moves on instead of retrying them.
+// persisted records, so a resumed campaign moves on instead of retrying them,
+// plus the targets --history carried from earlier campaigns (loadHistory).
 func (e *Engine) priorTargets() []agents.Target {
-	var out []agents.Target
+	out := append([]agents.Target(nil), e.state.HistoryTargets...)
 	for _, record := range e.state.CandidateRecords {
 		if record.Target != nil {
 			out = append(out, *record.Target)

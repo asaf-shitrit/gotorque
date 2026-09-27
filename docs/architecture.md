@@ -541,7 +541,13 @@ everything, as before. Tried targets
 are recorded with each verdict and handed back on resume, so no measured
 target is attacked twice (an unmeasured one gets one retry, see step 3 of the
 evaluation), and once every flagged target has been tried the optimizer
-chooses freely again. The coordinator model is not called in this mode, because
+chooses freely again. `--history DIR` (repeatable, ADR 0031) extends "tried"
+across campaigns: every target an earlier campaign of the same revision
+measured is loaded when the campaign is created, persisted as
+`HistoryTargets`, and counted as tried by `priorTargets`, so a new campaign
+spends its attempts on targets nothing has measured yet. A campaign at another
+revision is listed in the report as skipped rather than trusted, because its
+locations may point at different code. The coordinator model is not called in this mode, because
 nothing is left for it to decide. On a live gron campaign it took up to 2m40s a
 cycle, and left with a ranked list the optimizer ignored the top target and
 micro-optimized `validIdentifier` (inconclusive, -0.85%) before taking the top
