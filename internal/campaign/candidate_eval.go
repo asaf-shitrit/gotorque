@@ -87,6 +87,9 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	// Worktree teardown runs even when the caller's context is already
 	// canceled (duration budget or Ctrl-C), but keeps its values.
 	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
+	if e.rejectMeasuredDuplicate(evidence.Candidate.ID, &evidence) {
+		return evidence, nil
+	}
 	if !e.patchHasShape(ctx, prepared.Worktree, req.Target, &evidence) {
 		return evidence, nil
 	}
@@ -134,6 +137,38 @@ func (e *Engine) prepareCandidate(ctx context.Context, req orchestrator.Candidat
 // patchHasShape runs checkShape on the applied worktree. A diff Git cannot
 // produce leaves the judgment to the build, which would fail on the same
 // tree; the check only ever adds a reason, never a pass.
+// rejectMeasuredDuplicate rejects, before it is built, a candidate whose
+// patch this revision has already measured, in this campaign or in one
+// --history named (ADR 0031). The worktree manager's candidate ID is a digest
+// of the base revision and the normalized patch, so an equal ID is the same
+// patch. On dasel the WithExecutorID concatenation rewrite came back
+// byte-identical under a second cause's target and spent a whole measurement
+// to repeat an inconclusive verdict. It is marked unmeasured, so the target is
+// offered once more with the reason in prior_candidates.
+func (e *Engine) rejectMeasuredDuplicate(id string, evidence *orchestrator.CandidateEvidence) bool {
+	where, ok := e.measuredCandidate(id)
+	if !ok {
+		return false
+	}
+	evidence.Summary = "candidate rejected before build: the identical patch was already measured on this revision (" + where + "); propose a different change"
+	evidence.FailureDetail = where
+	evidence.Unmeasured = true
+	return true
+}
+
+// measuredCandidate reports where candidate id was already measured.
+func (e *Engine) measuredCandidate(id string) (string, bool) {
+	if where, ok := e.state.HistoryCandidates[id]; ok {
+		return where, true
+	}
+	for _, r := range e.state.CandidateRecords {
+		if r.CandidateID == id && isMeasured(r) {
+			return fmt.Sprintf("attempt %d of this campaign: %s", r.Attempt, r.Decision), true
+		}
+	}
+	return "", false
+}
+
 func (e *Engine) patchHasShape(ctx context.Context, worktree string, target *agents.Target, evidence *orchestrator.CandidateEvidence) bool {
 	diff, err := e.toolchain.ChangedLines(ctx, worktree)
 	if err != nil {

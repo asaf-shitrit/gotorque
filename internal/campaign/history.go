@@ -29,23 +29,22 @@ type HistorySource struct {
 // may point at different code. An unmeasured candidate (rejected before
 // measurement) says nothing about its target, so it is not carried either.
 // This is code-side bookkeeping only; no agent sees or decides it.
-func loadHistory(dirs []string, revision string) ([]agents.Target, []HistorySource, error) {
-	var targets []agents.Target
-	sources := make([]HistorySource, 0, len(dirs))
+func loadHistory(dirs []string, revision string) (History, error) {
+	h := History{Candidates: map[string]string{}}
 	seen := map[string]bool{}
 	for _, dir := range dirs {
 		abs, err := filepath.Abs(dir)
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolve --history %s: %w", dir, err)
+			return History{}, fmt.Errorf("resolve --history %s: %w", dir, err)
 		}
 		past, err := LoadReport(abs)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read --history %s: %w", dir, err)
+			return History{}, fmt.Errorf("read --history %s: %w", dir, err)
 		}
 		source := HistorySource{Directory: abs, CampaignID: past.ID}
 		if past.Environment.Revision != revision {
 			source.Skipped = fmt.Sprintf("revision %s, not %s", shortRevision(past.Environment.Revision), shortRevision(revision))
-			sources = append(sources, source)
+			h.Sources = append(h.Sources, source)
 			continue
 		}
 		for _, t := range measuredTargets(past.CandidateRecords) {
@@ -54,20 +53,44 @@ func loadHistory(dirs []string, revision string) ([]agents.Target, []HistorySour
 				continue
 			}
 			seen[key] = true
-			targets = append(targets, t)
+			h.Targets = append(h.Targets, t)
 			source.Targets++
 		}
-		sources = append(sources, source)
+		addMeasuredCandidates(h.Candidates, past)
+		h.Sources = append(h.Sources, source)
 	}
-	return targets, sources, nil
+	return h, nil
 }
+
+// History is what --history carries into a new campaign: the targets earlier
+// campaigns measured, the IDs of the candidates they measured (a digest of
+// revision and patch, so an equal ID is the same patch), each mapped to where
+// and how it was judged, and the sources read.
+type History struct {
+	Targets    []agents.Target
+	Candidates map[string]string
+	Sources    []HistorySource
+}
+
+func addMeasuredCandidates(into map[string]string, past State) {
+	for _, r := range past.CandidateRecords {
+		if r.CandidateID == "" || !isMeasured(r) {
+			continue
+		}
+		if _, ok := into[r.CandidateID]; !ok {
+			into[r.CandidateID] = fmt.Sprintf("campaign %s attempt %d: %s", past.ID, r.Attempt, r.Decision)
+		}
+	}
+}
+
+func isMeasured(r CandidateRecord) bool { return r.Accepted || len(r.Comparisons) > 0 }
 
 // measuredTargets are the targets of records whose candidate reached
 // measurement: accepted, or compared against the baseline at all.
 func measuredTargets(records []CandidateRecord) []agents.Target {
 	var out []agents.Target
 	for _, r := range records {
-		if r.Target != nil && (r.Accepted || len(r.Comparisons) > 0) {
+		if r.Target != nil && isMeasured(r) {
 			out = append(out, *r.Target)
 		}
 	}

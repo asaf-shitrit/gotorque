@@ -11,6 +11,7 @@ import (
 	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/manifest"
+	"example.com/gotorque/internal/orchestrator"
 )
 
 // writePastCampaign persists a finished campaign's state the way the engine
@@ -49,36 +50,37 @@ func TestLoadHistoryCarriesMeasuredTargetsOnly(t *testing.T) {
 		measured(targetExec), // the same target again is carried once
 		{Hypothesis: "untargeted"},
 	})
-	targets, sources, err := loadHistory([]string{dir}, "rev-a")
+	h, err := loadHistory([]string{dir}, "rev-a")
 	require.NoError(t, err)
-	require.Equal(t, []agents.Target{targetExec, targetUnpack}, targets)
-	require.Len(t, sources, 1)
-	require.Equal(t, "past-1", sources[0].CampaignID)
-	require.Equal(t, 2, sources[0].Targets)
-	require.Empty(t, sources[0].Skipped)
+	require.Equal(t, []agents.Target{targetExec, targetUnpack}, h.Targets)
+	require.Len(t, h.Sources, 1)
+	require.Equal(t, "past-1", h.Sources[0].CampaignID)
+	require.Equal(t, 2, h.Sources[0].Targets)
+	require.Empty(t, h.Sources[0].Skipped)
 }
 
 func TestLoadHistorySkipsAnotherRevision(t *testing.T) {
 	dir := writePastCampaign(t, "past-2", "0123456789abcdef0123", []CandidateRecord{measured(targetExec)})
-	targets, sources, err := loadHistory([]string{dir}, "fedcba9876543210fedc")
+	h, err := loadHistory([]string{dir}, "fedcba9876543210fedc")
 	require.NoError(t, err)
-	require.Empty(t, targets)
-	require.Contains(t, sources[0].Skipped, "0123456789ab")
-	require.Contains(t, sources[0].Skipped, "fedcba987654")
+	require.Empty(t, h.Targets)
+	require.Empty(t, h.Candidates)
+	require.Contains(t, h.Sources[0].Skipped, "0123456789ab")
+	require.Contains(t, h.Sources[0].Skipped, "fedcba987654")
 }
 
 func TestLoadHistoryDeduplicatesAcrossCampaigns(t *testing.T) {
 	first := writePastCampaign(t, "p1", "rev", []CandidateRecord{measured(targetExec)})
 	second := writePastCampaign(t, "p2", "rev", []CandidateRecord{measured(targetExec), measured(targetNewPtr)})
-	targets, sources, err := loadHistory([]string{first, second}, "rev")
+	h, err := loadHistory([]string{first, second}, "rev")
 	require.NoError(t, err)
-	require.Equal(t, []agents.Target{targetExec, targetNewPtr}, targets)
-	require.Equal(t, 1, sources[0].Targets)
-	require.Equal(t, 1, sources[1].Targets)
+	require.Equal(t, []agents.Target{targetExec, targetNewPtr}, h.Targets)
+	require.Equal(t, 1, h.Sources[0].Targets)
+	require.Equal(t, 1, h.Sources[1].Targets)
 }
 
 func TestLoadHistoryRejectsAnUnreadableDirectory(t *testing.T) {
-	_, _, err := loadHistory([]string{filepath.Join(t.TempDir(), "missing")}, "rev")
+	_, err := loadHistory([]string{filepath.Join(t.TempDir(), "missing")}, "rev")
 	require.ErrorContains(t, err, "read --history")
 }
 
@@ -113,4 +115,56 @@ func TestShortRevision(t *testing.T) {
 	require.Equal(t, "unknown", shortRevision(""))
 	require.Equal(t, "abc", shortRevision("abc"))
 	require.Equal(t, "0123456789ab", shortRevision("0123456789abcdef"))
+}
+
+func TestLoadHistoryCarriesMeasuredCandidateIDs(t *testing.T) {
+	inconclusive := measured(targetExec)
+	inconclusive.CandidateID, inconclusive.Attempt, inconclusive.Decision = "c-measured", 2, domain.DecisionInconclusive
+	unmeasured := CandidateRecord{CandidateID: "c-unmeasured", Target: &targetNewPtr}
+	dir := writePastCampaign(t, "past-3", "rev", []CandidateRecord{inconclusive, unmeasured})
+	h, err := loadHistory([]string{dir}, "rev")
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"c-measured": "campaign past-3 attempt 2: inconclusive"}, h.Candidates)
+}
+
+func TestRejectMeasuredDuplicate(t *testing.T) {
+	own := measured(targetNewPtr)
+	own.CandidateID, own.Attempt, own.Decision = "c-own", 1, domain.DecisionInconclusive
+	e := &Engine{state: State{
+		HistoryCandidates: map[string]string{"c-past": "campaign p attempt 3: inconclusive"},
+		CandidateRecords:  []CandidateRecord{own, {CandidateID: "c-rejected", Decision: domain.DecisionRejected}},
+	}}
+
+	var fromHistory orchestrator.CandidateEvidence
+	require.True(t, e.rejectMeasuredDuplicate("c-past", &fromHistory))
+	require.True(t, fromHistory.Unmeasured)
+	require.Contains(t, fromHistory.Summary, "identical patch was already measured")
+	require.Contains(t, fromHistory.Summary, "campaign p attempt 3")
+
+	var fromThisCampaign orchestrator.CandidateEvidence
+	require.True(t, e.rejectMeasuredDuplicate("c-own", &fromThisCampaign))
+	require.Contains(t, fromThisCampaign.FailureDetail, "attempt 1 of this campaign: inconclusive")
+
+	var fresh orchestrator.CandidateEvidence
+	require.False(t, e.rejectMeasuredDuplicate("c-new", &fresh))
+	require.False(t, e.rejectMeasuredDuplicate("c-rejected", &fresh), "a candidate rejected before measurement proves nothing about its patch")
+	require.Empty(t, fresh.Summary)
+}
+
+// TestCandidateMetaNamesEachTransport pins the report line for both
+// code-built transports; function_sources records rendered no transport line.
+func TestCandidateMetaNamesEachTransport(t *testing.T) {
+	for transport, want := range map[string]string{
+		FunctionSourceTransport:      "- Transport: function_source (",
+		MultiFunctionSourceTransport: "- Transport: function_sources (",
+		PatchTransport:               "",
+	} {
+		var b strings.Builder
+		writeCandidateMeta(&b, CandidateRecord{Transport: transport})
+		if want == "" {
+			require.NotContains(t, b.String(), "Transport", transport)
+			continue
+		}
+		require.Contains(t, b.String(), want, transport)
+	}
 }

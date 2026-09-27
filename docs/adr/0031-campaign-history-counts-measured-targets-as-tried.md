@@ -31,6 +31,16 @@ resumed campaign uses to skip targets it already tried.
 - **Visible.** The report gets a "Campaign history" section (sources, targets carried, skips), and
   its reproduction line repeats the `--history` flags.
 
+- **Identical patches are not re-measured.** Skipping a target by function and cause is not
+  enough. The first live check (`overnight-dasel-history-1`) skipped `WithExecutorID`'s
+  string-building target, then picked the same function under its `alloc` cause, and the optimizer
+  produced the byte-identical concatenation rewrite (candidate `ca289d672cf5…`, measured
+  inconclusive in two earlier campaigns). The worktree manager's candidate ID is a digest of the
+  base revision and the normalized patch, so `loadHistory` also carries the IDs of measured
+  candidates (`HistoryCandidates`). `rejectMeasuredDuplicate` refuses one, before it is built,
+  whether it was measured in a history campaign or earlier in this one. The rejection is unmeasured,
+  so the target gets one more attempt, and the reason names where the patch was measured.
+
 This is bookkeeping on the deterministic side. No agent sees the history or decides from it; it
 only changes which target code picks next.
 

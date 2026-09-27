@@ -147,7 +147,10 @@ type State struct {
 	// measured (--history); priorTargets counts them as tried. They are
 	// persisted because the flag is only read when the campaign is created.
 	HistoryTargets []agents.Target `json:"history_targets,omitempty"`
-	HistorySources []HistorySource `json:"history_sources,omitempty"`
+	// HistoryCandidates maps a candidate ID those campaigns measured to where
+	// and how it was judged; rejectMeasuredDuplicate refuses to re-measure it.
+	HistoryCandidates map[string]string `json:"history_candidates,omitempty"`
+	HistorySources    []HistorySource   `json:"history_sources,omitempty"`
 
 	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
 	// ConsecutiveFailures mirrors the orchestrator's run of rejected or
@@ -408,11 +411,12 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 		_ = store.Close()
 		return nil, err
 	}
-	state.HistoryTargets, state.HistorySources, err = loadHistory(opts.History, revision)
+	history, err := loadHistory(opts.History, revision)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
 	}
+	state.HistoryTargets, state.HistoryCandidates, state.HistorySources = history.Targets, history.Candidates, history.Sources
 	e, err := compose(dir, store, state, opts.Progress, opts.Now)
 	if err != nil {
 		_ = store.Close()
