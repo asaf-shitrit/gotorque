@@ -598,6 +598,13 @@ func historyFlags(sources []HistorySource) string {
 // writeCandidateLoad shows the load averages sampled around a candidate's
 // measurement, and warns when the machine was contended (loadavg.go).
 func writeCandidateLoad(b *strings.Builder, record CandidateRecord) {
+	if record.QuietWait > 0 {
+		verdict := "until it was quiet"
+		if record.QuietWaitExpired {
+			verdict = "and gave up; it was measured while still contended"
+		}
+		fmt.Fprintf(b, "- Waited %s for the machine to go quiet before measuring, %s\n", record.QuietWait, verdict)
+	}
 	if len(record.LoadAverages) == 0 {
 		return
 	}

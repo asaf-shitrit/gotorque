@@ -137,6 +137,10 @@ type CandidateEvidence struct {
 	// LoadContended is whether one of them exceeded half the measuring
 	// machine's CPUs.
 	LoadContended bool `json:"load_contended,omitempty"`
+	// QuietWait is how long the engine waited for the machine to go quiet
+	// before measuring, and QuietWaitExpired whether it gave up waiting.
+	QuietWait        time.Duration `json:"quiet_wait,omitempty"`
+	QuietWaitExpired bool          `json:"quiet_wait_expired,omitempty"`
 	// Unmeasured is set when the candidate was rejected before measurement:
 	// its patch did not apply, failed the shape check, or did not build.
 	Unmeasured bool `json:"unmeasured,omitempty"`

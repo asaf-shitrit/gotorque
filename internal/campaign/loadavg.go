@@ -1,9 +1,11 @@
 package campaign
 
 import (
+	"context"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // A measurement taken while other work loads the machine can mislead in
@@ -56,4 +58,53 @@ func parseProcLoadavg(text string) (float64, bool) {
 	}
 	l, err := strconv.ParseFloat(fields[0], 64)
 	return l, err == nil
+}
+
+// Recording contention after the fact only tells the reader which verdicts to
+// doubt. Before a candidate is measured, the engine therefore waits, for at
+// most quietWaitLimit, for the load average to fall back under the contended
+// threshold: the overnight browser job ran in bursts of a few minutes, so a
+// short wait moves most measurements out of it. A wait that runs out does not
+// block the candidate; it is measured anyway and flagged as before.
+const (
+	quietWaitLimit = 3 * time.Minute
+	quietPoll      = 10 * time.Second
+)
+
+// quietWaiter holds what waitForQuiet needs, so a test can drive it without
+// sleeping or reading the real load average.
+type quietWaiter struct {
+	sample func() []float64
+	cpus   int
+	limit  time.Duration
+	poll   time.Duration
+	sleep  func(context.Context, time.Duration) error
+}
+
+func defaultQuietWaiter() quietWaiter {
+	return quietWaiter{sample: sampleLoad, cpus: machineCPUs(), limit: quietWaitLimit, poll: quietPoll, sleep: sleepContext}
+}
+
+// wait returns how long it waited and whether the machine was still
+// contended when it stopped.
+func (w quietWaiter) wait(ctx context.Context) (time.Duration, bool) {
+	var waited time.Duration
+	for contended(w.sample(), w.cpus) {
+		if waited >= w.limit || w.sleep(ctx, w.poll) != nil {
+			return waited, true
+		}
+		waited += w.poll
+	}
+	return waited, false
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }

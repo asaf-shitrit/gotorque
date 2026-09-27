@@ -112,6 +112,10 @@ type CandidateRecord struct {
 	// measurement (see loadavg.go); the report flags a contended candidate.
 	LoadAverages  []float64 `json:"load_averages,omitempty"`
 	LoadContended bool      `json:"load_contended,omitempty"`
+	// QuietWait and QuietWaitExpired record the wait for a quiet machine
+	// before measurement (loadavg.go).
+	QuietWait        time.Duration `json:"quiet_wait,omitempty"`
+	QuietWaitExpired bool          `json:"quiet_wait_expired,omitempty"`
 }
 
 // RoleUsageSnapshot is persisted per-role model token usage for one ADK run.

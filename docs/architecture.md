@@ -220,7 +220,11 @@ produced here or in policy.
    one-minute load average is sampled before and after a candidate's
    measurement (`loadavg.go`) and recorded on its record. The report flags a
    candidate whose load exceeded half the machine's CPUs as contended; the
-   verdict never reads it. An A/A check on csvtk (the same binary on both
+   verdict never reads it. Before measuring, the engine also waits up to
+   three minutes for the load to fall under that threshold (`quietWaiter`),
+   because the contention seen in practice came in bursts of a few minutes;
+   a wait that runs out is recorded and the candidate is measured anyway.
+   Tests, which disable local isolation, never wait. An A/A check on csvtk (the same binary on both
    sides, fifty pairs, baseline first) found no order bias: second-run
    medians within 0.5% and no consistent direction.
    Before the pairs run, the baseline

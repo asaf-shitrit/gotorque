@@ -303,6 +303,9 @@ type seedRuns struct {
 
 func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
 	m := measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
+	if e.state.LocalIsolation {
+		evidence.QuietWait, evidence.QuietWaitExpired = defaultQuietWaiter().wait(ctx)
+	}
 	evidence.LoadAverages = sampleLoad()
 	defer func() {
 		evidence.LoadAverages = append(evidence.LoadAverages, sampleLoad()...)

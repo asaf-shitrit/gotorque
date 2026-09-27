@@ -1,8 +1,10 @@
 package campaign
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -54,4 +56,57 @@ func TestReportFlagsAContendedMeasurement(t *testing.T) {
 	var none strings.Builder
 	writeCandidateLoad(&none, CandidateRecord{})
 	require.Empty(t, none.String())
+}
+
+// scriptedLoad returns the given load samples in turn, then the last one.
+func scriptedLoad(loads ...float64) func() []float64 {
+	i := 0
+	return func() []float64 {
+		l := loads[min(i, len(loads)-1)]
+		i++
+		return []float64{l}
+	}
+}
+
+func noSleep(context.Context, time.Duration) error { return nil }
+
+func TestQuietWaiterWaitsUntilTheLoadFalls(t *testing.T) {
+	w := quietWaiter{sample: scriptedLoad(9, 8, 2), cpus: 8, limit: time.Minute, poll: 10 * time.Second, sleep: noSleep}
+	waited, expired := w.wait(context.Background())
+	require.Equal(t, 20*time.Second, waited)
+	require.False(t, expired)
+}
+
+func TestQuietWaiterGivesUpAtItsLimit(t *testing.T) {
+	w := quietWaiter{sample: scriptedLoad(9), cpus: 8, limit: 30 * time.Second, poll: 10 * time.Second, sleep: noSleep}
+	waited, expired := w.wait(context.Background())
+	require.Equal(t, 30*time.Second, waited)
+	require.True(t, expired)
+}
+
+func TestQuietWaiterDoesNotWaitOnAQuietMachine(t *testing.T) {
+	w := quietWaiter{sample: scriptedLoad(1), cpus: 8, limit: time.Minute, poll: time.Second, sleep: func(context.Context, time.Duration) error { panic("slept") }}
+	waited, expired := w.wait(context.Background())
+	require.Zero(t, waited)
+	require.False(t, expired)
+}
+
+func TestQuietWaiterStopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := quietWaiter{sample: scriptedLoad(9), cpus: 8, limit: time.Hour, poll: time.Hour, sleep: sleepContext}
+	_, expired := w.wait(ctx)
+	require.True(t, expired)
+	require.Equal(t, quietWaitLimit, defaultQuietWaiter().limit)
+}
+
+func TestReportNamesTheQuietWait(t *testing.T) {
+	var waited strings.Builder
+	writeCandidateLoad(&waited, CandidateRecord{QuietWait: 40 * time.Second})
+	require.Contains(t, waited.String(), "Waited 40s for the machine to go quiet before measuring, until it was quiet")
+
+	var gaveUp strings.Builder
+	writeCandidateLoad(&gaveUp, CandidateRecord{QuietWait: 3 * time.Minute, QuietWaitExpired: true, LoadAverages: []float64{9, 9}, LoadContended: true})
+	require.Contains(t, gaveUp.String(), "gave up")
+	require.Contains(t, gaveUp.String(), "contended")
 }
