@@ -14,18 +14,16 @@ import (
 
 // TestBuildEnvDropsUnlistedSecrets is the required regression: a workload's
 // environment must not carry a variable the manifest does not name, even
-// when that variable is set on gotorque's own process, which is where model
-// provider credentials such as OPENROUTER_API_KEY and AI_GATEWAY_API_KEY
-// live.
+// when that variable is set on gotorque's own process, which is where a
+// model provider credential such as OPENROUTER_API_KEY lives.
 func TestBuildEnvDropsUnlistedSecrets(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "sk-live-secret")
-	t.Setenv("AI_GATEWAY_API_KEY", "gw-live-secret")
 	t.Setenv("LANG", "en_US.UTF-8")
 
 	policy := EnvironmentPolicy{Allow: []string{"LANG"}}
 	env := BuildEnv(policy, []string{"HOME=/sandbox/home"}, map[string]string{"GOTOOLCHAIN": "local"})
 
-	for _, secret := range []string{"OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY"} {
+	for _, secret := range []string{"OPENROUTER_API_KEY"} {
 		for _, kv := range env {
 			if strings.HasPrefix(kv, secret+"=") {
 				t.Fatalf("workload env leaked %s: %v", secret, env)

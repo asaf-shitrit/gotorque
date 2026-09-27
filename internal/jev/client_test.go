@@ -175,9 +175,9 @@ func TestEvaluateRejectsAnAnswerWithNeitherNoulNorProbability(t *testing.T) {
 
 func TestEvaluateDecodesAnAnswerUnderTheOlderProbabilityField(t *testing.T) {
 	// Answers persisted in the bbolt jev_cache and campaign events were
-	// written under "probability" from when this package talked to the
-	// Vercel AI Gateway; a cache hit replayed through the same Answer type
-	// must still decode.
+	// written under "probability" from an earlier endpoint this package
+	// used; a cache hit replayed through the same Answer type must still
+	// decode.
 	var a Answer
 	if err := json.Unmarshal([]byte(`{"type":"noul","probability":0.42}`), &a); err != nil {
 		t.Fatal(err)

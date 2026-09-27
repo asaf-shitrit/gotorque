@@ -125,8 +125,9 @@ Package map:
 - `internal/agents`: role definitions, OpenAI-compatible provider, model
   routing, and the model-boundary leniency layer (`fence.go`, `decode.go`,
   `types.go`). This layer only removes parse failures; it never relaxes policy.
-- `internal/jev`: TypeSafe Jev client (Vercel AI Gateway `/v1/evaluate`), the
-  seven cause questions, their measured baseline, and the pure ranking used by
+- `internal/jev`: TypeSafe Jev client (OpenRouter's System One API,
+  `/systemone`, pinned to an exact build), the seven cause questions, their
+  measured baseline, and the pure ranking used by
   `--analyst jev` (`internal/campaign/causes.go` is the analyst node itself),
   plus the reviewer's hazard questions and the explorer's option question.
 - `internal/workload`: validates explorer proposals and reads the boolean

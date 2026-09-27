@@ -64,9 +64,9 @@ type Request struct {
 // Answer is one answer: the probability that the answer is yes. The wire
 // shape carries the probability under "noul" ({"type":"noul","noul":0.91}),
 // but answers are persisted verbatim in the bbolt jev_cache and in campaign
-// events under the older field name "probability" (from when this package
-// talked to the Vercel AI Gateway); UnmarshalJSON accepts either so neither
-// live responses nor anything already on disk fail to decode.
+// events under the older field name "probability" (from an earlier endpoint
+// this package used); UnmarshalJSON accepts either so neither live responses
+// nor anything already on disk fail to decode.
 type Answer struct {
 	Type        string  `json:"type"`
 	Probability float64 `json:"probability"`

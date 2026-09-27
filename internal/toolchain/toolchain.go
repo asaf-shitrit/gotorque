@@ -515,12 +515,11 @@ func (t *Toolchain) run(ctx context.Context, path string, args []string, dir str
 // provider credential's environment variable name takes. Every command this
 // package runs -- including `go build`/`go test`/benchstat on model-written
 // candidate code under --adk -- would otherwise inherit gotorque's own
-// process environment, putting OPENROUTER_API_KEY and AI_GATEWAY_API_KEY
-// within reach of code the harness does not trust.
+// process environment, putting OPENROUTER_API_KEY within reach of code the
+// harness does not trust.
 var (
 	explicitCredentialVars = map[string]bool{
 		"OPENROUTER_API_KEY": true,
-		"AI_GATEWAY_API_KEY": true,
 	}
 	credentialSuffixes  = []string{"_API_KEY", "_TOKEN", "_SECRET"}
 	credentialSubstring = "PASSWORD"
