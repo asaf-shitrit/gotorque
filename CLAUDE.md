@@ -217,8 +217,10 @@ Optional `GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}`
 (`low|medium|high`) sets per-role `reasoning.effort`. Unset sends nothing,
 except that the optimizer defaults to `low` under `--analyst jev`, and an
 invalid value fails the preflight. `--analyst jev`, `--reviewer jev`
-and `--explorer jev` replace those roles with Jev questions, which need
-`AI_GATEWAY_API_KEY` instead (ADRs 0012, 0014, 0015).
+and `--explorer jev` replace those roles with Jev questions, reached through
+OpenRouter's System One API and pinned to an exact build (`OPENROUTER_API_KEY`,
+the same credential the optimizer role already uses; ADRs 0012, 0014, 0015,
+0030).
 Credentials are never persisted into campaign state.
 
 ## Commit messages

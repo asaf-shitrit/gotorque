@@ -227,10 +227,9 @@ func validateBackend(flag, value string, f optimizeFlags) error {
 
 // selectJev swaps the analyst, reviewer, and explorer roles for Jev when
 // --analyst jev, --reviewer jev, or --explorer jev asks for it. Under --adk-stub
-// it uses the no-network stub; under --adk it spends one request proving the key
-// and billing work, because a gateway account without a card on file refuses
-// every request and those roles are reached only after the baseline has been
-// built.
+// it uses the no-network stub; under --adk it spends one request proving the
+// key, access, and the pinned build all work, because those roles are reached
+// only after the baseline has been built.
 func selectJev(ctx context.Context, out io.Writer, roles *agents.Set, f optimizeFlags) error {
 	if roles == nil || (f.analyst != analystJev && f.reviewer != analystJev && f.explorer != analystJev) {
 		return nil

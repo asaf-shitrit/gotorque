@@ -1,7 +1,13 @@
 # 0029. Jev requests are pinned to TypeSafe's own provider, and Preflight guards against drift
 
-- Status: accepted
+- Status: superseded by [0030](0030-jev-openrouter-systemone.md)
 - Date: 2026-09-26
+
+**Superseded 2026-09-27.** The Vercel AI Gateway account lost access to Jev (HTTP 403), and Jev
+moved to OpenRouter's System One API, which accepts a fully pinned build id. The provider-pin
+mechanism and the release-date probe this ADR built are both gone; the canary they shared survives,
+now guarding a build id gotorque pins exactly rather than an unversioned alias. The evidence and
+reasoning below are kept as history.
 
 ## Context
 

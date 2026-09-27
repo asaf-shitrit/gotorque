@@ -20,8 +20,8 @@ was available, and a manifest could not distinguish itself from any other manife
 `Manifest.SemanticValidate` — the check that runs on a `Manifest` built any other way — did not).
 Separately, `internal/profile/sample.go`'s direct-sampling path left `exec.Cmd.Env` unset on both
 platforms, which means "inherit the calling process's environment" — gotorque's own environment,
-including `OPENROUTER_API_KEY` or `AI_GATEWAY_API_KEY` when `--adk` is in use — reaching the
-sampled target binary. The sandboxed runner's own environment was already minimal
+including `OPENROUTER_API_KEY` or `AI_GATEWAY_API_KEY` when `--adk` is in use (`AI_GATEWAY_API_KEY`
+was removed by ADR 0030) — reaching the sampled target binary. The sandboxed runner's own environment was already minimal
 (`Sandbox.Env()` plus `GOTOOLCHAIN`), so this leak was real only on the direct-sampling path, but
 it existed.
 
@@ -119,7 +119,8 @@ Per field:
   `go test`/benchstat call goes through, including the test gate and measurement builds that
   compile and run a model-written candidate patch — passed `os.Environ()` straight through. Under
   `--adk` that process environment carries `OPENROUTER_API_KEY` and, under `--analyst jev`/
-  `--reviewer jev`/`--explorer jev`, `AI_GATEWAY_API_KEY`; nothing stopped candidate code compiled
+  `--reviewer jev`/`--explorer jev`, `AI_GATEWAY_API_KEY` (removed by ADR 0030, which moved Jev onto
+  `OPENROUTER_API_KEY` too); nothing stopped candidate code compiled
   and executed as part of the test gate from reading either. `toolchain.withoutCredentials` now
   strips those two names outright, plus any variable whose name ends in `_API_KEY`, `_TOKEN`, or
   `_SECRET`, or contains `PASSWORD` (checked case-insensitively), before every command this package
