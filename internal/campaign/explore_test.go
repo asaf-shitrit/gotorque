@@ -109,7 +109,7 @@ func TestExploreKeepsTheLikeliestModesThatChangeTheOutput(t *testing.T) {
 	require.Equal(t, []string{"--upper", "fixture.txt"}, chosen[0].Seed.Args)
 	require.Equal(t, "fixture --upper (Jev mode 0.97)", chosen[0].String())
 	require.Len(t, engine.state.DiscoveryWorkloads, 3)
-	require.Contains(t, RenderMarkdown(engine.State()), "- Explorer: the target's own options, judged by Jev (`typesafe-ai/jev`); discovery also sampled: fixture --upper (Jev mode 0.97); fixture --reverse (Jev mode 0.90); fixture --count (Jev mode 0.80)")
+	require.Contains(t, RenderMarkdown(engine.State()), "- Explorer: the target's own options, judged by Jev (`typesafe/jev-1.13-20260917`); discovery also sampled: fixture --upper (Jev mode 0.97); fixture --reverse (Jev mode 0.90); fixture --count (Jev mode 0.80)")
 	require.Contains(t, evaluator.state["help"], "print in upper case", "the help text comes from the target's own --help")
 }
 

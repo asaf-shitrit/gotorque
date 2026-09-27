@@ -5,9 +5,8 @@ import "fmt"
 // canaryFunction is a fixed, synthetic Go function the preflight asks Jev
 // about on every run. It is not real target code; it exists only so the same
 // questions can be asked against the same bytes every time, giving a
-// behavioral signal that a version change would move even when
-// GET /typesafe/v1/models' release_date does not (see checkModelRelease and
-// ADR 0029).
+// behavioral signal that TypeSafe's build can move behind an id gotorque
+// still pins exactly (see ADR 0030).
 const canaryFunction = `func renderEntries(r io.Reader, w io.Writer, sorted bool) (int, error) {
 	entries, err := readEntries(r)
 	if err != nil {
@@ -50,26 +49,27 @@ func canaryQuestionSet() map[string]Question {
 }
 
 // canaryRecorded is Jev's answer to each canary question, measured live
-// against TypeSafe's own serving (see TestLiveCanary). It is a single
-// snapshot, not a distribution like baseline.go: the canary's job is to
-// notice the model moving, not to rank anything, so one recorded value per
-// question is enough to compare against.
+// against the pinned build (jev.Model) served by TypeSafe (see TestLiveCanary).
+// It is a single snapshot, not a distribution like baseline.go: the canary's
+// job is to notice the model moving, not to rank anything, so one recorded
+// value per question is enough to compare against.
 //
 // Valid only for canaryFunction and canaryQuestionSet exactly as they stand;
 // TestCanaryMatchesQuestions fails on any edit to either. Re-measure with
 // TestLiveCanary rather than pasting new numbers by hand.
-// Measured over 6 repeats, 2026-09-26 (per-answer sd 0.006–0.015).
+// Measured over 6 repeats, 2026-09-27, against the pinned build (jev.Model)
+// through OpenRouter's System One API (ADR 0030); per-answer sd 0.004–0.029.
 // canaryFunction is chosen so most answers sit mid-range: an answer pinned
 // near 0 or 1 barely moves when the model changes, so it would make a poor
 // drift signal.
 var canaryRecorded = map[string]float64{
-	"alloc":         0.8500,
-	"unbuffered_io": 0.6600,
-	"string_build":  0.7400,
-	"fast_path":     0.4233,
-	"superlinear":   0.2467,
-	"prealloc":      0.7767,
-	"redundant":     0.1600,
+	"alloc":         0.8517,
+	"unbuffered_io": 0.6667,
+	"string_build":  0.7367,
+	"fast_path":     0.4100,
+	"superlinear":   0.2483,
+	"prealloc":      0.7617,
+	"redundant":     0.1583,
 }
 
 // CanaryTolerance is how far a canary answer may move from canaryRecorded
@@ -80,7 +80,7 @@ var canaryRecorded = map[string]float64{
 // at least one of the seven canary answers past it.
 const CanaryTolerance = 0.05
 
-const canaryDigest = "8980f0361b576c1ee564dce3e174d2e6465280685c04dc6bbf243497d67e14f7"
+const canaryDigest = "182d11791110d3da035f4f5913a9fbeffcae5f0cd2dcc932fb3ace35ae558711"
 
 // checkCanaryDigest reports whether the canary question set and state still
 // match what canaryRecorded was measured against.

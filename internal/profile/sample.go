@@ -357,9 +357,8 @@ func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 // allow/passthrough variables plus a minimal HOME/TMPDIR base rooted at the
 // sample's own scratch directory, the same shape runner.Sandbox.Env uses.
 // Leaving Cmd.Env unset would inherit gotorque's own process environment,
-// including model provider credentials such as OPENROUTER_API_KEY or
-// AI_GATEWAY_API_KEY; this keeps a sampled run's environment no broader than
-// a measured run's.
+// including a model provider credential such as OPENROUTER_API_KEY; this
+// keeps a sampled run's environment no broader than a measured run's.
 func sampleEnv(req SampleTarget, workDir string) []string {
 	base := []string{"HOME=" + workDir, "TMPDIR=" + workDir, "TMP=" + workDir, "TEMP=" + workDir}
 	return runner.BuildEnv(req.Sandbox.Environment, base, nil)

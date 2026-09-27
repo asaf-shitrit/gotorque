@@ -16,9 +16,9 @@ import (
 // gotorque's own process environment when present, and Allow additionally
 // gates which keys of RunRequest.AdditionalEnv (values gotorque supplies
 // itself, such as build configuration) are kept. Every other variable in the
-// harness's own environment -- including model provider credentials such as
-// OPENROUTER_API_KEY or AI_GATEWAY_API_KEY -- never reaches the target
-// process. An empty policy grants nothing beyond the sandbox's fixed base
+// harness's own environment -- including a model provider credential such as
+// OPENROUTER_API_KEY -- never reaches the target process. An empty policy
+// grants nothing beyond the sandbox's fixed base
 // (HOME/TMPDIR) and gotorque's own infrastructure variables.
 type EnvironmentPolicy struct {
 	Allow       []string

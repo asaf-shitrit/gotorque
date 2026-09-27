@@ -20,7 +20,7 @@ func TestEveryCauseHasAQuestionAndABaseline(t *testing.T) {
 	questions := Questions()
 	for _, cause := range Causes {
 		q, ok := questions[string(cause)]
-		if !ok || q.Type != "boolean" || q.Criteria["true"] == "" || q.Criteria["false"] == "" {
+		if !ok || q.Type != "noul" || q.Criteria["true"] == "" || q.Criteria["false"] == "" {
 			t.Errorf("%s question = %+v", cause, q)
 		}
 		if b := baseline[cause]; b.std <= 0 || b.mean <= 0 || b.mean >= 1 {
@@ -39,7 +39,7 @@ func answersAt(p map[Cause]float64) map[string]Answer {
 		if !ok {
 			prob = baseline[cause].mean
 		}
-		answers[string(cause)] = Answer{Type: "boolean", Probability: prob}
+		answers[string(cause)] = Answer{Type: "noul", Probability: prob}
 	}
 	return answers
 }

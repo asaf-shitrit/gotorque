@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// gateway serves the given status and body for each successive call, repeating
-// the last pair once the script runs out.
-func gateway(t *testing.T, script ...func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, *atomic.Int32) {
+// systemOne serves the given status and body for each successive call,
+// repeating the last pair once the script runs out.
+func systemOne(t *testing.T, script ...func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,13 +32,13 @@ func respond(status int, body string) func(http.ResponseWriter, *http.Request) {
 	}
 }
 
-const answered = `{"model":"typesafe-ai/jev","answers":{"ok":{"type":"boolean","probability":0.93}},"usage":{"inputTokens":120,"outputTokens":9}}`
+const answered = `{"model":"typesafe/jev-1.13-20260917","provider":"TypeSafe","answers":{"ok":{"type":"noul","noul":0.93}},"usage":{"input_tokens":120,"output_tokens":9,"cost":0.00001}}`
 
-func TestEvaluateSendsTheRequestTheGatewayExpects(t *testing.T) {
+func TestEvaluateSendsTheRequestSystemOneExpects(t *testing.T) {
 	var got Request
-	srv, _ := gateway(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/evaluate" {
-			t.Errorf("path = %q, want /v1/evaluate", r.URL.Path)
+	srv, _ := systemOne(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/systemone" {
+			t.Errorf("path = %q, want /systemone", r.URL.Path)
 		}
 		if auth := r.Header.Get("Authorization"); auth != "Bearer key-1" {
 			t.Errorf("authorization = %q", auth)
@@ -48,58 +48,51 @@ func TestEvaluateSendsTheRequestTheGatewayExpects(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(answered))
 	})
-	client := Client{APIKey: "key-1", BaseURL: srv.URL + "/v1/"}
-	resp, err := client.Evaluate(context.Background(), Request{State: "s", Questions: map[string]Question{"ok": {Type: "boolean", Instructions: "ok?"}}})
+	client := Client{APIKey: "key-1", BaseURL: srv.URL}
+	resp, err := client.Evaluate(context.Background(), Request{State: "s", Questions: map[string]Question{"ok": {Type: "noul", Instructions: "ok?"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Model != Model {
-		t.Errorf("model = %q, want the default %q", got.Model, Model)
+		t.Errorf("model = %q, want the pinned build %q", got.Model, Model)
 	}
-	if resp.Answers["ok"].Probability != 0.93 || resp.Usage.InputTokens != 120 {
+	if resp.Answers["ok"].Probability != 0.93 || resp.Usage.InputTokens != 120 || resp.Usage.Cost != 0.00001 {
 		t.Errorf("response = %+v", resp)
 	}
 }
 
-func TestEvaluatePinsTheProviderByDefault(t *testing.T) {
-	var got Request
-	srv, _ := gateway(t, func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Errorf("decode request: %v", err)
+func TestEvaluateTrimsATrailingSlashFromBaseURL(t *testing.T) {
+	srv, _ := systemOne(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/systemone" {
+			t.Errorf("path = %q, want /systemone", r.URL.Path)
 		}
 		_, _ = w.Write([]byte(answered))
 	})
-	client := Client{APIKey: "k", BaseURL: srv.URL}
+	client := Client{APIKey: "k", BaseURL: srv.URL + "/"}
 	if _, err := client.Evaluate(context.Background(), Request{}); err != nil {
 		t.Fatal(err)
 	}
-	if got.ProviderOptions == nil || len(got.ProviderOptions.Gateway.Only) != 1 || got.ProviderOptions.Gateway.Only[0] != pinnedProvider {
-		t.Errorf("providerOptions = %+v, want only [%s]", got.ProviderOptions, pinnedProvider)
-	}
 }
 
-func TestEvaluateKeepsACallerSProviderOptions(t *testing.T) {
-	var got Request
-	srv, _ := gateway(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&got)
-		_, _ = w.Write([]byte(answered))
-	})
-	client := Client{APIKey: "k", BaseURL: srv.URL}
-	custom := &ProviderOptions{Gateway: GatewayOptions{Only: []string{"something-else"}}}
-	if _, err := client.Evaluate(context.Background(), Request{ProviderOptions: custom}); err != nil {
-		t.Fatal(err)
-	}
-	if got.ProviderOptions.Gateway.Only[0] != "something-else" {
-		t.Errorf("providerOptions = %+v, want the caller's own", got.ProviderOptions)
-	}
-}
-
-func TestEvaluateRefusesAWrongFinalProvider(t *testing.T) {
-	body := `{"model":"typesafe-ai/jev","answers":{"ok":{"type":"boolean","probability":0.5}},"providerMetadata":{"gateway":{"routing":{"finalProvider":"digitalocean"}}}}`
-	srv, calls := gateway(t, respond(http.StatusOK, body))
+func TestEvaluateRefusesAWrongBuild(t *testing.T) {
+	body := `{"model":"typesafe/jev-1.14-20261001","provider":"TypeSafe","answers":{"ok":{"type":"noul","noul":0.5}}}`
+	srv, calls := systemOne(t, respond(http.StatusOK, body))
 	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{0}}
 	_, err := client.Evaluate(context.Background(), Request{})
-	if err == nil || !strings.Contains(err.Error(), "digitalocean") {
+	if err == nil || !strings.Contains(err.Error(), "typesafe/jev-1.14-20261001") {
+		t.Fatalf("err = %v, want it to name the wrong build", err)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("calls = %d, want no retry for a wrong build", calls.Load())
+	}
+}
+
+func TestEvaluateRefusesAWrongProvider(t *testing.T) {
+	body := `{"model":"typesafe/jev-1.13-20260917","provider":"SomeoneElse","answers":{"ok":{"type":"noul","noul":0.5}}}`
+	srv, calls := systemOne(t, respond(http.StatusOK, body))
+	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{0}}
+	_, err := client.Evaluate(context.Background(), Request{})
+	if err == nil || !strings.Contains(err.Error(), "SomeoneElse") {
 		t.Fatalf("err = %v, want it to name the wrong provider", err)
 	}
 	if calls.Load() != 1 {
@@ -107,32 +100,27 @@ func TestEvaluateRefusesAWrongFinalProvider(t *testing.T) {
 	}
 }
 
-func TestEvaluateAcceptsThePinnedProvider(t *testing.T) {
-	body := `{"model":"typesafe-ai/jev","answers":{"ok":{"type":"boolean","probability":0.5}},"providerMetadata":{"gateway":{"routing":{"finalProvider":"typesafe-ai"}}}}`
-	srv, _ := gateway(t, respond(http.StatusOK, body))
+func TestEvaluateAcceptsThePinnedBuildAndProvider(t *testing.T) {
+	srv, _ := systemOne(t, respond(http.StatusOK, answered))
 	client := Client{APIKey: "k", BaseURL: srv.URL}
 	if _, err := client.Evaluate(context.Background(), Request{}); err != nil {
-		t.Fatalf("err = %v, want the pinned provider accepted", err)
+		t.Fatalf("err = %v, want the pinned build and provider accepted", err)
 	}
 }
 
-func TestEvaluateAcceptsNoRoutingMetadataAtAll(t *testing.T) {
-	// Stub gateways in tests, and possibly a real response the gateway
-	// changes shape on, may carry no providerMetadata at all; that must not
-	// be treated as a wrong provider.
-	if _, err := (Client{APIKey: "k", BaseURL: mustAnswerServer(t)}).Evaluate(context.Background(), Request{}); err != nil {
-		t.Fatalf("err = %v, want a response with no routing metadata accepted", err)
+func TestEvaluateAcceptsNoBuildOrProviderAtAll(t *testing.T) {
+	// A stub server in a test, or a real response System One changes shape
+	// on, may carry no model or provider at all; that must not be treated as
+	// a wrong build or provider.
+	body := `{"answers":{"ok":{"type":"noul","noul":0.5}}}`
+	srv, _ := systemOne(t, respond(http.StatusOK, body))
+	if _, err := (Client{APIKey: "k", BaseURL: srv.URL}).Evaluate(context.Background(), Request{}); err != nil {
+		t.Fatalf("err = %v, want a response with no build or provider accepted", err)
 	}
-}
-
-func mustAnswerServer(t *testing.T) string {
-	t.Helper()
-	srv, _ := gateway(t, respond(http.StatusOK, answered))
-	return srv.URL
 }
 
 func TestEvaluateRetriesThrottledCalls(t *testing.T) {
-	srv, calls := gateway(t, respond(http.StatusTooManyRequests, `{"error":{"message":"busy"}}`), respond(http.StatusBadGateway, "down"), respond(http.StatusOK, answered))
+	srv, calls := systemOne(t, respond(http.StatusTooManyRequests, `{"error":{"message":"busy"}}`), respond(http.StatusBadGateway, "down"), respond(http.StatusOK, answered))
 	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{0, 0, 0}}
 	if _, err := client.Evaluate(context.Background(), Request{}); err != nil {
 		t.Fatal(err)
@@ -143,11 +131,11 @@ func TestEvaluateRetriesThrottledCalls(t *testing.T) {
 }
 
 func TestEvaluateGivesUpAfterTheLadder(t *testing.T) {
-	srv, calls := gateway(t, respond(http.StatusTooManyRequests, `{"error":{"message":"The upstream provider is currently experiencing high demand."}}`))
+	srv, calls := systemOne(t, respond(http.StatusTooManyRequests, `{"error":{"message":"The upstream provider is currently experiencing high demand."}}`))
 	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{0}}
 	_, err := client.Evaluate(context.Background(), Request{})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 429") || !strings.Contains(err.Error(), "high demand") {
-		t.Fatalf("err = %v, want the gateway's 429 message", err)
+		t.Fatalf("err = %v, want the endpoint's 429 message", err)
 	}
 	if calls.Load() != 2 {
 		t.Errorf("calls = %d, want one try plus one retry", calls.Load())
@@ -155,11 +143,11 @@ func TestEvaluateGivesUpAfterTheLadder(t *testing.T) {
 }
 
 func TestEvaluateDoesNotRetryARefusal(t *testing.T) {
-	srv, calls := gateway(t, respond(http.StatusForbidden, `{"error":{"message":"AI Gateway requires a valid credit card on file to service requests."}}`))
+	srv, calls := systemOne(t, respond(http.StatusForbidden, `{"error":{"message":"Free tier users do not have access to this model."}}`))
 	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{0, 0}}
 	_, err := client.Evaluate(context.Background(), Request{})
-	if err == nil || !strings.Contains(err.Error(), "credit card") {
-		t.Fatalf("err = %v, want the gateway's own explanation", err)
+	if err == nil || !strings.Contains(err.Error(), "Free tier") {
+		t.Fatalf("err = %v, want the endpoint's own explanation", err)
 	}
 	if calls.Load() != 1 {
 		t.Errorf("calls = %d, want no retry for a 403", calls.Load())
@@ -167,7 +155,7 @@ func TestEvaluateDoesNotRetryARefusal(t *testing.T) {
 }
 
 func TestEvaluateRejectsAMalformedAnswer(t *testing.T) {
-	srv, calls := gateway(t, respond(http.StatusOK, "not json"))
+	srv, calls := systemOne(t, respond(http.StatusOK, "not json"))
 	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{0}}
 	if _, err := client.Evaluate(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "decode Jev response") {
 		t.Fatalf("err = %v", err)
@@ -177,7 +165,29 @@ func TestEvaluateRejectsAMalformedAnswer(t *testing.T) {
 	}
 }
 
-func TestEvaluateRetriesAnUnreachableGateway(t *testing.T) {
+func TestEvaluateRejectsAnAnswerWithNeitherNoulNorProbability(t *testing.T) {
+	srv, _ := systemOne(t, respond(http.StatusOK, `{"answers":{"ok":{"type":"noul"}}}`))
+	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{0}}
+	if _, err := client.Evaluate(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "decode Jev response") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEvaluateDecodesAnAnswerUnderTheOlderProbabilityField(t *testing.T) {
+	// Answers persisted in the bbolt jev_cache and campaign events were
+	// written under "probability" from an earlier endpoint this package
+	// used; a cache hit replayed through the same Answer type must still
+	// decode.
+	var a Answer
+	if err := json.Unmarshal([]byte(`{"type":"noul","probability":0.42}`), &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Probability != 0.42 {
+		t.Errorf("probability = %v, want 0.42", a.Probability)
+	}
+}
+
+func TestEvaluateRetriesAnUnreachableEndpoint(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close()
 	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{0}}
@@ -187,7 +197,7 @@ func TestEvaluateRetriesAnUnreachableGateway(t *testing.T) {
 }
 
 func TestEvaluateStopsWaitingWhenTheContextEnds(t *testing.T) {
-	srv, _ := gateway(t, respond(http.StatusTooManyRequests, "busy"))
+	srv, _ := systemOne(t, respond(http.StatusTooManyRequests, "busy"))
 	client := Client{APIKey: "k", BaseURL: srv.URL, Backoff: []time.Duration{time.Hour}}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -214,48 +224,27 @@ func TestEvaluateReportsAnUnencodableState(t *testing.T) {
 	}
 }
 
-// canaryAnsweredBody builds an /v1/evaluate response that answers every
-// canary question at its recorded value, so a mock gateway can drive
-// Preflight without tripping canary drift by accident. overrides replaces
-// individual answers, e.g. to test drift.
+// canaryAnsweredBody builds a /systemone response that answers every canary
+// question at its recorded value, so a mock endpoint can drive Preflight
+// without tripping canary drift by accident. overrides replaces individual
+// answers, e.g. to test drift.
 func canaryAnsweredBody(overrides map[string]float64) string {
-	answers := map[string]Answer{}
+	answers := map[string]map[string]any{}
 	for id, p := range canaryRecorded {
-		answers[id] = Answer{Type: "boolean", Probability: p}
+		answers[id] = map[string]any{"type": "noul", "noul": p}
 	}
 	for id, p := range overrides {
-		answers[id] = Answer{Type: "boolean", Probability: p}
+		answers[id] = map[string]any{"type": "noul", "noul": p}
 	}
-	body, err := json.Marshal(map[string]any{"model": Model, "answers": answers})
+	body, err := json.Marshal(map[string]any{"model": Model, "provider": pinnedProvider, "answers": answers})
 	if err != nil {
 		panic(err)
 	}
 	return string(body)
 }
 
-// preflightGateway serves canaryAnsweredBody(overrides) for /v1/evaluate and
-// a models listing naming release for the "jev" entry, from one server, so
-// Client.BaseURL can point a Preflight call at both endpoints it uses.
-func preflightGateway(t *testing.T, release string, overrides map[string]float64) *httptest.Server {
-	t.Helper()
-	evalBody := canaryAnsweredBody(overrides)
-	modelsBody, err := json.Marshal(map[string]any{"models": []map[string]string{{"name": "jev", "release_date": release}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/typesafe/v1/models") {
-			_, _ = w.Write(modelsBody)
-			return
-		}
-		_, _ = w.Write([]byte(evalBody))
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 func TestPreflightSucceedsWithNoDrift(t *testing.T) {
-	srv := preflightGateway(t, baselineModelRelease, nil)
+	srv, _ := systemOne(t, respond(http.StatusOK, canaryAnsweredBody(nil)))
 	warnings, err := (Client{APIKey: "k", BaseURL: srv.URL}).Preflight(context.Background())
 	if err != nil || len(warnings) != 0 {
 		t.Errorf("preflight = %v, %v, want no warnings and no error", warnings, err)
@@ -263,60 +252,22 @@ func TestPreflightSucceedsWithNoDrift(t *testing.T) {
 }
 
 func TestPreflightRejectsAResponseWithNoAnswer(t *testing.T) {
-	empty, _ := gateway(t, respond(http.StatusOK, `{"answers":{}}`))
+	empty, _ := systemOne(t, respond(http.StatusOK, `{"answers":{}}`))
 	if _, err := (Client{APIKey: "k", BaseURL: empty.URL}).Preflight(context.Background()); err == nil {
 		t.Error("preflight accepted a response with no answer")
 	}
 }
 
 func TestPreflightPropagatesARefusal(t *testing.T) {
-	refused, _ := gateway(t, respond(http.StatusUnauthorized, `{"error":{"message":"invalid key"}}`))
+	refused, _ := systemOne(t, respond(http.StatusUnauthorized, `{"error":{"message":"invalid key"}}`))
 	if _, err := (Client{APIKey: "k", BaseURL: refused.URL}).Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "invalid key") {
 		t.Errorf("preflight = %v, want the refusal", err)
 	}
 }
 
-func TestPreflightFailsOnAReleaseDateMismatch(t *testing.T) {
-	srv := preflightGateway(t, "2099-01-01", nil)
-	client := Client{APIKey: "k", BaseURL: srv.URL}
-	_, err := client.Preflight(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "TestLiveBaseline") || !strings.Contains(err.Error(), EnvAllowDrift) {
-		t.Fatalf("err = %v, want it to name TestLiveBaseline and %s", err, EnvAllowDrift)
-	}
-}
-
-func TestPreflightWarnsOnAReleaseDateMismatchUnderTheOverride(t *testing.T) {
-	t.Setenv(EnvAllowDrift, "1")
-	srv := preflightGateway(t, "2099-01-01", nil)
-	client := Client{APIKey: "k", BaseURL: srv.URL}
-	warnings, err := client.Preflight(context.Background())
-	if err != nil {
-		t.Fatalf("err = %v, want the override to downgrade it", err)
-	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "TestLiveBaseline") {
-		t.Errorf("warnings = %v", warnings)
-	}
-}
-
-func TestPreflightWarnsWhenTheModelsListingCannotBeRead(t *testing.T) {
-	// This server answers /v1/evaluate correctly but has no real
-	// /typesafe/v1/models handler, so the listing decodes to no "jev" entry.
-	// That must warn, never fail the preflight: not knowing the release date
-	// is not evidence the model drifted.
-	srv, _ := gateway(t, respond(http.StatusOK, canaryAnsweredBody(nil)))
-	client := Client{APIKey: "k", BaseURL: srv.URL}
-	warnings, err := client.Preflight(context.Background())
-	if err != nil {
-		t.Fatalf("err = %v, want an unreadable listing to only warn", err)
-	}
-	if len(warnings) != 1 {
-		t.Fatalf("warnings = %v, want exactly one", warnings)
-	}
-}
-
 func TestPreflightFailsOnCanaryDrift(t *testing.T) {
 	moved := string(canaryCauses[0])
-	srv := preflightGateway(t, baselineModelRelease, map[string]float64{moved: canaryRecorded[moved] + 0.3})
+	srv, _ := systemOne(t, respond(http.StatusOK, canaryAnsweredBody(map[string]float64{moved: canaryRecorded[moved] + 0.3})))
 	client := Client{APIKey: "k", BaseURL: srv.URL}
 	_, err := client.Preflight(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "TestLiveCanary") || !strings.Contains(err.Error(), moved) {
@@ -327,7 +278,7 @@ func TestPreflightFailsOnCanaryDrift(t *testing.T) {
 func TestPreflightWarnsOnCanaryDriftUnderTheOverride(t *testing.T) {
 	t.Setenv(EnvAllowDrift, "1")
 	moved := string(canaryCauses[0])
-	srv := preflightGateway(t, baselineModelRelease, map[string]float64{moved: canaryRecorded[moved] + 0.3})
+	srv, _ := systemOne(t, respond(http.StatusOK, canaryAnsweredBody(map[string]float64{moved: canaryRecorded[moved] + 0.3})))
 	client := Client{APIKey: "k", BaseURL: srv.URL}
 	warnings, err := client.Preflight(context.Background())
 	if err != nil {
@@ -352,7 +303,7 @@ func TestClientDefaults(t *testing.T) {
 	t.Setenv(EnvAPIKey, "from-env")
 	t.Setenv(EnvBaseURL, "")
 	c := NewClientFromEnvironment()
-	if c.APIKey != "from-env" || c.endpoint() != DefaultBaseURL+"/evaluate" {
+	if c.APIKey != "from-env" || c.endpoint() != DefaultBaseURL+"/systemone" {
 		t.Errorf("client = %+v, endpoint %q", c, c.endpoint())
 	}
 	if c.httpClient().Timeout != time.Minute || len(c.backoff()) != len(defaultBackoff) {

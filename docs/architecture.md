@@ -69,7 +69,7 @@ roles that fail in different cycles never add up to an outage. A role Jev
 serves is not counted: with `--analyst jev` neither the analyst nor the
 coordinator, which becomes a deterministic plan that never calls a model, with
 `--reviewer jev` not the reviewer, and with `--explorer jev` not the explorer,
-a stub that reports the variants discovery sampled. Jev is served by a different gateway,
+a stub that reports the variants discovery sampled. Jev is served by a different endpoint,
 so a role it answers would otherwise keep the breaker from ever tripping. When
 those roles leave the optimizer as the only model role, one cycle in which it
 failed is the same single failed call the degrading wrapper absorbs whenever
@@ -390,7 +390,7 @@ strict `git apply` viable on model-generated patches.
 with cause classification ranked in code (ADR 0012). The orchestrator swaps the
 analyst agent node for a function node of the same name that calls
 `Dependencies.Causes`; `internal/campaign/causes.go` implements it and
-`internal/jev` holds the gateway client, the questions, their baseline, and the
+`internal/jev` holds the System One client, the questions, their baseline, and the
 ranking. The node returns the same `AnalystResult`, so `merge_analysis`,
 excerpts, and the optimizer are unchanged, and a failure degrades like a failed
 model call: an empty result, a `role_degraded` record against `analyst`, and
@@ -398,9 +398,9 @@ discovery's hot paths as the fallback. Only a cycle in which no function could
 be classified fails the node; a single function that fails is listed in
 `additional_checks` instead.
 
-Jev (TypeSafe, reached through the Vercel AI Gateway's native `/v1/evaluate`,
-which the OpenAI-compatible API does not serve) answers typed questions about a
-state with calibrated probabilities and generates no text. For each of up to
+Jev (TypeSafe, reached through OpenRouter's System One API `/systemone`, which
+the OpenAI-compatible API does not serve; ADR 0030) answers typed questions
+about a state with calibrated probabilities and generates no text. For each of up to
 twelve discovery hot functions with a source position, one per function, the
 node sends the whole declaration with its doc comment and seven yes/no
 questions, one per cause: avoidable allocation, unbuffered I/O, string
@@ -452,32 +452,25 @@ performance fixes, each asked about before and after the fix:
 186 functions with no labels involved. It is valid only for the exact question
 text and state template: `TestBaselineMatchesQuestions` compares a digest of
 both and fails on any edit, and `TestLiveBaseline` re-measures it (opt-in, one
-request per function). It is also valid only for the model version it was
-measured on, and nothing can fully check that: TypeSafe advises pinning a
-version once thresholds are tuned against it, but the gateway serves only the
-alias `typesafe-ai/jev` (pinned IDs such as `jev-1.13.0` return 404) and
-reports no version in its `/v1/evaluate` responses. The baseline was measured
-on Jev 1.13; re-run `TestLiveBaseline` when TypeSafe ships a release.
+request per function). It is also valid only for the exact Jev build it was
+measured on. OpenRouter's System One API accepts a fully pinned build id
+(`jev.Model`, currently `typesafe/jev-1.13-20260917`) where the earlier
+endpoint only ever exposed an unversioned alias (ADR 0012, ADR 0029); that gap
+is closed by ADR 0030, which this baseline, the fix-kind baseline
+(`fixkinds.go`), and the review baseline (`review_baseline.go`) were all
+re-measured against.
 
-ADR 0029 narrows what code can check instead of pinning a version. The
-gateway was found serving `typesafe-ai/jev` from a second upstream
-(`digitalocean`, as a fallback) with nothing confirming it runs the same
-build, so `Client.Evaluate` sends `providerOptions.gateway.only:
-["typesafe-ai"]` on every request and refuses an answer whose
-`providerMetadata.gateway.routing.finalProvider` names anything else.
-`Client.Preflight` makes one free `GET /typesafe/v1/models` call and compares
-its `release_date` for `jev` against `baselineModelRelease` (`baseline.go`),
-the only version signal the gateway exposes; a mismatch fails the campaign
-before it starts, naming `TestLiveBaseline`, unless
-`GOTORQUE_JEV_ALLOW_DRIFT` is set, which downgrades it to a warning (the
-provider pin has no such override). Because nothing documents whether
-`release_date` changes on every release behind the alias, that same preflight
-spends its one request on a canary (`internal/jev/canary.go`) instead of a
-plain connectivity check: a fixed synthetic function and all seven
-cause questions, with answers recorded once (`TestLiveCanary`) and guarded by
-a digest the same way the baseline is. An answer that moved by more than
-`CanaryTolerance` (0.05) fails the preflight the same way, naming
-`TestLiveCanary`.
+`Client.post` (ADR 0030) refuses an answer unconditionally, with no drift
+override, whenever a response's `model` is not exactly `jev.Model` or its
+`provider` is not exactly `TypeSafe`: nothing recorded is valid for any other
+build or provider. Because a release can still move Jev's answers behind a
+build id TypeSafe controls, `Client.Preflight` still spends its one request on
+a canary (`internal/jev/canary.go`) instead of a plain connectivity check: a
+fixed synthetic function and all seven cause questions, with answers recorded
+once (`TestLiveCanary`) and guarded by a digest the same way the baseline is.
+An answer that moved by more than `CanaryTolerance` (0.05) fails the
+preflight, naming `TestLiveCanary`, unless `GOTORQUE_JEV_ALLOW_DRIFT` is set,
+which downgrades that check alone to a warning.
 
 Each flagged cause becomes a one-sentence remedy in `candidate_hypotheses`,
 every function's first cause before any second cause, each tier ordered by
@@ -602,10 +595,11 @@ to infer) is added the same way; nothing outside that table is ever guessed.
 The single-function path (the zero `TargetFunction` kind) is unchanged, byte
 for byte.
 
-`AI_GATEWAY_API_KEY` (and optionally `AI_GATEWAY_BASE_URL`) configure the
-client. `--adk` spends one preflight request before repository work, because a
-gateway account without a card on file refuses every request and the analyst
-node is reached only after the baseline is built. Calls are sequential and
+`OPENROUTER_API_KEY` (and optionally `OPENROUTER_BASE_URL`) configure the
+client, the same credential and override the optimizer role already uses.
+`--adk` spends one preflight request before repository work, proving the key,
+access, and the pinned build (`typesafe/jev-1.13-20260917`, ADR 0030) all
+work before the analyst node is reached. Calls are sequential and
 retry HTTP 429 and 5xx with 1-16 s backoff: the provider throttled 36% of
 attempts at twelve in flight, and even sequential calls met a 429 that
 outlasted a 15 s ladder. `--adk-stub --analyst jev` uses a no-network stub,
@@ -1059,10 +1053,10 @@ The attempt deadline in `fence.go` (four minutes per ladder attempt) remains as
 the backstop, sized so attempts×timeout + backoff fits the orchestrator's
 twenty-minute per-node agent deadline.
 
-`--analyst jev` takes the analyst off this path entirely: it calls the Vercel
-AI Gateway with `AI_GATEWAY_API_KEY` instead of OpenRouter (see Jev cause
-analyst). The analyst's routed model is still validated and built, but never
-called.
+`--analyst jev` takes the analyst off this path entirely: it calls OpenRouter's
+System One API with `OPENROUTER_API_KEY`, pinned to an exact Jev build (see
+Jev cause analyst, ADR 0030). The analyst's routed model is still validated
+and built, but never called.
 
 Role output shape is not enforced by the endpoint. Each role's instruction
 states strict JSON rules, and `internal/agents/decode.go` repairs the defects
@@ -1235,7 +1229,7 @@ Separately, `internal/toolchain.Toolchain.run` — which every `go build`/
 `go test`/benchstat invocation goes through, including the test gate and
 measurement builds that compile and run a model-written candidate patch —
 strips any environment variable shaped like a credential
-(`OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, or any name ending in
+(`OPENROUTER_API_KEY`, or any name ending in
 `_API_KEY`/`_TOKEN`/`_SECRET` or containing `PASSWORD`) from gotorque's own
 process environment before passing the rest through. That is a different
 leak from the sandbox's `environment.allow`/`passthrough`: it is not

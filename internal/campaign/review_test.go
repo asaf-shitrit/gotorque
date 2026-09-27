@@ -110,7 +110,7 @@ func TestReviewConcernsAreRecordedAndReported(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ReviewerJev, engine.State().Reviewer)
 	report := RenderMarkdown(engine.State())
-	require.Contains(t, report, "- Reviewer: Jev behaviour-hazard checks (`typesafe-ai/jev`)")
+	require.Contains(t, report, "- Reviewer: Jev behaviour-hazard checks (`typesafe/jev-1.13-20260917`)")
 	require.Contains(t, report, "- Review: an error from a call that can fail is discarded (Jev yes 0.96, +5.0 sd)")
 }
 

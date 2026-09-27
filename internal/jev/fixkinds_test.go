@@ -17,7 +17,7 @@ func TestEveryKindHasAQuestionAndABaseline(t *testing.T) {
 	require.Len(t, questions, len(FixKinds))
 	for _, k := range FixKinds {
 		s := kindSpecs[k]
-		require.Equal(t, "boolean", questions[string(k)].Type, k)
+		require.Equal(t, "noul", questions[string(k)].Type, k)
 		require.Positive(t, kindBaseline[k].std, k)
 		if s.chosen {
 			require.Contains(t, k.Remedy("f", "a.go:1"), "f (a.go:1)", k)
@@ -33,10 +33,10 @@ func TestEveryKindHasAQuestionAndABaseline(t *testing.T) {
 func kindAnswers(p map[FixKind]float64) map[string]Answer {
 	answers := map[string]Answer{}
 	for _, k := range FixKinds {
-		answers[string(k)] = Answer{Type: "boolean", Probability: kindBaseline[k].mean}
+		answers[string(k)] = Answer{Type: "noul", Probability: kindBaseline[k].mean}
 	}
 	for k, v := range p {
-		answers[string(k)] = Answer{Type: "boolean", Probability: v}
+		answers[string(k)] = Answer{Type: "noul", Probability: v}
 	}
 	return answers
 }

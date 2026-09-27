@@ -41,14 +41,12 @@ func TestBuildUsesAllowlistedGoBuild(t *testing.T) {
 // (alecthomas/chroma's cmd/chroma is one).
 // TestBuildStripsCredentialsFromEnv is the fix for the audited leak: `go
 // build`/`go test`/benchstat run model-written candidate code with
-// OPENROUTER_API_KEY and AI_GATEWAY_API_KEY set on gotorque's own process
-// under --adk. Neither those two names nor any variable shaped like a
-// credential (_API_KEY/_TOKEN/_SECRET suffix, or containing PASSWORD) may
-// reach the child process; everything else the Go toolchain needs must
-// survive.
+// OPENROUTER_API_KEY set on gotorque's own process under --adk. Neither that
+// name nor any variable shaped like a credential (_API_KEY/_TOKEN/_SECRET
+// suffix, or containing PASSWORD) may reach the child process; everything
+// else the Go toolchain needs must survive.
 func TestBuildStripsCredentialsFromEnv(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "sk-live-secret")
-	t.Setenv("AI_GATEWAY_API_KEY", "gw-live-secret")
 	t.Setenv("SOME_SERVICE_TOKEN", "tok-secret")
 	t.Setenv("DB_PASSWORD", "hunter2")
 	t.Setenv("STRIPE_SECRET", "sk-stripe")
@@ -65,7 +63,7 @@ func TestBuildStripsCredentialsFromEnv(t *testing.T) {
 		t.Fatalf("invocations = %d", len(fake.invocations))
 	}
 	env := fake.invocations[0].Env
-	for _, leaked := range []string{"OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "SOME_SERVICE_TOKEN", "DB_PASSWORD", "STRIPE_SECRET"} {
+	for _, leaked := range []string{"OPENROUTER_API_KEY", "SOME_SERVICE_TOKEN", "DB_PASSWORD", "STRIPE_SECRET"} {
 		for _, kv := range env {
 			if strings.HasPrefix(kv, leaked+"=") {
 				t.Fatalf("build env leaked %s: %v", leaked, env)

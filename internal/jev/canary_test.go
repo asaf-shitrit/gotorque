@@ -28,13 +28,13 @@ func TestCanaryAsksEveryCause(t *testing.T) {
 func TestCanaryDriftFlagsAMovedAnswer(t *testing.T) {
 	answers := map[string]Answer{}
 	for id, want := range canaryRecorded {
-		answers[id] = Answer{Type: "boolean", Probability: want}
+		answers[id] = Answer{Type: "noul", Probability: want}
 	}
 	if drift := canaryDrift(answers); len(drift) != 0 {
 		t.Fatalf("drift = %v, want none for the recorded values themselves", drift)
 	}
 	moved := string(canaryCauses[0])
-	answers[moved] = Answer{Type: "boolean", Probability: canaryRecorded[moved] + 0.2}
+	answers[moved] = Answer{Type: "noul", Probability: canaryRecorded[moved] + 0.2}
 	drift := canaryDrift(answers)
 	if len(drift) != 1 {
 		t.Fatalf("drift = %v, want exactly one flagged question", drift)
@@ -44,7 +44,7 @@ func TestCanaryDriftFlagsAMovedAnswer(t *testing.T) {
 func TestCanaryDriftFlagsAMissingAnswer(t *testing.T) {
 	answers := map[string]Answer{}
 	for id, want := range canaryRecorded {
-		answers[id] = Answer{Type: "boolean", Probability: want}
+		answers[id] = Answer{Type: "noul", Probability: want}
 	}
 	delete(answers, string(canaryCauses[0]))
 	drift := canaryDrift(answers)
@@ -56,10 +56,10 @@ func TestCanaryDriftFlagsAMissingAnswer(t *testing.T) {
 func TestCanaryDriftToleratesSmallMovement(t *testing.T) {
 	answers := map[string]Answer{}
 	for id, want := range canaryRecorded {
-		answers[id] = Answer{Type: "boolean", Probability: want}
+		answers[id] = Answer{Type: "noul", Probability: want}
 	}
 	moved := string(canaryCauses[0])
-	answers[moved] = Answer{Type: "boolean", Probability: canaryRecorded[moved] + CanaryTolerance/2}
+	answers[moved] = Answer{Type: "noul", Probability: canaryRecorded[moved] + CanaryTolerance/2}
 	if drift := canaryDrift(answers); len(drift) != 0 {
 		t.Fatalf("drift = %v, want movement inside tolerance ignored", drift)
 	}

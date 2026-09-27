@@ -47,20 +47,22 @@ The analysis costs seconds instead of minutes, keeps discovery's locations verba
 per-function scores in a `cause_analysis` event. Its output is still advice: it feeds the optimizer
 and never reaches `apply_policy`. The baseline is tied to the exact question text and state
 template (`TestBaselineMatchesQuestions`); rewording either means re-measuring with
-`TestLiveBaseline`. A second provider and key (`AI_GATEWAY_API_KEY`) enter the run, guarded by a
-preflight under `--adk` because a gateway account without billing refuses every request.
+`TestLiveBaseline`. A second provider and key (`AI_GATEWAY_API_KEY` at the time; removed by ADR
+0030, which moved Jev onto `OPENROUTER_API_KEY` instead) enter the run, guarded by a preflight under
+`--adk` because a gateway account without billing refuses every request.
 
-The baseline cannot be pinned to a model version. TypeSafe advises pinning once thresholds are
-tuned, but the Vercel gateway serves only the alias `typesafe-ai/jev` and reports no version, so a
-Jev release (1.13 at measurement) silently moves every answer the baseline describes. Re-measure
-on each release; switching to TypeSafe's own endpoint, which accepts pinned IDs, needs a second
-account and key. ADR 0029 narrows what it can, in code rather than by pinning a version: every
-request is pinned to the `typesafe-ai` provider (the gateway was found serving the same alias from a
-second upstream, `digitalocean`, with no guarantee it runs the same build), `Client.Preflight` checks
-`GET /typesafe/v1/models`' `release_date` against the date the baselines were measured on, and that
-same preflight spends its one request on a canary — a fixed function and all seven cause
-questions with recorded answers — so a release that moves Jev's answers without moving
-`release_date` is still caught.
+At the time of this ADR the baseline could not be pinned to a model version: TypeSafe advises
+pinning once thresholds are tuned, but the Vercel gateway served only the alias `typesafe-ai/jev`
+and reported no version, so a Jev release (1.13 at measurement) silently moved every answer the
+baseline describes. ADR 0029 narrowed what it could check in code rather than by pinning a version:
+every request was pinned to the `typesafe-ai` provider (the gateway was found serving the same alias
+from a second upstream, `digitalocean`, with no guarantee it ran the same build), `Client.Preflight`
+checked `GET /typesafe/v1/models`' `release_date` against the date the baselines were measured on,
+and that same preflight spent its one request on a canary — a fixed function and all seven cause
+questions with recorded answers — so a release that moved Jev's answers without moving
+`release_date` was still caught. ADR 0030 replaced all of this by moving to OpenRouter's System One
+API, which accepts a fully pinned build id; the canary survives (an id TypeSafe controls can still
+move behind it), but the provider pin, the release-date probe, and the gateway path itself did not.
 
 Jev only classifies what discovery lists. On gron the output loop behind the accepted `bufio` patch
 shows up only as `fmt.(*pp).doPrintln`, a standard-library frame discovery drops, so the analyst is

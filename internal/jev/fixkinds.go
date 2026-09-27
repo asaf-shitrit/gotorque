@@ -94,7 +94,11 @@ var kindSpecs = map[FixKind]kindSpec{
 
 // kindBaseline is Jev's typical answer to each fix-kind question over the
 // same 186 functions and state template as the cause baseline, measured
-// 2026-09-24. On the benchmark's labelled fixes, the z-ranked kind named the
+// 2026-09-27 against the pinned build (jev.Model) through OpenRouter's System
+// One API (ADR 0030), in the same combined request as the cause baseline
+// (combinedBaselineQuestions in baseline_live_test.go), matching what
+// production sends (ADR 0028). On the benchmark's labelled fixes, measured
+// against the earlier gateway-served answers, the z-ranked kind named the
 // real fix for 16 of 21 allocation fixes (always guessing the commonest kind:
 // 9), 8 of 9 fast paths (6) and 8 of 12 string-building fixes (8); behind
 // KindGate it was right 14 of 18, 8 of 8 and 7 of 8 times it chose. The
@@ -102,19 +106,22 @@ var kindSpecs = map[FixKind]kindSpec{
 // labelled fixes from 28 other repositories, labelled before any question was
 // asked, re-scored them unchanged: behind the gate allocation was right 16 of
 // 17 times (always guessing: 9 of 21) and string building 20 of 24 (13 of 24).
+// The means moved by well under a point against the earlier gateway-served
+// measurement (see the comparison report ADR 0030 cites), so those accuracy
+// figures still stand without re-scoring.
 var kindBaseline = map[FixKind]stats{
-	KindBuilder:      {mean: 0.1789, std: 0.2636},
-	KindDropFmt:      {mean: 0.1336, std: 0.2293},
-	KindASCII:        {mean: 0.1183, std: 0.1593},
-	KindCommonCase:   {mean: 0.4068, std: 0.1959},
-	KindComputeOnce:  {mean: 0.3286, std: 0.1796},
-	KindRemoveUnused: {mean: 0.3623, std: 0.1520},
-	KindConversion:   {mean: 0.2909, std: 0.2101},
-	KindStackScratch: {mean: 0.2531, std: 0.2017},
-	KindSizeHint:     {mean: 0.2102, std: 0.2093},
+	KindBuilder:      {mean: 0.1781, std: 0.2632},
+	KindDropFmt:      {mean: 0.1332, std: 0.2289},
+	KindASCII:        {mean: 0.1180, std: 0.1591},
+	KindCommonCase:   {mean: 0.4056, std: 0.1959},
+	KindComputeOnce:  {mean: 0.3270, std: 0.1776},
+	KindRemoveUnused: {mean: 0.3622, std: 0.1527},
+	KindConversion:   {mean: 0.2915, std: 0.2105},
+	KindStackScratch: {mean: 0.2531, std: 0.2032},
+	KindSizeHint:     {mean: 0.2077, std: 0.2100},
 }
 
-const kindBaselineDigest = "e93b226ef549138c95a626a2640fae471a58a2c01de2bd2283ddd0aefb274b2d"
+const kindBaselineDigest = "82e55a2c3390fbb428be9482c62ed7a416ca13004adec3a2b73dc3d11f799cb2"
 
 // KindGate is how far the chosen kind must stand: at or above its usual
 // answer, and this many standard deviations ahead of the cause's next kind.

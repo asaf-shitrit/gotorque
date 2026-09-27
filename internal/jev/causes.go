@@ -123,8 +123,11 @@ var specs = map[Cause]causeSpec{
 	},
 }
 
+// boolean builds a yes/no-shaped question, sent as System One's "noul" type
+// (System One rejects "boolean" outright with HTTP 400); the true/false
+// criteria still say what a yes or no answer means.
 func boolean(instructions, whenTrue, whenFalse string) Question {
-	return Question{Type: "boolean", Instructions: instructions, Criteria: map[string]string{"true": whenTrue, "false": whenFalse}}
+	return Question{Type: "noul", Instructions: instructions, Criteria: map[string]string{"true": whenTrue, "false": whenFalse}}
 }
 
 // Questions returns the question set asked about every hot function, keyed by

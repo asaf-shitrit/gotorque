@@ -12,10 +12,13 @@ import (
 	"time"
 )
 
-// TestLiveBaseline measures the baseline in baseline.go against the real
-// gateway. It is opt-in and spends one request per function:
+// TestLiveBaseline measures the baseline in baseline.go and the fix-kind
+// baseline in fixkinds.go against the real endpoint, in one request per
+// function (cause and kind questions combined, as production sends them
+// since ADR 0028 - see combinedQuestions in internal/campaign/causes.go). It
+// is opt-in and spends one request per function:
 //
-//	AI_GATEWAY_API_KEY=... GOTORQUE_JEV_BASELINE_CASES=functions.jsonl \
+//	OPENROUTER_API_KEY=... GOTORQUE_JEV_BASELINE_CASES=functions.jsonl \
 //	  go test ./internal/jev -run TestLiveBaseline -v
 //
 // Each input line is {"id": "...", "path": "pkg/file.go", "source": "func ..."}.
@@ -31,21 +34,58 @@ func TestLiveBaseline(t *testing.T) {
 	client.Backoff = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second, 60 * time.Second}
 	functions := readBaselineFunctions(t, casesPath)
 	out := baselineOutput(t)
-	samples := map[Cause][]float64{}
+	causeSamples := map[Cause][]float64{}
+	kindSamples := map[FixKind][]float64{}
+	questions := combinedBaselineQuestions()
 	for _, fn := range functions {
-		resp, err := client.Evaluate(context.Background(), Request{State: SiteState(fn.Path, fn.Source), Questions: Questions()})
+		resp, err := client.Evaluate(context.Background(), Request{State: SiteState(fn.Path, fn.Source), Questions: questions})
 		if err != nil {
 			t.Fatalf("%s: %v", fn.ID, err)
 		}
 		for _, cause := range Causes {
-			samples[cause] = append(samples[cause], resp.Answers[string(cause)].Probability)
+			causeSamples[cause] = append(causeSamples[cause], resp.Answers[string(cause)].Probability)
+		}
+		for _, kind := range FixKinds {
+			kindSamples[kind] = append(kindSamples[kind], resp.Answers[string(kind)].Probability)
 		}
 		if out != nil {
-			line, _ := json.Marshal(map[string]any{"id": fn.ID, "answers": resp.Answers})
+			line, _ := json.Marshal(map[string]any{"id": fn.ID, "answers": resp.Answers, "usage": resp.Usage})
 			_, _ = fmt.Fprintln(out, string(line))
 		}
 	}
-	t.Log("\n" + formatBaseline(samples, len(functions)))
+	t.Log("\n" + formatBaseline(causeSamples, len(functions)))
+	t.Log("\n" + formatKindBaseline(kindSamples, len(functions)))
+}
+
+// combinedBaselineQuestions merges the cause and fix-kind question sets, the
+// same shape production sends in one request per site (ADR 0028), so the
+// measured baseline matches what a live campaign actually asks.
+func combinedBaselineQuestions() map[string]Question {
+	questions := Questions()
+	for id, q := range KindQuestions() {
+		questions[id] = q
+	}
+	return questions
+}
+
+func formatKindBaseline(samples map[FixKind][]float64, n int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "// measured over %d functions\nvar kindBaseline = map[FixKind]stats{\n", n)
+	for _, kind := range FixKinds {
+		mean, std := meanStd(samples[kind])
+		fmt.Fprintf(&b, "\t%s: {mean: %.4f, std: %.4f},\n", kindIdent(kind), mean, std)
+	}
+	fmt.Fprintf(&b, "}\n\nconst kindBaselineDigest = %q\n", kindDigest())
+	return b.String()
+}
+
+func kindIdent(k FixKind) string {
+	names := map[FixKind]string{
+		KindBuilder: "KindBuilder", KindDropFmt: "KindDropFmt", KindASCII: "KindASCII",
+		KindCommonCase: "KindCommonCase", KindComputeOnce: "KindComputeOnce", KindRemoveUnused: "KindRemoveUnused",
+		KindConversion: "KindConversion", KindStackScratch: "KindStackScratch", KindSizeHint: "KindSizeHint",
+	}
+	return names[k]
 }
 
 type baselineFunction struct {
@@ -122,11 +162,12 @@ func causeIdent(c Cause) string {
 
 // TestLiveReviewBaseline measures the review baseline in review_baseline.go:
 //
-//	AI_GATEWAY_API_KEY=... GOTORQUE_JEV_REVIEW_CASES=patches.jsonl \
+//	OPENROUTER_API_KEY=... GOTORQUE_JEV_REVIEW_CASES=patches.jsonl \
 //	  go test ./internal/jev -run TestLiveReviewBaseline -v
 //
 // Each input line is {"id", "hypothesis", "function", "source", "patch"}: a real
-// performance patch and its function's source before it.
+// performance patch and its function's source before it. Set
+// GOTORQUE_JEV_REVIEW_OUT to also write every answer as JSON lines.
 func TestLiveReviewBaseline(t *testing.T) {
 	casesPath := os.Getenv("GOTORQUE_JEV_REVIEW_CASES")
 	client := NewClientFromEnvironment()
@@ -135,6 +176,7 @@ func TestLiveReviewBaseline(t *testing.T) {
 	}
 	client.Backoff = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second, 60 * time.Second}
 	patches := readReviewPatches(t, casesPath)
+	out := reviewOutput(t)
 	samples := map[Hazard][]float64{}
 	for _, p := range patches {
 		resp, err := client.Evaluate(context.Background(), Request{State: ReviewState(p.Hypothesis, p.Function, p.Source, p.Patch), Questions: ReviewQuestions()})
@@ -143,6 +185,10 @@ func TestLiveReviewBaseline(t *testing.T) {
 		}
 		for _, h := range Hazards {
 			samples[h] = append(samples[h], resp.Answers[string(h)].Probability)
+		}
+		if out != nil {
+			line, _ := json.Marshal(map[string]any{"id": p.ID, "answers": resp.Answers, "usage": resp.Usage})
+			_, _ = fmt.Fprintln(out, string(line))
 		}
 	}
 	var b strings.Builder
@@ -153,6 +199,20 @@ func TestLiveReviewBaseline(t *testing.T) {
 	}
 	fmt.Fprintf(&b, "}\n\nconst reviewBaselineDigest = %q\n", reviewDigest())
 	t.Log("\n" + b.String())
+}
+
+func reviewOutput(t *testing.T) *os.File {
+	t.Helper()
+	path := os.Getenv("GOTORQUE_JEV_REVIEW_OUT")
+	if path == "" {
+		return nil
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
 }
 
 type reviewPatch struct {

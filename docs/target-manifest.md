@@ -145,7 +145,7 @@ cannot honor it, is:
   union of these two lists, copied by name from gotorque's own process
   environment when set, plus gotorque's own infrastructure variables (for
   example `GOTOOLCHAIN`). Nothing else does — including model provider
-  credentials such as `OPENROUTER_API_KEY` or `AI_GATEWAY_API_KEY` that
+  credentials such as `OPENROUTER_API_KEY` that
   gotorque itself may have set. This applies to every run gotorque makes of
   the target, including the profiler's direct-sampling path.
 - `max_processes` is **not enforced, on any platform.** An earlier version of
