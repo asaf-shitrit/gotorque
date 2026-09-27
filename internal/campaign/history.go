@@ -59,6 +59,7 @@ func loadHistory(dirs []string, revision string) (History, error) {
 		}
 		addMeasuredCandidates(h.Candidates, past)
 		h.Priors = appendEarlierCandidates(h.Priors, past.CandidateRecords)
+		h.Accepted = append(h.Accepted, acceptedFixes(past)...)
 		h.Sources = append(h.Sources, source)
 	}
 	return h, nil
@@ -75,6 +76,16 @@ type History struct {
 	// Priors are the measured candidates themselves, most recent campaign
 	// first, capped at maxEarlierCandidates, for the optimizer to read.
 	Priors []orchestrator.PriorCandidate
+	// Accepted are the targets of accepted candidates, each with where it
+	// was accepted; rejectKnownAcceptedFix refuses to re-find them.
+	Accepted []AcceptedFix
+}
+
+// AcceptedFix is a function an earlier candidate already sped up.
+type AcceptedFix struct {
+	Function string `json:"function"`
+	Location string `json:"location"`
+	Where    string `json:"where"`
 }
 
 // maxEarlierCandidates bounds how much history reaches the optimizer's
@@ -129,4 +140,15 @@ func shortRevision(revision string) string {
 		return "unknown"
 	}
 	return revision
+}
+
+// acceptedFixes lists past's accepted candidates that named a target.
+func acceptedFixes(past State) []AcceptedFix {
+	var out []AcceptedFix
+	for _, r := range past.CandidateRecords {
+		if r.Accepted && r.Target != nil {
+			out = append(out, AcceptedFix{Function: r.Target.Function, Location: r.Target.Location, Where: fmt.Sprintf("campaign %s attempt %d", past.ID, r.Attempt)})
+		}
+	}
+	return out
 }

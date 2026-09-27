@@ -169,10 +169,51 @@ func (e *Engine) measuredCandidate(id string) (string, bool) {
 	return "", false
 }
 
+// rejectKnownAcceptedFix rejects, before it is built, a patch that edits a
+// function an accepted candidate already sped up, in this campaign or in a
+// --history campaign (ADR 0031). An accepted fix is not applied to the base
+// revision, so the next campaign can find it again: overnight-gojq-history-1
+// spent its last attempt re-finding overnight-gojq-1's printValues
+// buffering fix as a different patch, and overnight-go-jsonnet-history-1
+// re-found checkArguments, although both reached the optimizer as accepted
+// earlier_candidates. Both were free-choice candidates, and only those are
+// held to this: a code-chosen target on an already-fixed function carries a
+// different cause (overnight-gojq-1 attempt 3 attacked printValues' redundant
+// work after its buffering fix was accepted), and since accepted fixes are
+// not stacked, measuring it alone is still a fair question. It is marked
+// unmeasured, like every pre-build rejection, and names where the fix was
+// accepted.
+func (e *Engine) rejectKnownAcceptedFix(worktree string, diff []byte, evidence *orchestrator.CandidateEvidence) bool {
+	changes := parseChanges(diff)
+	for _, fix := range e.acceptedFixes() {
+		if callerTouched(worktree, changes, agents.FunctionRef{Name: fix.Function, Location: fix.Location}) {
+			evidence.Summary = fmt.Sprintf("candidate rejected before build: %s already has an accepted fix (%s); propose a change to a different function", fix.Function, fix.Where)
+			evidence.FailureDetail = fix.Where
+			evidence.Unmeasured = true
+			return true
+		}
+	}
+	return false
+}
+
+// acceptedFixes are history's accepted fixes plus this campaign's.
+func (e *Engine) acceptedFixes() []AcceptedFix {
+	out := append([]AcceptedFix(nil), e.state.HistoryAccepted...)
+	for _, r := range e.state.CandidateRecords {
+		if r.Accepted && r.Target != nil {
+			out = append(out, AcceptedFix{Function: r.Target.Function, Location: r.Target.Location, Where: fmt.Sprintf("attempt %d of this campaign", r.Attempt)})
+		}
+	}
+	return out
+}
+
 func (e *Engine) patchHasShape(ctx context.Context, worktree string, target *agents.Target, evidence *orchestrator.CandidateEvidence) bool {
 	diff, err := e.toolchain.ChangedLines(ctx, worktree)
 	if err != nil {
 		return true
+	}
+	if target == nil && e.rejectKnownAcceptedFix(worktree, diff, evidence) {
+		return false
 	}
 	if err := checkShape(worktree, diff, target); err != nil {
 		evidence.Summary = fmt.Sprintf("candidate rejected before build: patch shape: %v", err)

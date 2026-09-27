@@ -49,6 +49,16 @@ resumed campaign uses to skip targets it already tried.
   16) now reach it as `earlier_candidates`, both in the targeted brief and in the full state it gets
   in free choice. They are advice only; `triedTargets` never reads them.
 
+- **A free-choice patch to an already-fixed function is refused.** An accepted fix is never applied
+  to the base revision, so later campaigns can find it again. Two did, overnight: gojq's
+  `printValues` output buffering and go-jsonnet's `checkArguments` map removal, each accepted again
+  as a different patch in free choice, although both reached the optimizer as accepted
+  `earlier_candidates`. `rejectKnownAcceptedFix` refuses, before build, a free-choice candidate that
+  edits a function an accepted candidate targeted, in history (`HistoryAccepted`) or earlier in this
+  campaign. Code-chosen targets are exempt: a second cause on a fixed function (gojq's `printValues`
+  redundant work, after its buffering fix) is a different question, and since fixes are not
+  stacked, measuring it alone is still fair.
+
 This is bookkeeping on the deterministic side. No agent sees the history or decides from it; it
 only changes which target code picks next.
 

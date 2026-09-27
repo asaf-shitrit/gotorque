@@ -190,3 +190,33 @@ func TestLoadHistoryCarriesEarlierCandidatesForTheOptimizer(t *testing.T) {
 	e := &Engine{state: State{HistoryPriors: h.Priors}}
 	require.Len(t, e.campaignRequest().EarlierCandidates, maxEarlierCandidates)
 }
+
+func TestRejectKnownAcceptedFix(t *testing.T) {
+	worktree := methodRepo(t)
+	diff := []byte("diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -9 +9 @@\n-\tfor _, v := range vs {\n+\tfor i := range vs {\n")
+	fix := AcceptedFix{Function: "(*cli).printValues", Location: "main.go:8", Where: "campaign p attempt 1"}
+
+	e := &Engine{state: State{HistoryAccepted: []AcceptedFix{fix}}}
+	var evidence orchestrator.CandidateEvidence
+	require.True(t, e.rejectKnownAcceptedFix(worktree, diff, &evidence))
+	require.True(t, evidence.Unmeasured)
+	require.Contains(t, evidence.Summary, "(*cli).printValues already has an accepted fix (campaign p attempt 1)")
+
+	own := &Engine{state: State{CandidateRecords: []CandidateRecord{{Attempt: 2, Accepted: true, Target: &agents.Target{Function: fix.Function, Location: fix.Location}}}}}
+	var ownEvidence orchestrator.CandidateEvidence
+	require.True(t, own.rejectKnownAcceptedFix(worktree, diff, &ownEvidence))
+	require.Contains(t, ownEvidence.FailureDetail, "attempt 2 of this campaign")
+
+	elsewhere := &Engine{state: State{HistoryAccepted: []AcceptedFix{{Function: "other", Location: "main.go:30", Where: "x"}}}}
+	var clean orchestrator.CandidateEvidence
+	require.False(t, elsewhere.rejectKnownAcceptedFix(worktree, diff, &clean))
+	require.Empty(t, clean.Summary)
+}
+
+func TestLoadHistoryCarriesAcceptedFixes(t *testing.T) {
+	accepted := CandidateRecord{Attempt: 3, Accepted: true, Target: &targetUnpack}
+	dir := writePastCampaign(t, "past-4", "rev", []CandidateRecord{accepted, measured(targetExec), {Accepted: true}})
+	h, err := loadHistory([]string{dir}, "rev")
+	require.NoError(t, err)
+	require.Equal(t, []AcceptedFix{{Function: targetUnpack.Function, Location: targetUnpack.Location, Where: "campaign past-4 attempt 3"}}, h.Accepted)
+}

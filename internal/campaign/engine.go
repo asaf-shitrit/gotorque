@@ -154,6 +154,9 @@ type State struct {
 	// HistoryPriors are the measured history candidates the optimizer reads
 	// as CampaignRequest.EarlierCandidates.
 	HistoryPriors []orchestrator.PriorCandidate `json:"history_priors,omitempty"`
+	// HistoryAccepted are functions a history campaign already has an
+	// accepted fix for; rejectKnownAcceptedFix refuses to re-find them.
+	HistoryAccepted []AcceptedFix `json:"history_accepted,omitempty"`
 
 	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
 	// ConsecutiveFailures mirrors the orchestrator's run of rejected or
@@ -420,6 +423,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 		return nil, err
 	}
 	state.HistoryTargets, state.HistoryCandidates, state.HistorySources, state.HistoryPriors = history.Targets, history.Candidates, history.Sources, history.Priors
+	state.HistoryAccepted = history.Accepted
 	e, err := compose(dir, store, state, opts.Progress, opts.Now)
 	if err != nil {
 		_ = store.Close()
