@@ -108,6 +108,10 @@ type CandidateRecord struct {
 	// measurement: the compiler's stderr for a failed build, or the apply or
 	// shape error. Without it a build failure reads only "exit status 1".
 	FailureDetail string `json:"failure_detail,omitempty"`
+	// LoadAverages are the one-minute load averages sampled before and after
+	// measurement (see loadavg.go); the report flags a contended candidate.
+	LoadAverages  []float64 `json:"load_averages,omitempty"`
+	LoadContended bool      `json:"load_contended,omitempty"`
 }
 
 // RoleUsageSnapshot is persisted per-role model token usage for one ADK run.

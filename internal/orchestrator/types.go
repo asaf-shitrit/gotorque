@@ -130,6 +130,13 @@ type CandidateEvidence struct {
 	// stderr tail) behind a rejection so later cycles can avoid repeating
 	// the same failed approach.
 	FailureDetail string `json:"failure_detail,omitempty"`
+	// LoadAverages are the machine's one-minute load averages sampled before
+	// and after the candidate's measurement, for the report to flag a
+	// contended one. The verdict never reads them.
+	LoadAverages []float64 `json:"load_averages,omitempty"`
+	// LoadContended is whether one of them exceeded half the measuring
+	// machine's CPUs.
+	LoadContended bool `json:"load_contended,omitempty"`
 	// Unmeasured is set when the candidate was rejected before measurement:
 	// its patch did not apply, failed the shape check, or did not build.
 	Unmeasured bool `json:"unmeasured,omitempty"`

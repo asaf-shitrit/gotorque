@@ -303,6 +303,11 @@ type seedRuns struct {
 
 func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
 	m := measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
+	evidence.LoadAverages = sampleLoad()
+	defer func() {
+		evidence.LoadAverages = append(evidence.LoadAverages, sampleLoad()...)
+		evidence.LoadContended = contended(evidence.LoadAverages, machineCPUs())
+	}()
 	m.baselineSize, m.candSize, m.sizeErr = binarySizes(e.state.BinaryPath, candidateBinary)
 	if !e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, &m) {
 		return false

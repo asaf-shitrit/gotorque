@@ -343,6 +343,7 @@ func writeCandidateExperiments(b *strings.Builder, state State) {
 func writeCandidateRecord(b *strings.Builder, record CandidateRecord) {
 	fmt.Fprintf(b, "### Attempt %d: `%s` **%s**\n\n", record.Attempt, record.CandidateID, strings.ToUpper(string(record.Decision)))
 	writeCandidateMeta(b, record)
+	writeCandidateLoad(b, record)
 	writeCandidateFailure(b, record)
 	writeCandidateSamples(b, record)
 	writeCandidateComparisons(b, record)
@@ -592,4 +593,21 @@ func historyFlags(sources []HistorySource) string {
 		fmt.Fprintf(&b, " --history %q", s.Directory)
 	}
 	return b.String()
+}
+
+// writeCandidateLoad shows the load averages sampled around a candidate's
+// measurement, and warns when the machine was contended (loadavg.go).
+func writeCandidateLoad(b *strings.Builder, record CandidateRecord) {
+	if len(record.LoadAverages) == 0 {
+		return
+	}
+	loads := make([]string, 0, len(record.LoadAverages))
+	for _, l := range record.LoadAverages {
+		loads = append(loads, strconv.FormatFloat(l, 'f', 2, 64))
+	}
+	fmt.Fprintf(b, "- Load average during measurement: %s", strings.Join(loads, " -> "))
+	if record.LoadContended {
+		b.WriteString(" **(contended: above half the machine's CPUs; other work may have moved these timings)**")
+	}
+	b.WriteString("\n")
 }

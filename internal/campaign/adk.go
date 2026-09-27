@@ -451,6 +451,8 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 		PgoNote:         input.Evidence.PgoNote,
 		ProposalRepair:  string(input.Evidence.ProposalRepair),
 		FailureDetail:   input.Evidence.FailureDetail,
+		LoadAverages:    input.Evidence.LoadAverages,
+		LoadContended:   input.Evidence.LoadContended,
 	}
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	// Persist immediately: an ADK failure later in the run must not lose
