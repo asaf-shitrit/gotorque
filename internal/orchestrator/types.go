@@ -134,8 +134,8 @@ type CandidateEvidence struct {
 	// and after the candidate's measurement, for the report to flag a
 	// contended one. The verdict never reads them.
 	LoadAverages []float64 `json:"load_averages,omitempty"`
-	// LoadContended is whether one of them exceeded half the measuring
-	// machine's CPUs.
+	// LoadContended is whether one of them exceeded 0.7 per CPU on the
+	// measuring machine.
 	LoadContended bool `json:"load_contended,omitempty"`
 	// QuietWait is how long the engine waited for the machine to go quiet
 	// before measuring, and QuietWaitExpired whether it gave up waiting.

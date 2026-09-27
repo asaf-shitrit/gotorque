@@ -614,7 +614,7 @@ func writeCandidateLoad(b *strings.Builder, record CandidateRecord) {
 	}
 	fmt.Fprintf(b, "- Load average during measurement: %s", strings.Join(loads, " -> "))
 	if record.LoadContended {
-		b.WriteString(" **(contended: above half the machine's CPUs; other work may have moved these timings)**")
+		b.WriteString(" **(contended: load above 0.7 per CPU; other work may have moved these timings)**")
 	}
 	b.WriteString("\n")
 }

@@ -14,12 +14,17 @@ import (
 // candidates' A/B runs, and nothing in their records said so: a contended
 // +4.6% read exactly like a clean one. The engine now samples the load
 // average before and after a candidate's measurement and records both; the
-// report flags the candidate when either exceeds half the machine's CPUs.
+// report flags the candidate when either exceeds contendedLoadFraction per CPU.
 // It is evidence for the reader only. The verdict does not read it.
 
 // contendedLoadFraction is the share of runtime.NumCPU above which a load
-// average marks the measurement as contended.
-const contendedLoadFraction = 0.5
+// average marks the measurement as contended. It was 0.5 at first, but this
+// 10-CPU Mac idles at a load of 4.4-4.9 from its other sessions, so the quiet
+// wait spent 140-170 s per candidate waiting out ordinary background work
+// (overnight-dasel-history-2). At 0.7 it still catches every contended run
+// seen overnight: miller-1's false accept measured at 7.45-11.67, and the
+// browser job's bursts at 7.8-25.
+const contendedLoadFraction = 0.7
 
 // sampleLoad returns the current one-minute load average, or nil when the
 // platform does not expose one.

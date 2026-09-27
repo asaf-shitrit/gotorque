@@ -219,7 +219,7 @@ produced here or in policy.
    Interleaving cancels steady load, not load that comes and goes, so the
    one-minute load average is sampled before and after a candidate's
    measurement (`loadavg.go`) and recorded on its record. The report flags a
-   candidate whose load exceeded half the machine's CPUs as contended; the
+   candidate whose load exceeded 0.7 per CPU as contended; the
    verdict never reads it. Before measuring, the engine also waits up to
    three minutes for the load to fall under that threshold (`quietWaiter`),
    because the contention seen in practice came in bursts of a few minutes;
