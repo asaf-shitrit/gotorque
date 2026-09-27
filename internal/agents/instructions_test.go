@@ -24,3 +24,15 @@ func TestOptimizerInstructionDescribesFunctionSets(t *testing.T) {
 	require.Contains(t, instruction, "target.callers")
 	require.Contains(t, instruction, "function_source (function_sources for a function_set target)")
 }
+
+// TestOptimizerInstructionNamesTargetContext pins the sentence that tells the
+// optimizer to use target.context's real declarations instead of guessing.
+func TestOptimizerInstructionNamesTargetContext(t *testing.T) {
+	for _, spec := range roleSpecs {
+		if spec.role == RoleOptimizer {
+			require.Contains(t, spec.instruction, "target.context")
+			return
+		}
+	}
+	t.Fatal("no optimizer role")
+}
