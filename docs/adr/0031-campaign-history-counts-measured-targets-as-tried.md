@@ -41,6 +41,14 @@ resumed campaign uses to skip targets it already tried.
   whether it was measured in a history campaign or earlier in this one. The rejection is unmeasured,
   so the target gets one more attempt, and the reason names where the patch was measured.
 
+- **The optimizer sees what was measured.** Once history covers every target the analysis
+  flags, `planTarget` has nothing left, and the optimizer chooses freely, as it always did after
+  the ranking ran out. On `overnight-go-jsonnet-history-1` it then re-proposed an earlier
+  campaign's `rawevaluate` patch, which the duplicate check refused. It saw only this campaign's
+  `prior_candidates`. The measured history candidates (hypothesis, verdict, reasons, target; at most
+  16) now reach it as `earlier_candidates`, both in the targeted brief and in the full state it gets
+  in free choice. They are advice only; `triedTargets` never reads them.
+
 This is bookkeeping on the deterministic side. No agent sees the history or decides from it; it
 only changes which target code picks next.
 

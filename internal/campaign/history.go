@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"example.com/gotorque/internal/agents"
+	"example.com/gotorque/internal/orchestrator"
 )
 
 // HistorySource is one earlier campaign --history read, and what it
@@ -57,6 +58,7 @@ func loadHistory(dirs []string, revision string) (History, error) {
 			source.Targets++
 		}
 		addMeasuredCandidates(h.Candidates, past)
+		h.Priors = appendEarlierCandidates(h.Priors, past.CandidateRecords)
 		h.Sources = append(h.Sources, source)
 	}
 	return h, nil
@@ -70,7 +72,14 @@ type History struct {
 	Targets    []agents.Target
 	Candidates map[string]string
 	Sources    []HistorySource
+	// Priors are the measured candidates themselves, most recent campaign
+	// first, capped at maxEarlierCandidates, for the optimizer to read.
+	Priors []orchestrator.PriorCandidate
 }
+
+// maxEarlierCandidates bounds how much history reaches the optimizer's
+// prompt; the duplicate check does not depend on it.
+const maxEarlierCandidates = 16
 
 func addMeasuredCandidates(into map[string]string, past State) {
 	for _, r := range past.CandidateRecords {
@@ -81,6 +90,21 @@ func addMeasuredCandidates(into map[string]string, past State) {
 			into[r.CandidateID] = fmt.Sprintf("campaign %s attempt %d: %s", past.ID, r.Attempt, r.Decision)
 		}
 	}
+}
+
+// appendEarlierCandidates adds past's measured candidates, as the optimizer
+// reads them, until maxEarlierCandidates is reached.
+func appendEarlierCandidates(into []orchestrator.PriorCandidate, records []CandidateRecord) []orchestrator.PriorCandidate {
+	for _, r := range records {
+		if len(into) == maxEarlierCandidates {
+			break
+		}
+		if !isMeasured(r) {
+			continue
+		}
+		into = append(into, orchestrator.PriorCandidate{Hypothesis: r.Hypothesis, Decision: string(r.Decision), Reasons: r.Reasons, Target: r.Target})
+	}
+	return into
 }
 
 func isMeasured(r CandidateRecord) bool { return r.Accepted || len(r.Comparisons) > 0 }

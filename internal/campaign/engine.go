@@ -151,6 +151,9 @@ type State struct {
 	// and how it was judged; rejectMeasuredDuplicate refuses to re-measure it.
 	HistoryCandidates map[string]string `json:"history_candidates,omitempty"`
 	HistorySources    []HistorySource   `json:"history_sources,omitempty"`
+	// HistoryPriors are the measured history candidates the optimizer reads
+	// as CampaignRequest.EarlierCandidates.
+	HistoryPriors []orchestrator.PriorCandidate `json:"history_priors,omitempty"`
 
 	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
 	// ConsecutiveFailures mirrors the orchestrator's run of rejected or
@@ -416,7 +419,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 		_ = store.Close()
 		return nil, err
 	}
-	state.HistoryTargets, state.HistoryCandidates, state.HistorySources = history.Targets, history.Candidates, history.Sources
+	state.HistoryTargets, state.HistoryCandidates, state.HistorySources, state.HistoryPriors = history.Targets, history.Candidates, history.Sources, history.Priors
 	e, err := compose(dir, store, state, opts.Progress, opts.Now)
 	if err != nil {
 		_ = store.Close()

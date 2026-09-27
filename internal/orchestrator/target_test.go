@@ -337,3 +337,12 @@ func TestPlanTargetKeepsTheFileHeader(t *testing.T) {
 		t.Errorf("excerpts = %+v, want the statements.go header, then the target's window", state.SourceExcerpts)
 	}
 }
+
+func TestOptimizerBriefCarriesEarlierCandidates(t *testing.T) {
+	earlier := []PriorCandidate{{Hypothesis: "concat instead of Sprintf", Decision: "inconclusive"}}
+	state := CampaignState{Request: CampaignRequest{EarlierCandidates: earlier}, Target: &agents.Target{Function: "f"}}
+	brief := optimizerBrief(state)
+	if len(brief.EarlierCandidates) != 1 || brief.EarlierCandidates[0].Hypothesis != "concat instead of Sprintf" {
+		t.Fatalf("earlier candidates = %+v", brief.EarlierCandidates)
+	}
+}

@@ -1,6 +1,7 @@
 package campaign
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,4 +168,25 @@ func TestCandidateMetaNamesEachTransport(t *testing.T) {
 		}
 		require.Contains(t, b.String(), want, transport)
 	}
+}
+
+func TestLoadHistoryCarriesEarlierCandidatesForTheOptimizer(t *testing.T) {
+	records := make([]CandidateRecord, 0, maxEarlierCandidates+3)
+	for i := range maxEarlierCandidates + 2 {
+		r := measured(targetExec)
+		r.Hypothesis, r.Decision, r.Reasons = fmt.Sprintf("h%d", i), domain.DecisionInconclusive, []string{"no supported improvement"}
+		records = append(records, r)
+	}
+	records = append(records, CandidateRecord{Hypothesis: "unmeasured", Target: &targetNewPtr})
+	dir := writePastCampaign(t, "p", "rev", records)
+	h, err := loadHistory([]string{dir}, "rev")
+	require.NoError(t, err)
+	require.Len(t, h.Priors, maxEarlierCandidates)
+	require.Equal(t, orchestrator.PriorCandidate{Hypothesis: "h0", Decision: "inconclusive", Reasons: []string{"no supported improvement"}, Target: &targetExec}, h.Priors[0])
+	for _, p := range h.Priors {
+		require.NotEqual(t, "unmeasured", p.Hypothesis)
+	}
+
+	e := &Engine{state: State{HistoryPriors: h.Priors}}
+	require.Len(t, e.campaignRequest().EarlierCandidates, maxEarlierCandidates)
 }

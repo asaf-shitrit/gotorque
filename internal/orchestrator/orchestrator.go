@@ -423,14 +423,18 @@ type OptimizerBrief struct {
 	Target           agents.Target             `json:"target"`
 	SourceExcerpts   []SourceExcerpt           `json:"source_excerpts,omitempty"`
 	PriorCandidates  []PriorCandidate          `json:"prior_candidates,omitempty"`
+	// EarlierCandidates are the measured candidates of earlier campaigns
+	// (CampaignRequest.EarlierCandidates).
+	EarlierCandidates []PriorCandidate `json:"earlier_candidates,omitempty"`
 }
 
 func optimizerBrief(state CampaignState) OptimizerBrief {
 	return OptimizerBrief{
-		OptimizationMode: state.Request.OptimizationMode,
-		Target:           *state.Target,
-		SourceExcerpts:   state.SourceExcerpts,
-		PriorCandidates:  state.PriorCandidates,
+		OptimizationMode:  state.Request.OptimizationMode,
+		Target:            *state.Target,
+		SourceExcerpts:    state.SourceExcerpts,
+		PriorCandidates:   state.PriorCandidates,
+		EarlierCandidates: state.Request.EarlierCandidates,
 	}
 }
 

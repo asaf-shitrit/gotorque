@@ -24,3 +24,15 @@ func TestOptimizerInstructionDescribesFunctionSets(t *testing.T) {
 	require.Contains(t, instruction, "target.callers")
 	require.Contains(t, instruction, "function_source (function_sources for a function_set target)")
 }
+
+// TestOptimizerInstructionNamesEarlierCandidates pins the sentence that tells
+// the optimizer what --history's earlier_candidates are (ADR 0031).
+func TestOptimizerInstructionNamesEarlierCandidates(t *testing.T) {
+	for _, spec := range roleSpecs {
+		if spec.role == RoleOptimizer {
+			require.Contains(t, spec.instruction, "earlier_candidates")
+			return
+		}
+	}
+	t.Fatal("no optimizer role")
+}
