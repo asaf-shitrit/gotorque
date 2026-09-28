@@ -1,0 +1,168 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "tengo CLI",
+  "target": {
+    "repository": "https://github.com/d5/tengo",
+    "build": {
+      "package": "./cmd/tengo",
+      "binary": "tengo"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "fib-arithmetic",
+        "name": "Arithmetic accumulation loop plus iterative-Fibonacci recursion",
+        "tier": "representative",
+        "args": [
+          "numeric.tengo"
+        ],
+        "files": [
+          {
+            "path": "numeric.tengo",
+            "content": "// Arithmetic loop plus recursive Fibonacci calls.\nfmt := import(\"fmt\")\n\nfib := func(n) {\n    if n < 2 { return n }\n    a := 0\n    b := 1\n    for i := 2; i <= n; i++ {\n        c := a + b\n        a = b\n        b = c\n    }\n    return b\n}\n\nsum := 0\nfor i := 0; i < 1400000; i++ {\n    sum += (i * i) % 97\n}\n\nfibSum := 0\nfor i := 0; i < 30; i++ {\n    fibSum += fib(i)\n}\n\nfmt.printf(\"sum=%d fibSum=%d\\n\", sum, fibSum)\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "A 900,000-iteration modulo-accumulation loop plus 26 calls into a recursive Fibonacci helper; about 110-125 ms."
+      },
+      {
+        "id": "string-build-format",
+        "name": "String concatenation and printf-style formatting",
+        "tier": "representative",
+        "args": [
+          "strings.tengo"
+        ],
+        "files": [
+          {
+            "path": "strings.tengo",
+            "content": "// String concatenation and printf-style formatting.\nfmt := import(\"fmt\")\n\nsb := \"\"\nfor i := 0; i < 60000; i++ {\n    sb += string(i % 10)\n}\n\nlines := \"\"\nfor i := 0; i < 4500; i++ {\n    lines += fmt.sprintf(\"item-%04d: value=%d ratio=%.3f\\n\", i, i*3, float(i)/7.0)\n}\n\nfmt.printf(\"strlen=%d lineslen=%d\\n\", len(sb), len(lines))\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "Builds a 60,000-character string by repeated += concatenation, then formats 4,500 lines with fmt.sprintf; about 200-240 ms."
+      },
+      {
+        "id": "map-churn-sort",
+        "name": "Map churn followed by a hand-rolled insertion sort",
+        "tier": "representative",
+        "args": [
+          "mapsort.tengo"
+        ],
+        "files": [
+          {
+            "path": "mapsort.tengo",
+            "content": "// Map churn followed by a list sort.\nfmt := import(\"fmt\")\n\ninsertion_sort := func(list) {\n    n := len(list)\n    for i := 1; i < n; i++ {\n        key := list[i]\n        j := i - 1\n        for j >= 0 && list[j] > key {\n            list[j+1] = list[j]\n            j--\n        }\n        list[j+1] = key\n    }\n    return list\n}\n\ncounts := {}\nfor i := 0; i < 45000; i++ {\n    key := string(i % 60)\n    if is_undefined(counts[key]) {\n        counts[key] = 0\n    }\n    counts[key] += 1\n}\nkeys := []\nfor k, v in counts {\n    keys = append(keys, k)\n}\nkeys = insertion_sort(keys)\ntotal := 0\nfor k, v in counts {\n    total += v\n}\n\nnums := []\nfor i := 0; i < 1600; i++ {\n    nums = append(nums, (i * 7919) % 10007)\n}\nnums = insertion_sort(nums)\n\nfmt.printf(\"keys=%d maptotal=%d sorted_first=%d sorted_last=%d\\n\",\n    len(keys), total, nums[0], nums[len(nums)-1])\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "Populates and increments a 60-key map across 45,000 insertions, sorts its keys, then insertion-sorts a 1,200-element numeric list (tengo's stdlib has no sort() builtin); about 95-120 ms."
+      },
+      {
+        "id": "fib-arithmetic-stress",
+        "name": "Same arithmetic/recursion workload at much higher volume",
+        "tier": "stress",
+        "args": [
+          "numeric-stress.tengo"
+        ],
+        "files": [
+          {
+            "path": "numeric-stress.tengo",
+            "content": "// Stress seed: same arithmetic/recursion workload at much higher volume,\n// for the macOS sampler.\nfmt := import(\"fmt\")\n\nfib := func(n) {\n    if n < 2 { return n }\n    a := 0\n    b := 1\n    for i := 2; i <= n; i++ {\n        c := a + b\n        a = b\n        b = c\n    }\n    return b\n}\n\nsum := 0\nfor i := 0; i < 50000000; i++ {\n    sum += (i * i) % 97\n}\n\nfibSum := 0\nfor i := 0; i < 900; i++ {\n    fibSum += fib(i % 30)\n}\n\nfmt.printf(\"sum=%d fibSum=%d\\n\", sum, fibSum)\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "A 50,000,000-iteration version of fib-arithmetic's accumulation loop for the macOS sampler; about 4.4-4.7 s."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples",
+        "tests"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}

@@ -1,0 +1,170 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "starlark-go CLI",
+  "target": {
+    "repository": "https://github.com/google/starlark-go",
+    "build": {
+      "package": "./cmd/starlark",
+      "binary": "starlark"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "fib-arithmetic",
+        "name": "Arithmetic accumulation loop plus recursive Fibonacci calls",
+        "tier": "representative",
+        "args": [
+          "-recursion",
+          "numeric.star"
+        ],
+        "files": [
+          {
+            "path": "numeric.star",
+            "content": "# Arithmetic loop plus recursive Fibonacci calls.\ndef fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\ndef run():\n    total = 0\n    for i in range(700000):\n        total += (i * i) % 97\n\n    fib_sum = 0\n    for i in range(20):\n        fib_sum += fib(i)\n\n    print(\"sum=%d fibSum=%d\" % (total, fib_sum))\n\nrun()\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "A 700,000-iteration modulo-accumulation loop plus 20 calls into a recursive Fibonacci function (Starlark recursion needs -recursion, off by default); about 105-110 ms."
+      },
+      {
+        "id": "string-build-format",
+        "name": "String building and %-style formatting",
+        "tier": "representative",
+        "args": [
+          "strings.star"
+        ],
+        "files": [
+          {
+            "path": "strings.star",
+            "content": "# String concatenation and % formatting.\ndef run():\n    parts = []\n    for i in range(90000):\n        parts.append(str(i % 10))\n    sb = \"\".join(parts)\n\n    lines = []\n    for i in range(20000):\n        ratio = int((i * 1000) / 7) % 1000\n        lines.append(\"item-%d: value=%d ratio=0.%d\" % (i, i * 3, ratio))\n    joined = \"\\n\".join(lines)\n\n    print(\"strlen=%d lineslen=%d\" % (len(sb), len(joined)))\n\nrun()\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "Joins 90,000 single-digit strings, then formats and joins 20,000 lines with %-interpolation; about 75-90 ms."
+      },
+      {
+        "id": "map-churn-sort",
+        "name": "Dict churn followed by sorted() over keys and a numeric list",
+        "tier": "representative",
+        "args": [
+          "mapsort.star"
+        ],
+        "files": [
+          {
+            "path": "mapsort.star",
+            "content": "# Dict churn followed by sorting keys and a numeric list.\ndef run():\n    counts = {}\n    for i in range(260000):\n        key = str(i % 70)\n        counts[key] = counts.get(key, 0) + 1\n\n    keys = sorted(counts.keys())\n    total = 0\n    for k in keys:\n        total += counts[k]\n\n    nums = []\n    for i in range(9000):\n        nums.append((i * 7919) % 10007)\n    nums = sorted(nums)\n\n    print(\"keys=%d maptotal=%d sorted_first=%d sorted_last=%d\" % (\n        len(keys), total, nums[0], nums[len(nums) - 1]))\n\nrun()\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "Populates a 70-key dict across 260,000 insertions (dicts are insertion-ordered in Starlark, but the workload sorts anyway for a stable hot path), sorts its keys, then sorts a 9,000-element numeric list; about 75-100 ms."
+      },
+      {
+        "id": "fib-arithmetic-stress",
+        "name": "Same arithmetic/recursion workload at much higher volume",
+        "tier": "stress",
+        "args": [
+          "-recursion",
+          "numeric-stress.star"
+        ],
+        "files": [
+          {
+            "path": "numeric-stress.star",
+            "content": "# Stress seed: same arithmetic/recursion workload at much higher volume,\n# for the macOS sampler.\ndef fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\ndef run():\n    total = 0\n    for i in range(30000000):\n        total += (i * i) % 97\n\n    fib_sum = 0\n    for i in range(120):\n        fib_sum += fib(i % 20)\n\n    print(\"sum=%d fibSum=%d\" % (total, fib_sum))\n\nrun()\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "A 30,000,000-iteration version of fib-arithmetic's accumulation loop for the macOS sampler; about 4.2-4.4 s."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples",
+        "tests"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}
