@@ -34,6 +34,7 @@ func New(deps Dependencies) *cobra.Command {
 	root.AddCommand(newManifestCommand(deps.Stdout))
 	root.AddCommand(newOptimizeCommand(deps.Stdout))
 	root.AddCommand(newReportCommand(deps.Stdout))
+	root.AddCommand(newVerifyCommand(deps.Stdout))
 	root.AddCommand(newVersionCommand(deps.Stdout))
 	return root
 }
@@ -469,4 +470,44 @@ func newVersionCommand(out io.Writer) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
 	return cmd
+}
+
+func newVerifyCommand(out io.Writer) *cobra.Command {
+	var attempt, pairs int
+	cmd := &cobra.Command{
+		Use:   "verify CAMPAIGN_DIR",
+		Short: "Evaluate a campaign's accepted candidates again from their recorded patches",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVerify(cmd.Context(), out, args[0], attempt, pairs)
+		},
+	}
+	cmd.Flags().IntVar(&attempt, "attempt", 0, "verify only this attempt (default: every accepted attempt)")
+	cmd.Flags().IntVar(&pairs, "pairs", campaign.DefaultVerifyPairs, "interleaved A/B pairs per workload")
+	return cmd
+}
+
+func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs int) (err error) {
+	engine, err := campaign.Resume(dir, out)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, engine.Close()) }()
+	attempts := engine.AcceptedAttempts()
+	if attempt > 0 {
+		attempts = []int{attempt}
+	}
+	if len(attempts) == 0 {
+		return campaign.ErrNothingAccepted
+	}
+	for _, a := range attempts {
+		v, verr := engine.Verify(ctx, a, pairs)
+		if verr != nil {
+			return verr
+		}
+		if _, err := fmt.Fprintf(out, "attempt %d: %s on verification over %d pairs (originally %s); held: %t\n", v.Attempt, v.Decision, v.Pairs, v.Original, v.Confirmed()); err != nil {
+			return err
+		}
+	}
+	return nil
 }

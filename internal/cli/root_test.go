@@ -175,3 +175,11 @@ func TestAttachResumeADKStubBuildsRolesWhenAbsent(t *testing.T) {
 
 	require.NoError(t, attachResumeADK(context.Background(), io.Discard, engine, f, nil, nil))
 }
+
+func TestVerifyReportsACampaignWithNothingAccepted(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"verify", writeCampaignDir(t, campaign.State{ID: "c", Status: campaign.StatusCompleted})})
+	err := cmd.Execute()
+	require.ErrorIs(t, err, campaign.ErrNothingAccepted)
+}

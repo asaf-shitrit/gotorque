@@ -150,6 +150,7 @@ func RenderMarkdown(state State) string {
 	writeDegradedRoles(&b, state)
 	writeHistory(&b, state)
 	writeCandidateExperiments(&b, state)
+	writeVerifications(&b, state)
 	writeTokenUsage(&b, state)
 	writeJevCache(&b, state)
 	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q%s%s\n```\n", state.Repository, state.ManifestPath, tradeoffFlags(state.Tradeoff), historyFlags(state.HistorySources))
@@ -643,4 +644,29 @@ func joinLoads(loads []float64) string {
 		parts = append(parts, strconv.FormatFloat(l, 'f', 2, 64))
 	}
 	return strings.Join(parts, " -> ")
+}
+
+// writeVerifications lists accepted candidates evaluated again from their
+// recorded patches, and whether the acceptance held.
+func writeVerifications(b *strings.Builder, state State) {
+	if len(state.Verifications) == 0 {
+		return
+	}
+	b.WriteString("## Verification\n\n| Attempt | Pairs | Originally | On verification | Load | Output variants | Held |\n|---:|---:|---|---|---|---|---|\n")
+	for _, v := range state.Verifications {
+		held := "no"
+		if v.Confirmed() {
+			held = "yes"
+		}
+		load := joinLoads(v.LoadAverages)
+		if v.LoadContended {
+			load += " (contended)"
+		}
+		outputs := fmt.Sprintf("%d checked", len(v.OutputChecks))
+		if len(v.OutputMismatches) > 0 {
+			outputs += ", differ: " + strings.Join(v.OutputMismatches, ", ")
+		}
+		fmt.Fprintf(b, "| %d | %d | %s | %s | %s | %s | %s |\n", v.Attempt, v.Pairs, v.Original, v.Decision, orNone(load), outputs, held)
+	}
+	b.WriteString("\n")
 }
