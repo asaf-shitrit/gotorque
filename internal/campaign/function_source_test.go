@@ -392,3 +392,11 @@ func TestEvaluateCandidateRejectsAnUnbuildableFunctionSourceWithAnID(t *testing.
 	require.Contains(t, evidence.Summary, "candidate rejected before build")
 	require.Contains(t, evidence.FailureDetail, "not the target main")
 }
+
+func TestResolveCandidatePatchNamesAnOptimizerThatDidNotAnswer(t *testing.T) {
+	engine := &Engine{}
+	req := orchestrator.CandidateRequest{RoleFailure: "optimizer model call failed after 3 attempts: model call attempt exceeded its 6m0s budget"}
+	_, _, err := engine.resolveCandidatePatch(context.Background(), req)
+	require.ErrorContains(t, err, "the optimizer did not answer: optimizer model call failed after 3 attempts")
+	require.NotErrorIs(t, err, errEmptyProposal)
+}

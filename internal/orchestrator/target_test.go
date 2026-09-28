@@ -353,3 +353,13 @@ func TestOptimizerBriefCarriesGoVersion(t *testing.T) {
 		t.Fatalf("go version = %q", got)
 	}
 }
+
+func TestRoleFailureFindsTheLatestForTheRole(t *testing.T) {
+	failures := []RoleFailure{{Role: "optimizer", Cause: "first"}, {Role: "reviewer", Cause: "r"}, {Role: "optimizer", Cause: "second"}}
+	if got := roleFailure(failures, "optimizer"); got != "second" {
+		t.Fatalf("got %q", got)
+	}
+	if got := roleFailure(failures, "analyst"); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}

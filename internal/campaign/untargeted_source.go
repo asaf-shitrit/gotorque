@@ -105,3 +105,15 @@ func declaredAt(path, function string) (int, bool) {
 // function source, so the record says the model sent nothing rather than
 // the generic "patch is empty" a malformed diff also produces.
 var errEmptyProposal = errors.New("the optimizer returned neither a patch nor a function_source")
+
+// emptyProposal is errEmptyProposal, or, when the optimizer's call itself
+// failed and the graph continued with an empty answer, that failure: on
+// overnight-yq-2 a model call that timed out three times was recorded as
+// "the optimizer returned neither a patch nor a function_source", which
+// blamed an answer that never arrived.
+func emptyProposal(roleFailure string) error {
+	if roleFailure == "" {
+		return errEmptyProposal
+	}
+	return fmt.Errorf("the optimizer did not answer: %s", roleFailure)
+}

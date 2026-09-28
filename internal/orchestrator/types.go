@@ -117,6 +117,10 @@ type CandidateRequest struct {
 	// Target is the function and cause code chose for this patch, or nil
 	// when the optimizer chose. The patch-shape check holds the patch to it.
 	Target *agents.Target `json:"target,omitempty"`
+	// RoleFailure is why the optimizer's call failed this cycle, when it did
+	// and the proposal is the degraded empty one, so the rejection can name
+	// the real cause instead of an empty patch.
+	RoleFailure string `json:"role_failure,omitempty"`
 }
 
 // CandidateEvidence records the candidate and deterministic measurements used
