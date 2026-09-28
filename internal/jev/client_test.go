@@ -275,6 +275,44 @@ func TestPreflightFailsOnCanaryDrift(t *testing.T) {
 	}
 }
 
+// TestPreflightToleratesOneOutlier pins the median-of-three confirmation: a
+// single drifted canary answer, the kind the pinned build produced once in ten
+// live repeats, must not fail the preflight when the confirmations agree with
+// the recorded values.
+func TestPreflightToleratesOneOutlier(t *testing.T) {
+	moved := string(canaryCauses[0])
+	srv, calls := systemOne(t,
+		respond(http.StatusOK, canaryAnsweredBody(map[string]float64{moved: canaryRecorded[moved] + 0.3})),
+		respond(http.StatusOK, canaryAnsweredBody(nil)))
+	warnings, err := (Client{APIKey: "k", BaseURL: srv.URL}).Preflight(context.Background())
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("preflight = %v, %v, want the outlier outvoted", warnings, err)
+	}
+	if got := calls.Load(); got != 1+canaryConfirmations {
+		t.Errorf("requests = %d, want %d", got, 1+canaryConfirmations)
+	}
+}
+
+func TestPreflightSkipsConfirmationWithoutDrift(t *testing.T) {
+	srv, calls := systemOne(t, respond(http.StatusOK, canaryAnsweredBody(nil)))
+	if _, err := (Client{APIKey: "k", BaseURL: srv.URL}).Preflight(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("requests = %d, want 1", got)
+	}
+}
+
+func TestPreflightPropagatesAConfirmationFailure(t *testing.T) {
+	moved := string(canaryCauses[0])
+	srv, _ := systemOne(t,
+		respond(http.StatusOK, canaryAnsweredBody(map[string]float64{moved: canaryRecorded[moved] + 0.3})),
+		respond(http.StatusUnauthorized, `{"error":{"message":"invalid key"}}`))
+	if _, err := (Client{APIKey: "k", BaseURL: srv.URL}).Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "invalid key") {
+		t.Errorf("preflight = %v, want the confirmation's refusal", err)
+	}
+}
+
 func TestPreflightWarnsOnCanaryDriftUnderTheOverride(t *testing.T) {
 	t.Setenv(EnvAllowDrift, "1")
 	moved := string(canaryCauses[0])

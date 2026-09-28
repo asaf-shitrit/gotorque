@@ -97,3 +97,29 @@ TypeSafe controls rather than an alias with no version signal at all.
 - Widening the canary to cover the hazard and fix-kind questions too, closing the gap noted above:
   deferred as out of scope for this migration; it triples the request cost of every preflight call
   for coverage no incident has yet shown is needed, the same trade-off ADR 0029 already declined.
+
+## Addendum: the canary is confirmed before it fails
+
+The first live campaign after this change (`openrouter-dasel-1`) stopped at the preflight. The
+canary's `superlinear` answer came back 0.17 against a recorded 0.248, with the pinned build and
+provider both confirmed. Ten fresh repeats put it at 0.235 (sd 0.014), so that answer was a
+one-off outlier about 5 sd out, not drift. Jev's answers are mostly within the recorded ~0.01
+noise but occasionally jump further.
+
+So a drifted first canary answer is no longer final. `Preflight` asks the canary twice more
+(`canaryConfirmations`) and judges each question by the median of the three answers. A single
+outlier is outvoted, and a model that really moved still fails. Without drift the preflight stays
+one request.
+
+## Addendum: each canary answer gets its own tolerance
+
+The median-of-three check did not end the false alarms. The overnight goawk campaign then stopped
+at the preflight on a median `superlinear` of 0.19 against the recorded 0.248. More sampling
+(6, 10, 12 and 20 repeats) showed why: the canary answers are not equally steady. `superlinear`'s
+sd is about 0.026 and `redundant`'s 0.006, and the recorded 0.248 sat at the high end of
+`superlinear`'s own range.
+
+`TestLiveCanary` now records each answer's sd (`canarySpread`) beside its mean, re-measured over
+20 repeats. A question's tolerance is the larger of 0.05 and four of its standard deviations:
+0.103 for `superlinear`, 0.081 for `fast_path`, 0.079 for `unbuffered_io`, 0.067 for
+`string_build`, 0.060 for `prealloc`, and the 0.05 floor for `alloc` and `redundant`.
