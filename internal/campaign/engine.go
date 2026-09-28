@@ -890,17 +890,14 @@ func (e *Engine) build(ctx context.Context) error {
 }
 
 func (e *Engine) runSeed(ctx context.Context, seed manifest.SeedWorkload) error {
-	fixtures := make(map[string][]byte, len(seed.Files))
-	for _, f := range seed.Files {
-		fixtures[f.Path] = []byte(f.Content)
-	}
+	fixtures := seed.Fixtures()
 	timeout := seed.Timeout.Duration()
 	if timeout == 0 {
 		timeout = e.state.Manifest.Campaign.MinimumCommandTimeout.Duration()
 	}
 	wid := stableID("workload", e.state.ID, seed.ID)
 	workload := domain.Workload{ID: wid, Name: seed.Name, Seed: seed.ID, Tier: seed.Tier, Command: domain.Command{Path: e.state.DiscoveryBinaryPath, Args: append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...)}, Timeout: timeout, Provenance: seed.Provenance, Description: seed.Description}
-	result, runErr := e.runner.Run(ctx, runner.RunRequest{Build: runner.Build{ID: e.state.DiscoveryBuildID, BinaryPath: e.state.DiscoveryBinaryPath}, Workload: workload, Mode: domain.RunModeDiscovery, AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"}, Stdin: []byte(seed.Stdin), Fixtures: fixtures})
+	result, runErr := e.runner.Run(ctx, runner.RunRequest{Build: runner.Build{ID: e.state.DiscoveryBuildID, BinaryPath: e.state.DiscoveryBinaryPath}, Workload: workload, Mode: domain.RunModeDiscovery, AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"}, Stdin: seed.StdinBytes(), Fixtures: fixtures})
 	result.ID = stableID("run", e.state.DiscoveryBuildID, wid, "baseline")
 	e.state.Runs = append(e.state.Runs, result)
 	e.recordIsolationNotes(result.IsolationNotes)
@@ -1026,15 +1023,12 @@ func (e *Engine) sampleFirstLiving(ctx context.Context) (manifest.SeedWorkload, 
 // sampleSeed samples one workload under the platform sampler, with its input
 // amplified so the target outlives the sampling window.
 func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
-	return e.sampleWith(ctx, seed, amplifyStdin([]byte(seed.Stdin)), reportName)
+	return e.sampleWith(ctx, seed, amplifyStdin(seed.StdinBytes()), reportName)
 }
 
 // sampleWith samples one workload on the given input.
 func (e *Engine) sampleWith(ctx context.Context, seed manifest.SeedWorkload, stdin []byte, reportName string) (profile.SampleResult, error) {
-	fixtures := make(map[string][]byte, len(seed.Files))
-	for _, f := range seed.Files {
-		fixtures[f.Path] = []byte(f.Content)
-	}
+	fixtures := seed.Fixtures()
 	result, err := profile.SampleTargetProfile(ctx, profile.SampleTarget{
 		BinaryPath: e.state.BinaryPath,
 		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),

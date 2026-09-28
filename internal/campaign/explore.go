@@ -161,7 +161,7 @@ func (e *Engine) sampleVariant(ctx context.Context, seed manifest.SeedWorkload, 
 	if err == nil || seed.Stdin == "" {
 		return result, err
 	}
-	result, lineErr := e.sampleWith(ctx, seed, repeatLines([]byte(seed.Stdin)), reportName)
+	result, lineErr := e.sampleWith(ctx, seed, repeatLines(seed.StdinBytes()), reportName)
 	if lineErr != nil {
 		return result, fmt.Errorf("%w; with one copy per line: %w", err, lineErr)
 	}
