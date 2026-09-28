@@ -426,6 +426,8 @@ type OptimizerBrief struct {
 	// EarlierCandidates are the measured candidates of earlier campaigns
 	// (CampaignRequest.EarlierCandidates).
 	EarlierCandidates []PriorCandidate `json:"earlier_candidates,omitempty"`
+	// GoVersion is the target module's declared Go language version.
+	GoVersion string `json:"go_version,omitempty"`
 }
 
 func optimizerBrief(state CampaignState) OptimizerBrief {
@@ -435,6 +437,7 @@ func optimizerBrief(state CampaignState) OptimizerBrief {
 		SourceExcerpts:    state.SourceExcerpts,
 		PriorCandidates:   state.PriorCandidates,
 		EarlierCandidates: state.Request.EarlierCandidates,
+		GoVersion:         state.Request.GoVersion,
 	}
 }
 
@@ -602,11 +605,12 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 	}
 	state.Proposal = proposal
 	evidence, err := g.deps.Runner.EvaluateCandidate(ctx, CandidateRequest{
-		Campaign: state.Request,
-		Attempt:  state.CandidatesTried + 1,
-		Analysis: state.Analysis,
-		Proposal: proposal,
-		Target:   state.Target,
+		Campaign:    state.Request,
+		Attempt:     state.CandidatesTried + 1,
+		Analysis:    state.Analysis,
+		Proposal:    proposal,
+		Target:      state.Target,
+		RoleFailure: roleFailure(state.CycleFailures, string(agents.RoleOptimizer)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("evaluate candidate: %w", err)
@@ -986,4 +990,15 @@ func validDecision(decision domain.Decision) bool {
 	default:
 		return false
 	}
+}
+
+// roleFailure returns the cause of role's last absorbed failure this cycle,
+// or "" when it answered.
+func roleFailure(failures []RoleFailure, role string) string {
+	for i := len(failures) - 1; i >= 0; i-- {
+		if failures[i].Role == role {
+			return failures[i].Cause
+		}
+	}
+	return ""
 }

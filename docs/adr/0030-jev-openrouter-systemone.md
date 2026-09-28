@@ -110,3 +110,16 @@ So a drifted first canary answer is no longer final. `Preflight` asks the canary
 (`canaryConfirmations`) and judges each question by the median of the three answers. A single
 outlier is outvoted, and a model that really moved still fails. Without drift the preflight stays
 one request.
+
+## Addendum: each canary answer gets its own tolerance
+
+The median-of-three check did not end the false alarms. The overnight goawk campaign then stopped
+at the preflight on a median `superlinear` of 0.19 against the recorded 0.248. More sampling
+(6, 10, 12 and 20 repeats) showed why: the canary answers are not equally steady. `superlinear`'s
+sd is about 0.026 and `redundant`'s 0.006, and the recorded 0.248 sat at the high end of
+`superlinear`'s own range.
+
+`TestLiveCanary` now records each answer's sd (`canarySpread`) beside its mean, re-measured over
+20 repeats. A question's tolerance is the larger of 0.05 and four of its standard deviations:
+0.103 for `superlinear`, 0.081 for `fast_path`, 0.079 for `unbuffered_io`, 0.067 for
+`string_build`, 0.060 for `prealloc`, and the 0.05 floor for `alloc` and `redundant`.

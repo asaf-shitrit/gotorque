@@ -346,3 +346,20 @@ func TestOptimizerBriefCarriesEarlierCandidates(t *testing.T) {
 		t.Fatalf("earlier candidates = %+v", brief.EarlierCandidates)
 	}
 }
+
+func TestOptimizerBriefCarriesGoVersion(t *testing.T) {
+	state := CampaignState{Request: CampaignRequest{GoVersion: "1.20"}, Target: &agents.Target{Function: "f"}}
+	if got := optimizerBrief(state).GoVersion; got != "1.20" {
+		t.Fatalf("go version = %q", got)
+	}
+}
+
+func TestRoleFailureFindsTheLatestForTheRole(t *testing.T) {
+	failures := []RoleFailure{{Role: "optimizer", Cause: "first"}, {Role: "reviewer", Cause: "r"}, {Role: "optimizer", Cause: "second"}}
+	if got := roleFailure(failures, "optimizer"); got != "second" {
+		t.Fatalf("got %q", got)
+	}
+	if got := roleFailure(failures, "analyst"); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}

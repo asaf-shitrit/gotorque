@@ -52,9 +52,9 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 	}
 	if req.Target == nil {
 		if req.Proposal.FunctionSource == "" {
-			return "", PatchTransport, errEmptyProposal
+			return "", PatchTransport, emptyProposal(req.RoleFailure)
 		}
-		diff, err := e.untargetedFunctionSourceDiff(ctx, req.Proposal)
+		diff, err := e.untargetedFunctionSourceDiff(ctx, req.Proposal, hotLocations(req.Analysis.HotPaths))
 		if err != nil {
 			return "", FunctionSourceTransport, err
 		}
@@ -74,7 +74,7 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 		}
 		return diff, FunctionSourceTransport, nil
 	}
-	return "", PatchTransport, errEmptyProposal
+	return "", PatchTransport, emptyProposal(req.RoleFailure)
 }
 
 // multiFunctionSources is the function_sources list to use for target,

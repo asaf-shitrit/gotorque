@@ -36,3 +36,15 @@ func TestOptimizerInstructionNamesEarlierCandidates(t *testing.T) {
 	}
 	t.Fatal("no optimizer role")
 }
+
+// TestOptimizerInstructionNamesGoVersion pins the sentence that holds the
+// optimizer to the target module's declared Go version.
+func TestOptimizerInstructionNamesGoVersion(t *testing.T) {
+	for _, spec := range roleSpecs {
+		if spec.role == RoleOptimizer {
+			require.Contains(t, spec.instruction, "go_version")
+			return
+		}
+	}
+	t.Fatal("no optimizer role")
+}
