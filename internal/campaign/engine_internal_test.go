@@ -42,23 +42,17 @@ func TestHotFunctionNamesDropsNonActionableFrames(t *testing.T) {
 	}
 }
 
-func TestFunctionNameCandidatesUnwrapsClosuresAndReceivers(t *testing.T) {
-	tests := []struct {
-		name string
-		want string // candidate that must be present for repo search to match
-	}{
-		{"github.com/itchyny/gojq/cli.newJSONInputIter.func1", "newJSONInputIter"},
-		{"pkg.outer.func1.2", "outer"},
-		{"github.com/x/y.(*Encoder).encode", "encode"},
-		{"main.main", "main"},
+func TestEnclosingFunctionUnwrapsClosures(t *testing.T) {
+	tests := map[string]string{
+		"github.com/itchyny/gojq/cli.newJSONInputIter.func1": "github.com/itchyny/gojq/cli.newJSONInputIter",
+		"pkg.outer.func1.2":                      "pkg.outer",
+		"github.com/x/y.(*Encoder).encode":       "github.com/x/y.(*Encoder).encode",
+		"github.com/x/y.(*Encoder).encode.func3": "github.com/x/y.(*Encoder).encode",
+		"main.main":                              "main.main",
 	}
-	for _, tt := range tests {
-		got := functionNameCandidates(tt.name)
-		if !slices.Contains(got, tt.want) {
-			t.Errorf("functionNameCandidates(%q) = %v, want it to contain %q", tt.name, got, tt.want)
-		}
-		if got[0] != tt.name {
-			t.Errorf("functionNameCandidates(%q) first = %q, want the original name first", tt.name, got[0])
+	for name, want := range tests {
+		if got := enclosingFunction(name); got != want {
+			t.Errorf("enclosingFunction(%q) = %q, want %q", name, got, want)
 		}
 	}
 }

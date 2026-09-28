@@ -130,7 +130,7 @@ func (p OpenAIProvider) modelClient(role Role) *http.Client {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	var transport http.RoundTripper = eventStreamTransport{base: base}
+	var transport http.RoundTripper = providerTransport{base: eventStreamTransport{base: base}}
 	if effort := p.Reasoning[role]; effort != "" {
 		transport = reasoningTransport{base: transport, effort: effort}
 	}

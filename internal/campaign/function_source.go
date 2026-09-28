@@ -193,12 +193,9 @@ func replaceFunctionSource(fullPath string, original []byte, function, functionS
 	if existing == nil {
 		return nil, fmt.Errorf("function %s not found in %s", function, filepath.Base(fullPath))
 	}
-	newDecl, newText, err := formatFunctionDecl(functionSource)
+	newDecl, newText, err := targetWithHelpers(file, function, functionSource)
 	if err != nil {
 		return nil, err
-	}
-	if name := funcName(newDecl); name != function {
-		return nil, fmt.Errorf("function_source declares %s, not the target %s", name, function)
 	}
 	spliced := spliceFunctionSource(fset, original, existing, newDecl, newText)
 	inferred, err := inferredStdlibImports(fullPath, spliced)
@@ -249,33 +246,84 @@ func findFuncDecl(file *ast.File, function string) *ast.FuncDecl {
 // declaration (for funcName and Doc) and its formatted text, doc comment
 // included when it has one.
 func formatFunctionDecl(src string) (*ast.FuncDecl, string, error) {
+	decls, err := splitFunctionDecls(src)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(decls) != 1 {
+		return nil, "", fmt.Errorf("function_source must declare exactly one function, found %d declarations", len(decls))
+	}
+	return decls[0].fd, decls[0].text, nil
+}
+
+// formattedDecl is one function declaration from a function_source, with its
+// gofmt-formatted text, doc comment included.
+type formattedDecl struct {
+	fd   *ast.FuncDecl
+	text string
+}
+
+// splitFunctionDecls formats src in isolation and returns each declaration
+// in it, all of which must be functions.
+func splitFunctionDecls(src string) ([]formattedDecl, error) {
 	trimmed := strings.TrimSpace(src)
 	if trimmed == "" {
-		return nil, "", errors.New("function_source is empty")
+		return nil, errors.New("function_source is empty")
 	}
-	synthetic := "package p\n\n" + trimmed + "\n"
-	formatted, err := format.Source([]byte(synthetic))
+	formatted, err := format.Source([]byte("package p\n\n" + trimmed + "\n"))
 	if err != nil {
-		return nil, "", fmt.Errorf("function_source does not parse as Go source: %w", err)
+		return nil, fmt.Errorf("function_source does not parse as Go source: %w", err)
 	}
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", formatted, parser.ParseComments)
 	if err != nil {
-		return nil, "", fmt.Errorf("function_source does not parse as Go source: %w", err)
+		return nil, fmt.Errorf("function_source does not parse as Go source: %w", err)
 	}
-	if len(file.Decls) != 1 {
-		return nil, "", fmt.Errorf("function_source must declare exactly one function, found %d declarations", len(file.Decls))
+	decls := make([]formattedDecl, 0, len(file.Decls))
+	for _, d := range file.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok {
+			return nil, errors.New("function_source must be a function declaration")
+		}
+		start := fd.Pos()
+		if fd.Doc != nil {
+			start = fd.Doc.Pos()
+		}
+		decls = append(decls, formattedDecl{fd: fd, text: string(formatted[fset.Position(start).Offset:fset.Position(fd.End()).Offset])})
 	}
-	fd, ok := file.Decls[0].(*ast.FuncDecl)
-	if !ok {
-		return nil, "", errors.New("function_source must be a function declaration")
+	return decls, nil
+}
+
+// targetWithHelpers picks the declaration of function out of a
+// function_source and returns it with the text to splice in its place: the
+// function, then every other declaration as a new helper after it. A helper
+// may not share a name with a function the file already declares, since the
+// target is the only existing function a single-function patch may change.
+// On live1-ycat an optimizer returned the target plus one new helper, a shape
+// the patch-shape check accepts, and the transport refused it before build as
+// "must declare exactly one function".
+func targetWithHelpers(file *ast.File, function, src string) (*ast.FuncDecl, string, error) {
+	decls, err := splitFunctionDecls(src)
+	if err != nil {
+		return nil, "", err
 	}
-	start := fd.Pos()
-	if fd.Doc != nil {
-		start = fd.Doc.Pos()
+	var target *formattedDecl
+	var helpers []string
+	for i := range decls {
+		name := funcName(decls[i].fd)
+		switch {
+		case name == function && target == nil:
+			target = &decls[i]
+		case findFuncDecl(file, name) != nil:
+			return nil, "", fmt.Errorf("function_source redeclares %s, which already exists; only the target %s may change", name, function)
+		default:
+			helpers = append(helpers, decls[i].text)
+		}
 	}
-	text := string(formatted[fset.Position(start).Offset:fset.Position(fd.End()).Offset])
-	return fd, text, nil
+	if target == nil {
+		return nil, "", fmt.Errorf("function_source declares %s, not the target %s", funcName(decls[0].fd), function)
+	}
+	return target.fd, strings.Join(append([]string{target.text}, helpers...), "\n\n"), nil
 }
 
 // addImports adds every path in wanted that data does not already import,

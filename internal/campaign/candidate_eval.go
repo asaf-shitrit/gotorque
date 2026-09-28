@@ -91,7 +91,7 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	// Worktree teardown runs even when the caller's context is already
 	// canceled (duration budget or Ctrl-C), but keeps its values.
 	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
-	if e.rejectMeasuredDuplicate(evidence.Candidate.ID, &evidence) {
+	if !e.verifying && e.rejectMeasuredDuplicate(evidence.Candidate.ID, &evidence) {
 		return evidence, nil
 	}
 	if !e.patchHasShape(ctx, prepared.Worktree, req.Target, &evidence) {
@@ -222,7 +222,7 @@ func (e *Engine) patchHasShape(ctx context.Context, worktree string, target *age
 	if err != nil {
 		return true
 	}
-	if target == nil && e.rejectKnownAcceptedFix(worktree, diff, evidence) {
+	if target == nil && !e.verifying && e.rejectKnownAcceptedFix(worktree, diff, evidence) {
 		return false
 	}
 	if err := checkShape(worktree, diff, target); err != nil {
@@ -424,7 +424,7 @@ func (e *Engine) abRequests(seed manifest.SeedWorkload, id, candidateBinary stri
 // series would.
 func (e *Engine) runSeries(ctx context.Context, runs *seedRuns, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
 	baseReq, candReq := e.abRequests(runs.seed, id, candidateBinary)
-	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
+	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: e.pairs()})
 	e.recordIsolationNotes(abIsolationNotes(ab))
 	if err != nil {
 		evidence.BehaviorMatches = false
@@ -719,7 +719,7 @@ func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.Candidat
 		return
 	}
 	evidence.PgoComparisons = comparisons
-	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each, lane cost %s; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, measurementRepetitions, e.now().Sub(started).Round(time.Second), filepath.Base(e.state.PGOProfilePath))
+	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each, lane cost %s; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, e.pairs(), e.now().Sub(started).Round(time.Second), filepath.Base(e.state.PGOProfilePath))
 	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
 }
 
@@ -812,7 +812,7 @@ func (e *Engine) measurePgoWorkloads(ctx context.Context, evidence *orchestrator
 		candReq := baseReq
 		candReq.Build = runner.Build{ID: candidateID + "-candidate-pgo", BinaryPath: candidatePgo}
 		candReq.Workload.Command.Path = candidatePgo
-		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: measurementRepetitions})
+		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: e.pairs()})
 		if err != nil {
 			e.skipPgoLane(evidence, fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err))
 			return nil, 0, false

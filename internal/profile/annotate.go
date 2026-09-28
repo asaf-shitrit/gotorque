@@ -2,7 +2,6 @@ package profile
 
 import (
 	"bufio"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -71,12 +70,24 @@ func ParsePprofList(output string) (path string, line int, ok bool) {
 	return path, line, true
 }
 
+// pprofSourceLine is a `pprof -list` source row: flat and cum columns, then
+// the line number and the code, as in "40ms 40ms 73:func (l *T) Get(".
+var pprofSourceLine = regexp.MustCompile(`^\s*\S+\s+\S+\s+(\d+):`)
+
 func pprofListLineNumber(text string) (int, bool) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" || strings.HasPrefix(trimmed, "ROUTINE ") {
 		return 0, true
 	}
 	if m := pprofLineMarker.FindStringSubmatch(trimmed); m != nil {
+		return atoi(m[1]), false
+	}
+	// Every row starts with the flat and cum columns, so the line number is
+	// never first: reading it from the start of the row returned 0 for all of
+	// them, and every function pprof resolved lost its line (chroma's
+	// (*LexerRegistry).Get became a bare "registry.go" that no analysis could
+	// read).
+	if m := pprofSourceLine.FindStringSubmatch(text); m != nil {
 		return atoi(m[1]), false
 	}
 	return colonLineNumber(trimmed), false
@@ -104,65 +115,9 @@ func minSampleLine(current, n int) int {
 	return current
 }
 
-// FindFunctionInRepo locates a function declaration by name under root,
-// searching .go files breadth-first with a bounded file count. It is the
-// fallback when no pprof-format profile exists for annotation.
-type functionSearch struct {
-	root  string
-	decl  *regexp.Regexp
-	found string
-	line  int
-	files int
-}
-
-func FindFunctionInRepo(root, functionName string) (string, int, bool) {
-	if functionName == "" {
-		return "", 0, false
-	}
-	s := functionSearch{root: root, decl: regexp.MustCompile(`(?m)^func (?:\([^)]*\) )?` + regexp.QuoteMeta(functionName) + `\(`)}
-	_ = filepath.WalkDir(root, s.visit)
-	return s.found, s.line, s.found != ""
-}
-
-func (s *functionSearch) visit(path string, d os.DirEntry, err error) error {
-	if err != nil || s.found != "" {
-		if s.found != "" {
-			return filepath.SkipAll
-		}
-		return nil
-	}
-	if d.IsDir() {
-		return skipIgnoredDir(d.Name())
-	}
-	return s.matchFile(path)
-}
-
 func skipIgnoredDir(base string) error {
 	if base == ".git" || base == "vendor" || base == "testdata" {
 		return filepath.SkipDir
-	}
-	return nil
-}
-
-func (s *functionSearch) matchFile(path string) error {
-	if !strings.HasSuffix(path, ".go") {
-		return nil
-	}
-	s.files++
-	if s.files > 2000 {
-		return filepath.SkipAll
-	}
-	data, err := os.ReadFile(path)
-	if err == nil {
-		if loc := s.decl.FindIndex(data); loc != nil {
-			rel, relErr := filepath.Rel(s.root, path)
-			if relErr != nil {
-				rel = path
-			}
-			s.found = filepath.ToSlash(rel)
-			s.line = 1 + strings.Count(string(data[:loc[0]]), "\n")
-			return filepath.SkipAll
-		}
 	}
 	return nil
 }
