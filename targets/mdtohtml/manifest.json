@@ -1,0 +1,142 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "mdtohtml CLI",
+  "target": {
+    "repository": "https://github.com/gomarkdown/mdtohtml",
+    "build": {
+      "package": ".",
+      "binary": "mdtohtml"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "release-notes-html",
+        "name": "Convert a large generated release-notes document to HTML",
+        "tier": "representative",
+        "args": [],
+        "stdin_header": "# Product Release History\n\n",
+        "stdin": "## Release notes\n\nThis release addresses **performance** issues in the `parser` module and adds\n*several* new capabilities for downstream consumers. See the [changelog](https://example.com/changelog)\nfor the full history.\n\n- Improved throughput for large batches\n- Reduced allocations in the tokenizer\n- Fixed a rare panic when `input` was empty\n\n| Metric | Before | After |\n| --- | --- | --- |\n| Latency (ms) | 120 | 95 |\n| Throughput (req/s) | 800 | 1050 |\n| Memory (MB) | 64 | 51 |\n\n> Note: this benchmark was run on a reference machine; your results may vary.\n\n```go\nfunc Process(item Item) (Result, error) {\n\tif item.ID == 0 {\n\t\treturn Result{}, fmt.Errorf(\"item: missing id\")\n\t}\n\treturn Result{ID: item.ID, Score: item.Score * 2}, nil\n}\n```\n\n1. Review the release notes above\n2. Update your configuration file\n3. Run the migration script\n4. Verify the health check endpoint\n\n",
+        "stdin_repeat": 4000,
+        "provenance": "manifest",
+        "description": "Default HTML conversion of a repeated release-notes block (heading, bold/italic, link, list, table, blockquote, fenced code, ordered list) piped on stdin; the header is written once and the block 4,000 times."
+      },
+      {
+        "id": "release-notes-page-toc",
+        "name": "Render a standalone page with a table of contents from the same document",
+        "tier": "representative",
+        "args": [
+          "-page",
+          "-toc",
+          "-attributes",
+          "-headingids"
+        ],
+        "stdin_header": "# Product Release History\n\n",
+        "stdin": "## Release notes\n\nThis release addresses **performance** issues in the `parser` module and adds\n*several* new capabilities for downstream consumers. See the [changelog](https://example.com/changelog)\nfor the full history.\n\n- Improved throughput for large batches\n- Reduced allocations in the tokenizer\n- Fixed a rare panic when `input` was empty\n\n| Metric | Before | After |\n| --- | --- | --- |\n| Latency (ms) | 120 | 95 |\n| Throughput (req/s) | 800 | 1050 |\n| Memory (MB) | 64 | 51 |\n\n> Note: this benchmark was run on a reference machine; your results may vary.\n\n```go\nfunc Process(item Item) (Result, error) {\n\tif item.ID == 0 {\n\t\treturn Result{}, fmt.Errorf(\"item: missing id\")\n\t}\n\treturn Result{ID: item.ID, Score: item.Score * 2}, nil\n}\n```\n\n1. Review the release notes above\n2. Update your configuration file\n3. Run the migration script\n4. Verify the health check endpoint\n\n",
+        "stdin_repeat": 2500,
+        "provenance": "manifest",
+        "description": "Full-page rendering with -page, -toc, -attributes, and -headingids enabled, exercising the TOC builder and block-attribute/heading-ID extensions the plain conversion above does not touch."
+      },
+      {
+        "id": "release-notes-html-stress",
+        "name": "Convert a very large generated release-notes document to HTML (macOS sampler stress seed)",
+        "tier": "stress",
+        "args": [],
+        "stdin_header": "# Product Release History\n\n",
+        "stdin": "## Release notes\n\nThis release addresses **performance** issues in the `parser` module and adds\n*several* new capabilities for downstream consumers. See the [changelog](https://example.com/changelog)\nfor the full history.\n\n- Improved throughput for large batches\n- Reduced allocations in the tokenizer\n- Fixed a rare panic when `input` was empty\n\n| Metric | Before | After |\n| --- | --- | --- |\n| Latency (ms) | 120 | 95 |\n| Throughput (req/s) | 800 | 1050 |\n| Memory (MB) | 64 | 51 |\n\n> Note: this benchmark was run on a reference machine; your results may vary.\n\n```go\nfunc Process(item Item) (Result, error) {\n\tif item.ID == 0 {\n\t\treturn Result{}, fmt.Errorf(\"item: missing id\")\n\t}\n\treturn Result{ID: item.ID, Score: item.Score * 2}, nil\n}\n```\n\n1. Review the release notes above\n2. Update your configuration file\n3. Run the migration script\n4. Verify the health check endpoint\n\n",
+        "stdin_repeat": 130000,
+        "provenance": "manifest",
+        "description": "Same default conversion as release-notes-html with the block repeated 130,000 times (about 115 MB of input), sized to run 3-6s so the macOS sampler has enough wall time to profile."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples",
+        "tests"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}
