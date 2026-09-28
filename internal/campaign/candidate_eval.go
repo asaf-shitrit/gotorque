@@ -54,6 +54,9 @@ const (
 // judgment stays here or in policy; the model never self-approves.
 // evaluateCandidate is invoked through the orchestrator CandidateService adapter.
 func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
+	if err := e.requireFreeSpace(); err != nil {
+		return orchestrator.CandidateEvidence{}, err
+	}
 	patchText, transport, err := e.resolveCandidatePatch(ctx, req)
 	if err != nil {
 		// Building the diff from function_source failed before there was
@@ -303,8 +306,16 @@ type seedRuns struct {
 
 func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
 	m := measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
+	if e.state.LocalIsolation {
+		evidence.QuietWait, evidence.QuietWaitExpired = defaultQuietWaiter().wait(ctx)
+	}
+	evidence.LoadAverages = sampleLoad()
+	defer func() {
+		evidence.LoadAverages = append(evidence.LoadAverages, sampleLoad()...)
+		evidence.LoadContended = contended(evidence.LoadAverages, machineCPUs())
+	}()
 	m.baselineSize, m.candSize, m.sizeErr = binarySizes(e.state.BinaryPath, candidateBinary)
-	if !e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, &m) {
+	if !e.measureSeedsOnQuietMachine(ctx, evidence, id, candidateBinary, &m) {
 		return false
 	}
 	if len(m.seeds) == 0 {
@@ -318,6 +329,34 @@ func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.
 		return false
 	}
 	return e.confirmImprovements(ctx, evidence, id, candidateBinary, &m)
+}
+
+// measureSeedsOnQuietMachine measures every representative seed, and
+// measures them all again from scratch, once, when the machine was contended
+// by the time the first pass ended. The wait before measuring only protects
+// the start: on overnight-miller-4 the load went from 6.4 to 16.6 during a
+// candidate's pairs, and its workload readings swung from -9% to +12%. The
+// same kind of burst gave overnight-miller-1 a false acceptance. The first
+// pass's samples are discarded, the engine waits for quiet again, and only the
+// second pass reaches the verdict; its load is what the record reports, with
+// the discarded pass's load kept beside it. A second contended pass is kept
+// as it is, flagged.
+func (e *Engine) measureSeedsOnQuietMachine(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	before, fresh := *evidence, *m
+	if !e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, m) {
+		return false
+	}
+	mid := sampleLoad()
+	if !e.state.LocalIsolation || !contended(mid, machineCPUs()) {
+		return true
+	}
+	waited, expired := defaultQuietWaiter().wait(ctx)
+	*evidence, *m = before, fresh
+	evidence.QuietWait += waited
+	evidence.QuietWaitExpired = expired
+	evidence.DiscardedLoad = slices.Concat(before.LoadAverages, mid)
+	evidence.LoadAverages = sampleLoad()
+	return e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, m)
 }
 
 func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {

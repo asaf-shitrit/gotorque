@@ -216,6 +216,22 @@ produced here or in policy.
    noise of short CLI workloads: a target that runs for 10-25 ms per seed
    carries 6-8% per-run spread, and at seven pairs a real 3.75% win measured
    as unsupported while thirty pairs resolved the same effect at p<1e-4.
+   Interleaving cancels steady load, not load that comes and goes, so the
+   one-minute load average is sampled before and after a candidate's
+   measurement (`loadavg.go`) and recorded on its record. The report flags a
+   candidate whose load exceeded 0.7 per CPU as contended; the
+   verdict never reads it. Before measuring, the engine also waits up to
+   three minutes for the load to fall under that threshold (`quietWaiter`),
+   because the contention seen in practice came in bursts of a few minutes;
+   a wait that runs out is recorded and the candidate is measured anyway.
+   The wait only protects the start, so when the load sampled after the
+   pairs is contended the engine discards them, waits again and measures
+   every seed once more from scratch (`measureSeedsOnQuietMachine`); only the
+   second pass reaches the verdict, and the report names the discarded
+   pass's load.
+   Tests, which disable local isolation, never wait. An A/A check on csvtk (the same binary on both
+   sides, fifty pairs, baseline first) found no order bias: second-run
+   medians within 0.5% and no consistent direction.
    Before the pairs run, the baseline
    is executed twice against itself: if two identical runs produce different
    stdout digests, the workload is treated as nondeterministic and behavior

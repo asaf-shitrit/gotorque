@@ -343,6 +343,7 @@ func writeCandidateExperiments(b *strings.Builder, state State) {
 func writeCandidateRecord(b *strings.Builder, record CandidateRecord) {
 	fmt.Fprintf(b, "### Attempt %d: `%s` **%s**\n\n", record.Attempt, record.CandidateID, strings.ToUpper(string(record.Decision)))
 	writeCandidateMeta(b, record)
+	writeCandidateLoad(b, record)
 	writeCandidateFailure(b, record)
 	writeCandidateSamples(b, record)
 	writeCandidateComparisons(b, record)
@@ -592,4 +593,35 @@ func historyFlags(sources []HistorySource) string {
 		fmt.Fprintf(&b, " --history %q", s.Directory)
 	}
 	return b.String()
+}
+
+// writeCandidateLoad shows the load averages sampled around a candidate's
+// measurement, and warns when the machine was contended (loadavg.go).
+func writeCandidateLoad(b *strings.Builder, record CandidateRecord) {
+	if record.QuietWait > 0 {
+		verdict := "until it was quiet"
+		if record.QuietWaitExpired {
+			verdict = "and gave up; it was measured while still contended"
+		}
+		fmt.Fprintf(b, "- Waited %s for the machine to go quiet before measuring, %s\n", record.QuietWait, verdict)
+	}
+	if len(record.DiscardedLoad) > 0 {
+		fmt.Fprintf(b, "- Measured twice: the first pass ended contended (load %s) and was discarded\n", joinLoads(record.DiscardedLoad))
+	}
+	if len(record.LoadAverages) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "- Load average during measurement: %s", joinLoads(record.LoadAverages))
+	if record.LoadContended {
+		b.WriteString(" **(contended: load above 0.7 per CPU; other work may have moved these timings)**")
+	}
+	b.WriteString("\n")
+}
+
+func joinLoads(loads []float64) string {
+	parts := make([]string, 0, len(loads))
+	for _, l := range loads {
+		parts = append(parts, strconv.FormatFloat(l, 'f', 2, 64))
+	}
+	return strings.Join(parts, " -> ")
 }

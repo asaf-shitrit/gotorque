@@ -140,6 +140,20 @@ type CandidateEvidence struct {
 	// stderr tail) behind a rejection so later cycles can avoid repeating
 	// the same failed approach.
 	FailureDetail string `json:"failure_detail,omitempty"`
+	// LoadAverages are the machine's one-minute load averages sampled before
+	// and after the candidate's measurement, for the report to flag a
+	// contended one. The verdict never reads them.
+	LoadAverages []float64 `json:"load_averages,omitempty"`
+	// LoadContended is whether one of them exceeded 0.7 per CPU on the
+	// measuring machine.
+	LoadContended bool `json:"load_contended,omitempty"`
+	// QuietWait is how long the engine waited for the machine to go quiet
+	// before measuring, and QuietWaitExpired whether it gave up waiting.
+	QuietWait        time.Duration `json:"quiet_wait,omitempty"`
+	QuietWaitExpired bool          `json:"quiet_wait_expired,omitempty"`
+	// DiscardedLoad is the load around a first measurement pass that ended
+	// contended and was thrown away for a second one (measureSeedsOnQuietMachine).
+	DiscardedLoad []float64 `json:"discarded_load,omitempty"`
 	// Unmeasured is set when the candidate was rejected before measurement:
 	// its patch did not apply, failed the shape check, or did not build.
 	Unmeasured bool `json:"unmeasured,omitempty"`
