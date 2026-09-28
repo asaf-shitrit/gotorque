@@ -182,12 +182,17 @@ func TestInferredStdlibImportsLeavesUnknownNamesAlone(t *testing.T) {
 	require.ErrorContains(t, err, "does not parse")
 }
 
-func TestReplaceFunctionSourceRejectsMultipleDecls(t *testing.T) {
+// TestReplaceFunctionSourceRejectsDeclsWithoutTheTarget: several
+// declarations are allowed only when one of them is the target (the rest
+// are new helpers, see TestReplaceFunctionSourceAddsNewHelpers).
+func TestReplaceFunctionSourceRejectsDeclsWithoutTheTarget(t *testing.T) {
 	repo := methodRepo(t)
 	original, err := os.ReadFile(filepath.Join(repo, "main.go"))
 	require.NoError(t, err)
 	_, err = replaceFunctionSource(filepath.Join(repo, "main.go"), original, "(*cli).printValues", "func a() {}\nfunc b() {}", nil)
-	require.ErrorContains(t, err, "exactly one function")
+	require.ErrorContains(t, err, "not the target (*cli).printValues")
+	_, _, err = formatFunctionDecl("func a() {}\nfunc b() {}")
+	require.ErrorContains(t, err, "exactly one function", "the free-choice path still takes one declaration")
 }
 
 // TestBuildFunctionSourceDiffAppliesCleanly drives the whole builder: read
@@ -406,4 +411,24 @@ func TestResolveCandidatePatchNamesAnOptimizerThatDidNotAnswer(t *testing.T) {
 	_, _, err := engine.resolveCandidatePatch(context.Background(), req)
 	require.ErrorContains(t, err, "the optimizer did not answer: optimizer model call failed after 3 attempts")
 	require.NotErrorIs(t, err, errEmptyProposal)
+}
+
+// TestReplaceFunctionSourceAddsNewHelpers: a function_source may carry new
+// helper functions beside the target; they are placed after it. A helper that
+// shares a name with an existing function, or a source without the target,
+// is refused.
+func TestReplaceFunctionSourceAddsNewHelpers(t *testing.T) {
+	src := "package main\n\nfunc f(n int) int {\n\treturn n\n}\n\nfunc g() {}\n"
+	path := filepath.Join(t.TempDir(), "main.go")
+	withHelper := "func f(n int) int {\n\treturn double(n) / 2\n}\n\n// double doubles n.\nfunc double(n int) int { return n * 2 }"
+	updated, err := replaceFunctionSource(path, []byte(src), "f", withHelper, nil)
+	require.NoError(t, err)
+	require.Contains(t, string(updated), "return double(n) / 2\n}\n\n// double doubles n.\nfunc double(n int) int { return n * 2 }\n\nfunc g() {}")
+
+	_, err = replaceFunctionSource(path, []byte(src), "f", "func f(n int) int { return n }\n\nfunc g() { println() }", nil)
+	require.ErrorContains(t, err, "redeclares g")
+	_, err = replaceFunctionSource(path, []byte(src), "f", "func h() {}\n\nfunc k() {}", nil)
+	require.ErrorContains(t, err, "not the target f")
+	_, err = replaceFunctionSource(path, []byte(src), "f", "func f(n int) int { return n }\n\ntype T int", nil)
+	require.ErrorContains(t, err, "must be a function declaration")
 }
