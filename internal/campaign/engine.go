@@ -702,7 +702,7 @@ func (e *Engine) runInspectStep(ctx context.Context) error {
 }
 
 func (e *Engine) runBuildStep(ctx context.Context) error {
-	if e.state.CompletedSteps["build"] {
+	if e.state.CompletedSteps["build"] && baselineBinariesPresent(e.state) {
 		return nil
 	}
 	if err := e.build(ctx); err != nil {
@@ -814,6 +814,25 @@ func decodeInventory(stdout []byte) (Inventory, error) {
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return line
+}
+
+// baselineBinariesPresent reports whether the release and coverage baseline
+// binaries a completed build step recorded are still on disk. A resumed
+// campaign used to trust the step and fail every candidate's measurement
+// with "stat ...-goawk: no such file or directory" once the campaign's
+// builds directory had been cleared to free disk space
+// (overnight-goawk-2); the build is reproducible from the recorded revision
+// and flags, so a missing binary is simply built again.
+func baselineBinariesPresent(state State) bool {
+	for _, path := range []string{state.BinaryPath, state.DiscoveryBinaryPath} {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) build(ctx context.Context) error {

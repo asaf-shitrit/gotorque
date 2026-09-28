@@ -1,6 +1,8 @@
 package campaign
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,4 +32,17 @@ func TestInventoryReportListsUnloadablePackages(t *testing.T) {
 	writeInventory(&b, State{Inventory: Inventory{Packages: []string{"a"}, Unloadable: []string{"x: broken"}}})
 	require.Contains(t, b.String(), "1 package(s) could not be loaded and were left out")
 	require.Contains(t, b.String(), "- `x: broken`")
+}
+
+// TestBaselineBinariesPresent pins the resume fix for a cleared builds
+// directory: a completed build step whose binaries are gone is run again.
+func TestBaselineBinariesPresent(t *testing.T) {
+	dir := t.TempDir()
+	release, coverage := filepath.Join(dir, "release"), filepath.Join(dir, "coverage")
+	require.NoError(t, os.WriteFile(release, nil, 0o600))
+	require.True(t, baselineBinariesPresent(State{BinaryPath: release}))
+	require.False(t, baselineBinariesPresent(State{BinaryPath: release, DiscoveryBinaryPath: coverage}))
+	require.NoError(t, os.WriteFile(coverage, nil, 0o600))
+	require.True(t, baselineBinariesPresent(State{BinaryPath: release, DiscoveryBinaryPath: coverage}))
+	require.True(t, baselineBinariesPresent(State{}), "a campaign that never built has nothing to check")
 }
