@@ -1460,6 +1460,10 @@ func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, nam
 }
 
 func (e *Engine) hotLocation(ctx context.Context, cpuProfile, name string) string {
+	// pprof's top listing marks inlined frames "name (inline)", a display
+	// suffix no symbol or declaration carries: chroma's lexers.Get stayed a
+	// bare name on every campaign because of it.
+	name = strings.TrimSuffix(name, " (inline)")
 	if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
 		return loc
 	}

@@ -1,0 +1,11 @@
+Total: 3.13s
+ROUTINE ======================== github.com/alecthomas/chroma/v3.(*LexerRegistry).Get in /repo/chroma/registry.go
+      60ms      1.09s (flat, cum) 34.82% of Total
+      40ms       40ms     73:func (l *LexerRegistry) Get(name string) Lexer {
+         .      1.03s     74:	if lexer := l.byName[name]; lexer != nil {
+      20ms       20ms     75:		return lexer
+         .          .     76:	}
+         .          .     77:	if lexer := l.byAlias[name]; lexer != nil {
+         .          .     78:		return lexer
+         .          .     79:	}
+         .          .     80:	if lexer := l.byName[strings.ToLower(name)]; lexer != nil {

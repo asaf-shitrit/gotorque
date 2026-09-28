@@ -91,8 +91,9 @@ func TestResolveHotLocationsQualifiesMethodsByReceiverAndPackage(t *testing.T) {
 		"go.starlark.net/starlark.Binary",
 		"go.starlark.net/starlark.Int.get",
 		"go.starlark.net/starlark.(*Function).CallInternal.func1",
+		"go.starlark.net/starlark.Int.get (inline)",
 	})
-	require.Equal(t, []string{"starlark/eval.go:5", "starlark/eval.go:7", "starlark/int.go:5"}, got)
+	require.Equal(t, []string{"starlark/eval.go:5", "starlark/eval.go:7", "starlark/int.go:5"}, got, "an (inline) frame folds into its declaration")
 }
 
 // TestResolveHotLocationsFindsMainInTheBuiltCommand: two commands declare

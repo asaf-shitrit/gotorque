@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -85,5 +86,19 @@ func TestAtoiRejectsNonNumeric(t *testing.T) {
 	}
 	if n := atoi("99"); n != 99 {
 		t.Fatalf("atoi = %d, want 99", n)
+	}
+}
+
+// TestParsePprofListReadsRealRows parses real `go tool pprof -list` output
+// (chroma's (*LexerRegistry).Get), whose rows open with the flat and cum
+// columns: the line number is the third field, never the first.
+func TestParsePprofListReadsRealRows(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "pprof-list-method.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, line, ok := ParsePprofList(string(data))
+	if !ok || filepath.ToSlash(path) != "/repo/chroma/registry.go" || line != 73 {
+		t.Fatalf("got %q:%d ok=%v, want /repo/chroma/registry.go:73", path, line, ok)
 	}
 }
