@@ -110,3 +110,11 @@ func TestReportNamesTheQuietWait(t *testing.T) {
 	require.Contains(t, gaveUp.String(), "gave up")
 	require.Contains(t, gaveUp.String(), "contended")
 }
+
+func TestReportNamesADiscardedPass(t *testing.T) {
+	var b strings.Builder
+	writeCandidateLoad(&b, CandidateRecord{DiscardedLoad: []float64{6.4, 16.58}, LoadAverages: []float64{3.1, 3.4}})
+	require.Contains(t, b.String(), "- Measured twice: the first pass ended contended (load 6.40 -> 16.58) and was discarded")
+	require.Contains(t, b.String(), "3.10 -> 3.40")
+	require.NotContains(t, b.String(), "contended: load above")
+}

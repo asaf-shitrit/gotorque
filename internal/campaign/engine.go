@@ -116,6 +116,8 @@ type CandidateRecord struct {
 	// before measurement (loadavg.go).
 	QuietWait        time.Duration `json:"quiet_wait,omitempty"`
 	QuietWaitExpired bool          `json:"quiet_wait_expired,omitempty"`
+	// DiscardedLoad is the load around a discarded, contended first pass.
+	DiscardedLoad []float64 `json:"discarded_load,omitempty"`
 }
 
 // RoleUsageSnapshot is persisted per-role model token usage for one ADK run.

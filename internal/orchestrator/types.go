@@ -141,6 +141,9 @@ type CandidateEvidence struct {
 	// before measuring, and QuietWaitExpired whether it gave up waiting.
 	QuietWait        time.Duration `json:"quiet_wait,omitempty"`
 	QuietWaitExpired bool          `json:"quiet_wait_expired,omitempty"`
+	// DiscardedLoad is the load around a first measurement pass that ended
+	// contended and was thrown away for a second one (measureSeedsOnQuietMachine).
+	DiscardedLoad []float64 `json:"discarded_load,omitempty"`
 	// Unmeasured is set when the candidate was rejected before measurement:
 	// its patch did not apply, failed the shape check, or did not build.
 	Unmeasured bool `json:"unmeasured,omitempty"`

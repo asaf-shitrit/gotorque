@@ -224,6 +224,11 @@ produced here or in policy.
    three minutes for the load to fall under that threshold (`quietWaiter`),
    because the contention seen in practice came in bursts of a few minutes;
    a wait that runs out is recorded and the candidate is measured anyway.
+   The wait only protects the start, so when the load sampled after the
+   pairs is contended the engine discards them, waits again and measures
+   every seed once more from scratch (`measureSeedsOnQuietMachine`); only the
+   second pass reaches the verdict, and the report names the discarded
+   pass's load.
    Tests, which disable local isolation, never wait. An A/A check on csvtk (the same binary on both
    sides, fifty pairs, baseline first) found no order bias: second-run
    medians within 0.5% and no consistent direction.
