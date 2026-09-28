@@ -56,6 +56,48 @@ Pointing at live upstreams:
   needed, unlike chroma). The stress seed
   `minify-html-bundle-stress` runs `--bundle` over the HTML page 5,300 times
   (about 3.2-3.5 s) for the macOS sampler.
+- `cue/` exercises a config-evaluator workload class comparable to
+  go-jsonnet: comprehensions, unification against definitions and
+  constraints, and large generated lists, but built from CUE's own
+  data-modeling operators (`&`, disjunctions, field constraints) rather than
+  a scripting language. Both seeds evaluate the same `fleet.cue` (a
+  comprehension over `list.Range` that unifies each entry against a
+  `#Service` definition with a tier constraint and a bounded `replicas`
+  range): `fleet-export` runs `cue export` over 1,500 services (about
+  150-220 ms), and `fleet-eval` runs `cue eval` — which also resolves and
+  prints the definitions/constraints, not just the concrete JSON — over 300
+  services (about 105-155 ms). The stress seed `fleet-export-profile` scales
+  the same comprehension to 42,000 services (about 4.5-4.9 s) for the macOS
+  sampler. Local-file evaluation with no external module imports never
+  touches `CUE_CACHE_DIR` or `$HOME`, confirmed by running with an
+  unwritable `$HOME` and again with none set, so the sandbox's temp-only
+  writes need no extra environment allowance. Its own test suite
+  (`go test ./...`, 121 packages) took about 103 s and passed cleanly.
+- `mdtohtml/` exercises Markdown-to-HTML conversion: parsing, inline
+  formatting, tables, fenced code, and (for one seed) table-of-contents and
+  heading-ID generation. Both representative seeds read a repeated
+  release-notes block on stdin via `stdin_header`/`stdin_repeat` rather than
+  an inlined multi-megabyte file: `release-notes-html` repeats the block
+  4,000 times (about 3.5 MB in, 100-155 ms) through the default converter,
+  and `release-notes-page-toc` repeats it 2,500 times through `-page -toc
+  -attributes -headingids` (about 2.2 MB in, 60-85 ms), exercising the TOC
+  builder and block-attribute/heading-ID extensions the default path
+  skips. The stress seed `release-notes-html-stress` repeats the block
+  130,000 times (about 115 MB in, 3.5-5.8 s) for the macOS sampler. The
+  module has no test files of its own (`go test ./...` reports "no test
+  files" and exits in under 200 ms).
+- `fzf/` exercises non-interactive fuzzy and exact filtering: the scorer,
+  tiebreaking, and delimiter/field selection, run with `--filter` so no TTY
+  is needed. Both representative seeds filter a 50-line generated candidate
+  block (file paths built from a small word list) repeated 4,000 times to
+  200,000 lines via `stdin_repeat`: `filter-worker` runs the default fuzzy
+  `--filter=worker` (about 60-85 ms), and `filter-exact-nth-delim` adds
+  `--exact --tiebreak=length,index --delimiter=_ --nth=2` to filter one
+  underscore-delimited field with explicit, deterministic tie-breaking
+  (about 50-85 ms). Output was confirmed byte-identical across repeated runs
+  for both. The stress seed `filter-worker-stress` repeats the same block
+  220,000 times (11,000,000 lines, about 3.2-3.9 s) for the macOS sampler.
+  Its own test suite (`go test ./...`) took about 6.1 s and passed.
 
 Pointing at `asaf-shitrit/gotorque-targets`, which is not published yet. Both
 validate, but neither can run a campaign until that repository exists:

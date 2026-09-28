@@ -1,0 +1,155 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "cue CLI",
+  "target": {
+    "repository": "https://github.com/cue-lang/cue",
+    "build": {
+      "package": "./cmd/cue",
+      "binary": "cue"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "fleet-export",
+        "name": "Export a generated service fleet to JSON",
+        "tier": "representative",
+        "args": [
+          "export",
+          "fleet.cue"
+        ],
+        "files": [
+          {
+            "path": "fleet.cue",
+            "content": "package fleet\n\nimport (\n\t\"list\"\n\t\"math\"\n)\n\n#Region: \"us-east\" | \"us-west\" | \"eu-central\" | \"ap-south\"\n\n#Tier: \"small\" | \"medium\" | \"large\"\n\n#tierSpecs: {\n\tsmall:  {cpu: 1, memoryMB:  512, replicas: 1}\n\tmedium: {cpu: 2, memoryMB: 2048, replicas: 3}\n\tlarge:  {cpu: 4, memoryMB: 8192, replicas: 5}\n}\n\n#Service: {\n\tid:       int\n\tname:     string\n\tregion:   #Region\n\ttier:     #Tier\n\tspec:     #tierSpecs[tier]\n\tenabled:  bool\n\treplicas: int & >=1 & <=10\n\treplicas: spec.replicas\n\tlabels: {\n\t\tteam:  \"team-\\(math.Mod(id, 8))\"\n\t\tenv:   [\"dev\", \"staging\", \"prod\"][int & math.Trunc(math.Mod(id, 3))]\n\t\towner: \"owner-\\(math.Mod(id, 20))\"\n\t}\n\tports: [for p in list.Range(0, 3, 1) {8000 + (int & math.Trunc(math.Mod(id, 1000)))*3 + p}]\n}\n\n_regionsList: [\"us-east\", \"us-west\", \"eu-central\", \"ap-south\"]\n_tiersList: [\"small\", \"medium\", \"large\"]\n\nservices: [\n\tfor i in list.Range(0, 1500, 1) {\n\t\t#Service & {\n\t\t\tid:      i\n\t\t\tname:    \"svc-\\(i)\"\n\t\t\tregion:  _regionsList[int & math.Trunc(math.Mod(i, len(_regionsList)))]\n\t\t\ttier:    _tiersList[int & math.Trunc(math.Mod(i, len(_tiersList)))]\n\t\t\tenabled: math.Mod(i, 5) != 0\n\t\t}\n\t},\n]\n\ntotalReplicas: {\n\tfor s in services {\n\t\t\"\\(s.id)\": s.replicas\n\t}\n}\n\nsummary: {\n\tcount: len(services)\n\tbyRegion: {\n\t\tfor r in _regionsList {\n\t\t\t\"\\(r)\": len([for s in services if s.region == r {s}])\n\t\t}\n\t}\n}\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "cue export of a 1,500-service fleet built by a comprehension over list.Range, unifying each entry against a #Service definition with tier constraints and a bounded replicas range."
+      },
+      {
+        "id": "fleet-eval",
+        "name": "Evaluate and print a smaller service fleet with definitions resolved",
+        "tier": "representative",
+        "args": [
+          "eval",
+          "fleet.cue"
+        ],
+        "files": [
+          {
+            "path": "fleet.cue",
+            "content": "package fleet\n\nimport (\n\t\"list\"\n\t\"math\"\n)\n\n#Region: \"us-east\" | \"us-west\" | \"eu-central\" | \"ap-south\"\n\n#Tier: \"small\" | \"medium\" | \"large\"\n\n#tierSpecs: {\n\tsmall:  {cpu: 1, memoryMB:  512, replicas: 1}\n\tmedium: {cpu: 2, memoryMB: 2048, replicas: 3}\n\tlarge:  {cpu: 4, memoryMB: 8192, replicas: 5}\n}\n\n#Service: {\n\tid:       int\n\tname:     string\n\tregion:   #Region\n\ttier:     #Tier\n\tspec:     #tierSpecs[tier]\n\tenabled:  bool\n\treplicas: int & >=1 & <=10\n\treplicas: spec.replicas\n\tlabels: {\n\t\tteam:  \"team-\\(math.Mod(id, 8))\"\n\t\tenv:   [\"dev\", \"staging\", \"prod\"][int & math.Trunc(math.Mod(id, 3))]\n\t\towner: \"owner-\\(math.Mod(id, 20))\"\n\t}\n\tports: [for p in list.Range(0, 3, 1) {8000 + (int & math.Trunc(math.Mod(id, 1000)))*3 + p}]\n}\n\n_regionsList: [\"us-east\", \"us-west\", \"eu-central\", \"ap-south\"]\n_tiersList: [\"small\", \"medium\", \"large\"]\n\nservices: [\n\tfor i in list.Range(0, 300, 1) {\n\t\t#Service & {\n\t\t\tid:      i\n\t\t\tname:    \"svc-\\(i)\"\n\t\t\tregion:  _regionsList[int & math.Trunc(math.Mod(i, len(_regionsList)))]\n\t\t\ttier:    _tiersList[int & math.Trunc(math.Mod(i, len(_tiersList)))]\n\t\t\tenabled: math.Mod(i, 5) != 0\n\t\t}\n\t},\n]\n\ntotalReplicas: {\n\tfor s in services {\n\t\t\"\\(s.id)\": s.replicas\n\t}\n}\n\nsummary: {\n\tcount: len(services)\n\tbyRegion: {\n\t\tfor r in _regionsList {\n\t\t\t\"\\(r)\": len([for s in services if s.region == r {s}])\n\t\t}\n\t}\n}\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "cue eval of a 300-service fleet; eval resolves and prints definitions and constraints alongside the concrete values, unlike export's JSON-only output, so it exercises the definition/constraint path more heavily per entry."
+      },
+      {
+        "id": "fleet-export-profile",
+        "name": "Export a large generated service fleet (macOS sampler stress seed)",
+        "tier": "stress",
+        "args": [
+          "export",
+          "fleet.cue"
+        ],
+        "files": [
+          {
+            "path": "fleet.cue",
+            "content": "package fleet\n\nimport (\n\t\"list\"\n\t\"math\"\n)\n\n#Region: \"us-east\" | \"us-west\" | \"eu-central\" | \"ap-south\"\n\n#Tier: \"small\" | \"medium\" | \"large\"\n\n#tierSpecs: {\n\tsmall:  {cpu: 1, memoryMB:  512, replicas: 1}\n\tmedium: {cpu: 2, memoryMB: 2048, replicas: 3}\n\tlarge:  {cpu: 4, memoryMB: 8192, replicas: 5}\n}\n\n#Service: {\n\tid:       int\n\tname:     string\n\tregion:   #Region\n\ttier:     #Tier\n\tspec:     #tierSpecs[tier]\n\tenabled:  bool\n\treplicas: int & >=1 & <=10\n\treplicas: spec.replicas\n\tlabels: {\n\t\tteam:  \"team-\\(math.Mod(id, 8))\"\n\t\tenv:   [\"dev\", \"staging\", \"prod\"][int & math.Trunc(math.Mod(id, 3))]\n\t\towner: \"owner-\\(math.Mod(id, 20))\"\n\t}\n\tports: [for p in list.Range(0, 3, 1) {8000 + (int & math.Trunc(math.Mod(id, 1000)))*3 + p}]\n}\n\n_regionsList: [\"us-east\", \"us-west\", \"eu-central\", \"ap-south\"]\n_tiersList: [\"small\", \"medium\", \"large\"]\n\nservices: [\n\tfor i in list.Range(0, 42000, 1) {\n\t\t#Service & {\n\t\t\tid:      i\n\t\t\tname:    \"svc-\\(i)\"\n\t\t\tregion:  _regionsList[int & math.Trunc(math.Mod(i, len(_regionsList)))]\n\t\t\ttier:    _tiersList[int & math.Trunc(math.Mod(i, len(_tiersList)))]\n\t\t\tenabled: math.Mod(i, 5) != 0\n\t\t}\n\t},\n]\n\ntotalReplicas: {\n\tfor s in services {\n\t\t\"\\(s.id)\": s.replicas\n\t}\n}\n\nsummary: {\n\tcount: len(services)\n\tbyRegion: {\n\t\tfor r in _regionsList {\n\t\t\t\"\\(r)\": len([for s in services if s.region == r {s}])\n\t\t}\n\t}\n}\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "cue export of a 42,000-service fleet from the same comprehension, sized to run 3-6s so the macOS sampler has enough wall time to profile."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples",
+        "tests"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "fzf CLI",
+  "target": {
+    "repository": "https://github.com/junegunn/fzf",
+    "build": {
+      "package": ".",
+      "binary": "fzf"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "filter-worker",
+        "name": "Non-interactive fuzzy filter over a large generated candidate list",
+        "tier": "representative",
+        "args": [
+          "--filter=worker"
+        ],
+        "stdin": "src/alpha/delta_config_000000.go\nsrc/beta/stream_filter_000001.py\nsrc/gamma/search_worker_000002.rs\nsrc/delta/alpha_shard_000003.js\nsrc/service/worker_buffer_000004.ts\nsrc/config/router_backup_000005.java\nsrc/handler/replica_socket_000006.rb\nsrc/worker/service_alpha_000007.c\nsrc/cache/socket_server_000008.cpp\nsrc/buffer/filter_gamma_000009.md\nsrc/stream/beta_queue_000010.go\nsrc/socket/cache_service_000011.py\nsrc/client/queue_search_000012.rs\nsrc/server/backup_handler_000013.js\nsrc/router/config_cluster_000014.ts\nsrc/queue/client_cache_000015.java\nsrc/index/cluster_replica_000016.rb\nsrc/search/gamma_stream_000017.c\nsrc/filter/buffer_restore_000018.cpp\nsrc/cluster/index_client_000019.md\nsrc/shard/restore_beta_000020.go\nsrc/replica/handler_router_000021.py\nsrc/backup/server_delta_000022.rs\nsrc/restore/shard_index_000023.js\nsrc/alpha/delta_config_000024.ts\nsrc/beta/stream_filter_000025.java\nsrc/gamma/search_worker_000026.rb\nsrc/delta/alpha_shard_000027.c\nsrc/service/worker_buffer_000028.cpp\nsrc/config/router_backup_000029.md\nsrc/handler/replica_socket_000030.go\nsrc/worker/service_alpha_000031.py\nsrc/cache/socket_server_000032.rs\nsrc/buffer/filter_gamma_000033.js\nsrc/stream/beta_queue_000034.ts\nsrc/socket/cache_service_000035.java\nsrc/client/queue_search_000036.rb\nsrc/server/backup_handler_000037.c\nsrc/router/config_cluster_000038.cpp\nsrc/queue/client_cache_000039.md\nsrc/index/cluster_replica_000040.go\nsrc/search/gamma_stream_000041.py\nsrc/filter/buffer_restore_000042.rs\nsrc/cluster/index_client_000043.js\nsrc/shard/restore_beta_000044.ts\nsrc/replica/handler_router_000045.java\nsrc/backup/server_delta_000046.rb\nsrc/restore/shard_index_000047.c\nsrc/alpha/delta_config_000048.cpp\nsrc/beta/stream_filter_000049.md\n",
+        "stdin_repeat": 4000,
+        "provenance": "manifest",
+        "description": "fzf --filter over 200,000 file-path-like candidates (a 50-line generated block repeated), matching the query against the fuzzy scorer and printing matches sorted by score with a stable index tiebreak; runs without a TTY since --filter always reads stdin non-interactively."
+      },
+      {
+        "id": "filter-exact-nth-delim",
+        "name": "Exact-match filter restricted to one delimited field, with an explicit tiebreak",
+        "tier": "representative",
+        "args": [
+          "--filter=alpha",
+          "--exact",
+          "--tiebreak=length,index",
+          "--delimiter=_",
+          "--nth=2"
+        ],
+        "stdin": "src/alpha/delta_config_000000.go\nsrc/beta/stream_filter_000001.py\nsrc/gamma/search_worker_000002.rs\nsrc/delta/alpha_shard_000003.js\nsrc/service/worker_buffer_000004.ts\nsrc/config/router_backup_000005.java\nsrc/handler/replica_socket_000006.rb\nsrc/worker/service_alpha_000007.c\nsrc/cache/socket_server_000008.cpp\nsrc/buffer/filter_gamma_000009.md\nsrc/stream/beta_queue_000010.go\nsrc/socket/cache_service_000011.py\nsrc/client/queue_search_000012.rs\nsrc/server/backup_handler_000013.js\nsrc/router/config_cluster_000014.ts\nsrc/queue/client_cache_000015.java\nsrc/index/cluster_replica_000016.rb\nsrc/search/gamma_stream_000017.c\nsrc/filter/buffer_restore_000018.cpp\nsrc/cluster/index_client_000019.md\nsrc/shard/restore_beta_000020.go\nsrc/replica/handler_router_000021.py\nsrc/backup/server_delta_000022.rs\nsrc/restore/shard_index_000023.js\nsrc/alpha/delta_config_000024.ts\nsrc/beta/stream_filter_000025.java\nsrc/gamma/search_worker_000026.rb\nsrc/delta/alpha_shard_000027.c\nsrc/service/worker_buffer_000028.cpp\nsrc/config/router_backup_000029.md\nsrc/handler/replica_socket_000030.go\nsrc/worker/service_alpha_000031.py\nsrc/cache/socket_server_000032.rs\nsrc/buffer/filter_gamma_000033.js\nsrc/stream/beta_queue_000034.ts\nsrc/socket/cache_service_000035.java\nsrc/client/queue_search_000036.rb\nsrc/server/backup_handler_000037.c\nsrc/router/config_cluster_000038.cpp\nsrc/queue/client_cache_000039.md\nsrc/index/cluster_replica_000040.go\nsrc/search/gamma_stream_000041.py\nsrc/filter/buffer_restore_000042.rs\nsrc/cluster/index_client_000043.js\nsrc/shard/restore_beta_000044.ts\nsrc/replica/handler_router_000045.java\nsrc/backup/server_delta_000046.rb\nsrc/restore/shard_index_000047.c\nsrc/alpha/delta_config_000048.cpp\nsrc/beta/stream_filter_000049.md\n",
+        "stdin_repeat": 4000,
+        "provenance": "manifest",
+        "description": "Same 200,000-candidate list filtered with --exact (substring matching instead of fuzzy) restricted to the second underscore-delimited field via --delimiter/--nth, with an explicit --tiebreak=length,index for deterministic, sort-stable output."
+      },
+      {
+        "id": "filter-worker-stress",
+        "name": "Fuzzy filter over a very large candidate list (macOS sampler stress seed)",
+        "tier": "stress",
+        "args": [
+          "--filter=worker"
+        ],
+        "stdin": "src/alpha/delta_config_000000.go\nsrc/beta/stream_filter_000001.py\nsrc/gamma/search_worker_000002.rs\nsrc/delta/alpha_shard_000003.js\nsrc/service/worker_buffer_000004.ts\nsrc/config/router_backup_000005.java\nsrc/handler/replica_socket_000006.rb\nsrc/worker/service_alpha_000007.c\nsrc/cache/socket_server_000008.cpp\nsrc/buffer/filter_gamma_000009.md\nsrc/stream/beta_queue_000010.go\nsrc/socket/cache_service_000011.py\nsrc/client/queue_search_000012.rs\nsrc/server/backup_handler_000013.js\nsrc/router/config_cluster_000014.ts\nsrc/queue/client_cache_000015.java\nsrc/index/cluster_replica_000016.rb\nsrc/search/gamma_stream_000017.c\nsrc/filter/buffer_restore_000018.cpp\nsrc/cluster/index_client_000019.md\nsrc/shard/restore_beta_000020.go\nsrc/replica/handler_router_000021.py\nsrc/backup/server_delta_000022.rs\nsrc/restore/shard_index_000023.js\nsrc/alpha/delta_config_000024.ts\nsrc/beta/stream_filter_000025.java\nsrc/gamma/search_worker_000026.rb\nsrc/delta/alpha_shard_000027.c\nsrc/service/worker_buffer_000028.cpp\nsrc/config/router_backup_000029.md\nsrc/handler/replica_socket_000030.go\nsrc/worker/service_alpha_000031.py\nsrc/cache/socket_server_000032.rs\nsrc/buffer/filter_gamma_000033.js\nsrc/stream/beta_queue_000034.ts\nsrc/socket/cache_service_000035.java\nsrc/client/queue_search_000036.rb\nsrc/server/backup_handler_000037.c\nsrc/router/config_cluster_000038.cpp\nsrc/queue/client_cache_000039.md\nsrc/index/cluster_replica_000040.go\nsrc/search/gamma_stream_000041.py\nsrc/filter/buffer_restore_000042.rs\nsrc/cluster/index_client_000043.js\nsrc/shard/restore_beta_000044.ts\nsrc/replica/handler_router_000045.java\nsrc/backup/server_delta_000046.rb\nsrc/restore/shard_index_000047.c\nsrc/alpha/delta_config_000048.cpp\nsrc/beta/stream_filter_000049.md\n",
+        "stdin_repeat": 220000,
+        "provenance": "manifest",
+        "description": "Same query as filter-worker over 11,000,000 candidates (the block repeated 220,000 times), sized to run 3-6s so the macOS sampler has enough wall time to profile."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples",
+        "tests"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}
