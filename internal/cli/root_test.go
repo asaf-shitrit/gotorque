@@ -175,3 +175,18 @@ func TestAttachResumeADKStubBuildsRolesWhenAbsent(t *testing.T) {
 
 	require.NoError(t, attachResumeADK(context.Background(), io.Discard, engine, f, nil, nil))
 }
+
+func TestVerifyReportsACampaignWithNothingAccepted(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"verify", writeCampaignDir(t, campaign.State{ID: "c", Status: campaign.StatusCompleted})})
+	err := cmd.Execute()
+	require.ErrorIs(t, err, campaign.ErrNothingAccepted)
+}
+
+func TestNullCandidatesRejectAgents(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"optimize", "--repo", t.TempDir(), "--manifest", "m.json", "--adk-stub", "--null-candidates", "3"})
+	require.ErrorContains(t, cmd.Execute(), "--null-candidates replaces the agents")
+}

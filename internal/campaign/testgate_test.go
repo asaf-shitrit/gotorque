@@ -367,3 +367,27 @@ func TestBaselineStepKeepsASuiteWithOneUnbuildablePackage(t *testing.T) {
 	writeBehaviorGate(&b, engine.State())
 	require.Contains(t, b.String(), "cannot build or set up on the unpatched revision")
 }
+
+// TestGateIgnoresPointerAddressesInTestNames pins the fix for hcl, whose
+// TestVariables names subtests after a %#v with pointers: the same subtest
+// passing under a new address is not a lost pass.
+func TestGateIgnoresPointerAddressesInTestNames(t *testing.T) {
+	baselineRun := `{"Action":"pass","Package":"p","Test":"TestVariables/&x.Expr{LHS:(*x.T)(0x7856190ebbc0)}"}
+`
+	candidateRun := `{"Action":"pass","Package":"p","Test":"TestVariables/&x.Expr{LHS:(*x.T)(0x14000abc120)}"}
+`
+	baseline, ok := parseTestFailures(baselineRun)
+	require.True(t, ok)
+	require.Equal(t, []string{"p::TestVariables/&x.Expr{LHS:(*x.T)(0x…)}"}, baseline.Passed)
+
+	engine := &Engine{state: State{BaselineTestPasses: baseline.Passed}}
+	reason, passed := engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(candidateRun)}, nil)
+	require.True(t, passed, reason)
+
+	persisted := &Engine{state: State{BaselineTestPasses: []string{"p::TestVariables/&x.Expr{LHS:(*x.T)(0x7856190ebbc0)}"}}}
+	reason, passed = persisted.classifyTestOutcome(toolchain.Result{Stdout: []byte(candidateRun)}, nil)
+	require.True(t, passed, "a baseline persisted with raw addresses still matches: %s", reason)
+
+	require.Empty(t, newTestFailures([]string{"p::T/(0xdeadbeef01)"}, []string{"p::T/(0x…)"}))
+	require.Equal(t, "p::T/0x12", stableTestName("p::T/0x12"), "short hex is not an address")
+}

@@ -34,6 +34,7 @@ func New(deps Dependencies) *cobra.Command {
 	root.AddCommand(newManifestCommand(deps.Stdout))
 	root.AddCommand(newOptimizeCommand(deps.Stdout))
 	root.AddCommand(newReportCommand(deps.Stdout))
+	root.AddCommand(newVerifyCommand(deps.Stdout))
 	root.AddCommand(newVersionCommand(deps.Stdout))
 	return root
 }
@@ -46,6 +47,7 @@ type optimizeFlags struct {
 	allow                                   []string
 	history                                 []string
 	freeChoice                              bool
+	nullCandidates                          int
 	tradeoff                                manifest.Tradeoff
 }
 
@@ -77,6 +79,7 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&f.reviewer, "reviewer", analystLLM, "reviewer backend: llm (the reviewer model role) or jev (TypeSafe Jev behaviour-hazard checks; needs "+jev.EnvAPIKey+" with --adk)")
 	cmd.Flags().StringVar(&f.tradeoffName, "tradeoff", "", "what the campaign may give up for its improvement: balanced (the manifest as written), speed (improve wall time; memory may regress 10%, CPU 5%) or lean (improve peak memory; wall and CPU time may regress 3%)")
 	cmd.Flags().BoolVar(&f.freeChoice, "free-choice", false, "with --analyst jev, keep going after every flagged target has been tried and let the optimizer choose its own site, instead of finishing")
+	cmd.Flags().IntVar(&f.nullCandidates, "null-candidates", 0, "evaluate this many code-generated candidates that change nothing (a comment line each) instead of running agents, to measure the harness's false-acceptance and false-rejection rates")
 	cmd.Flags().StringArrayVar(&f.history, "history", nil, "an earlier campaign directory of the same repository revision; targets its candidates measured count as already tried, so this campaign moves on to new ones (repeatable)")
 	cmd.Flags().StringArrayVar(&f.allow, "allow", nil, "largest regression one metric may show, as metric=percent (wall, cpu, memory, size, or a full metric name), e.g. --allow memory=5%; repeatable, and applied over --tradeoff")
 	return cmd
@@ -85,6 +88,9 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 func runOptimize(ctx context.Context, out io.Writer, f optimizeFlags) error {
 	if f.runADK && f.runADKStub {
 		return errors.New("--adk and --adk-stub are mutually exclusive")
+	}
+	if f.nullCandidates > 0 && (f.runADK || f.runADKStub) {
+		return errors.New("--null-candidates replaces the agents; it cannot be combined with --adk or --adk-stub")
 	}
 	if err := validateJevRoles(f); err != nil {
 		return err
@@ -312,7 +318,7 @@ func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, r
 	if f.repo == "" || f.manifestPath == "" {
 		return errors.New("--repo and --manifest are required unless --resume is used")
 	}
-	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig, Tradeoff: f.tradeoff, History: f.history, FreeChoice: f.freeChoice})
+	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig, Tradeoff: f.tradeoff, History: f.history, FreeChoice: f.freeChoice, NullCandidates: f.nullCandidates})
 	if err != nil {
 		return err
 	}
@@ -471,4 +477,44 @@ func newVersionCommand(out io.Writer) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
 	return cmd
+}
+
+func newVerifyCommand(out io.Writer) *cobra.Command {
+	var attempt, pairs int
+	cmd := &cobra.Command{
+		Use:   "verify CAMPAIGN_DIR",
+		Short: "Evaluate a campaign's accepted candidates again from their recorded patches",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVerify(cmd.Context(), out, args[0], attempt, pairs)
+		},
+	}
+	cmd.Flags().IntVar(&attempt, "attempt", 0, "verify only this attempt (default: every accepted attempt)")
+	cmd.Flags().IntVar(&pairs, "pairs", campaign.DefaultVerifyPairs, "interleaved A/B pairs per workload")
+	return cmd
+}
+
+func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs int) (err error) {
+	engine, err := campaign.Resume(dir, out)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, engine.Close()) }()
+	attempts := engine.AcceptedAttempts()
+	if attempt > 0 {
+		attempts = []int{attempt}
+	}
+	if len(attempts) == 0 {
+		return campaign.ErrNothingAccepted
+	}
+	for _, a := range attempts {
+		v, verr := engine.Verify(ctx, a, pairs)
+		if verr != nil {
+			return verr
+		}
+		if _, err := fmt.Fprintf(out, "attempt %d: %s on verification over %d pairs (originally %s); held: %t\n", v.Attempt, v.Decision, v.Pairs, v.Original, v.Confirmed()); err != nil {
+			return err
+		}
+	}
+	return nil
 }

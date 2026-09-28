@@ -115,3 +115,60 @@ func marshalVerbatim(v any) ([]byte, error) {
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
+
+// providerTransport asks OpenRouter to route every Responses API request to
+// its fastest providers first ({"provider":{"sort":"throughput"}}).
+//
+// OpenRouter serves one model id from many providers, and they are not alike:
+// on 2026-09-28 deepseek-v4.1-flash, the default role model, ran at a median
+// 8 tokens/s on the slowest provider and 193 on the fastest. An optimizer
+// answer is 10-20k tokens, two minutes on a fast provider and far past the
+// six-minute attempt budget on a slow one. Three optimizer calls overnight
+// ran out that budget on all three attempts while still producing output
+// (the idle timeout never fired), costing 18 minutes each; the routing
+// preference is the only lever that reaches which provider answers.
+//
+// Only requests to openrouter.ai are changed: OPENROUTER_BASE_URL can point
+// at another OpenAI-compatible endpoint, which may reject an unknown field. A
+// request that already names a provider preference keeps it.
+type providerTransport struct {
+	base http.RoundTripper
+}
+
+func (t providerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method != http.MethodPost || req.Body == nil || req.Body == http.NoBody || !strings.HasSuffix(req.URL.Path, "/responses") || !isOpenRouter(req.URL.Hostname()) {
+		return t.base.RoundTrip(req)
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read request body to set provider routing: %w", err)
+	}
+	body, err = withProviderSort(body)
+	if err != nil {
+		return nil, fmt.Errorf("set provider routing: %w", err)
+	}
+	out := req.Clone(req.Context())
+	out.Body = io.NopCloser(bytes.NewReader(body))
+	out.ContentLength = int64(len(body))
+	out.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	return t.base.RoundTrip(out)
+}
+
+func isOpenRouter(host string) bool {
+	return host == "openrouter.ai" || strings.HasSuffix(host, ".openrouter.ai")
+}
+
+// withProviderSort adds {"provider":{"sort":"throughput"}} unless the body
+// already carries a provider preference, keeping every other field's bytes.
+func withProviderSort(body []byte) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, err
+	}
+	if _, ok := fields["provider"]; ok {
+		return body, nil
+	}
+	fields["provider"] = json.RawMessage(`{"sort":"throughput"}`)
+	return marshalVerbatim(fields)
+}

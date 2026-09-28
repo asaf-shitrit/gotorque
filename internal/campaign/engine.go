@@ -164,6 +164,9 @@ type State struct {
 	HistoryTargets []agents.Target `json:"history_targets,omitempty"`
 	// FreeChoice is Options.FreeChoice, persisted so a resume keeps it.
 	FreeChoice bool `json:"free_choice,omitempty"`
+	// NullCandidates is Options.NullCandidates, persisted so a resume keeps
+	// counting toward it.
+	NullCandidates int `json:"null_candidates,omitempty"`
 	// HistoryCandidates maps a candidate ID those campaigns measured to where
 	// and how it was judged; rejectMeasuredDuplicate refuses to re-measure it.
 	HistoryCandidates map[string]string `json:"history_candidates,omitempty"`
@@ -176,6 +179,9 @@ type State struct {
 	HistoryAccepted []AcceptedFix `json:"history_accepted,omitempty"`
 
 	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
+	// Verifications are accepted candidates evaluated again from their
+	// recorded patches (gotorque verify).
+	Verifications []Verification `json:"verifications,omitempty"`
 	// ConsecutiveFailures mirrors the orchestrator's run of rejected or
 	// inconclusive candidates. The graph builds a fresh CampaignState every
 	// time it is entered, so without a persisted tally each resume would
@@ -220,6 +226,9 @@ type State struct {
 	// 0027's addendum). Absent when discovery never profiled (a
 	// benchmark-only or otherwise empty discovery).
 	DiscoveryHotFunctionWeights map[string]float64 `json:"discovery_hot_function_weights,omitempty"`
+	// DiscoveryUnbufferedWrites is the target sample's unbuffered-write
+	// evidence (ADR 0032), resolved to hot-list locations.
+	DiscoveryUnbufferedWrites []orchestrator.UnbufferedWrite `json:"discovery_unbuffered_writes,omitempty"`
 	// DiscoveryWorkloads names the option variants discovery sampled next to
 	// the first seed, with Jev's processing-mode judgment of each.
 	DiscoveryWorkloads          []string `json:"discovery_workloads,omitempty"`
@@ -303,6 +312,9 @@ type Options struct {
 	// target has been tried, letting the optimizer choose freely, instead of
 	// finishing (orchestrator.Config.StopWhenRankingExhausted).
 	FreeChoice bool
+	// NullCandidates, when positive, replaces the agent graph with that many
+	// code-generated candidates that change nothing (runNullCandidates).
+	NullCandidates int
 }
 
 type Engine struct {
@@ -328,6 +340,11 @@ type Engine struct {
 	// a constant so tests can drive the lane's bound without waiting minutes
 	// for it, the same reason fence.go keeps its retry ladder in fields.
 	pgoBuildTimeout time.Duration
+	// verifying and repetitions are set only while Verify re-evaluates a
+	// recorded candidate: the duplicate and accepted-fix refusals are off, and
+	// repetitions overrides the pair count.
+	verifying   bool
+	repetitions int
 }
 
 func Create(ctx context.Context, opts Options) (*Engine, error) {
@@ -450,6 +467,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 	state.HistoryTargets, state.HistoryCandidates, state.HistorySources, state.HistoryPriors = history.Targets, history.Candidates, history.Sources, history.Priors
 	state.HistoryAccepted = history.Accepted
 	state.FreeChoice = opts.FreeChoice
+	state.NullCandidates = opts.NullCandidates
 	e, err := compose(dir, store, state, opts.Progress, opts.Now)
 	if err != nil {
 		_ = store.Close()
@@ -782,7 +800,13 @@ func (e *Engine) runDiscoveryStep(ctx context.Context) error {
 
 func (e *Engine) finishCampaign(ctx context.Context) error {
 	stopReason := "baseline discovery complete; no model candidate requested"
-	if e.adkAgents != nil {
+	if e.state.NullCandidates > 0 {
+		reason, err := e.runNullCandidates(ctx)
+		if err != nil {
+			return err
+		}
+		stopReason = reason
+	} else if e.adkAgents != nil {
 		result, err := e.RunADK(ctx, *e.adkAgents, e.adkConfig)
 		if err != nil {
 			return err
@@ -994,8 +1018,63 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	names, weights := e.sampledHotNamesAndWeights(results...)
 	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", names)
 	e.state.DiscoveryHotFunctionWeights = mergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
+	e.state.DiscoveryUnbufferedWrites = e.unbufferedWrites(ctx, results)
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
+}
+
+// unbufferedWriteShare is the fraction of a function's sampled time that must
+// be unbuffered writes before code raises the target itself. Across every
+// campaign sample on record, the functions above it were exactly gron's
+// output loop, gojq's printValues and encoder flush, and fzf's Printer, each
+// at 0.95 or more; nothing else reached 0.3.
+const unbufferedWriteShare = 0.5
+
+// maxWriteCallers caps how many callers a write site's evidence keeps.
+const maxWriteCallers = 3
+
+// unbufferedWrites resolves the sample's unbuffered-write sites to hot-list
+// locations, keeping each function's largest share over the sampled
+// workloads. A site outside the hot list is dropped: the evidence ranks
+// targets and is not a reason to look at code discovery did not measure.
+func (e *Engine) unbufferedWrites(ctx context.Context, results []profile.SampleResult) []orchestrator.UnbufferedWrite {
+	best := map[string]profile.WriteSite{}
+	var order []string
+	for _, result := range results {
+		for _, site := range profile.UnbufferedWrites(result.Stacks, e.ownSymbol, unbufferedWriteShare) {
+			prior, seen := best[site.Function]
+			if !seen {
+				order = append(order, site.Function)
+			}
+			if !seen || site.Share > prior.Share {
+				best[site.Function] = site
+			}
+		}
+	}
+	var out []orchestrator.UnbufferedWrite
+	for _, name := range order {
+		if w, ok := e.writeEvidence(ctx, best[name]); ok {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func (e *Engine) writeEvidence(ctx context.Context, site profile.WriteSite) (orchestrator.UnbufferedWrite, bool) {
+	loc := e.hotLocation(ctx, "", site.Function)
+	if !slices.Contains(e.state.DiscoveryHotFunctions, loc) {
+		return orchestrator.UnbufferedWrite{}, false
+	}
+	w := orchestrator.UnbufferedWrite{Location: loc, Share: site.Share}
+	for _, caller := range site.Callers {
+		if len(w.Callers) == maxWriteCallers {
+			break
+		}
+		if c := e.hotLocation(ctx, "", caller); c != caller && c != loc && !slices.Contains(w.Callers, c) {
+			w.Callers = append(w.Callers, c)
+		}
+	}
+	return w, true
 }
 
 // sampleFirstLiving samples the first seed, and when that fails, each
@@ -1467,6 +1546,10 @@ func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, nam
 }
 
 func (e *Engine) hotLocation(ctx context.Context, cpuProfile, name string) string {
+	// pprof's top listing marks inlined frames "name (inline)", a display
+	// suffix no symbol or declaration carries: chroma's lexers.Get stayed a
+	// bare name on every campaign because of it.
+	name = strings.TrimSuffix(name, " (inline)")
 	if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
 		return loc
 	}
@@ -1480,7 +1563,10 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 	if cpuProfile == "" {
 		return "", false
 	}
-	result, err := e.toolchain.PprofList(ctx, name, cpuProfile)
+	// -list takes a regular expression. Unquoted, a method name such as
+	// pkg.(*Function).CallInternal fails to parse, and unanchored, any name
+	// matches every symbol containing it.
+	result, err := e.toolchain.PprofList(ctx, "^"+regexp.QuoteMeta(name)+"$", cpuProfile)
 	if err != nil {
 		return "", false
 	}
@@ -1489,7 +1575,10 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 		return "", false
 	}
 	path, ok = e.repoRelative(path)
-	if !ok {
+	// A benchmark profile runs test helpers too (scc's filereader_test.go
+	// reached the hot list), and a patch may not edit a test file, so the
+	// location says nothing a candidate could act on.
+	if !ok || strings.HasSuffix(path, "_test.go") {
 		return "", false
 	}
 	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
@@ -1544,52 +1633,40 @@ func (e *Engine) hotLocationFromRepo(name string) (string, bool) {
 	if strings.Contains(name, ":") {
 		return "", false
 	}
-	// Sampler output uses runtime-style names (main.main,
-	// pkg.(*T).method) whose last segment is the source symbol.
-	for _, candidate := range functionNameCandidates(name) {
-		if path, line, ok := profile.FindFunctionInRepo(e.state.Repository, candidate); ok {
-			return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
-		}
+	sym := profile.ParseSymbol(enclosingFunction(name))
+	path, line, ok := e.findMainDeclaration(sym)
+	if !ok {
+		path, line, ok = profile.FindDeclaration(e.state.Repository, sym)
 	}
-	return "", false
+	if !ok {
+		return "", false
+	}
+	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
 }
 
-// functionNameCandidates lists the identifiers worth searching for in the
-// repository, most specific first. Profile frames name closures and methods in
-// forms no `func` declaration ever uses: pkg.outer.func1 for a closure (and
-// .func1.2 when nested), pkg.(*T).method for a method. Searching those
-// verbatim never matches, which is why a measured module symbol such as
-// cli.newJSONInputIter.func1 used to resolve to no source location at all.
-func functionNameCandidates(name string) []string {
-	candidates := []string{name}
-	add := func(candidate string) {
-		if candidate == "" {
-			return
-		}
-		for _, existing := range candidates {
-			if existing == candidate {
-				return
-			}
-		}
-		candidates = append(candidates, candidate)
+// findMainDeclaration resolves a main.* frame in the target's own main
+// package. A repository with several commands declares the same names in
+// each, and a repository-wide search refuses them as ambiguous.
+func (e *Engine) findMainDeclaration(sym profile.Symbol) (string, int, bool) {
+	build := e.state.Manifest.Target.Build
+	if sym.Package != "main" || !strings.HasPrefix(build.Package, ".") {
+		return "", 0, false
 	}
+	dir := filepath.Join(e.state.Repository, build.Directory, build.Package)
+	return profile.FindDeclarationInDir(e.state.Repository, dir, sym)
+}
 
-	// Strip closure suffixes until an enclosing declaration name remains.
-	enclosing := name
+// enclosingFunction strips closure suffixes until the declared function
+// remains. Profile frames name closures in forms no `func` declaration uses:
+// pkg.outer.func1 for a closure, pkg.outer.func1.2 when nested.
+func enclosingFunction(name string) string {
 	for {
-		trimmed, ok := trimClosureSuffix(enclosing)
+		trimmed, ok := trimClosureSuffix(name)
 		if !ok {
-			break
+			return name
 		}
-		enclosing = trimmed
-		add(enclosing)
+		name = trimmed
 	}
-
-	// The declared identifier is the final segment, with any method receiver
-	// removed: pkg.(*T).method declares "func (t *T) method(".
-	add(lastSegment(enclosing))
-	add(lastSegment(name))
-	return candidates
 }
 
 func isTestEntryPoint(segment string) bool {

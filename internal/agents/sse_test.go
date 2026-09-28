@@ -3,6 +3,7 @@ package agents
 import (
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -189,4 +190,18 @@ func TestEventStreamReaderCloseClosesTheBody(t *testing.T) {
 	require.NoError(t, newEventStreamReader(pr).Close())
 	_, err := pw.Write([]byte("x"))
 	require.ErrorIs(t, err, io.ErrClosedPipe)
+}
+
+// A runaway answer's error says where the budget went and how the visible
+// text ended, keeping only its tail.
+func TestIncompleteErrorReportsTokensAndTheOutputTail(t *testing.T) {
+	loop := strings.Repeat("w.WriteString(s)\n", 40)
+	event := `data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},` +
+		`"usage":{"output_tokens":32768,"output_tokens_details":{"reasoning_tokens":30000}},` +
+		`"output":[{"type":"reasoning","content":[]},{"type":"message","content":[{"type":"output_text","text":` + strconv.Quote("{\"patch\": \"\"}\n"+loop) + `}]}]}}` + "\n\n"
+	_, err := readFiltered(t, strings.NewReader(sseCreated+event))
+	require.ErrorIs(t, err, ErrStreamIncomplete)
+	require.ErrorContains(t, err, "reason: max_output_tokens; 32768 output tokens, 30000 of them reasoning; visible output ends \"…")
+	require.ErrorContains(t, err, `w.WriteString(s)")`)
+	require.NotContains(t, err.Error(), "patch", "only the tail is kept")
 }
