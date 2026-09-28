@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // ErrStreamIncomplete reports a model stream that ended without the endpoint
@@ -150,12 +151,8 @@ func (r *eventStreamReader) dispatch(blank []byte) {
 // the endpoint gave, instead of waiting for the connection to close.
 func (r *eventStreamReader) classify() {
 	var event struct {
-		Type     string `json:"type"`
-		Response struct {
-			IncompleteDetails struct {
-				Reason string `json:"reason"`
-			} `json:"incomplete_details"`
-		} `json:"response"`
+		Type     string             `json:"type"`
+		Response incompleteResponse `json:"response"`
 	}
 	kind := r.name
 	if json.Unmarshal(r.data, &event) == nil && event.Type != "" {
@@ -166,7 +163,7 @@ func (r *eventStreamReader) classify() {
 		r.terminal = true
 	case "response.incomplete":
 		r.terminal = true
-		r.fail(incompleteError(event.Response.IncompleteDetails.Reason))
+		r.fail(incompleteError(event.Response))
 	}
 }
 
@@ -185,9 +182,58 @@ func (r *eventStreamReader) fail(err error) {
 	}
 }
 
-func incompleteError(reason string) error {
+// incompleteResponse is what response.incomplete says about the answer it
+// cut: why, how many tokens went to reasoning and to visible output, and the
+// output itself.
+type incompleteResponse struct {
+	IncompleteDetails struct {
+		Reason string `json:"reason"`
+	} `json:"incomplete_details"`
+	Usage struct {
+		OutputTokens        int `json:"output_tokens"`
+		OutputTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
+	} `json:"usage"`
+	Output []struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"output"`
+}
+
+// incompleteTail is how much of a cut answer's visible text the error keeps.
+const incompleteTail = 240
+
+// incompleteError names the reason and, when the endpoint reported them, the
+// token split and the end of the visible text. Optimizer answers cut at
+// max_output_tokens cost 19 calls across eight campaigns, three of them
+// failing every retry, and the bare reason could not say whether the budget
+// went to reasoning or to output that repeats itself.
+func incompleteError(resp incompleteResponse) error {
+	reason := resp.IncompleteDetails.Reason
 	if reason == "" {
 		reason = "not given"
 	}
-	return fmt.Errorf("%w: the endpoint sent response.incomplete (reason: %s)", ErrStreamIncomplete, reason)
+	detail := ""
+	if u := resp.Usage; u.OutputTokens > 0 {
+		detail = fmt.Sprintf("; %d output tokens, %d of them reasoning", u.OutputTokens, u.OutputTokensDetails.ReasoningTokens)
+	}
+	if text := strings.TrimSpace(visibleText(resp)); text != "" {
+		if len(text) > incompleteTail {
+			text = "…" + text[len(text)-incompleteTail:]
+		}
+		detail += fmt.Sprintf("; visible output ends %q", text)
+	}
+	return fmt.Errorf("%w: the endpoint sent response.incomplete (reason: %s%s)", ErrStreamIncomplete, reason, detail)
+}
+
+func visibleText(resp incompleteResponse) string {
+	var b strings.Builder
+	for _, item := range resp.Output {
+		for _, c := range item.Content {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
 }
