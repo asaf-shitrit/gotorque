@@ -58,6 +58,8 @@
         "tier": {"enum": ["representative", "plausible", "stress"]},
         "args": {"type": "array", "items": {"type": "string"}},
         "stdin": {"type": "string"},
+        "stdin_header": {"type": "string"},
+        "stdin_repeat": {"type": "integer", "minimum": 1},
         "files": {"type": "array", "items": {"$ref": "#/$defs/file"}},
         "provenance": {"type": "string", "minLength": 1},
         "description": {"type": "string"},
@@ -70,7 +72,9 @@
       "required": ["path", "content"],
       "properties": {
         "path": {"type": "string", "minLength": 1},
-        "content": {"type": "string"}
+        "content": {"type": "string"},
+        "header": {"type": "string"},
+        "repeat": {"type": "integer", "minimum": 1}
       }
     },
     "discovery": {

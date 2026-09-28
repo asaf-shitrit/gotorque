@@ -651,10 +651,7 @@ func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orches
 // by; comparisons and reports name the workload by the seed id instead, so
 // callers no longer need it back.
 func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, binaryPath string) runner.RunRequest {
-	fixtures := make(map[string][]byte, len(seed.Files))
-	for _, f := range seed.Files {
-		fixtures[f.Path] = []byte(f.Content)
-	}
+	fixtures := seed.Fixtures()
 	args := append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...)
 	timeout := seed.Timeout.Duration()
 	if timeout == 0 {
@@ -665,7 +662,7 @@ func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, bin
 		Build:         runner.Build{ID: buildID, BinaryPath: binaryPath},
 		Workload:      domain.Workload{ID: wid, Name: seed.Name, Seed: seed.ID, Tier: seed.Tier, Command: domain.Command{Path: binaryPath, Args: args}, Timeout: timeout},
 		Mode:          domain.RunModeMeasurement,
-		Stdin:         []byte(seed.Stdin),
+		Stdin:         seed.StdinBytes(),
 		Fixtures:      fixtures,
 		AdditionalEnv: map[string]string{"GOTOOLCHAIN": "local"},
 		// Network and filesystem access are governed by the manifest's

@@ -84,6 +84,16 @@ optional deterministic `stdin`, optional fixture `files`, an optional
 inside the temporary sandbox. `target.command` is a fixed prefix or
 subcommand; it is empty for a root CLI.
 
+A large input can be described compactly instead of inlined: `stdin_repeat`
+writes `stdin` that many times, after `stdin_header` written once, and a
+fixture file's `repeat` and `header` do the same for its `content`. A
+workload needs 30-300 ms of work to rise above process startup, and inlining
+that much CSV or FASTA made manifests of 2-10 MB; a header plus a generated
+block of rows repeated keeps them to kilobytes. Omitted or 1 means once.
+Repeated rows are identical, so a workload that deduplicates, groups by a
+key or sorts should be built from blocks where that is what you want
+measured.
+
 `target.build.directory` is optional and repository-relative (no `..`, no
 absolute paths). It names a nested Go module the CLI lives in, for a target
 that keeps `cmd/<name>` as its own module with a `replace ../../` back to the
