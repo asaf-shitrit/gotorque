@@ -269,6 +269,13 @@ func writeInventory(b *strings.Builder, state State) {
 // and the report must not imply otherwise.
 func writeBehaviorGate(b *strings.Builder, state State) {
 	defer writeUnbuildable(b, state.BaselineUnbuildable)
+	if len(state.BaselineTestFailures) == 0 && len(state.BaselineTestPasses) == 0 && state.CompletedSteps[baselinePassesStep] {
+		// jj and mdtohtml have no tests of their own. "The suite passes" is
+		// true of an empty suite and says nothing, so the report names what
+		// actually guards behavior there.
+		b.WriteString("\n## Behavior gate\n\n**The target has no tests of its own.** Nothing but the seed workloads' outputs guards behavior: a candidate that changes output only on inputs the workloads never give it cannot be caught here.\n")
+		return
+	}
 	if len(state.BaselineTestFailures) == 0 {
 		b.WriteString("\n## Behavior gate\n\nThe upstream test suite passes on the unpatched revision, so every candidate's full suite must pass.\n")
 		return
