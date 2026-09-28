@@ -235,7 +235,13 @@ produced here or in policy.
    recorded patch through the same evaluation and policy, with 60 pairs per
    workload by default instead of 25 and with the duplicate and accepted-fix
    refusals off, and records whether the acceptance held. It automates the
-   re-measurement that exposed overnight-miller-1's false acceptance. An A/A check on csvtk (the same binary on both
+   re-measurement that exposed overnight-miller-1's false acceptance. `--null-candidates N` measures the other
+   side: instead of running agents, the campaign evaluates N code-generated
+   candidates that each add one comment line after a build-package file's
+   package clause (`runNullCandidates`). The code is identical and only line
+   numbers move, so a sound harness accepts none of them and rejects almost
+   none; the run's verdicts are its false-acceptance and false-rejection
+   rates. An A/A check on csvtk (the same binary on both
    sides, fifty pairs, baseline first) found no order bias, but the same check
    on miller's filter-value-threshold found the second run of each pair 2.66%
    slower in 41 of 60 pairs with byte-identical binaries, enough to reject

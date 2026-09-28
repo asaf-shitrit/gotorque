@@ -424,30 +424,7 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	// the engine, this function and the policy all had to agree on.
 	result := s.engine.policyVerdict(input.Evidence)
 	// Persist the full verdict so reports can explain every decision.
-	record := CandidateRecord{
-		Attempt:          len(s.engine.state.CandidateRecords) + 1,
-		CandidateID:      input.Evidence.Candidate.ID,
-		Hypothesis:       input.Evidence.Candidate.Hypothesis,
-		Target:           input.Target,
-		ReviewConcerns:   input.Review.Concerns,
-		PatchPath:        input.Evidence.Candidate.PatchPath,
-		Transport:        input.Evidence.Candidate.Transport,
-		Summary:          input.Evidence.Summary,
-		Decision:         result.Decision,
-		Reasons:          result.Reasons,
-		Comparisons:      result.Comparisons,
-		BenchstatOutput:  input.Evidence.BenchstatOutput,
-		Samples:          input.Evidence.RepSamples,
-		PgoComparisons:   input.Evidence.PgoComparisons,
-		PgoNote:          input.Evidence.PgoNote,
-		ProposalRepair:   string(input.Evidence.ProposalRepair),
-		FailureDetail:    input.Evidence.FailureDetail,
-		LoadAverages:     input.Evidence.LoadAverages,
-		LoadContended:    input.Evidence.LoadContended,
-		QuietWait:        input.Evidence.QuietWait,
-		QuietWaitExpired: input.Evidence.QuietWaitExpired,
-		DiscardedLoad:    input.Evidence.DiscardedLoad,
-	}
+	record := candidateRecord(len(s.engine.state.CandidateRecords)+1, input.Evidence, input.Target, input.Review, result)
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	// Persist immediately: an ADK failure later in the run must not lose
 	// already-evaluated verdicts from bbolt.
@@ -457,4 +434,32 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	// Snapshot it per verdict rather than only at completion.
 	s.engine.snapshotReports()
 	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: result.Comparisons, Reasons: result.Reasons}, nil
+}
+
+// candidateRecord is the persisted verdict for one candidate.
+func candidateRecord(attempt int, evidence orchestrator.CandidateEvidence, target *agents.Target, review agents.ReviewerResult, result policy.Result) CandidateRecord {
+	return CandidateRecord{
+		Attempt:          attempt,
+		CandidateID:      evidence.Candidate.ID,
+		Hypothesis:       evidence.Candidate.Hypothesis,
+		Target:           target,
+		ReviewConcerns:   review.Concerns,
+		PatchPath:        evidence.Candidate.PatchPath,
+		Transport:        evidence.Candidate.Transport,
+		Summary:          evidence.Summary,
+		Decision:         result.Decision,
+		Reasons:          result.Reasons,
+		Comparisons:      result.Comparisons,
+		BenchstatOutput:  evidence.BenchstatOutput,
+		Samples:          evidence.RepSamples,
+		PgoComparisons:   evidence.PgoComparisons,
+		PgoNote:          evidence.PgoNote,
+		ProposalRepair:   string(evidence.ProposalRepair),
+		FailureDetail:    evidence.FailureDetail,
+		LoadAverages:     evidence.LoadAverages,
+		LoadContended:    evidence.LoadContended,
+		QuietWait:        evidence.QuietWait,
+		QuietWaitExpired: evidence.QuietWaitExpired,
+		DiscardedLoad:    evidence.DiscardedLoad,
+	}
 }
