@@ -337,18 +337,45 @@ func (e *Engine) onlyVanished(outcome testOutcome) bool {
 	return len(lost) > 0
 }
 
-// splitStable divides the required tests into those the fresh run passed
-// and those it did not.
+// splitStable divides the required tests into those still required and
+// those that are not. A subtest missing from the fresh run marks its whole
+// top-level test's subtree as generated anew on every run: cue's
+// TestSortRandom draws fresh permutations per run, so after the first
+// re-check dropped 2452 of its subtests the next candidate still missed
+// TestSortRandom/12/2, one neither baseline run had lost. Every subtest
+// under such a test stops being required; the top-level test itself stays
+// required whenever the fresh run passed it, and it fails if any of its
+// subtests fails, so a failure still rejects.
 func splitStable(required, fresh []string) (stable, unstable []string) {
 	passed := stringSet(fresh)
+	randomized := map[string]bool{}
 	for _, name := range required {
-		if passed[name] {
+		if !passed[name] {
+			if top, sub := topLevelTest(name); sub {
+				randomized[top] = true
+			}
+		}
+	}
+	for _, name := range required {
+		top, sub := topLevelTest(name)
+		if passed[name] && (!sub || !randomized[top]) {
 			stable = append(stable, name)
 		} else {
 			unstable = append(unstable, name)
 		}
 	}
 	return stable, unstable
+}
+
+// topLevelTest returns the `package::Test` a required name belongs to, and
+// whether the name is a subtest of it.
+func topLevelTest(name string) (string, bool) {
+	pkg, test, ok := strings.Cut(name, "::")
+	if !ok {
+		return name, false
+	}
+	top, _, sub := strings.Cut(test, "/")
+	return pkg + "::" + top, sub
 }
 
 func (e *Engine) newFailureReason(failures []string) string {

@@ -403,3 +403,21 @@ func TestBehaviorGateStopsRequiringSubtestsTheBaselineDoesNotRepeat(t *testing.T
 	require.False(t, engine.candidateTestsPassed(context.Background(), repo, &evidence))
 	require.Contains(t, evidence.FailureDetail, "TestRandom/case9 (did not run)")
 }
+
+// TestSplitStableDropsTheSubtreeOfARandomizedTest: one vanished subtest marks
+// its top-level test's whole subtree as regenerated per run, while the
+// top-level test and every other test stay required.
+func TestSplitStableDropsTheSubtreeOfARandomizedTest(t *testing.T) {
+	required := []string{
+		"p::TestSortRandom", "p::TestSortRandom/0", "p::TestSortRandom/0/2", "p::TestSortRandom/12/2",
+		"p::TestTable", "p::TestTable/row", "q::TestOther",
+	}
+	fresh := []string{"p::TestSortRandom", "p::TestSortRandom/0", "p::TestSortRandom/12/2", "p::TestTable", "p::TestTable/row", "q::TestOther"}
+	stable, unstable := splitStable(required, fresh)
+	require.Equal(t, []string{"p::TestSortRandom", "p::TestTable", "p::TestTable/row", "q::TestOther"}, stable)
+	require.Equal(t, []string{"p::TestSortRandom/0", "p::TestSortRandom/0/2", "p::TestSortRandom/12/2"}, unstable)
+
+	stable, unstable = splitStable([]string{"p::TestGone", "p::TestKept"}, []string{"p::TestKept"})
+	require.Equal(t, []string{"p::TestKept"}, stable, "a vanished top-level test marks nothing else")
+	require.Equal(t, []string{"p::TestGone"}, unstable)
+}

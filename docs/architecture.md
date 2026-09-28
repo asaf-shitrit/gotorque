@@ -211,7 +211,12 @@ produced here or in policy.
    candidate's only fault is baseline passes that did not run,
    `pruneUnstablePasses` re-runs the unpatched suite with `-count=1` (the
    test cache would replay the first run) and stops requiring every test
-   that run does not pass either, then judges the candidate again. The re-run
+   that run does not pass either, then judges the candidate again. A
+   subtest missing from that run marks its top-level test's whole subtree
+   as regenerated per run, so none of its subtests stay required; the
+   top-level test does, and it fails whenever a subtest fails. Dropping only
+   the names that vanished never converged on cue: 2452 were dropped and the
+   next candidate still missed another permutation subtest. The re-run
    is of the base revision, so a patch cannot decide what counts as
    unstable, and a test that passes again stays required. A campaign spends at
    most two such re-runs (`maxBaselineRechecks`). The baseline suite, like
