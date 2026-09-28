@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -162,9 +164,17 @@ const baselinePassesStep = "baseline_test_passes"
 // caused. One suite run up front costs seconds and turns that environment
 // drift into a recorded set the gate can subtract.
 //
-// A run that never reached a test — build or setup failure — is refused
-// outright: subtracting it would leave a campaign accepting patches with the
-// behavior gate effectively switched off.
+// A run in which no test passed at all — every package failed to build or
+// set up — is refused outright: subtracting it would leave a campaign
+// accepting patches with the behavior gate effectively switched off. A run in
+// which some packages' tests could not build while others ran is kept, and
+// those packages are recorded as BaselineUnbuildable and subtracted from each
+// candidate's setup failures the way predating test failures are: their tests
+// never ran on the unpatched revision, so they cannot speak for or against a
+// patch. miller was refused whole before this for C benchmark sources under
+// scripts/perf and two example commands, while hundreds of its tests ran.
+// The target's own package cannot hide here: the baseline build that runs
+// before this step fails first.
 //
 // A campaign persisted before passes were recorded has "baseline_tests" set
 // and no pass set, and the step runs again for it rather than letting the gate
@@ -184,6 +194,7 @@ func (e *Engine) runBaselineTestStep(ctx context.Context) error {
 	}
 	e.state.BaselineTestFailures = outcome.Tests
 	e.state.BaselineTestPasses = outcome.Passed
+	e.state.BaselineUnbuildable = outcome.Packages
 	e.state.CompletedSteps["baseline_tests"] = true
 	e.state.CompletedSteps[baselinePassesStep] = true
 	return e.saveEvent("baseline_tests_completed", baselineTestMessage(outcome), map[string]any{"failures": outcome.Tests, "passes": len(outcome.Passed)})
@@ -191,8 +202,18 @@ func (e *Engine) runBaselineTestStep(ctx context.Context) error {
 
 // runBaselineSuite runs the suite on the unpatched revision and refuses an
 // outcome the gate could not attribute a candidate against.
+//
+// The suite runs in a disposable worktree at the base revision, the way every
+// candidate's does, never in the canonical checkout: miller's tests rewrite
+// tracked fixtures under test/input, and one run left seven of them truncated
+// in the checkout the function_source transport reads its base from.
 func (e *Engine) runBaselineSuite(ctx context.Context) (testOutcome, error) {
-	result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
+	dir, cleanup, err := e.baselineWorktree(ctx)
+	if err != nil {
+		return testOutcome{}, err
+	}
+	defer cleanup()
+	result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: dir, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
 	// A failing suite is a non-zero exit, which the toolchain reports as an
 	// error alongside the result. The exit status is therefore not the signal
 	// here: the parsed JSON is, and it is only unavailable when the go command
@@ -204,10 +225,10 @@ func (e *Engine) runBaselineSuite(ctx context.Context) (testOutcome, error) {
 		}
 		return testOutcome{}, fmt.Errorf("baseline test suite output carried no test events: %s", tail(string(result.Stderr), 400))
 	}
-	if len(outcome.Packages) > 0 {
+	if len(outcome.Packages) > 0 && len(outcome.Passed) == 0 {
 		return testOutcome{}, fmt.Errorf("baseline test suite cannot run against the unpatched revision, so no candidate could be attributed: %s", describeTestFailures(outcome.Packages))
 	}
-	if result.ExitCode != 0 && len(outcome.Tests) == 0 {
+	if result.ExitCode != 0 && len(outcome.Tests) == 0 && len(outcome.Packages) == 0 {
 		return testOutcome{}, fmt.Errorf("baseline test suite fails on the unpatched revision without naming a failing test: %s", tail(string(result.Stderr), 400))
 	}
 	return outcome, nil
@@ -217,6 +238,9 @@ func baselineTestMessage(outcome testOutcome) string {
 	message := fmt.Sprintf("upstream test suite passes on the unpatched revision; %d passing test(s) must pass for every candidate", len(outcome.Passed))
 	if len(outcome.Tests) > 0 {
 		message = fmt.Sprintf("%d upstream test failure(s) predate every patch and are excluded from the behavior gate: %s; %d passing test(s) must pass for every candidate", len(outcome.Tests), describeTestFailures(outcome.Tests), len(outcome.Passed))
+	}
+	if len(outcome.Packages) > 0 {
+		message += fmt.Sprintf("; %d package(s) whose tests cannot build on the unpatched revision are excluded: %s", len(outcome.Packages), describeTestFailures(outcome.Packages))
 	}
 	return message
 }
@@ -240,8 +264,8 @@ func (e *Engine) classifyTestOutcome(result toolchain.Result, testErr error) (re
 		}
 		return "test run failed without parseable output: " + tail(string(result.Stderr), 400), false
 	}
-	if len(outcome.Packages) > 0 {
-		return "test build or setup failed in: " + describeTestFailures(outcome.Packages), false
+	if broken := newTestFailures(e.state.BaselineUnbuildable, outcome.Packages); len(broken) > 0 {
+		return "test build or setup failed in: " + describeTestFailures(broken), false
 	}
 	if reason := e.newFailureReason(outcome.Tests); reason != "" {
 		return reason, false
@@ -290,4 +314,23 @@ func stringSet(values []string) map[string]bool {
 		set[value] = true
 	}
 	return set
+}
+
+// baselineWorktree checks out the campaign's base revision in a fresh
+// worktree under the campaign directory and returns it with its cleanup. A
+// worktree left behind by an interrupted run is removed first.
+func (e *Engine) baselineWorktree(ctx context.Context) (string, func(), error) {
+	dir := filepath.Join(e.dir, "worktrees", "baseline-tests")
+	_, _ = e.toolchain.RemoveWorktree(ctx, e.state.Repository, dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return "", nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return "", nil, err
+	}
+	if _, err := e.toolchain.CreateWorktree(ctx, e.state.Repository, dir, e.state.Environment.Revision); err != nil {
+		return "", nil, fmt.Errorf("create baseline test worktree: %w", err)
+	}
+	cleanup := func() { _, _ = e.toolchain.RemoveWorktree(context.WithoutCancel(ctx), e.state.Repository, dir) }
+	return dir, cleanup, nil
 }

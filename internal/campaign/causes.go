@@ -100,6 +100,9 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	result := analystResult(verdicts, req.Campaign.Objective)
 	result.AdditionalChecks = append(result.AdditionalChecks, skipped...)
 	addThrowawayTargets(req.Campaign.Repository, sites, req.Discovery.HotFunctionWeights, &result)
+	for i := range result.Targets {
+		result.Targets[i].Context = targetSignatures(req.Campaign.Repository, result.Targets[i])
+	}
 	return result, nil
 }
 

@@ -349,7 +349,11 @@ func (t *Toolchain) GoList(ctx context.Context, repository string) (Result, erro
 	if err := requireDirectory(repository); err != nil {
 		return Result{}, err
 	}
-	return t.run(ctx, t.goPath, []string{"list", "-mod=readonly", "-json", "./..."}, repository, []string{"GOTOOLCHAIN=local"}, nil)
+	// -e reports a package that fails to load (miller keeps C benchmark
+	// sources under scripts/perf, which cannot build without cgo) in that
+	// package's Error field instead of failing the whole listing. A
+	// module-level problem still exits non-zero.
+	return t.run(ctx, t.goPath, []string{"list", "-e", "-mod=readonly", "-json", "./..."}, repository, []string{"GOTOOLCHAIN=local"}, nil)
 }
 
 func (t *Toolchain) CreateWorktree(ctx context.Context, repository, path, revision string) (Result, error) {

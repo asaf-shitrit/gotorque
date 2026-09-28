@@ -172,6 +172,11 @@ type Target struct {
 	// callee's consuming callers, ranked, which the patch may change alongside
 	// Function.
 	Callers []FunctionRef `json:"callers,omitempty"`
+	// Context is the declarations, from the target's own package, of the
+	// functions, methods and types Function refers to, plus its receiver's
+	// type (signatures without bodies), so the optimizer does not have to
+	// guess the types around the code it rewrites.
+	Context []string `json:"context,omitempty"`
 }
 
 // TargetKind names how much of the code a target lets a patch change.
