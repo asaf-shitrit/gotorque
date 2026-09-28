@@ -10,6 +10,7 @@ import (
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/manifest"
 	"example.com/gotorque/internal/profile"
+	"example.com/gotorque/internal/toolchain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -151,4 +152,31 @@ func TestSamplingFallsBackToALongerStressSeed(t *testing.T) {
 	_, _, err = e.sampleFirstLiving(context.Background())
 	require.ErrorContains(t, err, "quick: ", "with no stress seed the first seed's failure is reported")
 	require.NotContains(t, err.Error(), "medium", "only stress seeds are tried after the first")
+}
+
+// TestResolveHotLocationsSkipsTestFilesInTheProfile profiles a benchmark
+// that spends its time in a helper declared in a _test.go file, as scc's
+// filereader_test.go did. The helper stays a bare name, since no patch may
+// edit a test file; the library function resolves to its line through
+// pprof -list.
+func TestResolveHotLocationsSkipsTestFilesInTheProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and profiles a benchmark")
+	}
+	repo := t.TempDir()
+	for rel, src := range map[string]string{
+		"go.mod":      "module example.com/hot\n\ngo 1.22\n",
+		"lib.go":      "package hot\n\nfunc Work(n int) int {\n\ts := 0\n\tfor i := range n {\n\t\ts += i * i % 7\n\t}\n\treturn s\n}\n",
+		"lib_test.go": "package hot\n\nimport \"testing\"\n\nfunc helper(n int) int {\n\ts := 0\n\tfor i := range n {\n\t\ts ^= i * 31 % 11\n\t}\n\treturn s\n}\n\nvar sink int\n\nfunc BenchmarkHot(b *testing.B) {\n\tfor range b.N {\n\t\tsink += Work(3e7) + helper(3e7)\n\t}\n}\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(repo, rel), []byte(src), 0o600))
+	}
+	prof := filepath.Join(t.TempDir(), "cpu.pb.gz")
+	tc := toolchain.New(toolchain.Options{})
+	_, err := tc.Test(context.Background(), toolchain.TestRequest{Repository: repo, Bench: "Hot", Count: 1, Cpuprofile: prof, Output: filepath.Join(t.TempDir(), "hot.test"), Env: []string{"GOFLAGS=-benchtime=3x"}})
+	require.NoError(t, err)
+	e := &Engine{toolchain: tc}
+	e.state.Repository = repo
+	got := e.resolveHotLocations(context.Background(), prof, []string{"example.com/hot.Work", "example.com/hot.helper (inline)"})
+	require.Equal(t, []string{"lib.go:3", "example.com/hot.helper"}, got)
 }

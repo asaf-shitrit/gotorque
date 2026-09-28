@@ -1489,7 +1489,10 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 		return "", false
 	}
 	path, ok = e.repoRelative(path)
-	if !ok {
+	// A benchmark profile runs test helpers too (scc's filereader_test.go
+	// reached the hot list), and a patch may not edit a test file, so the
+	// location says nothing a candidate could act on.
+	if !ok || strings.HasSuffix(path, "_test.go") {
 		return "", false
 	}
 	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
