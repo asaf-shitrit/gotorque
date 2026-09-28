@@ -190,7 +190,8 @@ Package map:
   `e.state.Repository` at the campaign's base revision, so a code path that
   reaches it before that checkout exists, or after something has dirtied it,
   builds a diff against the wrong source. `patch` on `OptimizerResult` always
-  wins over `function_source` when both are set; do not flip that precedence,
+  wins over `function_source` when both are set and it holds a hunk (a blank
+  or prose `patch` yields, `patchWins`); do not flip that precedence,
   it is the fallback that keeps a model ignoring the instruction from losing
   the attempt outright. `findFuncDecl` matches by `funcName`'s format
   (`causes.go`), not by line number, so a target's `location` line going

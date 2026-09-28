@@ -231,11 +231,37 @@ func TestResolveCandidatePatchPrefersPatchOverFunctionSource(t *testing.T) {
 	target := &agents.Target{Location: "main.go:8", Function: "(*cli).printValues"}
 	req := orchestrator.CandidateRequest{
 		Target:   target,
-		Proposal: agents.OptimizerResult{Patch: "hand written diff", FunctionSource: "func (c *cli) printValues(vs []string) error { return nil }"},
+		Proposal: agents.OptimizerResult{Patch: handDiff, FunctionSource: "func (c *cli) printValues(vs []string) error { return nil }"},
 	}
 	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
-	require.Equal(t, "hand written diff", patch)
+	require.Equal(t, handDiff, patch)
+	require.Equal(t, PatchTransport, transport)
+}
+
+const handDiff = "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-x\n+y\n"
+
+// TestResolveCandidatePatchSkipsAPatchFieldWithNoDiff: live cue candidates
+// arrived with a patch of nothing but a newline, which used to win over the
+// function_source and be rejected as a malformed diff. A patch field with no
+// hunk now yields to a function_source, and is still used, and judged, when
+// no function_source came with it.
+func TestResolveCandidatePatchSkipsAPatchFieldWithNoDiff(t *testing.T) {
+	repo := methodRepo(t)
+	engine := newFuncSourceTestEngine(repo)
+	target := &agents.Target{Location: "main.go:8", Function: "(*cli).printValues"}
+	src := "func (c *cli) printValues(vs []string) error { return nil }"
+	for _, blank := range []string{"\n", "  ", "see function_source"} {
+		req := orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: blank, FunctionSource: src}}
+		patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+		require.NoError(t, err)
+		require.Equal(t, FunctionSourceTransport, transport, "patch %q", blank)
+		require.Contains(t, patch, "@@")
+	}
+	req := orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: "see function_source"}}
+	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, "see function_source", patch)
 	require.Equal(t, PatchTransport, transport)
 }
 
@@ -411,6 +437,36 @@ func TestResolveCandidatePatchNamesAnOptimizerThatDidNotAnswer(t *testing.T) {
 	_, _, err := engine.resolveCandidatePatch(context.Background(), req)
 	require.ErrorContains(t, err, "the optimizer did not answer: optimizer model call failed after 3 attempts")
 	require.NotErrorIs(t, err, errEmptyProposal)
+}
+
+func TestCandidatePatchKeepsTheOptimizerAnswerBesideIt(t *testing.T) {
+	engine := &Engine{dir: t.TempDir()}
+	req := orchestrator.CandidateRequest{Attempt: 3, Proposal: agents.OptimizerResult{Patch: "\n", FunctionSource: "func f() {}", Hypothesis: "h"}}
+	id, patchPath, err := engine.writeCandidatePatch(req, "\n")
+	require.NoError(t, err)
+	require.FileExists(t, patchPath)
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(patchPath), id+".proposal.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"function_source": "func f() {}"`)
+}
+
+// TestResolveCandidatePatchNamesTheTargetFileForAHeaderlessHunk: a live cue
+// answer sent a correct hunk with no file headers. With a target the file is
+// known; without one, or when the patch names its file, nothing changes.
+func TestResolveCandidatePatchNamesTheTargetFileForAHeaderlessHunk(t *testing.T) {
+	engine := newFuncSourceTestEngine(methodRepo(t))
+	target := &agents.Target{Location: "internal/core/adt/conjunct.go:39", Function: "(*nodeContext).scheduleConjunct"}
+	hunk := "@@ -77,1 +77,1 @@\n-a\n+b\n"
+	patch, transport, err := engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: hunk}})
+	require.NoError(t, err)
+	require.Equal(t, PatchTransport, transport)
+	require.Equal(t, "--- a/internal/core/adt/conjunct.go\n+++ b/internal/core/adt/conjunct.go\n"+hunk, patch)
+
+	patch, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: handDiff}})
+	require.NoError(t, err)
+	require.Equal(t, handDiff, patch)
+
+	require.Equal(t, hunk, withTargetHeaders(hunk, nil))
 }
 
 // TestReplaceFunctionSourceAddsNewHelpers: a function_source may carry new

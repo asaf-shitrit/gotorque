@@ -115,10 +115,13 @@ func assertLadderBounded(t *testing.T, attemptTimeout, callerTimeout, wantAtLeas
 		inner: inner, role: "explorer", attempts: 3,
 		baseBackoff: 0, attemptTimeout: attemptTimeout,
 	}
+	// The clock starts before the deadline is set, so the deadline can never
+	// expire in less than callerTimeout of measured time (CI saw 198ms of a
+	// 200ms bound when the clock started after it).
+	started := time.Now()
 	callerCtx, cancel := context.WithTimeout(context.Background(), callerTimeout)
 	defer cancel()
 
-	started := time.Now()
 	var gotErr error
 	for _, err := range m.GenerateContent(callerCtx, &model.LLMRequest{}, false) {
 		gotErr = err

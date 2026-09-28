@@ -47,8 +47,8 @@ const (
 // located by the function it declares (untargetedFunctionSourceDiff). A
 // proposal with none of these is errEmptyProposal.
 func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.CandidateRequest) (patch, transport string, err error) {
-	if req.Proposal.Patch != "" {
-		return req.Proposal.Patch, PatchTransport, nil
+	if patchWins(req.Proposal) {
+		return withTargetHeaders(req.Proposal.Patch, req.Target), PatchTransport, nil
 	}
 	if req.Target == nil {
 		if req.Proposal.FunctionSource == "" {
@@ -75,6 +75,40 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 		return diff, FunctionSourceTransport, nil
 	}
 	return "", PatchTransport, emptyProposal(req.RoleFailure)
+}
+
+// isDiff reports whether a patch field holds a unified diff at all. Patch
+// wins over function_source (ADR 0022), but only a patch with a hunk can win:
+// two live cue candidates arrived with a patch field of nothing but a
+// newline, which took precedence and was rejected as a malformed diff,
+// losing whatever function_source came with it.
+func isDiff(patch string) bool { return strings.Contains(patch, "@@") }
+
+// withTargetHeaders gives a patch that has hunks but no file headers the
+// target's file: a live cue answer sent one correct hunk for
+// (*nodeContext).scheduleConjunct, at the right line of conjunct.go, and no
+// "--- a/" or "+++ b/" line, so it was rejected as a malformed diff. Without
+// a target there is no file to name, and a patch that names one is left
+// alone.
+func withTargetHeaders(patch string, target *agents.Target) string {
+	if target == nil || !isDiff(patch) || strings.Contains(patch, "\n+++ ") || strings.HasPrefix(patch, "+++ ") {
+		return patch
+	}
+	file := targetPath(target.Location)
+	if file == "" {
+		return patch
+	}
+	return "--- a/" + file + "\n+++ b/" + file + "\n" + strings.TrimLeft(patch, "\n")
+}
+
+// patchWins reports whether the proposal's patch field is the candidate: it
+// is set, and either holds a diff or has no function source to yield to.
+func patchWins(p agents.OptimizerResult) bool {
+	return p.Patch != "" && (isDiff(p.Patch) || !hasFunctionSource(p))
+}
+
+func hasFunctionSource(p agents.OptimizerResult) bool {
+	return strings.TrimSpace(p.FunctionSource) != "" || len(p.FunctionSources) > 0
 }
 
 // multiFunctionSources is the function_sources list to use for target,
