@@ -148,10 +148,11 @@ func RenderMarkdown(state State) string {
 	writeBaselineWorkloads(&b, state)
 	writeSandboxIsolationNotes(&b, state)
 	writeDegradedRoles(&b, state)
+	writeHistory(&b, state)
 	writeCandidateExperiments(&b, state)
 	writeTokenUsage(&b, state)
 	writeJevCache(&b, state)
-	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q%s\n```\n", state.Repository, state.ManifestPath, tradeoffFlags(state.Tradeoff))
+	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q%s%s\n```\n", state.Repository, state.ManifestPath, tradeoffFlags(state.Tradeoff), historyFlags(state.HistorySources))
 	return b.String()
 }
 
@@ -358,8 +359,11 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	if record.PatchPath != "" {
 		fmt.Fprintf(b, "- Patch: `%s`%s\n", record.PatchPath, acceptedMarker(record.Accepted))
 	}
-	if record.Transport == FunctionSourceTransport {
+	switch record.Transport {
+	case FunctionSourceTransport:
 		b.WriteString("- Transport: function_source (code built the diff from the optimizer's replacement function)\n")
+	case MultiFunctionSourceTransport:
+		b.WriteString("- Transport: function_sources (code built a multi-file diff from the optimizer's replacement callee and callers, ADR 0027)\n")
 	}
 	if record.ProposalRepair != "" {
 		// A salvaged proposal is judged like any other; this line only keeps
@@ -559,4 +563,33 @@ func orNone(s string) string {
 		return "none"
 	}
 	return s
+}
+
+// writeHistory lists the earlier campaigns --history read and how many
+// measured targets each one carried into this campaign as already tried.
+func writeHistory(b *strings.Builder, state State) {
+	if len(state.HistorySources) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "## Campaign history\n\n%d target(s) earlier campaigns of this revision already measured were counted as tried, so no candidate here re-proposed them.\n\n", len(state.HistoryTargets))
+	b.WriteString("| Campaign | Directory | Targets carried |\n|---|---|---:|\n")
+	for _, s := range state.HistorySources {
+		carried := strconv.Itoa(s.Targets)
+		if s.Skipped != "" {
+			carried = "skipped: " + s.Skipped
+		}
+		fmt.Fprintf(b, "| `%s` | `%s` | %s |\n", orNone(s.CampaignID), s.Directory, carried)
+	}
+	for _, t := range state.HistoryTargets {
+		fmt.Fprintf(b, "\n- `%s` at `%s`, %s", t.Function, t.Location, t.Cause)
+	}
+	b.WriteString("\n\n")
+}
+
+func historyFlags(sources []HistorySource) string {
+	var b strings.Builder
+	for _, s := range sources {
+		fmt.Fprintf(&b, " --history %q", s.Directory)
+	}
+	return b.String()
 }

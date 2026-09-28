@@ -143,6 +143,20 @@ type State struct {
 	// report carries the shape it was written in. It stays zero for state that
 	// predates versioning, which readers report rather than assume.
 	SchemaVersion int `json:"schema_version,omitempty"`
+	// HistoryTargets are targets earlier campaigns of this revision already
+	// measured (--history); priorTargets counts them as tried. They are
+	// persisted because the flag is only read when the campaign is created.
+	HistoryTargets []agents.Target `json:"history_targets,omitempty"`
+	// HistoryCandidates maps a candidate ID those campaigns measured to where
+	// and how it was judged; rejectMeasuredDuplicate refuses to re-measure it.
+	HistoryCandidates map[string]string `json:"history_candidates,omitempty"`
+	HistorySources    []HistorySource   `json:"history_sources,omitempty"`
+	// HistoryPriors are the measured history candidates the optimizer reads
+	// as CampaignRequest.EarlierCandidates.
+	HistoryPriors []orchestrator.PriorCandidate `json:"history_priors,omitempty"`
+	// HistoryAccepted are functions a history campaign already has an
+	// accepted fix for; rejectKnownAcceptedFix refuses to re-find them.
+	HistoryAccepted []AcceptedFix `json:"history_accepted,omitempty"`
 
 	CandidateRecords []CandidateRecord `json:"candidate_records,omitempty"`
 	// ConsecutiveFailures mirrors the orchestrator's run of rejected or
@@ -261,6 +275,9 @@ type Options struct {
 	// Tradeoff overrides the manifest's performance block for this
 	// campaign; the zero value leaves it as written.
 	Tradeoff manifest.Tradeoff
+	// History names earlier campaign directories whose measured targets
+	// this campaign counts as already tried (loadHistory).
+	History []string
 }
 
 type Engine struct {
@@ -400,6 +417,13 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 		_ = store.Close()
 		return nil, err
 	}
+	history, err := loadHistory(opts.History, revision)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	state.HistoryTargets, state.HistoryCandidates, state.HistorySources, state.HistoryPriors = history.Targets, history.Candidates, history.Sources, history.Priors
+	state.HistoryAccepted = history.Accepted
 	e, err := compose(dir, store, state, opts.Progress, opts.Now)
 	if err != nil {
 		_ = store.Close()

@@ -147,14 +147,15 @@ func (e *Engine) campaignRequest() orchestrator.CampaignRequest {
 		BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...),
 		OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures,
 		PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive, PriorTargets: e.priorTargets(),
-		Objective: e.state.Manifest.Performance.PrimaryMetric,
+		Objective: e.state.Manifest.Performance.PrimaryMetric, EarlierCandidates: e.state.HistoryPriors, GoVersion: goDirective(e.state.Repository, e.state.Manifest.Target.Build.Directory),
 	}
 }
 
 // priorTargets are the targets earlier candidates tried, read back from the
-// persisted records, so a resumed campaign moves on instead of retrying them.
+// persisted records, so a resumed campaign moves on instead of retrying them,
+// plus the targets --history carried from earlier campaigns (loadHistory).
 func (e *Engine) priorTargets() []agents.Target {
-	var out []agents.Target
+	out := append([]agents.Target(nil), e.state.HistoryTargets...)
 	for _, record := range e.state.CandidateRecords {
 		if record.Target != nil {
 			out = append(out, *record.Target)

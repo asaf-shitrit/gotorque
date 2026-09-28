@@ -115,6 +115,15 @@ func TestResumeRejectsConflictingFlags(t *testing.T) {
 	require.ErrorContains(t, err, "--resume cannot be combined")
 }
 
+func TestResumeRejectsHistory(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"optimize", "--resume", t.TempDir(), "--history", t.TempDir()})
+
+	err := cmd.Execute()
+	require.ErrorContains(t, err, "--history")
+}
+
 func TestResumeReportsUnknownCampaign(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
