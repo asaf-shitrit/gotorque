@@ -162,6 +162,8 @@ type State struct {
 	// measured (--history); priorTargets counts them as tried. They are
 	// persisted because the flag is only read when the campaign is created.
 	HistoryTargets []agents.Target `json:"history_targets,omitempty"`
+	// FreeChoice is Options.FreeChoice, persisted so a resume keeps it.
+	FreeChoice bool `json:"free_choice,omitempty"`
 	// HistoryCandidates maps a candidate ID those campaigns measured to where
 	// and how it was judged; rejectMeasuredDuplicate refuses to re-measure it.
 	HistoryCandidates map[string]string `json:"history_candidates,omitempty"`
@@ -297,6 +299,10 @@ type Options struct {
 	// History names earlier campaign directories whose measured targets
 	// this campaign counts as already tried (loadHistory).
 	History []string
+	// FreeChoice keeps a Jev-analyst campaign going after every flagged
+	// target has been tried, letting the optimizer choose freely, instead of
+	// finishing (orchestrator.Config.StopWhenRankingExhausted).
+	FreeChoice bool
 }
 
 type Engine struct {
@@ -443,6 +449,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 	}
 	state.HistoryTargets, state.HistoryCandidates, state.HistorySources, state.HistoryPriors = history.Targets, history.Candidates, history.Sources, history.Priors
 	state.HistoryAccepted = history.Accepted
+	state.FreeChoice = opts.FreeChoice
 	e, err := compose(dir, store, state, opts.Progress, opts.Now)
 	if err != nil {
 		_ = store.Close()

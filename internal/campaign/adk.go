@@ -35,6 +35,7 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	// result meant a budget-spent campaign — exactly the outcome the patch
 	// budget is meant to reach — reported no cost at all.
 	defer e.recordTokenUsage(roleSet)
+	cfg.StopWhenRankingExhausted = e.state.Analyst == AnalystJev && !e.state.FreeChoice
 	adk, message, err := e.prepareADK(roleSet, cfg)
 	if err != nil {
 		return orchestrator.CampaignResult{}, err

@@ -45,6 +45,7 @@ type optimizeFlags struct {
 	tradeoffName                            string
 	allow                                   []string
 	history                                 []string
+	freeChoice                              bool
 	tradeoff                                manifest.Tradeoff
 }
 
@@ -75,6 +76,7 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&f.explorer, "explorer", analystLLM, "explorer backend: llm (the explorer model role) or jev (the target's own options, judged by TypeSafe Jev and sampled in discovery; needs "+jev.EnvAPIKey+" with --adk)")
 	cmd.Flags().StringVar(&f.reviewer, "reviewer", analystLLM, "reviewer backend: llm (the reviewer model role) or jev (TypeSafe Jev behaviour-hazard checks; needs "+jev.EnvAPIKey+" with --adk)")
 	cmd.Flags().StringVar(&f.tradeoffName, "tradeoff", "", "what the campaign may give up for its improvement: balanced (the manifest as written), speed (improve wall time; memory may regress 10%, CPU 5%) or lean (improve peak memory; wall and CPU time may regress 3%)")
+	cmd.Flags().BoolVar(&f.freeChoice, "free-choice", false, "with --analyst jev, keep going after every flagged target has been tried and let the optimizer choose its own site, instead of finishing")
 	cmd.Flags().StringArrayVar(&f.history, "history", nil, "an earlier campaign directory of the same repository revision; targets its candidates measured count as already tried, so this campaign moves on to new ones (repeatable)")
 	cmd.Flags().StringArrayVar(&f.allow, "allow", nil, "largest regression one metric may show, as metric=percent (wall, cpu, memory, size, or a full metric name), e.g. --allow memory=5%; repeatable, and applied over --tradeoff")
 	return cmd
@@ -310,7 +312,7 @@ func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, r
 	if f.repo == "" || f.manifestPath == "" {
 		return errors.New("--repo and --manifest are required unless --resume is used")
 	}
-	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig, Tradeoff: f.tradeoff, History: f.history})
+	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig, Tradeoff: f.tradeoff, History: f.history, FreeChoice: f.freeChoice})
 	if err != nil {
 		return err
 	}

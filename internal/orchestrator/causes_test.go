@@ -120,3 +120,62 @@ func TestFailingCauseAnalystDegradesLikeTheAgent(t *testing.T) {
 		t.Errorf("analyses = %+v, want the empty degraded result", runner.analyses)
 	}
 }
+
+// exhaustionGraph is causeGraph with the ranking-exhaustion stop configurable
+// and room for more candidates than the analysis has targets.
+func exhaustionGraph(t *testing.T, analyst *fakeCauseAnalyst, stop bool) (*Orchestrator, *int) {
+	t.Helper()
+	var calls, optimizerCalls int
+	roleSet := agents.Set{
+		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "objective", NextExperiment: "experiment"}, &calls),
+		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, &calls),
+		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
+		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &optimizerCalls),
+		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}, &calls),
+	}
+	orch := mustNew(t, Dependencies{
+		Runner: &hotRunner{},
+		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionInconclusive}},
+		Jobs:   &fakeJobService{},
+		Agents: roleSet,
+		Causes: analyst,
+	}, Config{MaxCandidates: 3, MaxConsecutiveFailures: 5, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1, StopWhenRankingExhausted: stop})
+	return orch, &optimizerCalls
+}
+
+func oneTargetAnalyst() *fakeCauseAnalyst {
+	return &fakeCauseAnalyst{result: agents.AnalystResult{
+		HotPaths: []agents.HotPath{{Location: "main.go:207"}},
+		Targets:  []agents.Target{{Location: "main.go:207", Function: "write", Cause: "unbuffered_io", Remedy: "buffer it"}},
+	}}
+}
+
+// TestCampaignStopsWhenEveryFlaggedTargetWasTried: with the stop on, a
+// campaign with one flagged target spends one candidate on it and then
+// finishes, instead of handing the optimizer free choice.
+func TestCampaignStopsWhenEveryFlaggedTargetWasTried(t *testing.T) {
+	orch, optimizerCalls := exhaustionGraph(t, oneTargetAnalyst(), true)
+	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-exhausted", causeCampaign, "finalize_campaign")
+	if result.CandidatesTried != 1 {
+		t.Fatalf("candidates tried = %d, want 1", result.CandidatesTried)
+	}
+	if result.StopReason != stopReasonRankingExhausted {
+		t.Errorf("stop reason = %q, want %q", result.StopReason, stopReasonRankingExhausted)
+	}
+	if *optimizerCalls != 1 {
+		t.Errorf("optimizer calls = %d, want 1", *optimizerCalls)
+	}
+}
+
+// TestCampaignKeepsFreeChoiceWithoutTheStop pins the previous behavior when
+// the stop is off (--free-choice, or a model analyst).
+func TestCampaignKeepsFreeChoiceWithoutTheStop(t *testing.T) {
+	orch, _ := exhaustionGraph(t, oneTargetAnalyst(), false)
+	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-free", causeCampaign, "finalize_campaign")
+	if result.CandidatesTried != 3 {
+		t.Fatalf("candidates tried = %d, want 3", result.CandidatesTried)
+	}
+	if result.StopReason != stopReasonMaxCandidates {
+		t.Errorf("stop reason = %q, want %q", result.StopReason, stopReasonMaxCandidates)
+	}
+}

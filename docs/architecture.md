@@ -568,8 +568,14 @@ deterministic nodes, and a cycle with no target left hands the optimizer
 everything, as before. Tried targets
 are recorded with each verdict and handed back on resume, so no measured
 target is attacked twice (an unmeasured one gets one retry, see step 3 of the
-evaluation), and once every flagged target has been tried the optimizer
-chooses freely again. `--history DIR` (repeatable, ADR 0031) extends "tried"
+evaluation). Once every flagged target has been tried, a Jev-analyst
+campaign finishes ("every target the analysis flagged has been tried") rather
+than handing the optimizer free choice: across the 2026-09-28 overnight
+campaigns, 35 free-choice candidates produced no new accepted fix (the two
+they accepted rediscovered known ones) and failed to build or apply at
+nearly twice the rate of code-chosen targets. `--free-choice` keeps the old
+behavior, where the optimizer then chooses freely; a model analyst, which
+ranks nothing, always does. `--history DIR` (repeatable, ADR 0031) extends "tried"
 across campaigns: every target an earlier campaign of the same revision
 measured is loaded when the campaign is created, persisted as
 `HistoryTargets`, and counted as tried by `priorTargets`, so a new campaign
