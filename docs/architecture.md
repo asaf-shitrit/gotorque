@@ -230,7 +230,12 @@ produced here or in policy.
    every seed once more from scratch (`measureSeedsOnQuietMachine`); only the
    second pass reaches the verdict, and the report names the discarded
    pass's load.
-   Tests, which disable local isolation, never wait. An A/A check on csvtk (the same binary on both
+   Tests, which disable local isolation, never wait. `gotorque verify DIR` checks an accepted verdict
+   after the fact: it evaluates each accepted candidate again from its
+   recorded patch through the same evaluation and policy, with 60 pairs per
+   workload by default instead of 25 and with the duplicate and accepted-fix
+   refusals off, and records whether the acceptance held. It automates the
+   re-measurement that exposed overnight-miller-1's false acceptance. An A/A check on csvtk (the same binary on both
    sides, fifty pairs, baseline first) found no order bias, but the same check
    on miller's filter-value-threshold found the second run of each pair 2.66%
    slower in 41 of 60 pairs with byte-identical binaries, enough to reject

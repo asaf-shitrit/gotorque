@@ -418,20 +418,11 @@ func eligibleReadings(config policy.Config, comparisons []domain.MetricCompariso
 }
 
 func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput) (domain.Evaluation, error) {
-	config := policyConfigFromManifest(s.engine.state.Manifest)
 	// Eligibility is structural now: every reading of the primary metric may
 	// carry the verdict, and a reading without a workload is the pooled one.
 	// This used to be re-derived here from the comparison's name, a convention
 	// the engine, this function and the policy all had to agree on.
-	eligible := eligibleReadings(config, input.Evidence.Comparisons)
-	result := policy.Evaluate(config, policy.Evidence{
-		BehaviorMatches:        input.Evidence.BehaviorMatches,
-		FailureSummary:         input.Evidence.Summary,
-		SafetyChecksPassed:     input.Evidence.SafetyChecksPassed,
-		RepresentativeEvidence: input.Evidence.RepresentativeEvidence,
-		Comparisons:            input.Evidence.Comparisons,
-		Primary:                eligible,
-	})
+	result := s.engine.policyVerdict(input.Evidence)
 	// Persist the full verdict so reports can explain every decision.
 	record := CandidateRecord{
 		Attempt:          len(s.engine.state.CandidateRecords) + 1,

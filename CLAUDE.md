@@ -41,6 +41,7 @@ gotorque optimize --repo /path/to/repo --manifest targets/go-jsonnet/manifest.js
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --analyst jev --history <earlier-campaign-dir>
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
+gotorque verify <campaign-dir> [--attempt N] [--pairs 60]
 ```
 
 `--adk-stub` runs the whole pipeline with deterministic stub agents and no
