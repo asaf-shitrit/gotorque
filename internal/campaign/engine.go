@@ -1473,7 +1473,10 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 	if cpuProfile == "" {
 		return "", false
 	}
-	result, err := e.toolchain.PprofList(ctx, name, cpuProfile)
+	// -list takes a regular expression. Unquoted, a method name such as
+	// pkg.(*Function).CallInternal fails to parse, and unanchored, any name
+	// matches every symbol containing it.
+	result, err := e.toolchain.PprofList(ctx, "^"+regexp.QuoteMeta(name)+"$", cpuProfile)
 	if err != nil {
 		return "", false
 	}
@@ -1537,52 +1540,24 @@ func (e *Engine) hotLocationFromRepo(name string) (string, bool) {
 	if strings.Contains(name, ":") {
 		return "", false
 	}
-	// Sampler output uses runtime-style names (main.main,
-	// pkg.(*T).method) whose last segment is the source symbol.
-	for _, candidate := range functionNameCandidates(name) {
-		if path, line, ok := profile.FindFunctionInRepo(e.state.Repository, candidate); ok {
-			return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
-		}
+	sym := profile.ParseSymbol(enclosingFunction(name))
+	if path, line, ok := profile.FindDeclaration(e.state.Repository, sym); ok {
+		return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
 	}
 	return "", false
 }
 
-// functionNameCandidates lists the identifiers worth searching for in the
-// repository, most specific first. Profile frames name closures and methods in
-// forms no `func` declaration ever uses: pkg.outer.func1 for a closure (and
-// .func1.2 when nested), pkg.(*T).method for a method. Searching those
-// verbatim never matches, which is why a measured module symbol such as
-// cli.newJSONInputIter.func1 used to resolve to no source location at all.
-func functionNameCandidates(name string) []string {
-	candidates := []string{name}
-	add := func(candidate string) {
-		if candidate == "" {
-			return
-		}
-		for _, existing := range candidates {
-			if existing == candidate {
-				return
-			}
-		}
-		candidates = append(candidates, candidate)
-	}
-
-	// Strip closure suffixes until an enclosing declaration name remains.
-	enclosing := name
+// enclosingFunction strips closure suffixes until the declared function
+// remains. Profile frames name closures in forms no `func` declaration uses:
+// pkg.outer.func1 for a closure, pkg.outer.func1.2 when nested.
+func enclosingFunction(name string) string {
 	for {
-		trimmed, ok := trimClosureSuffix(enclosing)
+		trimmed, ok := trimClosureSuffix(name)
 		if !ok {
-			break
+			return name
 		}
-		enclosing = trimmed
-		add(enclosing)
+		name = trimmed
 	}
-
-	// The declared identifier is the final segment, with any method receiver
-	// removed: pkg.(*T).method declares "func (t *T) method(".
-	add(lastSegment(enclosing))
-	add(lastSegment(name))
-	return candidates
 }
 
 func isTestEntryPoint(segment string) bool {

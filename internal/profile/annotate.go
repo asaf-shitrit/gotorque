@@ -2,7 +2,6 @@ package profile
 
 import (
 	"bufio"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -104,65 +103,9 @@ func minSampleLine(current, n int) int {
 	return current
 }
 
-// FindFunctionInRepo locates a function declaration by name under root,
-// searching .go files breadth-first with a bounded file count. It is the
-// fallback when no pprof-format profile exists for annotation.
-type functionSearch struct {
-	root  string
-	decl  *regexp.Regexp
-	found string
-	line  int
-	files int
-}
-
-func FindFunctionInRepo(root, functionName string) (string, int, bool) {
-	if functionName == "" {
-		return "", 0, false
-	}
-	s := functionSearch{root: root, decl: regexp.MustCompile(`(?m)^func (?:\([^)]*\) )?` + regexp.QuoteMeta(functionName) + `\(`)}
-	_ = filepath.WalkDir(root, s.visit)
-	return s.found, s.line, s.found != ""
-}
-
-func (s *functionSearch) visit(path string, d os.DirEntry, err error) error {
-	if err != nil || s.found != "" {
-		if s.found != "" {
-			return filepath.SkipAll
-		}
-		return nil
-	}
-	if d.IsDir() {
-		return skipIgnoredDir(d.Name())
-	}
-	return s.matchFile(path)
-}
-
 func skipIgnoredDir(base string) error {
 	if base == ".git" || base == "vendor" || base == "testdata" {
 		return filepath.SkipDir
-	}
-	return nil
-}
-
-func (s *functionSearch) matchFile(path string) error {
-	if !strings.HasSuffix(path, ".go") {
-		return nil
-	}
-	s.files++
-	if s.files > 2000 {
-		return filepath.SkipAll
-	}
-	data, err := os.ReadFile(path)
-	if err == nil {
-		if loc := s.decl.FindIndex(data); loc != nil {
-			rel, relErr := filepath.Rel(s.root, path)
-			if relErr != nil {
-				rel = path
-			}
-			s.found = filepath.ToSlash(rel)
-			s.line = 1 + strings.Count(string(data[:loc[0]]), "\n")
-			return filepath.SkipAll
-		}
 	}
 	return nil
 }

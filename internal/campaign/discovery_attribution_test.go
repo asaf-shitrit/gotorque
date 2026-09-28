@@ -67,6 +67,34 @@ func TestResolveHotLocationsFoldsSymbolsSharingADeclaration(t *testing.T) {
 	require.Equal(t, []string{"statements.go:5", "strings.Join"}, got)
 }
 
+// TestResolveHotLocationsQualifiesMethodsByReceiverAndPackage reproduces
+// live1-starlark: bare-name search sent (*Function).CallInternal to another
+// package's CallInternal, Binary to a method named Binary, and Int.get into a
+// test file.
+func TestResolveHotLocationsQualifiesMethodsByReceiverAndPackage(t *testing.T) {
+	repo := t.TempDir()
+	for rel, src := range map[string]string{
+		"go.mod":                   "module go.starlark.net\n",
+		"lib/proto/proto.go":       "package proto\n\ntype D struct{}\n\nfunc (d D) CallInternal() {}\n",
+		"lib/time/time.go":         "package time\n\ntype Duration int\n\nfunc (d Duration) Binary() {}\n",
+		"starlark/example_test.go": "package starlark_test\n\ntype cache struct{}\n\nfunc (c *cache) get() {}\n",
+		"starlark/eval.go":         "package starlark\n\ntype Function struct{}\n\nfunc (fn *Function) CallInternal() {}\n\nfunc Binary() {}\n",
+		"starlark/int.go":          "package starlark\n\ntype Int struct{}\n\nfunc (i Int) get() {}\n",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(repo, rel)), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(repo, rel), []byte(src), 0o600))
+	}
+	e := &Engine{}
+	e.state.Repository = repo
+	got := e.resolveHotLocations(context.Background(), "", []string{
+		"go.starlark.net/starlark.(*Function).CallInternal",
+		"go.starlark.net/starlark.Binary",
+		"go.starlark.net/starlark.Int.get",
+		"go.starlark.net/starlark.(*Function).CallInternal.func1",
+	})
+	require.Equal(t, []string{"starlark/eval.go:5", "starlark/eval.go:7", "starlark/int.go:5"}, got)
+}
+
 func TestResolveHotLocationsStopsAtTheBudget(t *testing.T) {
 	names := make([]string, 0, 2*hotFunctionBudget)
 	for i := range 2 * hotFunctionBudget {
