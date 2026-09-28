@@ -289,12 +289,19 @@ func TestLocateFunctionSkipsTestsVendorAndTestdataAndRefusesAmbiguity(t *testing
 	write(".hidden/h.go", "package h\n\nfunc only() {}\n")
 	write("broken.go", "package main\nfunc {")
 
-	loc, err := locateFunction(repo, "only")
+	loc, err := locateFunction(repo, "only", nil)
 	require.NoError(t, err)
 	require.Equal(t, "a/a.go:3", loc)
 
-	_, err = locateFunction(repo, "twice")
+	_, err = locateFunction(repo, "twice", nil)
 	require.ErrorContains(t, err, "2 files declare")
+
+	loc, err = locateFunction(repo, "twice", []string{"b/b.go:3"})
+	require.NoError(t, err)
+	require.Equal(t, "b/b.go:3", loc, "the hot file breaks the tie")
+
+	_, err = locateFunction(repo, "twice", []string{"c/c.go:1"})
+	require.ErrorContains(t, err, "2 files declare", "a hot list naming neither leaves the tie")
 }
 
 func TestResolveCandidatePatchBuildsFromFunctionSourceWithTarget(t *testing.T) {

@@ -26,13 +26,13 @@ import (
 // diff the same way the targeted path does. The optimizer still chose the
 // site; code only finds where it is. A proposal with neither field is now
 // rejected as errEmptyProposal, which says so.
-func (e *Engine) untargetedFunctionSourceDiff(ctx context.Context, proposal agents.OptimizerResult) (string, error) {
+func (e *Engine) untargetedFunctionSourceDiff(ctx context.Context, proposal agents.OptimizerResult, hotPaths []string) (string, error) {
 	decl, _, err := formatFunctionDecl(proposal.FunctionSource)
 	if err != nil {
 		return "", err
 	}
 	name := funcName(decl)
-	location, err := locateFunction(e.state.Repository, name)
+	location, err := locateFunction(e.state.Repository, name, hotPaths)
 	if err != nil {
 		return "", err
 	}
@@ -43,7 +43,32 @@ func (e *Engine) untargetedFunctionSourceDiff(ctx context.Context, proposal agen
 // format) under repo and returns its repository-relative location. Vendored
 // code, testdata and hidden directories are skipped, like every other walk
 // of a target's source.
-func locateFunction(repo, function string) (string, error) {
+//
+// When several files declare it (gojq has an (*encoder).encodeObject in both
+// its root package and cli/), the match in a file the analysis listed as a
+// hot path wins, since those are the files the optimizer was shown; only a
+// tie that survives that is refused.
+func locateFunction(repo, function string, hotPaths []string) (string, error) {
+	found, err := declarationsOf(repo, function)
+	if err != nil {
+		return "", fmt.Errorf("look up %s: %w", function, err)
+	}
+	if len(found) > 1 {
+		found = preferHotFiles(found, hotPaths)
+	}
+	switch len(found) {
+	case 1:
+		return found[0], nil
+	case 0:
+		return "", fmt.Errorf("function_source declares %s, which no non-test file declares; with no target, return a patch", function)
+	default:
+		return "", fmt.Errorf("function_source declares %s, which %d files declare (%s); with no target, return a patch", function, len(found), strings.Join(found, ", "))
+	}
+}
+
+// declarationsOf lists every non-test declaration of function under repo as
+// a repository-relative file:line.
+func declarationsOf(repo, function string) ([]string, error) {
 	var found []string
 	err := filepath.WalkDir(repo, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -64,17 +89,7 @@ func locateFunction(repo, function string) (string, error) {
 		}
 		return nil
 	})
-	if err != nil {
-		return "", fmt.Errorf("look up %s: %w", function, err)
-	}
-	switch len(found) {
-	case 1:
-		return found[0], nil
-	case 0:
-		return "", fmt.Errorf("function_source declares %s, which no non-test file declares; with no target, return a patch", function)
-	default:
-		return "", fmt.Errorf("function_source declares %s, which %d files declare (%s); with no target, return a patch", function, len(found), strings.Join(found, ", "))
-	}
+	return found, err
 }
 
 func skipSourceDir(path, repo, name string) error {
@@ -116,4 +131,31 @@ func emptyProposal(roleFailure string) error {
 		return errEmptyProposal
 	}
 	return fmt.Errorf("the optimizer did not answer: %s", roleFailure)
+}
+
+// preferHotFiles keeps the locations whose file appears among hotPaths, or
+// all of them when none does.
+func preferHotFiles(found, hotPaths []string) []string {
+	hot := map[string]bool{}
+	for _, p := range hotPaths {
+		hot[targetPath(p)] = true
+	}
+	var kept []string
+	for _, loc := range found {
+		if hot[targetPath(loc)] {
+			kept = append(kept, loc)
+		}
+	}
+	if len(kept) == 0 {
+		return found
+	}
+	return kept
+}
+
+func hotLocations(paths []agents.HotPath) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, p.Location)
+	}
+	return out
 }

@@ -54,7 +54,7 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 		if req.Proposal.FunctionSource == "" {
 			return "", PatchTransport, emptyProposal(req.RoleFailure)
 		}
-		diff, err := e.untargetedFunctionSourceDiff(ctx, req.Proposal)
+		diff, err := e.untargetedFunctionSourceDiff(ctx, req.Proposal, hotLocations(req.Analysis.HotPaths))
 		if err != nil {
 			return "", FunctionSourceTransport, err
 		}
