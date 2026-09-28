@@ -211,7 +211,8 @@ produced here or in policy.
    name.
 5. **Interleaved A/B measurement.** For each representative-tier seed
    workload, baseline and candidate binaries are measured in serialized
-   alternating pairs (baseline first, twenty-five pairs per workload) so CPU
+   alternating pairs (twenty-five pairs per workload, the side that runs first
+   alternating pair by pair) so CPU
    contention affects both sides equally. The pair count is sized against the
    noise of short CLI workloads: a target that runs for 10-25 ms per seed
    carries 6-8% per-run spread, and at seven pairs a real 3.75% win measured
@@ -230,8 +231,12 @@ produced here or in policy.
    second pass reaches the verdict, and the report names the discarded
    pass's load.
    Tests, which disable local isolation, never wait. An A/A check on csvtk (the same binary on both
-   sides, fifty pairs, baseline first) found no order bias: second-run
-   medians within 0.5% and no consistent direction.
+   sides, fifty pairs, baseline first) found no order bias, but the same check
+   on miller's filter-value-threshold found the second run of each pair 2.66%
+   slower in 41 of 60 pairs with byte-identical binaries, enough to reject
+   candidates against the 2% guardrail. Runs therefore alternate which side
+   goes first (`RunInterleaved`, ABBA), so a position effect falls on both
+   sides equally.
    Before the pairs run, the baseline
    is executed twice against itself: if two identical runs produce different
    stdout digests, the workload is treated as nondeterministic and behavior
