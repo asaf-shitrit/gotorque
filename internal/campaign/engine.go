@@ -66,6 +66,11 @@ type Environment struct {
 type Inventory struct {
 	Packages []string `json:"packages"`
 	Commands []string `json:"commands"`
+	// Unloadable are packages go list could not load, with the reason. They
+	// are left out of Packages rather than failing the campaign: a
+	// repository's scripts or examples directory can hold sources the target
+	// never builds.
+	Unloadable []string `json:"unloadable,omitempty"`
 }
 
 // CandidateRecord persists one evaluated model proposal with the policy
@@ -252,6 +257,10 @@ type State struct {
 	// revision, keyed `package::Test`. The behavior gate only rejects a
 	// candidate for failures absent from this set.
 	BaselineTestFailures []string `json:"baseline_test_failures,omitempty"`
+	// BaselineUnbuildable are packages whose tests could not build or set up
+	// on the unpatched revision; the gate subtracts them from a candidate's
+	// setup failures (runBaselineTestStep).
+	BaselineUnbuildable []string `json:"baseline_unbuildable,omitempty"`
 	// BaselineTestPasses holds the tests, subtests included, that pass on the
 	// unpatched revision, keyed `package::Test`. A candidate must pass every
 	// one of them: comparing failures alone never noticed a test that the
@@ -727,7 +736,7 @@ func (e *Engine) runInspectStep(ctx context.Context) error {
 }
 
 func (e *Engine) runBuildStep(ctx context.Context) error {
-	if e.state.CompletedSteps["build"] {
+	if e.state.CompletedSteps["build"] && baselineBinariesPresent(e.state) {
 		return nil
 	}
 	if err := e.build(ctx); err != nil {
@@ -798,24 +807,66 @@ func (e *Engine) inspect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("inventory Go packages: %w", err)
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(result.Stdout)))
-	var packages, commands []string
+	inventory, err := decodeInventory(result.Stdout)
+	if err != nil {
+		return err
+	}
+	e.state.Inventory = inventory
+	return nil
+}
+
+// decodeInventory reads go list -e -json output. A package with an Error is
+// recorded as unloadable instead of listed.
+func decodeInventory(stdout []byte) (Inventory, error) {
+	decoder := json.NewDecoder(bytes.NewReader(stdout))
+	var inv Inventory
 	for {
-		var item struct{ ImportPath, Name string }
+		var item struct {
+			ImportPath, Name string
+			Error            *struct{ Err string }
+		}
 		if err := decoder.Decode(&item); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
-			return fmt.Errorf("decode go list: %w", err)
+			return Inventory{}, fmt.Errorf("decode go list: %w", err)
 		}
-		packages = append(packages, item.ImportPath)
+		if item.Error != nil {
+			inv.Unloadable = append(inv.Unloadable, item.ImportPath+": "+firstLine(item.Error.Err))
+			continue
+		}
+		inv.Packages = append(inv.Packages, item.ImportPath)
 		if item.Name == "main" {
-			commands = append(commands, item.ImportPath)
+			inv.Commands = append(inv.Commands, item.ImportPath)
 		}
 	}
-	sort.Strings(packages)
-	sort.Strings(commands)
-	e.state.Inventory = Inventory{Packages: packages, Commands: commands}
-	return nil
+	sort.Strings(inv.Packages)
+	sort.Strings(inv.Commands)
+	sort.Strings(inv.Unloadable)
+	return inv, nil
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
+}
+
+// baselineBinariesPresent reports whether the release and coverage baseline
+// binaries a completed build step recorded are still on disk. A resumed
+// campaign used to trust the step and fail every candidate's measurement
+// with "stat ...-goawk: no such file or directory" once the campaign's
+// builds directory had been cleared to free disk space
+// (overnight-goawk-2); the build is reproducible from the recorded revision
+// and flags, so a missing binary is simply built again.
+func baselineBinariesPresent(state State) bool {
+	for _, path := range []string{state.BinaryPath, state.DiscoveryBinaryPath} {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) build(ctx context.Context) error {

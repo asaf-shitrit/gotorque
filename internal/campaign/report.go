@@ -255,12 +255,19 @@ func writeInventory(b *strings.Builder, state State) {
 	for _, command := range state.Inventory.Commands {
 		fmt.Fprintf(b, "- `%s`\n", command)
 	}
+	if len(state.Inventory.Unloadable) > 0 {
+		fmt.Fprintf(b, "\n%d package(s) could not be loaded and were left out:\n\n", len(state.Inventory.Unloadable))
+		for _, p := range state.Inventory.Unloadable {
+			fmt.Fprintf(b, "- `%s`\n", p)
+		}
+	}
 }
 
 // writeBehaviorGate states what the candidate gate could verify, because a
 // target whose own suite is already red cannot be held to "the suite passes"
 // and the report must not imply otherwise.
 func writeBehaviorGate(b *strings.Builder, state State) {
+	defer writeUnbuildable(b, state.BaselineUnbuildable)
 	if len(state.BaselineTestFailures) == 0 {
 		b.WriteString("\n## Behavior gate\n\nThe upstream test suite passes on the unpatched revision, so every candidate's full suite must pass.\n")
 		return
@@ -268,6 +275,18 @@ func writeBehaviorGate(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "\n## Behavior gate\n\nThe upstream test suite already fails on the unpatched revision: %d test(s) are excluded from the gate, and a candidate is rejected only for failures not listed here.\n\n", len(state.BaselineTestFailures))
 	for _, failure := range state.BaselineTestFailures {
 		fmt.Fprintf(b, "- `%s`\n", failure)
+	}
+}
+
+// writeUnbuildable lists packages whose tests could not build or set up on
+// the unpatched revision, which the gate therefore cannot use.
+func writeUnbuildable(b *strings.Builder, packages []string) {
+	if len(packages) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\nThe tests of %d package(s) cannot build or set up on the unpatched revision, so they do not gate candidates:\n\n", len(packages))
+	for _, p := range packages {
+		fmt.Fprintf(b, "- `%s`\n", p)
 	}
 }
 
