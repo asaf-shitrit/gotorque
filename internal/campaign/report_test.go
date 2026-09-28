@@ -202,3 +202,17 @@ func TestTheEventHeadlinesTheCampaignsOwnMetric(t *testing.T) {
 	require.Contains(t, candidateEventSummary(record, "peak_memory_bytes"), "peak_memory_bytes -1.81% (unsupported)")
 	require.Contains(t, candidateEventSummary(record, ""), "wall_time_ns -0.99% (unsupported)")
 }
+
+func TestBehaviorGateNamesATargetWithoutTests(t *testing.T) {
+	var b strings.Builder
+	writeBehaviorGate(&b, State{CompletedSteps: map[string]bool{baselinePassesStep: true}})
+	require.Contains(t, b.String(), "The target has no tests of its own")
+
+	var withTests strings.Builder
+	writeBehaviorGate(&withTests, State{CompletedSteps: map[string]bool{baselinePassesStep: true}, BaselineTestPasses: []string{"p::T"}})
+	require.Contains(t, withTests.String(), "The upstream test suite passes")
+
+	var notRun strings.Builder
+	writeBehaviorGate(&notRun, State{})
+	require.NotContains(t, notRun.String(), "no tests of its own", "a baseline that never ran says nothing about tests")
+}

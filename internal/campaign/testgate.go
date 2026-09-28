@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -60,7 +61,7 @@ func (t *testTally) record(event testEvent) {
 		}
 		return
 	}
-	key := event.Package + "::" + event.Test
+	key := event.Package + "::" + stableTestName(event.Test)
 	switch event.Action {
 	case "fail":
 		t.failed[key] = true
@@ -125,11 +126,11 @@ func sortedKeys(set map[string]bool) []string {
 func newTestFailures(baseline, candidate []string) []string {
 	known := make(map[string]bool, len(baseline))
 	for _, failure := range baseline {
-		known[failure] = true
+		known[stableTestName(failure)] = true
 	}
 	var introduced []string
 	for _, failure := range candidate {
-		if !known[failure] {
+		if !known[stableTestName(failure)] {
 			introduced = append(introduced, failure)
 		}
 	}
@@ -398,6 +399,7 @@ func lostBaselinePasses(baseline []string, outcome testOutcome) []string {
 	skipped := stringSet(outcome.Skipped)
 	var lost []string
 	for _, name := range baseline {
+		name = stableTestName(name)
 		switch {
 		case passed[name]:
 		case skipped[name]:
@@ -408,6 +410,22 @@ func lostBaselinePasses(baseline []string, outcome testOutcome) []string {
 	}
 	sort.Strings(lost)
 	return lost
+}
+
+// pointerAddress matches a printed pointer (0x7856190ebbc0): Go's %#v writes
+// one for every pointer field, and table tests that name subtests after
+// their input value carry them into test names.
+var pointerAddress = regexp.MustCompile(`0x[0-9a-fA-F]{6,}`)
+
+// stableTestName replaces pointer addresses in a test name with a
+// placeholder. hcl's TestVariables names its subtests after a %#v of the
+// expression under test, so every run names them differently, and on
+// live1-hclfmt every candidate was rejected because baseline subtests "did
+// not run": they had run, under new addresses. Names that differ only by
+// address now compare equal, on both sides of the gate and for baselines
+// persisted before this existed.
+func stableTestName(name string) string {
+	return pointerAddress.ReplaceAllString(name, "0x…")
 }
 
 func stringSet(values []string) map[string]bool {
