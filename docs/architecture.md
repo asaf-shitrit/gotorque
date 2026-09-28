@@ -168,8 +168,15 @@ produced here or in policy.
    `bufio.Writer` must also route every write through it: a direct write left
    on the wrapped writer lands before the buffered output and reorders it,
    which is how a gojq patch that buffered `printValues`' values but not its
-   newlines reached the test gate. The check can only add a rejection: when Git
-   cannot produce the diff, the build decides as before.
+   newlines reached the test gate. A patch that rewrites a keyed struct
+   literal may not drop a field from it, nor switch one to a bare `true`,
+   `false`, `nil`, `""` or empty composite (`checkLiteralDrift`): a
+   function_source rewrite of fzf's `defaultOptions` buffered the Printer as
+   asked and retyped the `Options` literal from memory, losing `Unicode` and
+   turning `ClearOnExit` off, and fzf's tests passed it. Over the 186 patches
+   recorded before it the rule never fired (`TestLiteralDriftReplaysRecordedPatches`
+   replays them when the work directory is present). The check can only add a
+   rejection: when Git cannot produce the diff, the build decides as before.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
    the compiler stderr attached to the candidate record. When
@@ -209,10 +216,23 @@ produced here or in policy.
    made without any timing comparison, and the report names the tests. State
    written before the pass set existed re-runs the baseline step once
    (`CompletedSteps["baseline_test_passes"]`) instead of running the rest of
-   the campaign without the check. The baseline suite runs in the canonical
-   checkout and candidates run in fresh worktrees. A test that passes only
-   because of an ignored local file therefore rejects every candidate, by
-   name.
+   the campaign without the check. A test can name its subtests from a
+   random seed (cue's `TestSortRandom` runs one subtest per permutation of
+   random inputs), so a baseline pass may simply not recur. When a
+   candidate's only fault is baseline passes that did not run,
+   `pruneUnstablePasses` re-runs the unpatched suite with `-count=1` (the
+   test cache would replay the first run) and stops requiring every test
+   that run does not pass either, then judges the candidate again. A
+   subtest missing from that run marks its top-level test's whole subtree
+   as regenerated per run, so none of its subtests stay required; the
+   top-level test does, and it fails whenever a subtest fails. Dropping only
+   the names that vanished never converged on cue: 2452 were dropped and the
+   next candidate still missed another permutation subtest. The re-run
+   is of the base revision, so a patch cannot decide what counts as
+   unstable, and a test that passes again stays required. A campaign spends at
+   most two such re-runs (`maxBaselineRechecks`). The baseline suite, like
+   every candidate's, runs in a fresh worktree at the base revision, never
+   in the canonical checkout: miller's tests rewrite tracked fixtures.
 5. **Interleaved A/B measurement.** For each representative-tier seed
    workload, baseline and candidate binaries are measured in serialized
    alternating pairs (twenty-five pairs per workload, the side that runs first
@@ -583,8 +603,14 @@ deterministic nodes, and a cycle with no target left hands the optimizer
 everything, as before. Tried targets
 are recorded with each verdict and handed back on resume, so no measured
 target is attacked twice (an unmeasured one gets one retry, see step 3 of the
-evaluation), and once every flagged target has been tried the optimizer
-chooses freely again. `--history DIR` (repeatable, ADR 0031) extends "tried"
+evaluation). Once every flagged target has been tried, a Jev-analyst
+campaign finishes ("every target the analysis flagged has been tried") rather
+than handing the optimizer free choice: across the 2026-09-28 overnight
+campaigns, 35 free-choice candidates produced no new accepted fix (the two
+they accepted rediscovered known ones) and failed to build or apply at
+nearly twice the rate of code-chosen targets. `--free-choice` keeps the old
+behavior, where the optimizer then chooses freely; a model analyst, which
+ranks nothing, always does. `--history DIR` (repeatable, ADR 0031) extends "tried"
 across campaigns: every target an earlier campaign of the same revision
 measured is loaded when the campaign is created, persisted as
 `HistoryTargets`, and counted as tried by `priorTargets`, so a new campaign

@@ -27,6 +27,13 @@ type Config struct {
 	DeterministicTimeout       time.Duration
 	AgentTimeout               time.Duration
 	MaxConcurrency             int
+	// StopWhenRankingExhausted finishes the campaign once the analysis has no
+	// untried target left, instead of handing the optimizer free choice. The
+	// engine sets it under a ranking analyst (Jev): across the 2026-09-28
+	// overnight campaigns, 35 free-choice candidates produced no new accepted
+	// fix (the two they accepted rediscovered known ones) and failed to build
+	// or apply at nearly twice the rate of code-chosen targets.
+	StopWhenRankingExhausted bool
 }
 
 // DefaultConfig matches the version-one campaign limits in the plan. The

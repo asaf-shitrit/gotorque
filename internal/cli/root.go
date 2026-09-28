@@ -35,6 +35,7 @@ func New(deps Dependencies) *cobra.Command {
 	root.AddCommand(newOptimizeCommand(deps.Stdout))
 	root.AddCommand(newReportCommand(deps.Stdout))
 	root.AddCommand(newVerifyCommand(deps.Stdout))
+	root.AddCommand(newScorecardCommand(deps.Stdout))
 	root.AddCommand(newVersionCommand(deps.Stdout))
 	return root
 }
@@ -46,6 +47,7 @@ type optimizeFlags struct {
 	tradeoffName                            string
 	allow                                   []string
 	history                                 []string
+	freeChoice                              bool
 	nullCandidates                          int
 	tradeoff                                manifest.Tradeoff
 }
@@ -77,6 +79,7 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&f.explorer, "explorer", analystLLM, "explorer backend: llm (the explorer model role) or jev (the target's own options, judged by TypeSafe Jev and sampled in discovery; needs "+jev.EnvAPIKey+" with --adk)")
 	cmd.Flags().StringVar(&f.reviewer, "reviewer", analystLLM, "reviewer backend: llm (the reviewer model role) or jev (TypeSafe Jev behaviour-hazard checks; needs "+jev.EnvAPIKey+" with --adk)")
 	cmd.Flags().StringVar(&f.tradeoffName, "tradeoff", "", "what the campaign may give up for its improvement: balanced (the manifest as written), speed (improve wall time; memory may regress 10%, CPU 5%) or lean (improve peak memory; wall and CPU time may regress 3%)")
+	cmd.Flags().BoolVar(&f.freeChoice, "free-choice", false, "with --analyst jev, keep going after every flagged target has been tried and let the optimizer choose its own site, instead of finishing")
 	cmd.Flags().IntVar(&f.nullCandidates, "null-candidates", 0, "evaluate this many code-generated candidates that change nothing (a comment line each) instead of running agents, to measure the harness's false-acceptance and false-rejection rates")
 	cmd.Flags().StringArrayVar(&f.history, "history", nil, "an earlier campaign directory of the same repository revision; targets its candidates measured count as already tried, so this campaign moves on to new ones (repeatable)")
 	cmd.Flags().StringArrayVar(&f.allow, "allow", nil, "largest regression one metric may show, as metric=percent (wall, cpu, memory, size, or a full metric name), e.g. --allow memory=5%; repeatable, and applied over --tradeoff")
@@ -316,7 +319,7 @@ func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, r
 	if f.repo == "" || f.manifestPath == "" {
 		return errors.New("--repo and --manifest are required unless --resume is used")
 	}
-	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig, Tradeoff: f.tradeoff, History: f.history, NullCandidates: f.nullCandidates})
+	engine, err := campaign.Create(ctx, campaign.Options{Repository: f.repo, ManifestPath: f.manifestPath, CampaignDir: f.campaignDir, Progress: out, ADKAgents: roleSet, ADKConfig: adkConfig, Tradeoff: f.tradeoff, History: f.history, FreeChoice: f.freeChoice, NullCandidates: f.nullCandidates})
 	if err != nil {
 		return err
 	}
@@ -515,4 +518,20 @@ func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs in
 		}
 	}
 	return nil
+}
+
+func newScorecardCommand(out io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "scorecard CAMPAIGN_DIR...",
+		Short: "Summarise campaigns' verdicts by class for the stability criteria",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			rows, err := campaign.Scorecard(args)
+			if err != nil {
+				return err
+			}
+			_, err = io.WriteString(out, campaign.RenderScorecard(rows))
+			return err
+		},
+	}
 }

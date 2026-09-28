@@ -162,6 +162,8 @@ type State struct {
 	// measured (--history); priorTargets counts them as tried. They are
 	// persisted because the flag is only read when the campaign is created.
 	HistoryTargets []agents.Target `json:"history_targets,omitempty"`
+	// FreeChoice is Options.FreeChoice, persisted so a resume keeps it.
+	FreeChoice bool `json:"free_choice,omitempty"`
 	// NullCandidates is Options.NullCandidates, persisted so a resume keeps
 	// counting toward it.
 	NullCandidates int `json:"null_candidates,omitempty"`
@@ -277,6 +279,9 @@ type State struct {
 	// before this field existed has none, and the baseline test step re-runs
 	// to record them (CompletedSteps["baseline_test_passes"] marks the run).
 	BaselineTestPasses []string `json:"baseline_test_passes,omitempty"`
+	// BaselineRechecks counts the unpatched-suite re-runs pruneUnstablePasses
+	// has spent, bounded by maxBaselineRechecks.
+	BaselineRechecks int `json:"baseline_rechecks,omitempty"`
 	// TokenUsage holds per-role model token totals collected during ADK runs.
 	TokenUsage map[string]RoleUsageSnapshot `json:"token_usage,omitempty"`
 	// JevCache holds per-role Jev cache hit/miss counts across this campaign's
@@ -306,6 +311,10 @@ type Options struct {
 	// History names earlier campaign directories whose measured targets
 	// this campaign counts as already tried (loadHistory).
 	History []string
+	// FreeChoice keeps a Jev-analyst campaign going after every flagged
+	// target has been tried, letting the optimizer choose freely, instead of
+	// finishing (orchestrator.Config.StopWhenRankingExhausted).
+	FreeChoice bool
 	// NullCandidates, when positive, replaces the agent graph with that many
 	// code-generated candidates that change nothing (runNullCandidates).
 	NullCandidates int
@@ -460,6 +469,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 	}
 	state.HistoryTargets, state.HistoryCandidates, state.HistorySources, state.HistoryPriors = history.Targets, history.Candidates, history.Sources, history.Priors
 	state.HistoryAccepted = history.Accepted
+	state.FreeChoice = opts.FreeChoice
 	state.NullCandidates = opts.NullCandidates
 	e, err := compose(dir, store, state, opts.Progress, opts.Now)
 	if err != nil {
