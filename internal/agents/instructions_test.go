@@ -48,3 +48,15 @@ func TestOptimizerInstructionNamesGoVersion(t *testing.T) {
 	}
 	t.Fatal("no optimizer role")
 }
+
+// TestOptimizerInstructionNamesTargetContext pins the sentence that tells the
+// optimizer to use target.context's real declarations instead of guessing.
+func TestOptimizerInstructionNamesTargetContext(t *testing.T) {
+	for _, spec := range roleSpecs {
+		if spec.role == RoleOptimizer {
+			require.Contains(t, spec.instruction, "target.context")
+			return
+		}
+	}
+	t.Fatal("no optimizer role")
+}

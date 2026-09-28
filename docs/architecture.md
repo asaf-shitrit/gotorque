@@ -545,7 +545,12 @@ as the coordinator's experiment, and cuts the source excerpts down to that
 function; the optimizer's instruction forbids patching any other. With a
 target, the optimizer's instruction also tells it to answer with
 `function_source` (the target function's whole new declaration) and
-`imports` instead of a hand-written `patch` (ADR 0022): deterministic code
+`imports` instead of a hand-written `patch` (ADR 0022). Each target also
+carries `context`: the declarations, from its own package, of the functions,
+methods and types its body refers to and its receiver's type, signatures
+without bodies and capped at twelve (`targetSignatures`), because the
+optimizer otherwise guessed them and lost attempts to build failures (on
+miller it treated a `string` return as `[]byte` twice). With function_source, deterministic code
 finds the function by name in the base revision and builds the diff itself,
 which removes context-line and header mismatches as a way to lose a
 candidate. `patch` stays the transport when there is no target, and remains
