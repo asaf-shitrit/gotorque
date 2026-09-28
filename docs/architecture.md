@@ -645,6 +645,26 @@ to infer) is added the same way; nothing outside that table is ever guessed.
 The single-function path (the zero `TargetFunction` kind) is unchanged, byte
 for byte.
 
+**Measured unbuffered writes (ADR 0032, `internal/profile/writes.go`,
+`internal/campaign/writes.go`).** A second code-only signal reads the target
+sample's call stacks rather than source. `profile.UnbufferedWrites`
+attributes samples to the innermost own frame exactly as `AttributeToOwn`
+does and, per function, counts the samples below `syscall.write` with no
+`bufio.` frame on the path, orphaned `write` samples shared out in
+proportion to each function's observed writes. A hot-list function whose
+share reaches 0.5 (`unbufferedWriteShare`) is persisted in
+`DiscoveryUnbufferedWrites` with up to three callers' locations and becomes a
+first-tier target with cause `unbuffered_writes`, ahead of throwaway_result
+and every Jev target; a Jev `unbuffered_io` target at the same location is
+dropped. Callers under the classification limit join as a function set, as
+places the buffering may go: the shape check asks for a flushed `bufio`
+writer, as for Jev's `unbuffered_io`, and not for a caller edit. The report
+labels both code-derived causes "code-derived" instead of a z-score. It sees
+through closures, which Jev cannot: fzf's Printer closure, `func(str string)
+{ fmt.Println(str) }`, carried the second-largest weight of the sample, and
+Jev, shown the 2.4 KB options constructor it sits in, put unbuffered I/O at
+0.04.
+
 `OPENROUTER_API_KEY` (and optionally `OPENROUTER_BASE_URL`) configure the
 client, the same credential and override the optimizer role already uses.
 `--adk` spends one preflight request before repository work, proving the key,

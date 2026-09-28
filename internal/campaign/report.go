@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/jev"
 	"example.com/gotorque/internal/manifest"
@@ -377,9 +378,19 @@ func writeCandidateRecord(b *strings.Builder, record CandidateRecord) {
 	writeCandidatePGO(b, record)
 }
 
+// targetEvidence says what raised a target: Jev's deviation from its usual
+// answer, or code, whose causes carry no z-score and used to print as
+// "+0.0 sd", as if Jev had found nothing unusual.
+func targetEvidence(t agents.Target) string {
+	if t.Cause == causeThrowawayResult || t.Cause == causeUnbufferedWrites {
+		return "code-derived"
+	}
+	return fmt.Sprintf("%+.1f sd", t.Z)
+}
+
 func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	if t := record.Target; t != nil {
-		fmt.Fprintf(b, "- Target: `%s` at `%s`, %s (%+.1f sd)\n", t.Function, t.Location, t.Cause, t.Z)
+		fmt.Fprintf(b, "- Target: `%s` at `%s`, %s (%s)\n", t.Function, t.Location, t.Cause, targetEvidence(*t))
 	}
 	if record.Hypothesis != "" {
 		fmt.Fprintf(b, "- Hypothesis: %s\n", record.Hypothesis)
