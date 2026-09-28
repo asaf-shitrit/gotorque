@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -105,7 +106,70 @@ func checkShape(worktree string, diff []byte, target *agents.Target) error {
 			return err
 		}
 	}
+	for _, name := range names {
+		if err := checkLiteralDrift(name, changes[name]); err != nil {
+			return err
+		}
+	}
 	return checkRemedy(worktree, changes, target)
+}
+
+var keyedField = regexp.MustCompile(`^\s*([A-Za-z_]\w*):\s*(\S.*?)\s*,?\s*$`)
+
+// switchedOff matches a keyed value that turns a behaviour off or empties it:
+// a bare boolean, nil, an empty string, or an empty composite literal.
+// Numbers are left alone, since resizing a buffer is an optimization.
+var switchedOff = regexp.MustCompile(`^(?:true|false|nil|""|[\w.\[\]*]*\{\})$`)
+
+// checkLiteralDrift rejects a patch that rewrites a keyed composite literal
+// and, on the way, drops a field or switches one to a bare constant. A
+// function_source rewrite of fzf's defaultOptions buffered the Printer, the
+// remedy asked of it, and retyped the Options literal from memory: Unicode,
+// BorderLabel and PreviewLabel vanished, and ClearOnExit, Ambidouble and the
+// walker defaults changed. fzf's tests pass with any defaults, so it was
+// accepted at -31%. Over the 186 patches recorded before it, neither rule
+// fired once.
+//
+// A dropped field counts only when the file also adds keyed fields, so a
+// literal moved or replaced by assignments is not mistaken for a rewrite.
+func checkLiteralDrift(name string, change *fileChange) error {
+	if !strings.HasSuffix(name, ".go") {
+		return nil
+	}
+	removed, added := keyedFields(change.removed), keyedFields(change.added)
+	if len(added) == 0 {
+		return nil
+	}
+	var drift []string
+	for _, key := range slices.Sorted(maps.Keys(removed)) {
+		now, kept := added[key]
+		switch {
+		case !kept:
+			drift = append(drift, key+" is dropped")
+		case now != removed[key] && switchedOff.MatchString(now):
+			drift = append(drift, fmt.Sprintf("%s changes from %s to %s", key, removed[key], now))
+		}
+	}
+	if len(drift) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s: the patch rewrites a struct literal and %s; a field left out resets to its zero value, so keep every field the remedy does not need to change exactly as it was", name, strings.Join(drift, ", "))
+}
+
+// keyedFields reads `Key: value` lines, skipping case clauses and comments;
+// a label or a bare `default:` has no value and never matches.
+func keyedFields(lines []string) map[string]string {
+	fields := map[string]string{}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "case ") || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if m := keyedField.FindStringSubmatch(line); m != nil {
+			fields[m[1]] = strings.TrimSuffix(m[2], ",")
+		}
+	}
+	return fields
 }
 
 func checkFile(worktree, name string, change *fileChange, target *agents.Target) error {

@@ -164,8 +164,15 @@ produced here or in policy.
    `bufio.Writer` must also route every write through it: a direct write left
    on the wrapped writer lands before the buffered output and reorders it,
    which is how a gojq patch that buffered `printValues`' values but not its
-   newlines reached the test gate. The check can only add a rejection: when Git
-   cannot produce the diff, the build decides as before.
+   newlines reached the test gate. A patch that rewrites a keyed struct
+   literal may not drop a field from it, nor switch one to a bare `true`,
+   `false`, `nil`, `""` or empty composite (`checkLiteralDrift`): a
+   function_source rewrite of fzf's `defaultOptions` buffered the Printer as
+   asked and retyped the `Options` literal from memory, losing `Unicode` and
+   turning `ClearOnExit` off, and fzf's tests passed it. Over the 186 patches
+   recorded before it the rule never fired (`TestLiteralDriftReplaysRecordedPatches`
+   replays them when the work directory is present). The check can only add a
+   rejection: when Git cannot produce the diff, the build decides as before.
 3. **Release build.** The patched tree is built with release-equivalent flags
    into the campaign builds directory. Build failures end the attempt with
    the compiler stderr attached to the candidate record. When
