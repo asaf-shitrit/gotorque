@@ -1,0 +1,177 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "hclfmt CLI",
+  "target": {
+    "repository": "https://github.com/hashicorp/hcl",
+    "build": {
+      "package": "./cmd/hclfmt",
+      "binary": "hclfmt"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "format-generated-tf",
+        "name": "Format a 3000-block generated HCL file",
+        "tier": "representative",
+        "args": [
+          "large.tf"
+        ],
+        "files": [
+          {
+            "path": "large.tf",
+            "content": "resource \"aws_instance\" \"web\" {\n  ami           = \"ami-00000000\"\n  instance_type = \"t3.micro\"\n  tags = {\n    Name = \"web\"\n    Env  = \"prod\"\n  }\n  network_interface {\n    device_index = 0\n    subnet_id    = \"subnet-0000\"\n  }\n}\n\n",
+            "repeat": 3000
+          }
+        ],
+        "provenance": "manifest",
+        "description": "hclwrite.Format over a repeated resource block; identical blocks are valid HCL and hclfmt does no semantic duplicate-label check."
+      },
+      {
+        "id": "check-generated-tf",
+        "name": "Syntax-check and format a 1500-block generated HCL file",
+        "tier": "representative",
+        "args": [
+          "--check",
+          "mid.tf"
+        ],
+        "files": [
+          {
+            "path": "mid.tf",
+            "content": "resource \"aws_instance\" \"web\" {\n  ami           = \"ami-00000000\"\n  instance_type = \"t3.micro\"\n  tags = {\n    Name = \"web\"\n    Env  = \"prod\"\n  }\n  network_interface {\n    device_index = 0\n    subnet_id    = \"subnet-0000\"\n  }\n}\n\n",
+            "repeat": 1500
+          }
+        ],
+        "provenance": "manifest",
+        "description": "--check parses twice (diagnostics pass, then format), roughly 2x the plain-format cost per byte."
+      },
+      {
+        "id": "format-two-files",
+        "name": "Format two 800-block HCL files in one invocation",
+        "tier": "plausible",
+        "args": [
+          "a.tf",
+          "b.tf"
+        ],
+        "files": [
+          {
+            "path": "a.tf",
+            "content": "resource \"aws_instance\" \"web\" {\n  ami           = \"ami-00000000\"\n  instance_type = \"t3.micro\"\n  tags = {\n    Name = \"web\"\n    Env  = \"prod\"\n  }\n  network_interface {\n    device_index = 0\n    subnet_id    = \"subnet-0000\"\n  }\n}\n\n",
+            "repeat": 800
+          },
+          {
+            "path": "b.tf",
+            "content": "resource \"aws_instance\" \"web\" {\n  ami           = \"ami-00000000\"\n  instance_type = \"t3.micro\"\n  tags = {\n    Name = \"web\"\n    Env  = \"prod\"\n  }\n  network_interface {\n    device_index = 0\n    subnet_id    = \"subnet-0000\"\n  }\n}\n\n",
+            "repeat": 800
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "format-generated-tf-large",
+        "name": "Format a 115000-block generated HCL file",
+        "tier": "stress",
+        "args": [
+          "huge.tf"
+        ],
+        "files": [
+          {
+            "path": "huge.tf",
+            "content": "resource \"aws_instance\" \"web\" {\n  ami           = \"ami-00000000\"\n  instance_type = \"t3.micro\"\n  tags = {\n    Name = \"web\"\n    Env  = \"prod\"\n  }\n  network_interface {\n    device_index = 0\n    subnet_id    = \"subnet-0000\"\n  }\n}\n\n",
+            "repeat": 115000
+          }
+        ],
+        "provenance": "manifest",
+        "description": "~26MB expanded input, ~3.4-6s wall time observed locally; within the macOS sampler's target band."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}

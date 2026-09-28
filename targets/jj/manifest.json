@@ -1,0 +1,191 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "jj CLI",
+  "target": {
+    "repository": "https://github.com/tidwall/jj",
+    "build": {
+      "package": "./cmd/jj",
+      "binary": "jj"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "edit-order-status",
+        "name": "Set a field deep inside a 100k-record JSON array",
+        "tier": "representative",
+        "args": [
+          "-n",
+          "-i",
+          "orders.json",
+          "-v",
+          "shipped",
+          "orders.99000.status"
+        ],
+        "files": [
+          {
+            "path": "orders.json",
+            "header": "{\"orders\":[",
+            "content": "{\"id\":0,\"customer\":\"cust-0\",\"status\":\"pending\",\"total\":42.5,\"items\":[{\"sku\":\"SKU0-0\",\"qty\":3,\"price\":9.5},{\"sku\":\"SKU0-1\",\"qty\":2,\"price\":4.25}],\"tags\":[\"tag0\",\"tag3\"]},",
+            "repeat": 100000
+          }
+        ],
+        "provenance": "manifest",
+        "description": "sjson set on the last quarter of a 100k-element array; exercises jj's key-path write path."
+      },
+      {
+        "id": "sum-order-totals",
+        "name": "Wildcard-read every total across a 100k-record JSON array",
+        "tier": "representative",
+        "args": [
+          "-n",
+          "-i",
+          "orders.json",
+          "orders.#.total"
+        ],
+        "files": [
+          {
+            "path": "orders.json",
+            "header": "{\"orders\":[",
+            "content": "{\"id\":0,\"customer\":\"cust-0\",\"status\":\"pending\",\"total\":42.5,\"items\":[{\"sku\":\"SKU0-0\",\"qty\":3,\"price\":9.5},{\"sku\":\"SKU0-1\",\"qty\":2,\"price\":4.25}],\"tags\":[\"tag0\",\"tag3\"]},",
+            "repeat": 100000
+          }
+        ],
+        "provenance": "manifest",
+        "description": "gjson wildcard read collecting one field from every array element."
+      },
+      {
+        "id": "delete-order",
+        "name": "Delete one element from a 50k-record JSON array",
+        "tier": "plausible",
+        "args": [
+          "-n",
+          "-i",
+          "orders.json",
+          "-D",
+          "orders.49000"
+        ],
+        "files": [
+          {
+            "path": "orders.json",
+            "header": "{\"orders\":[",
+            "content": "{\"id\":0,\"customer\":\"cust-0\",\"status\":\"pending\",\"total\":42.5,\"items\":[{\"sku\":\"SKU0-0\",\"qty\":3,\"price\":9.5},{\"sku\":\"SKU0-1\",\"qty\":2,\"price\":4.25}],\"tags\":[\"tag0\",\"tag3\"]},",
+            "repeat": 50000
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "edit-order-status-large",
+        "name": "Set a field deep inside a 2.5M-record JSON array",
+        "tier": "stress",
+        "args": [
+          "-n",
+          "-i",
+          "orders.json",
+          "-v",
+          "shipped",
+          "orders.2499000.status"
+        ],
+        "files": [
+          {
+            "path": "orders.json",
+            "header": "{\"orders\":[",
+            "content": "{\"id\":0,\"customer\":\"cust-0\",\"status\":\"pending\",\"total\":42.5,\"items\":[{\"sku\":\"SKU0-0\",\"qty\":3,\"price\":9.5},{\"sku\":\"SKU0-1\",\"qty\":2,\"price\":4.25}],\"tags\":[\"tag0\",\"tag3\"]},",
+            "repeat": 2500000
+          }
+        ],
+        "provenance": "manifest",
+        "description": "~420MB expanded input, ~1.5-2.7s wall time observed locally. jj's gjson/sjson engine is a byte-level scanner at roughly 150-400MB/s; reaching the usual 3-6s stress band would need a 1-1.7GB expanded fixture, which risks the sandbox's memory ceiling once input and rewritten output are both held. Capped short of that band; see targets/README.md."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 2147483648
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}
