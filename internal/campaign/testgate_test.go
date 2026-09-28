@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -366,6 +367,59 @@ func TestBaselineStepKeepsASuiteWithOneUnbuildablePackage(t *testing.T) {
 	var b strings.Builder
 	writeBehaviorGate(&b, engine.State())
 	require.Contains(t, b.String(), "cannot build or set up on the unpatched revision")
+}
+
+// TestBehaviorGateStopsRequiringSubtestsTheBaselineDoesNotRepeat: cue's
+// TestSortRandom names its subtests from a random seed. Here each run of the
+// suite names a different subtest, so the one the baseline passed is absent
+// from the candidate's run and from a second baseline run alike: it stops
+// being required, and the candidate passes. TestRandom itself ran every time
+// and stays required.
+func TestBehaviorGateStopsRequiringSubtestsTheBaselineDoesNotRepeat(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "runs")
+	tests := "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestRandom(t *testing.T) {\n\tdata, _ := os.ReadFile(" + strconv.Quote(counter) + ")\n\t_ = os.WriteFile(" + strconv.Quote(counter) + ", append(data, 'x'), 0o600)\n\tt.Run(fmt.Sprint(\"case\", len(data)), func(t *testing.T) {})\n}\n"
+	repo := repositoryWithTestFile(t, tests)
+	manifestPath := writeManifest(t, t.TempDir())
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: manifestPath,
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+
+	require.NoError(t, engine.runBaselineTestStep(context.Background()))
+	require.Equal(t, []string{"test.local/fixture::TestRandom", "test.local/fixture::TestRandom/case0"}, engine.State().BaselineTestPasses)
+
+	var evidence orchestrator.CandidateEvidence
+	require.True(t, engine.candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
+	require.Equal(t, []string{"test.local/fixture::TestRandom"}, engine.State().BaselineTestPasses)
+	require.Equal(t, 1, engine.State().BaselineRechecks)
+
+	// The budget is spent after maxBaselineRechecks re-runs: a later loss is
+	// judged against the set as it stands, without another run.
+	engine.state.BaselineRechecks = maxBaselineRechecks
+	engine.state.BaselineTestPasses = append(engine.state.BaselineTestPasses, "test.local/fixture::TestRandom/case9")
+	evidence = orchestrator.CandidateEvidence{}
+	require.False(t, engine.candidateTestsPassed(context.Background(), repo, &evidence))
+	require.Contains(t, evidence.FailureDetail, "TestRandom/case9 (did not run)")
+}
+
+// TestSplitStableDropsTheSubtreeOfARandomizedTest: one vanished subtest marks
+// its top-level test's whole subtree as regenerated per run, while the
+// top-level test and every other test stay required.
+func TestSplitStableDropsTheSubtreeOfARandomizedTest(t *testing.T) {
+	required := []string{
+		"p::TestSortRandom", "p::TestSortRandom/0", "p::TestSortRandom/0/2", "p::TestSortRandom/12/2",
+		"p::TestTable", "p::TestTable/row", "q::TestOther",
+	}
+	fresh := []string{"p::TestSortRandom", "p::TestSortRandom/0", "p::TestSortRandom/12/2", "p::TestTable", "p::TestTable/row", "q::TestOther"}
+	stable, unstable := splitStable(required, fresh)
+	require.Equal(t, []string{"p::TestSortRandom", "p::TestTable", "p::TestTable/row", "q::TestOther"}, stable)
+	require.Equal(t, []string{"p::TestSortRandom/0", "p::TestSortRandom/0/2", "p::TestSortRandom/12/2"}, unstable)
+
+	stable, unstable = splitStable([]string{"p::TestGone", "p::TestKept"}, []string{"p::TestKept"})
+	require.Equal(t, []string{"p::TestKept"}, stable, "a vanished top-level test marks nothing else")
+	require.Equal(t, []string{"p::TestGone"}, unstable)
 }
 
 // TestGateIgnoresPointerAddressesInTestNames pins the fix for hcl, whose
