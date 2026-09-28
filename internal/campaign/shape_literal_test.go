@@ -53,9 +53,18 @@ func TestLiteralDriftAllowsWhatOptimizationsDo(t *testing.T) {
 	}
 }
 
+// reviewedDriftCatches are recorded patches the rule rejects, each read and
+// confirmed to change behaviour beyond its remedy. A rejection of any other
+// recorded patch fails the replay until it is reviewed and listed here: a
+// false rejection costs a good candidate (ADR 0017).
+var reviewedDriftCatches = map[string]string{
+	"b6630f4bf77b1f73f9981bdc": "live2-fzf: Options literal retyped; Unicode dropped, ClearOnExit switched off",
+	"02810e0fd72d07d033542ec2": "live7-hclfmt: TokenQuotedNewline and TokenInvalid diagnostics deleted",
+}
+
 // TestLiteralDriftReplaysRecordedPatches runs the rule over every patch the
-// live campaigns recorded: it may fire on the retyped fzf literal and on
-// nothing else, since a false rejection costs a good candidate (ADR 0017).
+// live campaigns recorded: it must reject each reviewed catch that is on
+// record and nothing else.
 func TestLiteralDriftReplaysRecordedPatches(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
@@ -63,18 +72,20 @@ func TestLiteralDriftReplaysRecordedPatches(t *testing.T) {
 	if len(patches) == 0 {
 		t.Skip("no recorded campaigns at ~/projects/gotorque-work; skipping the replay gate")
 	}
-	const fzf = "b6630f4bf77b1f73f9981bdc"
-	sawFzf, firedFzf := false, false
 	for _, path := range patches {
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
-		sawFzf = sawFzf || strings.Contains(path, fzf)
+		id := strings.TrimSuffix(filepath.Base(path), ".diff")
+		fired := false
 		for name, change := range parseChanges(data) {
 			if err := checkLiteralDrift(name, change); err != nil {
-				require.Contains(t, path, fzf, "unexpected rejection: %v", err)
-				firedFzf = true
+				_, reviewed := reviewedDriftCatches[id]
+				require.True(t, reviewed, "unreviewed rejection of %s: %v", path, err)
+				fired = true
 			}
 		}
+		if note, reviewed := reviewedDriftCatches[id]; reviewed {
+			require.True(t, fired, "reviewed catch no longer rejected: %s (%s)", path, note)
+		}
 	}
-	require.Equal(t, sawFzf, firedFzf, "the retyped fzf literal must be rejected whenever its patch is on record")
 }
