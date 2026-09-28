@@ -147,7 +147,7 @@ func (e *Engine) campaignRequest() orchestrator.CampaignRequest {
 		BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...),
 		OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures,
 		PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive, PriorTargets: e.priorTargets(),
-		Objective: e.state.Manifest.Performance.PrimaryMetric, EarlierCandidates: e.state.HistoryPriors,
+		Objective: e.state.Manifest.Performance.PrimaryMetric, EarlierCandidates: e.state.HistoryPriors, GoVersion: goDirective(e.state.Repository, e.state.Manifest.Target.Build.Directory),
 	}
 }
 

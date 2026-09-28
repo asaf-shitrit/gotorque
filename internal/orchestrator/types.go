@@ -44,6 +44,12 @@ type CampaignRequest struct {
 	// re-derive a known verdict; triedTargets never reads them (the engine
 	// passes their targets through PriorTargets instead).
 	EarlierCandidates []PriorCandidate `json:"earlier_candidates,omitempty"`
+	// GoVersion is the language version the target module's go.mod declares
+	// (its go directive), so a patch does not reach for a builtin or API the
+	// module cannot compile: goawk declares go 1.20, and a free-choice
+	// candidate on overnight-goawk-2 failed to build over clear, which needs
+	// 1.21.
+	GoVersion string `json:"go_version,omitempty"`
 }
 
 // Inspection is deterministic repository and target inventory.

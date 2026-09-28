@@ -426,6 +426,8 @@ type OptimizerBrief struct {
 	// EarlierCandidates are the measured candidates of earlier campaigns
 	// (CampaignRequest.EarlierCandidates).
 	EarlierCandidates []PriorCandidate `json:"earlier_candidates,omitempty"`
+	// GoVersion is the target module's declared Go language version.
+	GoVersion string `json:"go_version,omitempty"`
 }
 
 func optimizerBrief(state CampaignState) OptimizerBrief {
@@ -435,6 +437,7 @@ func optimizerBrief(state CampaignState) OptimizerBrief {
 		SourceExcerpts:    state.SourceExcerpts,
 		PriorCandidates:   state.PriorCandidates,
 		EarlierCandidates: state.Request.EarlierCandidates,
+		GoVersion:         state.Request.GoVersion,
 	}
 }
 
