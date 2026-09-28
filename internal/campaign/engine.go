@@ -218,6 +218,9 @@ type State struct {
 	// 0027's addendum). Absent when discovery never profiled (a
 	// benchmark-only or otherwise empty discovery).
 	DiscoveryHotFunctionWeights map[string]float64 `json:"discovery_hot_function_weights,omitempty"`
+	// DiscoveryUnbufferedWrites is the target sample's unbuffered-write
+	// evidence (ADR 0032), resolved to hot-list locations.
+	DiscoveryUnbufferedWrites []orchestrator.UnbufferedWrite `json:"discovery_unbuffered_writes,omitempty"`
 	// DiscoveryWorkloads names the option variants discovery sampled next to
 	// the first seed, with Jev's processing-mode judgment of each.
 	DiscoveryWorkloads          []string `json:"discovery_workloads,omitempty"`
@@ -987,8 +990,63 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	names, weights := e.sampledHotNamesAndWeights(results...)
 	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", names)
 	e.state.DiscoveryHotFunctionWeights = mergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
+	e.state.DiscoveryUnbufferedWrites = e.unbufferedWrites(ctx, results)
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
+}
+
+// unbufferedWriteShare is the fraction of a function's sampled time that must
+// be unbuffered writes before code raises the target itself. Across every
+// campaign sample on record, the functions above it were exactly gron's
+// output loop, gojq's printValues and encoder flush, and fzf's Printer, each
+// at 0.95 or more; nothing else reached 0.3.
+const unbufferedWriteShare = 0.5
+
+// maxWriteCallers caps how many callers a write site's evidence keeps.
+const maxWriteCallers = 3
+
+// unbufferedWrites resolves the sample's unbuffered-write sites to hot-list
+// locations, keeping each function's largest share over the sampled
+// workloads. A site outside the hot list is dropped: the evidence ranks
+// targets and is not a reason to look at code discovery did not measure.
+func (e *Engine) unbufferedWrites(ctx context.Context, results []profile.SampleResult) []orchestrator.UnbufferedWrite {
+	best := map[string]profile.WriteSite{}
+	var order []string
+	for _, result := range results {
+		for _, site := range profile.UnbufferedWrites(result.Stacks, e.ownSymbol, unbufferedWriteShare) {
+			prior, seen := best[site.Function]
+			if !seen {
+				order = append(order, site.Function)
+			}
+			if !seen || site.Share > prior.Share {
+				best[site.Function] = site
+			}
+		}
+	}
+	var out []orchestrator.UnbufferedWrite
+	for _, name := range order {
+		if w, ok := e.writeEvidence(ctx, best[name]); ok {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func (e *Engine) writeEvidence(ctx context.Context, site profile.WriteSite) (orchestrator.UnbufferedWrite, bool) {
+	loc := e.hotLocation(ctx, "", site.Function)
+	if !slices.Contains(e.state.DiscoveryHotFunctions, loc) {
+		return orchestrator.UnbufferedWrite{}, false
+	}
+	w := orchestrator.UnbufferedWrite{Location: loc, Share: site.Share}
+	for _, caller := range site.Callers {
+		if len(w.Callers) == maxWriteCallers {
+			break
+		}
+		if c := e.hotLocation(ctx, "", caller); c != caller && c != loc && !slices.Contains(w.Callers, c) {
+			w.Callers = append(w.Callers, c)
+		}
+	}
+	return w, true
 }
 
 // sampleFirstLiving samples the first seed, and when that fails, each

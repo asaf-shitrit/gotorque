@@ -100,6 +100,7 @@ func (a causeAnalyst) AnalyzeCauses(ctx context.Context, req orchestrator.CauseR
 	result := analystResult(verdicts, req.Campaign.Objective)
 	result.AdditionalChecks = append(result.AdditionalChecks, skipped...)
 	addThrowawayTargets(req.Campaign.Repository, sites, req.Discovery.HotFunctionWeights, &result)
+	addUnbufferedWriteTargets(req.Campaign.Repository, req.Discovery.UnbufferedWrites, &result)
 	for i := range result.Targets {
 		result.Targets[i].Context = targetSignatures(req.Campaign.Repository, result.Targets[i])
 	}
@@ -252,6 +253,15 @@ func hotFunctions(repo string, locations []string) ([]hotFunction, []string) {
 // functionAt returns the top-level function declaration containing line, with
 // its doc comment, which is the unit the baseline was measured on.
 func functionAt(file string, line int) (hotFunction, int, error) {
+	fn, start, err := declarationAt(file, line)
+	if err == nil && len(fn.Source) > maxCauseSourceBytes {
+		return hotFunction{}, 0, fmt.Errorf("function %s is %d bytes, over the %d-byte classification limit", fn.Name, len(fn.Source), maxCauseSourceBytes)
+	}
+	return fn, start, err
+}
+
+// declarationAt is functionAt without the classification size limit.
+func declarationAt(file string, line int) (hotFunction, int, error) {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return hotFunction{}, 0, err
@@ -271,9 +281,6 @@ func functionAt(file string, line int) (hotFunction, int, error) {
 			from = fd.Doc.Pos()
 		}
 		source := data[fset.Position(from).Offset:fset.Position(fd.End()).Offset]
-		if len(source) > maxCauseSourceBytes {
-			return hotFunction{}, 0, fmt.Errorf("function %s is %d bytes, over the %d-byte classification limit", funcName(fd), len(source), maxCauseSourceBytes)
-		}
 		return hotFunction{Name: funcName(fd), Source: string(source)}, fset.Position(fd.Pos()).Line, nil
 	}
 	return hotFunction{}, 0, errors.New("no function declaration contains line " + strconv.Itoa(line))

@@ -89,6 +89,21 @@ type DiscoveryEvidence struct {
 	// or otherwise empty discovery), in which case the ranking that consumes
 	// it falls back to call-site count exactly as before this field existed.
 	HotFunctionWeights map[string]float64 `json:"hot_function_weights,omitempty"`
+	// UnbufferedWrites are the hot functions the target sample caught
+	// spending most of their time in write system calls with no bufio frame
+	// on the path (ADR 0032). Code derives them from call stacks; Jev never
+	// sees them.
+	UnbufferedWrites []UnbufferedWrite `json:"unbuffered_writes,omitempty"`
+}
+
+// UnbufferedWrite is one function the sample caught writing record by record:
+// its hot-list location, the fraction of its sampled time spent in those
+// writes, and the locations of the functions that called it on those paths,
+// most samples first.
+type UnbufferedWrite struct {
+	Location string   `json:"location"`
+	Share    float64  `json:"share"`
+	Callers  []string `json:"callers,omitempty"`
 }
 
 // CauseRequest carries what a CauseAnalyst needs: the repository to read source
