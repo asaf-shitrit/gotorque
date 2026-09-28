@@ -179,3 +179,17 @@ func TestCampaignKeepsFreeChoiceWithoutTheStop(t *testing.T) {
 		t.Errorf("stop reason = %q, want %q", result.StopReason, stopReasonMaxCandidates)
 	}
 }
+
+// TestCampaignStopsWhenTheAnalysisFlaggedNothing: with the stop on, an
+// analysis that flags no target ends the campaign before any candidate, and
+// says why.
+func TestCampaignStopsWhenTheAnalysisFlaggedNothing(t *testing.T) {
+	orch, optimizerCalls := exhaustionGraph(t, &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:207"}}}}, true)
+	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-nothing", causeCampaign, "finalize_campaign")
+	if result.CandidatesTried != 0 || *optimizerCalls != 0 {
+		t.Fatalf("candidates = %d, optimizer calls = %d, want none", result.CandidatesTried, *optimizerCalls)
+	}
+	if result.StopReason != stopReasonNothingFlagged {
+		t.Errorf("stop reason = %q, want %q", result.StopReason, stopReasonNothingFlagged)
+	}
+}

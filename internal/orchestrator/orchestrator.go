@@ -25,7 +25,11 @@ const (
 	stopReasonMaxCandidates = "maximum candidate count reached"
 	// stopReasonRankingExhausted ends a campaign whose analysis has no untried
 	// target left (Config.StopWhenRankingExhausted).
-	stopReasonRankingExhausted    = "every target the analysis flagged has been tried"
+	stopReasonRankingExhausted = "every target the analysis flagged has been tried"
+	// stopReasonNothingFlagged ends a campaign whose analysis flagged no
+	// target at all. live1-tengo reported the exhausted reason above for a
+	// ranking that had nothing in it, which read as if targets had been tried.
+	stopReasonNothingFlagged      = "the analysis flagged no target"
 	stopReasonConsecutiveFailures = "consecutive rejection/inconclusive limit reached"
 	// stopReasonConsecutiveInconclusive is reported only when the campaign
 	// configures stop_after_inconclusive, which bounds unresolved verdicts
@@ -411,6 +415,9 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	next := routeContinue
 	if g.cfg.StopWhenRankingExhausted && state.Target == nil {
 		state.StopReason = stopReasonRankingExhausted
+		if len(state.Analysis.Targets) == 0 {
+			state.StopReason = stopReasonNothingFlagged
+		}
 		next = routeFinish
 	}
 	ev := stateEvent(ctx, state)
