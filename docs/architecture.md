@@ -468,8 +468,12 @@ build id TypeSafe controls, `Client.Preflight` still spends its one request on
 a canary (`internal/jev/canary.go`) instead of a plain connectivity check: a
 fixed synthetic function and all seven cause questions, with answers recorded
 once (`TestLiveCanary`) and guarded by a digest the same way the baseline is.
-An answer that moved by more than `CanaryTolerance` (0.05) fails the
-preflight, naming `TestLiveCanary`, unless `GOTORQUE_JEV_ALLOW_DRIFT` is set,
+A drifted first answer is re-asked twice and judged by the median of the
+three, because Jev occasionally returns a single answer several sd out (ADR
+0030's addendum); a median that moved by more than its tolerance (the larger of
+`CanaryTolerance`, 0.05, and four of that answer's recorded standard
+deviations, `canarySpread`)
+fails the preflight, naming `TestLiveCanary`, unless `GOTORQUE_JEV_ALLOW_DRIFT` is set,
 which downgrades that check alone to a warning.
 
 Each flagged cause becomes a one-sentence remedy in `candidate_hypotheses`,
