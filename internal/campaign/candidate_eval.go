@@ -2,6 +2,7 @@ package campaign
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -119,6 +120,12 @@ func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest, patchTex
 	patchPath = filepath.Join(patchDir, id+".diff")
 	if err := os.WriteFile(patchPath, []byte(patchText), 0o600); err != nil {
 		return "", "", err
+	}
+	// The optimizer's answer as it arrived, beside the diff built from it.
+	// Two cue candidates were rejected as malformed diffs, and without the
+	// answer nothing said whether a function_source had come with them.
+	if proposal, err := json.MarshalIndent(req.Proposal, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(patchDir, id+".proposal.json"), proposal, 0o600)
 	}
 	return id, patchPath, nil
 }

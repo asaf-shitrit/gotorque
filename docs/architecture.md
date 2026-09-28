@@ -92,9 +92,13 @@ produced here or in policy.
    optimizer may return `function_source` (the target function's complete new
    declaration) and `imports` instead of a hand-written `patch`.
    `resolveCandidatePatch` in `internal/campaign/function_source.go` chooses
-   which the rest of the loop sees: a non-empty `patch` always wins (it is
-   also the only transport when there is no target), otherwise a target plus a
-   non-empty `function_source` builds the diff deterministically. Building
+   which the rest of the loop sees: a `patch` holding a hunk always wins (it
+   is also the only transport when there is no target), otherwise a target
+   plus a non-empty `function_source` builds the diff deterministically. A
+   `patch` with no hunk (two cue answers carried a lone newline) yields to a
+   `function_source` when one came with it, and is judged as before when
+   none did. Each answer is kept as `patches/<id>.proposal.json` beside the
+   diff built from it. Building
    parses the target's file at the base revision, finds the `FuncDecl` named
    `target.Function` (the same format `causes.go`'s `funcName` produces),
    splices the gofmt'd new declaration over it (keeping the old doc comment
