@@ -1541,10 +1541,26 @@ func (e *Engine) hotLocationFromRepo(name string) (string, bool) {
 		return "", false
 	}
 	sym := profile.ParseSymbol(enclosingFunction(name))
-	if path, line, ok := profile.FindDeclaration(e.state.Repository, sym); ok {
-		return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
+	path, line, ok := e.findMainDeclaration(sym)
+	if !ok {
+		path, line, ok = profile.FindDeclaration(e.state.Repository, sym)
 	}
-	return "", false
+	if !ok {
+		return "", false
+	}
+	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
+}
+
+// findMainDeclaration resolves a main.* frame in the target's own main
+// package. A repository with several commands declares the same names in
+// each, and a repository-wide search refuses them as ambiguous.
+func (e *Engine) findMainDeclaration(sym profile.Symbol) (string, int, bool) {
+	build := e.state.Manifest.Target.Build
+	if sym.Package != "main" || !strings.HasPrefix(build.Package, ".") {
+		return "", 0, false
+	}
+	dir := filepath.Join(e.state.Repository, build.Directory, build.Package)
+	return profile.FindDeclarationInDir(e.state.Repository, dir, sym)
 }
 
 // enclosingFunction strips closure suffixes until the declared function

@@ -872,8 +872,10 @@ anchored, since `-list` takes a regular expression: unquoted,
 symbol containing it. The search strips closure suffixes (`outer.func1`,
 `outer.func1.2`) and matches a method only on its own receiver type and a
 function only without one. A package inside the root module is searched in
-its own directory, among the files this platform builds; anything else is
-searched repository-wide and must match exactly once. Test files are never
+its own directory, among the files this platform builds, and a `main.*`
+frame in the manifest's build package, since it belongs to the binary that
+was sampled; anything else is searched repository-wide and must match
+exactly once. Test files are never
 searched. Matching the bare name instead sent starlark's
 `(*Function).CallInternal` to another package's `CallInternal`, `Binary` to a
 method named `Binary` in `lib/time`, and `Int.get` into `example_test.go`.

@@ -95,6 +95,27 @@ func TestResolveHotLocationsQualifiesMethodsByReceiverAndPackage(t *testing.T) {
 	require.Equal(t, []string{"starlark/eval.go:5", "starlark/eval.go:7", "starlark/int.go:5"}, got)
 }
 
+// TestResolveHotLocationsFindsMainInTheBuiltCommand: two commands declare
+// run, and a sampled main.run belongs to the one the manifest builds.
+func TestResolveHotLocationsFindsMainInTheBuiltCommand(t *testing.T) {
+	repo := t.TempDir()
+	for rel, src := range map[string]string{
+		"go.mod":        "module example.com/tool\n",
+		"cmd/a/main.go": "package main\n\nfunc run() {}\n",
+		"cmd/b/main.go": "package main\n\nfunc main() {}\n\nfunc run() {}\n",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(repo, rel)), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(repo, rel), []byte(src), 0o600))
+	}
+	e := &Engine{}
+	e.state.Repository = repo
+	e.state.Manifest.Target.Build.Package = "./cmd/b"
+	require.Equal(t, []string{"cmd/b/main.go:5"}, e.resolveHotLocations(context.Background(), "", []string{"main.run"}))
+
+	e.state.Manifest.Target.Build.Package = "example.com/tool/cmd/b"
+	require.Equal(t, []string{"main.run"}, e.resolveHotLocations(context.Background(), "", []string{"main.run"}), "an import-path package names no directory to prefer, and run is ambiguous")
+}
+
 func TestResolveHotLocationsStopsAtTheBudget(t *testing.T) {
 	names := make([]string, 0, 2*hotFunctionBudget)
 	for i := range 2 * hotFunctionBudget {

@@ -84,6 +84,16 @@ func FindDeclaration(root string, sym Symbol) (string, int, bool) {
 	return s.matches[0].path, s.matches[0].line, true
 }
 
+// FindDeclarationInDir searches one package directory for sym, for a
+// package whose import path names no directory: a sampled main.* frame
+// belongs to the binary that was built, wherever its main package lives.
+func FindDeclarationInDir(root, dir string, sym Symbol) (string, int, bool) {
+	if sym.Func == "" {
+		return "", 0, false
+	}
+	return firstInDir(root, dir, declPattern(sym))
+}
+
 // packageDir maps an import path inside the root module to its directory.
 func packageDir(root, pkg string) (string, bool) {
 	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
