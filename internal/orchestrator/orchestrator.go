@@ -22,7 +22,14 @@ const (
 	routeContinue = "continue"
 	routeFinish   = "finish"
 
-	stopReasonMaxCandidates       = "maximum candidate count reached"
+	stopReasonMaxCandidates = "maximum candidate count reached"
+	// stopReasonRankingExhausted ends a campaign whose analysis has no untried
+	// target left (Config.StopWhenRankingExhausted).
+	stopReasonRankingExhausted = "every target the analysis flagged has been tried"
+	// stopReasonNothingFlagged ends a campaign whose analysis flagged no
+	// target at all. live1-tengo reported the exhausted reason above for a
+	// ranking that had nothing in it, which read as if targets had been tried.
+	stopReasonNothingFlagged      = "the analysis flagged no target"
 	stopReasonConsecutiveFailures = "consecutive rejection/inconclusive limit reached"
 	// stopReasonConsecutiveInconclusive is reported only when the campaign
 	// configures stop_after_inconclusive, which bounds unresolved verdicts
@@ -283,7 +290,8 @@ func (n graphNodes) edges() []workflow.Edge {
 		Add(n.explorer, n.discover).
 		Add(n.discover, n.analyst).
 		Add(n.analyst, n.mergeAnalysis).
-		Add(n.mergeAnalysis, n.optimizer).
+		AddRoute(n.mergeAnalysis, n.optimizer, workflow.StringRoute(routeContinue)).
+		AddRoute(n.mergeAnalysis, n.finalize, workflow.StringRoute(routeFinish)).
 		Add(n.optimizer, n.evaluate).
 		Add(n.evaluate, n.reviewer).
 		Add(n.reviewer, n.decide).
@@ -404,10 +412,19 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	state.Analysis = result
 	attachExcerpts(ctx, g.deps.Runner, &state, result)
 	planTarget(&state)
+	next := routeContinue
+	if g.cfg.StopWhenRankingExhausted && state.Target == nil {
+		state.StopReason = stopReasonRankingExhausted
+		if len(state.Analysis.Targets) == 0 {
+			state.StopReason = stopReasonNothingFlagged
+		}
+		next = routeFinish
+	}
 	ev := stateEvent(ctx, state)
 	if state.Target != nil {
 		ev.Output = optimizerBrief(state)
 	}
+	ev.Routes = []string{next}
 	return ev, nil
 }
 
