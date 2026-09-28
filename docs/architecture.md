@@ -205,10 +205,18 @@ produced here or in policy.
    made without any timing comparison, and the report names the tests. State
    written before the pass set existed re-runs the baseline step once
    (`CompletedSteps["baseline_test_passes"]`) instead of running the rest of
-   the campaign without the check. The baseline suite runs in the canonical
-   checkout and candidates run in fresh worktrees. A test that passes only
-   because of an ignored local file therefore rejects every candidate, by
-   name.
+   the campaign without the check. A test can name its subtests from a
+   random seed (cue's `TestSortRandom` runs one subtest per permutation of
+   random inputs), so a baseline pass may simply not recur. When a
+   candidate's only fault is baseline passes that did not run,
+   `pruneUnstablePasses` re-runs the unpatched suite with `-count=1` (the
+   test cache would replay the first run) and stops requiring every test
+   that run does not pass either, then judges the candidate again. The re-run
+   is of the base revision, so a patch cannot decide what counts as
+   unstable, and a test that passes again stays required. A campaign spends at
+   most two such re-runs (`maxBaselineRechecks`). The baseline suite, like
+   every candidate's, runs in a fresh worktree at the base revision, never
+   in the canonical checkout: miller's tests rewrite tracked fixtures.
 5. **Interleaved A/B measurement.** For each representative-tier seed
    workload, baseline and candidate binaries are measured in serialized
    alternating pairs (twenty-five pairs per workload, the side that runs first

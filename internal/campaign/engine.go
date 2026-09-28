@@ -268,6 +268,9 @@ type State struct {
 	// before this field existed has none, and the baseline test step re-runs
 	// to record them (CompletedSteps["baseline_test_passes"] marks the run).
 	BaselineTestPasses []string `json:"baseline_test_passes,omitempty"`
+	// BaselineRechecks counts the unpatched-suite re-runs pruneUnstablePasses
+	// has spent, bounded by maxBaselineRechecks.
+	BaselineRechecks int `json:"baseline_rechecks,omitempty"`
 	// TokenUsage holds per-role model token totals collected during ADK runs.
 	TokenUsage map[string]RoleUsageSnapshot `json:"token_usage,omitempty"`
 	// JevCache holds per-role Jev cache hit/miss counts across this campaign's

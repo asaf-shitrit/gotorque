@@ -261,6 +261,9 @@ func (e *Engine) candidateTestsPassed(ctx context.Context, worktree string, evid
 	// suite reports after a test the baseline passed was skipped or dropped.
 	testResult, testErr := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: worktree, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
 	reason, passed := e.classifyTestOutcome(testResult, testErr)
+	if !passed && e.pruneUnstablePasses(ctx, testResult) {
+		reason, passed = e.classifyTestOutcome(testResult, testErr)
+	}
 	if passed {
 		return true
 	}

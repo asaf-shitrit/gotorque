@@ -188,7 +188,7 @@ func (e *Engine) runBaselineTestStep(ctx context.Context) error {
 	if e.state.CompletedSteps["baseline_tests"] && e.state.CompletedSteps[baselinePassesStep] {
 		return nil
 	}
-	outcome, err := e.runBaselineSuite(ctx)
+	outcome, err := e.runBaselineSuite(ctx, 0)
 	if err != nil {
 		return err
 	}
@@ -207,13 +207,17 @@ func (e *Engine) runBaselineTestStep(ctx context.Context) error {
 // candidate's does, never in the canonical checkout: miller's tests rewrite
 // tracked fixtures under test/input, and one run left seven of them truncated
 // in the checkout the function_source transport reads its base from.
-func (e *Engine) runBaselineSuite(ctx context.Context) (testOutcome, error) {
+//
+// count is passed to go test's -count: 0 leaves the test cache in play, and
+// 1 forces the suite to run, which a re-check needs because the base
+// revision builds the same test binary and would replay the first run.
+func (e *Engine) runBaselineSuite(ctx context.Context, count int) (testOutcome, error) {
 	dir, cleanup, err := e.baselineWorktree(ctx)
 	if err != nil {
 		return testOutcome{}, err
 	}
 	defer cleanup()
-	result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: dir, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
+	result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: dir, JSON: true, Count: count, Env: []string{"GOTOOLCHAIN=local"}})
 	// A failing suite is a non-zero exit, which the toolchain reports as an
 	// error alongside the result. The exit status is therefore not the signal
 	// here: the parsed JSON is, and it is only unavailable when the go command
@@ -274,6 +278,77 @@ func (e *Engine) classifyTestOutcome(result toolchain.Result, testErr error) (re
 		return "tests that passed on the unpatched revision did not pass: " + describeTestFailures(lost), false
 	}
 	return "", true
+}
+
+// maxBaselineRechecks bounds how many times one campaign re-runs the
+// unpatched suite to tell an unstable test from a lost one.
+const maxBaselineRechecks = 2
+
+// pruneUnstablePasses re-runs the unpatched suite when a candidate's only
+// fault is baseline-passing tests that did not run at all, and stops
+// requiring every test that the fresh run did not pass either. It reports
+// whether the required set shrank, in which case the candidate is judged
+// again against it.
+//
+// A test can generate its subtests from a random seed: cue's TestSortRandom
+// seeds itself from rand.Uint64 and runs one subtest per permutation of
+// random inputs, so TestSortRandom/0/2 exists on one run and not the next.
+// Two cue candidates were rejected for "losing" such subtests. The re-run is
+// of the unpatched revision in a fresh worktree, so nothing a patch does can
+// decide which tests count as unstable, and a test the fresh run passes
+// stays required: a candidate that stopped running it is still rejected.
+func (e *Engine) pruneUnstablePasses(ctx context.Context, result toolchain.Result) bool {
+	if e.state.BaselineRechecks >= maxBaselineRechecks {
+		return false
+	}
+	outcome, ok := parseTestFailures(string(result.Stdout))
+	if !ok || !e.onlyVanished(outcome) {
+		return false
+	}
+	e.state.BaselineRechecks++
+	fresh, err := e.runBaselineSuite(ctx, 1)
+	if err != nil {
+		_ = e.saveEvent("baseline_tests_rechecked", "re-running the unpatched suite failed, so every baseline pass stays required: "+err.Error(), nil)
+		return false
+	}
+	stable, unstable := splitStable(e.state.BaselineTestPasses, fresh.Passed)
+	if len(unstable) == 0 {
+		_ = e.saveEvent("baseline_tests_rechecked", "every baseline pass passed again on the unpatched revision, so the candidate's missing tests are its own", nil)
+		return false
+	}
+	e.state.BaselineTestPasses = stable
+	_ = e.saveEvent("baseline_tests_rechecked", fmt.Sprintf("%d baseline-passing test(s) did not pass on a second run of the unpatched revision and are no longer required: %s", len(unstable), describeTestFailures(unstable)), map[string]any{"unstable": unstable})
+	return true
+}
+
+// onlyVanished reports whether the outcome's one fault is baseline-passing
+// tests that did not run. A skip, a new failure or a broken package is a
+// verdict a baseline re-run cannot change, so it is not worth the run.
+func (e *Engine) onlyVanished(outcome testOutcome) bool {
+	if len(newTestFailures(e.state.BaselineUnbuildable, outcome.Packages)) > 0 || e.newFailureReason(outcome.Tests) != "" {
+		return false
+	}
+	lost := lostBaselinePasses(e.state.BaselineTestPasses, outcome)
+	for _, name := range lost {
+		if !strings.HasSuffix(name, " (did not run)") {
+			return false
+		}
+	}
+	return len(lost) > 0
+}
+
+// splitStable divides the required tests into those the fresh run passed
+// and those it did not.
+func splitStable(required, fresh []string) (stable, unstable []string) {
+	passed := stringSet(fresh)
+	for _, name := range required {
+		if passed[name] {
+			stable = append(stable, name)
+		} else {
+			unstable = append(unstable, name)
+		}
+	}
+	return stable, unstable
 }
 
 func (e *Engine) newFailureReason(failures []string) string {
