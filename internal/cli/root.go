@@ -35,6 +35,7 @@ func New(deps Dependencies) *cobra.Command {
 	root.AddCommand(newOptimizeCommand(deps.Stdout))
 	root.AddCommand(newReportCommand(deps.Stdout))
 	root.AddCommand(newVerifyCommand(deps.Stdout))
+	root.AddCommand(newScorecardCommand(deps.Stdout))
 	root.AddCommand(newVersionCommand(deps.Stdout))
 	return root
 }
@@ -517,4 +518,20 @@ func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs in
 		}
 	}
 	return nil
+}
+
+func newScorecardCommand(out io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "scorecard CAMPAIGN_DIR...",
+		Short: "Summarise campaigns' verdicts by class for the stability criteria",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			rows, err := campaign.Scorecard(args)
+			if err != nil {
+				return err
+			}
+			_, err = io.WriteString(out, campaign.RenderScorecard(rows))
+			return err
+		},
+	}
 }
