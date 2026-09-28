@@ -162,6 +162,9 @@ type State struct {
 	// measured (--history); priorTargets counts them as tried. They are
 	// persisted because the flag is only read when the campaign is created.
 	HistoryTargets []agents.Target `json:"history_targets,omitempty"`
+	// NullCandidates is Options.NullCandidates, persisted so a resume keeps
+	// counting toward it.
+	NullCandidates int `json:"null_candidates,omitempty"`
 	// HistoryCandidates maps a candidate ID those campaigns measured to where
 	// and how it was judged; rejectMeasuredDuplicate refuses to re-measure it.
 	HistoryCandidates map[string]string `json:"history_candidates,omitempty"`
@@ -300,6 +303,9 @@ type Options struct {
 	// History names earlier campaign directories whose measured targets
 	// this campaign counts as already tried (loadHistory).
 	History []string
+	// NullCandidates, when positive, replaces the agent graph with that many
+	// code-generated candidates that change nothing (runNullCandidates).
+	NullCandidates int
 }
 
 type Engine struct {
@@ -451,6 +457,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 	}
 	state.HistoryTargets, state.HistoryCandidates, state.HistorySources, state.HistoryPriors = history.Targets, history.Candidates, history.Sources, history.Priors
 	state.HistoryAccepted = history.Accepted
+	state.NullCandidates = opts.NullCandidates
 	e, err := compose(dir, store, state, opts.Progress, opts.Now)
 	if err != nil {
 		_ = store.Close()
@@ -783,7 +790,13 @@ func (e *Engine) runDiscoveryStep(ctx context.Context) error {
 
 func (e *Engine) finishCampaign(ctx context.Context) error {
 	stopReason := "baseline discovery complete; no model candidate requested"
-	if e.adkAgents != nil {
+	if e.state.NullCandidates > 0 {
+		reason, err := e.runNullCandidates(ctx)
+		if err != nil {
+			return err
+		}
+		stopReason = reason
+	} else if e.adkAgents != nil {
 		result, err := e.RunADK(ctx, *e.adkAgents, e.adkConfig)
 		if err != nil {
 			return err
