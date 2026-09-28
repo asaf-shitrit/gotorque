@@ -217,11 +217,26 @@ produced here or in policy.
    noise of short CLI workloads: a target that runs for 10-25 ms per seed
    carries 6-8% per-run spread, and at seven pairs a real 3.75% win measured
    as unsupported while thirty pairs resolved the same effect at p<1e-4.
-   Runs alternate which side goes first (`RunInterleaved`, ABBA): an A/A check
+   Interleaving cancels steady load, not load that comes and goes, so the
+   one-minute load average is sampled before and after a candidate's
+   measurement (`loadavg.go`) and recorded on its record. The report flags a
+   candidate whose load exceeded 0.7 per CPU as contended; the
+   verdict never reads it. Before measuring, the engine also waits up to
+   three minutes for the load to fall under that threshold (`quietWaiter`),
+   because the contention seen in practice came in bursts of a few minutes;
+   a wait that runs out is recorded and the candidate is measured anyway.
+   The wait only protects the start, so when the load sampled after the
+   pairs is contended the engine discards them, waits again and measures
+   every seed once more from scratch (`measureSeedsOnQuietMachine`); only the
+   second pass reaches the verdict, and the report names the discarded
+   pass's load.
+   Tests, which disable local isolation, never wait. An A/A check on csvtk (the same binary on both
+   sides, fifty pairs, baseline first) found no order bias, but the same check
    on miller's filter-value-threshold found the second run of each pair 2.66%
    slower in 41 of 60 pairs with byte-identical binaries, enough to reject
-   candidates against the 2% guardrail, while csvtk showed no such bias, so
-   the effect is workload-dependent and has to fall on both sides equally.
+   candidates against the 2% guardrail. Runs therefore alternate which side
+   goes first (`RunInterleaved`, ABBA), so a position effect falls on both
+   sides equally.
    Before the pairs run, the baseline
    is executed twice against itself: if two identical runs produce different
    stdout digests, the workload is treated as nondeterministic and behavior
@@ -474,8 +489,12 @@ build id TypeSafe controls, `Client.Preflight` still spends its one request on
 a canary (`internal/jev/canary.go`) instead of a plain connectivity check: a
 fixed synthetic function and all seven cause questions, with answers recorded
 once (`TestLiveCanary`) and guarded by a digest the same way the baseline is.
-An answer that moved by more than `CanaryTolerance` (0.05) fails the
-preflight, naming `TestLiveCanary`, unless `GOTORQUE_JEV_ALLOW_DRIFT` is set,
+A drifted first answer is re-asked twice and judged by the median of the
+three, because Jev occasionally returns a single answer several sd out (ADR
+0030's addendum); a median that moved by more than its tolerance (the larger of
+`CanaryTolerance`, 0.05, and four of that answer's recorded standard
+deviations, `canarySpread`)
+fails the preflight, naming `TestLiveCanary`, unless `GOTORQUE_JEV_ALLOW_DRIFT` is set,
 which downgrades that check alone to a warning.
 
 Each flagged cause becomes a one-sentence remedy in `candidate_hypotheses`,
@@ -531,7 +550,12 @@ as the coordinator's experiment, and cuts the source excerpts down to that
 function; the optimizer's instruction forbids patching any other. With a
 target, the optimizer's instruction also tells it to answer with
 `function_source` (the target function's whole new declaration) and
-`imports` instead of a hand-written `patch` (ADR 0022): deterministic code
+`imports` instead of a hand-written `patch` (ADR 0022). Each target also
+carries `context`: the declarations, from its own package, of the functions,
+methods and types its body refers to and its receiver's type, signatures
+without bodies and capped at twelve (`targetSignatures`), because the
+optimizer otherwise guessed them and lost attempts to build failures (on
+miller it treated a `string` return as `[]byte` twice). With function_source, deterministic code
 finds the function by name in the base revision and builds the diff itself,
 which removes context-line and header mismatches as a way to lose a
 candidate. `patch` stays the transport when there is no target, and remains
@@ -545,7 +569,16 @@ everything, as before. Tried targets
 are recorded with each verdict and handed back on resume, so no measured
 target is attacked twice (an unmeasured one gets one retry, see step 3 of the
 evaluation), and once every flagged target has been tried the optimizer
-chooses freely again. The coordinator model is not called in this mode, because
+chooses freely again. `--history DIR` (repeatable, ADR 0031) extends "tried"
+across campaigns: every target an earlier campaign of the same revision
+measured is loaded when the campaign is created, persisted as
+`HistoryTargets`, and counted as tried by `priorTargets`, so a new campaign
+spends its attempts on targets nothing has measured yet. A campaign at another
+revision is listed in the report as skipped rather than trusted, because its
+locations may point at different code. The measured candidates' IDs (a digest of
+revision and normalized patch) are carried too, and a candidate whose patch
+this revision already measured, in a history campaign or earlier in this one,
+is rejected before it is built (`rejectMeasuredDuplicate`). The coordinator model is not called in this mode, because
 nothing is left for it to decide. On a live gron campaign it took up to 2m40s a
 cycle, and left with a ranked list the optimizer ignored the top target and
 micro-optimized `validIdentifier` (inconclusive, -0.85%) before taking the top

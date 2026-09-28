@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -152,6 +153,35 @@ func TestReplaceFunctionSourceInsertsAFreshImportBlock(t *testing.T) {
 	require.Contains(t, string(updated), "strings.Builder")
 }
 
+// TestReplaceFunctionSourceInfersAStdlibImport pins the single-function
+// path's standard-library inference: a replacement that uses strconv and
+// strings with no imports listed still gets both, and an import the file
+// already binds under an alias is not added twice.
+func TestReplaceFunctionSourceInfersAStdlibImport(t *testing.T) {
+	src := "package main\n\nimport str \"strings\"\n\nvar _ = str.ToUpper\n\nfunc f(n int) string {\n\treturn \"\"\n}\n"
+	path := filepath.Join(t.TempDir(), "main.go")
+	newSrc := `func f(n int) string {
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(n))
+	return str.ToLower(b.String())
+}`
+	updated, err := replaceFunctionSource(path, []byte(src), "f", newSrc, nil)
+	require.NoError(t, err)
+	require.Contains(t, string(updated), "\"strconv\"")
+	require.Contains(t, string(updated), "str \"strings\"")
+	require.Equal(t, 1, strings.Count(string(updated), "\"strings\""), "the aliased import already provides the path")
+}
+
+func TestInferredStdlibImportsLeavesUnknownNamesAlone(t *testing.T) {
+	src := []byte("package main\n\nimport \"bytes\"\n\nfunc f() { _ = bytes.NewBuffer; _ = yaml.Marshal; _ = sort.Ints }\n")
+	got, err := inferredStdlibImports("main.go", src)
+	require.NoError(t, err)
+	require.Equal(t, []string{"sort"}, got)
+
+	_, err = inferredStdlibImports("main.go", []byte("package main\nfunc {"))
+	require.ErrorContains(t, err, "does not parse")
+}
+
 func TestReplaceFunctionSourceRejectsMultipleDecls(t *testing.T) {
 	repo := methodRepo(t)
 	original, err := os.ReadFile(filepath.Join(repo, "main.go"))
@@ -204,15 +234,74 @@ func TestResolveCandidatePatchPrefersPatchOverFunctionSource(t *testing.T) {
 	require.Equal(t, PatchTransport, transport)
 }
 
-func TestResolveCandidatePatchWithoutTargetLeavesPatchAlone(t *testing.T) {
-	engine := &Engine{}
-	req := orchestrator.CandidateRequest{
-		Proposal: agents.OptimizerResult{FunctionSource: "func f() {}"},
+// TestResolveCandidatePatchLocatesAnUntargetedFunctionSource covers free
+// choice: with no target, a function_source is found by the function it
+// declares and built into a diff, instead of being dropped as an empty patch.
+func TestResolveCandidatePatchLocatesAnUntargetedFunctionSource(t *testing.T) {
+	repo := methodRepo(t)
+	engine := newFuncSourceTestEngine(repo)
+	req := orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: `func (c *cli) printValues(vs []string) error {
+	w := bufio.NewWriter(c.out)
+	defer w.Flush()
+	for _, v := range vs {
+		w.WriteString(v)
 	}
+	return nil
+}`, Imports: []string{"bufio"}}}
 	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
-	require.Empty(t, patch, "no target means function_source is never used, matching the pre-ADR-0022 behavior")
-	require.Equal(t, PatchTransport, transport)
+	require.Equal(t, FunctionSourceTransport, transport)
+	require.Contains(t, applyDiff(t, repo, patch, "main.go"), "bufio.NewWriter")
+}
+
+func TestResolveCandidatePatchRejectsAnUnknownUntargetedFunction(t *testing.T) {
+	engine := newFuncSourceTestEngine(methodRepo(t))
+	req := orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "func nowhere() {}"}}
+	_, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	require.ErrorContains(t, err, "no non-test file declares")
+	require.Equal(t, FunctionSourceTransport, transport)
+
+	_, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "not go"}})
+	require.ErrorContains(t, err, "does not parse")
+}
+
+func TestResolveCandidatePatchNamesAnEmptyProposal(t *testing.T) {
+	engine := &Engine{}
+	_, _, err := engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{Hypothesis: "h"}})
+	require.ErrorIs(t, err, errEmptyProposal)
+	target := &agents.Target{Location: "main.go:8", Function: "f"}
+	_, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Hypothesis: "h"}})
+	require.ErrorIs(t, err, errEmptyProposal)
+}
+
+func TestLocateFunctionSkipsTestsVendorAndTestdataAndRefusesAmbiguity(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		full := filepath.Join(repo, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o700))
+		require.NoError(t, os.WriteFile(full, []byte(src), 0o600))
+	}
+	write("a/a.go", "package a\n\nfunc only() {}\n\nfunc twice() {}\n")
+	write("b/b.go", "package b\n\nfunc twice() {}\n")
+	write("a/a_test.go", "package a\n\nfunc only() {}\n")
+	write("vendor/v/v.go", "package v\n\nfunc only() {}\n")
+	write("a/testdata/t.go", "package t\n\nfunc only() {}\n")
+	write(".hidden/h.go", "package h\n\nfunc only() {}\n")
+	write("broken.go", "package main\nfunc {")
+
+	loc, err := locateFunction(repo, "only", nil)
+	require.NoError(t, err)
+	require.Equal(t, "a/a.go:3", loc)
+
+	_, err = locateFunction(repo, "twice", nil)
+	require.ErrorContains(t, err, "2 files declare")
+
+	loc, err = locateFunction(repo, "twice", []string{"b/b.go:3"})
+	require.NoError(t, err)
+	require.Equal(t, "b/b.go:3", loc, "the hot file breaks the tie")
+
+	_, err = locateFunction(repo, "twice", []string{"c/c.go:1"})
+	require.ErrorContains(t, err, "2 files declare", "a hot list naming neither leaves the tie")
 }
 
 func TestResolveCandidatePatchBuildsFromFunctionSourceWithTarget(t *testing.T) {
@@ -309,4 +398,12 @@ func TestEvaluateCandidateRejectsAnUnbuildableFunctionSourceWithAnID(t *testing.
 	require.True(t, evidence.Unmeasured)
 	require.Contains(t, evidence.Summary, "candidate rejected before build")
 	require.Contains(t, evidence.FailureDetail, "not the target main")
+}
+
+func TestResolveCandidatePatchNamesAnOptimizerThatDidNotAnswer(t *testing.T) {
+	engine := &Engine{}
+	req := orchestrator.CandidateRequest{RoleFailure: "optimizer model call failed after 3 attempts: model call attempt exceeded its 6m0s budget"}
+	_, _, err := engine.resolveCandidatePatch(context.Background(), req)
+	require.ErrorContains(t, err, "the optimizer did not answer: optimizer model call failed after 3 attempts")
+	require.NotErrorIs(t, err, errEmptyProposal)
 }

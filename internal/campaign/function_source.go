@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -42,14 +43,22 @@ const (
 // (or a lone FunctionSource naming the callee, accepted the way every other
 // list field here accepts a scalar) builds a multi-file diff. Otherwise, a
 // code-chosen target and a non-empty FunctionSource build the single-file
-// diff exactly as before ADR 0027. Every other case, including no target at
-// all, passes Patch through unchanged (empty or not).
+// diff exactly as before ADR 0027. With no target, a FunctionSource is
+// located by the function it declares (untargetedFunctionSourceDiff). A
+// proposal with none of these is errEmptyProposal.
 func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.CandidateRequest) (patch, transport string, err error) {
 	if req.Proposal.Patch != "" {
 		return req.Proposal.Patch, PatchTransport, nil
 	}
 	if req.Target == nil {
-		return req.Proposal.Patch, PatchTransport, nil
+		if req.Proposal.FunctionSource == "" {
+			return "", PatchTransport, emptyProposal(req.RoleFailure)
+		}
+		diff, err := e.untargetedFunctionSourceDiff(ctx, req.Proposal, hotLocations(req.Analysis.HotPaths))
+		if err != nil {
+			return "", FunctionSourceTransport, err
+		}
+		return diff, FunctionSourceTransport, nil
 	}
 	if sources := multiFunctionSources(*req.Target, req.Proposal); len(sources) > 0 {
 		diff, err := e.buildMultiFunctionSourceDiff(ctx, *req.Target, sources, req.Proposal.Imports)
@@ -65,7 +74,7 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 		}
 		return diff, FunctionSourceTransport, nil
 	}
-	return req.Proposal.Patch, PatchTransport, nil
+	return "", PatchTransport, emptyProposal(req.RoleFailure)
 }
 
 // multiFunctionSources is the function_sources list to use for target,
@@ -158,7 +167,11 @@ func replaceFunctionSource(fullPath string, original []byte, function, functionS
 		return nil, fmt.Errorf("function_source declares %s, not the target %s", name, function)
 	}
 	spliced := spliceFunctionSource(fset, original, existing, newDecl, newText)
-	withImports, err := addImports(fullPath, spliced, imports)
+	inferred, err := inferredStdlibImports(fullPath, spliced)
+	if err != nil {
+		return nil, err
+	}
+	withImports, err := addImports(fullPath, spliced, append(slices.Clone(imports), inferred...))
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +266,34 @@ func addImports(fullPath string, data []byte, wanted []string) ([]byte, error) {
 		return insertImportBlock(fset, data, file, missing)
 	}
 	return replaceImportBlock(fset, data, decl, missing)
+}
+
+// inferredStdlibImports names the standard-library imports data refers to by
+// package name but does not import, looked up in the same fixed table the
+// multi-function path uses (stdlibImportPath, ADR 0027). An optimizer that
+// switches a loop to strings.Builder and forgets to list "strings" in imports
+// otherwise loses the attempt to a build failure the harness could have
+// prevented. A name already bound by an import, under any alias, is left
+// alone, and a name outside the table is never guessed at.
+func inferredStdlibImports(fullPath string, data []byte) ([]string, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), fullPath, data, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("source does not parse after replacing the function: %w", err)
+	}
+	named := map[string]bool{}
+	for _, spec := range file.Imports {
+		if name := importName(spec); name != "" {
+			named[name] = true
+		}
+	}
+	var out []string
+	for name := range packageRefs(file) {
+		if imp, ok := stdlibImportPath(name); ok && !named[name] {
+			out = append(out, imp)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 func missingImports(file *ast.File, wanted []string) []string {

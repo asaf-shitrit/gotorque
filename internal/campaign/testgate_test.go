@@ -118,8 +118,19 @@ func TestBaselineStepRefusesUnattributableFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, engine.Close()) }()
 
-	// Removing the module leaves the go command unable to run any test.
-	require.NoError(t, os.Remove(filepath.Join(repo, "go.mod")))
+	// The suite runs in a worktree of the committed base revision, so the
+	// breakage is committed: a test file that does not compile in the only
+	// package leaves no test able to run. A second engine is created on the
+	// new revision.
+	require.NoError(t, engine.Close())
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "main_test.go"), []byte("package main\n\nfunc broken( {\n"), 0o600))
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "break the suite")
+	engine, err = Create(context.Background(), Options{
+		Repository: repo, ManifestPath: manifestPath,
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
 	err = engine.runBaselineTestStep(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no candidate could be attributed")
@@ -310,4 +321,49 @@ func repositoryWithTestFile(t *testing.T, source string) string {
 	git(t, repo, "add", ".")
 	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "tests")
 	return repo
+}
+
+func TestClassifyTestOutcomeSubtractsBaselineUnbuildablePackages(t *testing.T) {
+	engine := &Engine{state: State{BaselineUnbuildable: []string{"example.com/m/scripts/perf"}}}
+	output := `{"Action":"fail","Package":"example.com/m/scripts/perf","FailedBuild":"example.com/m/scripts/perf"}
+{"Action":"pass","Package":"example.com/m","Test":"TestKept"}
+`
+	reason, passed := engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(output), ExitCode: 1}, nil)
+	require.True(t, passed, reason)
+
+	newlyBroken := `{"Action":"fail","Package":"example.com/m/lib","FailedBuild":"example.com/m/lib"}
+`
+	reason, passed = engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(newlyBroken), ExitCode: 1}, nil)
+	require.False(t, passed)
+	require.Contains(t, reason, "test build or setup failed in: example.com/m/lib")
+}
+
+// TestBaselineStepKeepsASuiteWithOneUnbuildablePackage pins the fix for
+// miller, whose campaign was refused whole because a few directories' tests
+// could not build while the rest of the suite ran.
+func TestBaselineStepKeepsASuiteWithOneUnbuildablePackage(t *testing.T) {
+	repo := makeRepository(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "main_test.go"), []byte("package main\n\nimport \"testing\"\n\nfunc TestKept(t *testing.T) {}\n"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "scripts"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "scripts", "scripts.go"), []byte("package scripts\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "scripts", "scripts_test.go"), []byte("package scripts\n\nfunc broken( {\n"), 0o600))
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "tests")
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+
+	require.NoError(t, engine.runBaselineTestStep(context.Background()))
+	require.Equal(t, []string{"test.local/fixture/scripts"}, engine.State().BaselineUnbuildable)
+	require.Contains(t, engine.State().BaselineTestPasses, "test.local/fixture::TestKept")
+
+	var evidence orchestrator.CandidateEvidence
+	require.True(t, engine.candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
+
+	var b strings.Builder
+	writeBehaviorGate(&b, engine.State())
+	require.Contains(t, b.String(), "cannot build or set up on the unpatched revision")
 }

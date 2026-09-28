@@ -54,6 +54,9 @@ const (
 // judgment stays here or in policy; the model never self-approves.
 // evaluateCandidate is invoked through the orchestrator CandidateService adapter.
 func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
+	if err := e.requireFreeSpace(); err != nil {
+		return orchestrator.CandidateEvidence{}, err
+	}
 	patchText, transport, err := e.resolveCandidatePatch(ctx, req)
 	if err != nil {
 		// Building the diff from function_source failed before there was
@@ -87,6 +90,9 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	// Worktree teardown runs even when the caller's context is already
 	// canceled (duration budget or Ctrl-C), but keeps its values.
 	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
+	if e.rejectMeasuredDuplicate(evidence.Candidate.ID, &evidence) {
+		return evidence, nil
+	}
 	if !e.patchHasShape(ctx, prepared.Worktree, req.Target, &evidence) {
 		return evidence, nil
 	}
@@ -134,10 +140,83 @@ func (e *Engine) prepareCandidate(ctx context.Context, req orchestrator.Candidat
 // patchHasShape runs checkShape on the applied worktree. A diff Git cannot
 // produce leaves the judgment to the build, which would fail on the same
 // tree; the check only ever adds a reason, never a pass.
+// rejectMeasuredDuplicate rejects, before it is built, a candidate whose
+// patch this revision has already measured, in this campaign or in one
+// --history named (ADR 0031). The worktree manager's candidate ID is a digest
+// of the base revision and the normalized patch, so an equal ID is the same
+// patch. On dasel the WithExecutorID concatenation rewrite came back
+// byte-identical under a second cause's target and spent a whole measurement
+// to repeat an inconclusive verdict. It is marked unmeasured, so the target is
+// offered once more with the reason in prior_candidates.
+func (e *Engine) rejectMeasuredDuplicate(id string, evidence *orchestrator.CandidateEvidence) bool {
+	where, ok := e.measuredCandidate(id)
+	if !ok {
+		return false
+	}
+	evidence.Summary = "candidate rejected before build: the identical patch was already measured on this revision (" + where + "); propose a different change"
+	evidence.FailureDetail = where
+	evidence.Unmeasured = true
+	return true
+}
+
+// measuredCandidate reports where candidate id was already measured.
+func (e *Engine) measuredCandidate(id string) (string, bool) {
+	if where, ok := e.state.HistoryCandidates[id]; ok {
+		return where, true
+	}
+	for _, r := range e.state.CandidateRecords {
+		if r.CandidateID == id && isMeasured(r) {
+			return fmt.Sprintf("attempt %d of this campaign: %s", r.Attempt, r.Decision), true
+		}
+	}
+	return "", false
+}
+
+// rejectKnownAcceptedFix rejects, before it is built, a patch that edits a
+// function an accepted candidate already sped up, in this campaign or in a
+// --history campaign (ADR 0031). An accepted fix is not applied to the base
+// revision, so the next campaign can find it again: overnight-gojq-history-1
+// spent its last attempt re-finding overnight-gojq-1's printValues
+// buffering fix as a different patch, and overnight-go-jsonnet-history-1
+// re-found checkArguments, although both reached the optimizer as accepted
+// earlier_candidates. Both were free-choice candidates, and only those are
+// held to this: a code-chosen target on an already-fixed function carries a
+// different cause (overnight-gojq-1 attempt 3 attacked printValues' redundant
+// work after its buffering fix was accepted), and since accepted fixes are
+// not stacked, measuring it alone is still a fair question. It is marked
+// unmeasured, like every pre-build rejection, and names where the fix was
+// accepted.
+func (e *Engine) rejectKnownAcceptedFix(worktree string, diff []byte, evidence *orchestrator.CandidateEvidence) bool {
+	changes := parseChanges(diff)
+	for _, fix := range e.acceptedFixes() {
+		if callerTouched(worktree, changes, agents.FunctionRef{Name: fix.Function, Location: fix.Location}) {
+			evidence.Summary = fmt.Sprintf("candidate rejected before build: %s already has an accepted fix (%s); propose a change to a different function", fix.Function, fix.Where)
+			evidence.FailureDetail = fix.Where
+			evidence.Unmeasured = true
+			return true
+		}
+	}
+	return false
+}
+
+// acceptedFixes are history's accepted fixes plus this campaign's.
+func (e *Engine) acceptedFixes() []AcceptedFix {
+	out := append([]AcceptedFix(nil), e.state.HistoryAccepted...)
+	for _, r := range e.state.CandidateRecords {
+		if r.Accepted && r.Target != nil {
+			out = append(out, AcceptedFix{Function: r.Target.Function, Location: r.Target.Location, Where: fmt.Sprintf("attempt %d of this campaign", r.Attempt)})
+		}
+	}
+	return out
+}
+
 func (e *Engine) patchHasShape(ctx context.Context, worktree string, target *agents.Target, evidence *orchestrator.CandidateEvidence) bool {
 	diff, err := e.toolchain.ChangedLines(ctx, worktree)
 	if err != nil {
 		return true
+	}
+	if target == nil && e.rejectKnownAcceptedFix(worktree, diff, evidence) {
+		return false
 	}
 	if err := checkShape(worktree, diff, target); err != nil {
 		evidence.Summary = fmt.Sprintf("candidate rejected before build: patch shape: %v", err)
@@ -227,8 +306,16 @@ type seedRuns struct {
 
 func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
 	m := measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
+	if e.state.LocalIsolation {
+		evidence.QuietWait, evidence.QuietWaitExpired = defaultQuietWaiter().wait(ctx)
+	}
+	evidence.LoadAverages = sampleLoad()
+	defer func() {
+		evidence.LoadAverages = append(evidence.LoadAverages, sampleLoad()...)
+		evidence.LoadContended = contended(evidence.LoadAverages, machineCPUs())
+	}()
 	m.baselineSize, m.candSize, m.sizeErr = binarySizes(e.state.BinaryPath, candidateBinary)
-	if !e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, &m) {
+	if !e.measureSeedsOnQuietMachine(ctx, evidence, id, candidateBinary, &m) {
 		return false
 	}
 	if len(m.seeds) == 0 {
@@ -242,6 +329,34 @@ func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.
 		return false
 	}
 	return e.confirmImprovements(ctx, evidence, id, candidateBinary, &m)
+}
+
+// measureSeedsOnQuietMachine measures every representative seed, and
+// measures them all again from scratch, once, when the machine was contended
+// by the time the first pass ended. The wait before measuring only protects
+// the start: on overnight-miller-4 the load went from 6.4 to 16.6 during a
+// candidate's pairs, and its workload readings swung from -9% to +12%. The
+// same kind of burst gave overnight-miller-1 a false acceptance. The first
+// pass's samples are discarded, the engine waits for quiet again, and only the
+// second pass reaches the verdict; its load is what the record reports, with
+// the discarded pass's load kept beside it. A second contended pass is kept
+// as it is, flagged.
+func (e *Engine) measureSeedsOnQuietMachine(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	before, fresh := *evidence, *m
+	if !e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, m) {
+		return false
+	}
+	mid := sampleLoad()
+	if !e.state.LocalIsolation || !contended(mid, machineCPUs()) {
+		return true
+	}
+	waited, expired := defaultQuietWaiter().wait(ctx)
+	*evidence, *m = before, fresh
+	evidence.QuietWait += waited
+	evidence.QuietWaitExpired = expired
+	evidence.DiscardedLoad = slices.Concat(before.LoadAverages, mid)
+	evidence.LoadAverages = sampleLoad()
+	return e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, m)
 }
 
 func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
