@@ -444,3 +444,22 @@ func TestCandidatePatchKeepsTheOptimizerAnswerBesideIt(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(data), `"function_source": "func f() {}"`)
 }
+
+// TestResolveCandidatePatchNamesTheTargetFileForAHeaderlessHunk: a live cue
+// answer sent a correct hunk with no file headers. With a target the file is
+// known; without one, or when the patch names its file, nothing changes.
+func TestResolveCandidatePatchNamesTheTargetFileForAHeaderlessHunk(t *testing.T) {
+	engine := newFuncSourceTestEngine(methodRepo(t))
+	target := &agents.Target{Location: "internal/core/adt/conjunct.go:39", Function: "(*nodeContext).scheduleConjunct"}
+	hunk := "@@ -77,1 +77,1 @@\n-a\n+b\n"
+	patch, transport, err := engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: hunk}})
+	require.NoError(t, err)
+	require.Equal(t, PatchTransport, transport)
+	require.Equal(t, "--- a/internal/core/adt/conjunct.go\n+++ b/internal/core/adt/conjunct.go\n"+hunk, patch)
+
+	patch, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: handDiff}})
+	require.NoError(t, err)
+	require.Equal(t, handDiff, patch)
+
+	require.Equal(t, hunk, withTargetHeaders(hunk, nil))
+}
