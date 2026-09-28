@@ -154,3 +154,34 @@ func (s *Store) Double() int {
 	require.ErrorContains(t, err, "switching (*Store).Get's callers")
 	require.ErrorContains(t, err, "(*Store).IsPositive")
 }
+
+// TestUnbufferedWritesRemedyNeedsAFlushedWriterNotACallerEdit: for measured
+// unbuffered writes the callers are where buffering may go, so buffering in
+// the writing function alone passes, while a patch with no bufio writer, or
+// one that never flushes it, fails as it would for Jev's unbuffered_io.
+func TestUnbufferedWritesRemedyNeedsAFlushedWriterNotACallerEdit(t *testing.T) {
+	target := shapeMultiTarget
+	target.Cause = causeUnbufferedWrites
+	unchangedB := `package fixture
+
+func (s *Store) IsPositive() bool {
+	return s.Get().v > 0
+}
+
+func (s *Store) Double() int {
+	b := s.Get()
+	return b.v * 2
+}
+`
+	withBody := func(body string) string {
+		return "package fixture\n\nimport (\n\t\"bufio\"\n\t\"os\"\n)\n\ntype Box struct{ v int }\n\nfunc NewBox(v int) *Box { return &Box{v: v} }\n\ntype Store struct{ x int }\n\nfunc (s *Store) Get() *Box {\n" + body + "\treturn NewBox(s.x)\n}\n"
+	}
+	flushed := withBody("\tw := bufio.NewWriter(os.Stdout)\n\tdefer w.Flush()\n\t_, _ = w.WriteString(\"x\")\n")
+	require.NoError(t, shapeOfMulti(t, flushed, unchangedB, &target))
+
+	unflushed := withBody("\tw := bufio.NewWriter(os.Stdout)\n\t_, _ = w.WriteString(\"x\")\n")
+	require.ErrorContains(t, shapeOfMulti(t, unflushed, unchangedB, &target), "never flushes")
+
+	noBufio := "package fixture\n\ntype Box struct{ v int }\n\nfunc NewBox(v int) *Box { return &Box{v: v} }\n\ntype Store struct{ x int }\n\nfunc (s *Store) Get() *Box {\n\tv := s.x\n\treturn NewBox(v)\n}\n"
+	require.ErrorContains(t, shapeOfMulti(t, noBufio, unchangedB, &target), "buffered I/O")
+}

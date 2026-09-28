@@ -482,6 +482,14 @@ func checkRemedy(worktree string, changes map[string]*fileChange, target *agents
 	if target == nil {
 		return nil
 	}
+	if target.Cause == causeUnbufferedWrites {
+		// Measured unbuffered writes ask for what Jev's unbuffered_io asks
+		// for, a bufio writer that is flushed. Its callers join the set as
+		// places the buffering may go, not as edits the remedy requires.
+		asIO := *target
+		asIO.Cause = string(jev.CauseUnbufferedIO)
+		return checkCauseShape(worktree, changes, &asIO)
+	}
 	if target.IsFunctionSet() {
 		return checkSwitchedCallers(worktree, changes, *target)
 	}

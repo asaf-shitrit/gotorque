@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/jev"
 	"example.com/gotorque/internal/manifest"
@@ -269,6 +270,13 @@ func writeInventory(b *strings.Builder, state State) {
 // and the report must not imply otherwise.
 func writeBehaviorGate(b *strings.Builder, state State) {
 	defer writeUnbuildable(b, state.BaselineUnbuildable)
+	if len(state.BaselineTestFailures) == 0 && len(state.BaselineTestPasses) == 0 && state.CompletedSteps[baselinePassesStep] {
+		// jj and mdtohtml have no tests of their own. "The suite passes" is
+		// true of an empty suite and says nothing, so the report names what
+		// actually guards behavior there.
+		b.WriteString("\n## Behavior gate\n\n**The target has no tests of its own.** Nothing but the seed workloads' outputs guards behavior: a candidate that changes output only on inputs the workloads never give it cannot be caught here.\n")
+		return
+	}
 	if len(state.BaselineTestFailures) == 0 {
 		b.WriteString("\n## Behavior gate\n\nThe upstream test suite passes on the unpatched revision, so every candidate's full suite must pass.\n")
 		return
@@ -370,9 +378,19 @@ func writeCandidateRecord(b *strings.Builder, record CandidateRecord) {
 	writeCandidatePGO(b, record)
 }
 
+// targetEvidence says what raised a target: Jev's deviation from its usual
+// answer, or code, whose causes carry no z-score and used to print as
+// "+0.0 sd", as if Jev had found nothing unusual.
+func targetEvidence(t agents.Target) string {
+	if t.Cause == causeThrowawayResult || t.Cause == causeUnbufferedWrites {
+		return "code-derived"
+	}
+	return fmt.Sprintf("%+.1f sd", t.Z)
+}
+
 func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	if t := record.Target; t != nil {
-		fmt.Fprintf(b, "- Target: `%s` at `%s`, %s (%+.1f sd)\n", t.Function, t.Location, t.Cause, t.Z)
+		fmt.Fprintf(b, "- Target: `%s` at `%s`, %s (%s)\n", t.Function, t.Location, t.Cause, targetEvidence(*t))
 	}
 	if record.Hypothesis != "" {
 		fmt.Fprintf(b, "- Hypothesis: %s\n", record.Hypothesis)
@@ -652,7 +670,7 @@ func writeVerifications(b *strings.Builder, state State) {
 	if len(state.Verifications) == 0 {
 		return
 	}
-	b.WriteString("## Verification\n\n| Attempt | Pairs | Originally | On verification | Load | Held |\n|---:|---:|---|---|---|---|\n")
+	b.WriteString("## Verification\n\n| Attempt | Pairs | Originally | On verification | Load | Output variants | Held |\n|---:|---:|---|---|---|---|---|\n")
 	for _, v := range state.Verifications {
 		held := "no"
 		if v.Confirmed() {
@@ -662,7 +680,11 @@ func writeVerifications(b *strings.Builder, state State) {
 		if v.LoadContended {
 			load += " (contended)"
 		}
-		fmt.Fprintf(b, "| %d | %d | %s | %s | %s | %s |\n", v.Attempt, v.Pairs, v.Original, v.Decision, orNone(load), held)
+		outputs := fmt.Sprintf("%d checked", len(v.OutputChecks))
+		if len(v.OutputMismatches) > 0 {
+			outputs += ", differ: " + strings.Join(v.OutputMismatches, ", ")
+		}
+		fmt.Fprintf(b, "| %d | %d | %s | %s | %s | %s | %s |\n", v.Attempt, v.Pairs, v.Original, v.Decision, orNone(load), outputs, held)
 	}
 	b.WriteString("\n")
 }

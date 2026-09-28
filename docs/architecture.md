@@ -235,7 +235,13 @@ produced here or in policy.
    recorded patch through the same evaluation and policy, with 60 pairs per
    workload by default instead of 25 and with the duplicate and accepted-fix
    refusals off, and records whether the acceptance held. It automates the
-   re-measurement that exposed overnight-miller-1's false acceptance. An A/A check on csvtk (the same binary on both
+   re-measurement that exposed overnight-miller-1's false acceptance. `--null-candidates N` measures the other
+   side: instead of running agents, the campaign evaluates N code-generated
+   candidates that each add one comment line after a build-package file's
+   package clause (`runNullCandidates`). The code is identical and only line
+   numbers move, so a sound harness accepts none of them and rejects almost
+   none; the run's verdicts are its false-acceptance and false-rejection
+   rates. An A/A check on csvtk (the same binary on both
    sides, fifty pairs, baseline first) found no order bias, but the same check
    on miller's filter-value-threshold found the second run of each pair 2.66%
    slower in 41 of 60 pairs with byte-identical binaries, enough to reject
@@ -639,6 +645,26 @@ to infer) is added the same way; nothing outside that table is ever guessed.
 The single-function path (the zero `TargetFunction` kind) is unchanged, byte
 for byte.
 
+**Measured unbuffered writes (ADR 0032, `internal/profile/writes.go`,
+`internal/campaign/writes.go`).** A second code-only signal reads the target
+sample's call stacks rather than source. `profile.UnbufferedWrites`
+attributes samples to the innermost own frame exactly as `AttributeToOwn`
+does and, per function, counts the samples below `syscall.write` with no
+`bufio.` frame on the path, orphaned `write` samples shared out in
+proportion to each function's observed writes. A hot-list function whose
+share reaches 0.5 (`unbufferedWriteShare`) is persisted in
+`DiscoveryUnbufferedWrites` with up to three callers' locations and becomes a
+first-tier target with cause `unbuffered_writes`, ahead of throwaway_result
+and every Jev target; a Jev `unbuffered_io` target at the same location is
+dropped. Callers under the classification limit join as a function set, as
+places the buffering may go: the shape check asks for a flushed `bufio`
+writer, as for Jev's `unbuffered_io`, and not for a caller edit. The report
+labels both code-derived causes "code-derived" instead of a z-score. It sees
+through closures, which Jev cannot: fzf's Printer closure, `func(str string)
+{ fmt.Println(str) }`, carried the second-largest weight of the sample, and
+Jev, shown the 2.4 KB options constructor it sits in, put unbuffered I/O at
+0.04.
+
 `OPENROUTER_API_KEY` (and optionally `OPENROUTER_BASE_URL`) configure the
 client, the same credential and override the optimizer role already uses.
 `--adk` spends one preflight request before repository work, proving the key,
@@ -870,9 +896,20 @@ reason about it as target code.
 
 Up to 15 surviving names (`hotFunctionBudget`) are annotated with source
 positions: `go tool pprof -list` over the same profile where it resolves,
-otherwise a repository search for the declaration, which matches through
-closure suffixes (`outer.func1`, `outer.func1.2`) and method receivers
-(`pkg.(*T).method`) that no `func` declaration is ever written with.
+otherwise a repository search for the declaration
+(`profile.FindDeclaration`). The pprof query is the name quoted and
+anchored, since `-list` takes a regular expression: unquoted,
+`pkg.(*T).method` does not parse, and unanchored, a name matches every
+symbol containing it. The search strips closure suffixes (`outer.func1`,
+`outer.func1.2`) and matches a method only on its own receiver type and a
+function only without one. A package inside the root module is searched in
+its own directory, among the files this platform builds, and a `main.*`
+frame in the manifest's build package, since it belongs to the binary that
+was sampled; anything else is searched repository-wide and must match
+exactly once. Test files are never
+searched. Matching the bare name instead sent starlark's
+`(*Function).CallInternal` to another package's `CallInternal`, `Binary` to a
+method named `Binary` in `lib/time`, and `Int.get` into `example_test.go`.
 `go tool pprof -list` reports absolute paths, and the excerpt collector
 refuses those because an absolute location is indistinguishable from one
 escaping the repository, so every profiled frame resolved to a location no

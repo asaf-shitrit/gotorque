@@ -304,30 +304,53 @@ func importsForFile(fullPath string, data []byte, wanted []string) ([]string, er
 	if err != nil {
 		return nil, fmt.Errorf("%s does not parse after splicing its function(s): %w", filepath.Base(fullPath), err)
 	}
-	have := importedPaths(file)
-	refs := packageRefs(file)
-	added := map[string]bool{}
-	var needed []string
-	consider := func(imp string) {
-		imp = strings.TrimSpace(imp)
-		if imp == "" || have[imp] || added[imp] {
-			return
-		}
-		if name := packageNameForPath(imp); name != "" && refs[name] {
-			added[imp] = true
-			needed = append(needed, imp)
-		}
-	}
+	plan := importPlan{have: importedPaths(file), bound: boundImportNames(file), refs: packageRefs(file), added: map[string]bool{}}
 	for _, imp := range wanted {
-		consider(imp)
+		plan.consider(imp)
 	}
-	for name := range refs {
+	for name := range plan.refs {
 		if imp, ok := stdlibImportPath(name); ok {
-			consider(imp)
+			plan.consider(imp)
 		}
 	}
+	needed := plan.needed
 	slices.Sort(needed)
 	return needed, nil
+}
+
+// importPlan collects the imports one spliced file still needs.
+type importPlan struct {
+	have, bound, refs, added map[string]bool
+	needed                   []string
+}
+
+// consider adds imp when the file refers to its package name and nothing
+// binds that name yet. A name an existing import already binds is that
+// import's: gron imports github.com/pkg/errors as errors, and adding the
+// standard errors beside it failed all four builds of a live campaign with
+// "errors redeclared in this block".
+func (p *importPlan) consider(imp string) {
+	imp = strings.TrimSpace(imp)
+	if imp == "" || p.have[imp] || p.added[imp] {
+		return
+	}
+	if name := packageNameForPath(imp); name != "" && p.refs[name] && !p.bound[name] {
+		p.added[imp] = true
+		p.bound[name] = true
+		p.needed = append(p.needed, imp)
+	}
+}
+
+// boundImportNames is every package name data's imports already bind, under
+// an alias or the path's own name.
+func boundImportNames(file *ast.File) map[string]bool {
+	bound := map[string]bool{}
+	for _, spec := range file.Imports {
+		if name := importName(spec); name != "" {
+			bound[name] = true
+		}
+	}
+	return bound
 }
 
 // importedPaths is every import path data's import block already has.

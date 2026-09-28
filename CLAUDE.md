@@ -42,6 +42,7 @@ gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --a
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
 gotorque verify <campaign-dir> [--attempt N] [--pairs 60]
+gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --null-candidates 50
 gotorque scorecard <campaign-dir>...
 ```
 
@@ -216,7 +217,10 @@ the schema without keeping them consistent fails the test suite by design.
 Per-role model IDs come from `GOTORQUE_MODEL_{COORDINATOR,EXPLORER,ANALYST,
 OPTIMIZER,REVIEWER}`, defaulting to `deepseek/deepseek-v4.1-flash` via
 OpenRouter (`internal/agents/routing.go`). `OPENROUTER_BASE_URL` overrides the
-endpoint.
+endpoint. Requests to openrouter.ai ask for providers sorted by throughput
+(`providerTransport`): one model id is served by providers from 8 to 193
+tokens/s, and a slow one makes a 10-20k-token optimizer answer overrun its
+six-minute attempt budget.
 Optional `GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}`
 (`low|medium|high`) sets per-role `reasoning.effort`. Unset sends nothing,
 except that the optimizer defaults to `low` under `--analyst jev`, and an
