@@ -274,3 +274,14 @@ func TestMultiFunctionSourceNeverAddsAnUnusedImport(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, diff, "strconv")
 }
+
+// TestImportsForFileLeavesANameAnExistingImportBinds is the live gron case:
+// main.go imports github.com/pkg/errors, so errors.Wrap is already resolved,
+// and neither inference nor the optimizer's list may add the standard errors
+// beside it. A name nothing binds is still added, once.
+func TestImportsForFileLeavesANameAnExistingImportBinds(t *testing.T) {
+	src := []byte("package main\n\nimport (\n\t\"fmt\"\n\n\t\"github.com/pkg/errors\"\n)\n\nfunc f() error {\n\tvar b strings.Builder\n\t_ = rand.Int()\n\tfmt.Println(b.String())\n\treturn errors.Wrap(nil, \"x\")\n}\n")
+	got, err := importsForFile("main.go", src, []string{"errors", "math/rand", "crypto/rand"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"math/rand", "strings"}, got)
+}
