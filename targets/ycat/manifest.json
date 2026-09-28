@@ -1,0 +1,157 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "ycat CLI",
+  "target": {
+    "repository": "https://github.com/goccy/go-yaml",
+    "build": {
+      "package": ".",
+      "binary": "ycat",
+      "directory": "cmd/ycat"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "print-generated-services",
+        "name": "Colorize and print a 1400-item generated YAML list",
+        "tier": "representative",
+        "args": [
+          "services.yaml"
+        ],
+        "files": [
+          {
+            "path": "services.yaml",
+            "header": "services:\n",
+            "content": "- name: svc\n  image: registry.example.com/app\n  replicas: 3\n  env:\n    KEY_0: v0\n    KEY_1: v1\n    KEY_2: v2\n    KEY_3: v3\n    KEY_4: v4\n  ports:\n    - 8080\n  labels:\n    team: t0\n    tier: backend\n",
+            "repeat": 1400
+          }
+        ],
+        "provenance": "manifest",
+        "description": "lexer.Tokenize + printer.PrintTokens over a repeated list entry. Output always carries the manually-built ANSI codes from format(); the isatty-gated SprintFunc-based ones (line numbers) consistently resolve to no-color because gotorque always captures stdout as a pipe, never a TTY, so the byte stream is deterministic across runs without needing a color flag."
+      },
+      {
+        "id": "print-small-services",
+        "name": "Colorize and print a 100-item generated YAML list",
+        "tier": "plausible",
+        "args": [
+          "small.yaml"
+        ],
+        "files": [
+          {
+            "path": "small.yaml",
+            "header": "services:\n",
+            "content": "- name: svc\n  image: registry.example.com/app\n  replicas: 3\n  env:\n    KEY_0: v0\n    KEY_1: v1\n    KEY_2: v2\n    KEY_3: v3\n    KEY_4: v4\n  ports:\n    - 8080\n  labels:\n    team: t0\n    tier: backend\n",
+            "repeat": 100
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "print-generated-services-large",
+        "name": "Colorize and print a 150000-item generated YAML list",
+        "tier": "stress",
+        "args": [
+          "huge.yaml"
+        ],
+        "files": [
+          {
+            "path": "huge.yaml",
+            "header": "services:\n",
+            "content": "- name: svc\n  image: registry.example.com/app\n  replicas: 3\n  env:\n    KEY_0: v0\n    KEY_1: v1\n    KEY_2: v2\n    KEY_3: v3\n    KEY_4: v4\n  ports:\n    - 8080\n  labels:\n    team: t0\n    tier: backend\n",
+            "repeat": 150000
+          }
+        ],
+        "provenance": "manifest",
+        "description": "~29.7MB expanded input, ~4.5s wall time observed locally."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}

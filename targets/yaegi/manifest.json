@@ -1,0 +1,172 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "yaegi CLI",
+  "target": {
+    "repository": "https://github.com/traefik/yaegi",
+    "build": {
+      "package": "./cmd/yaegi",
+      "binary": "yaegi"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "fib-arithmetic",
+        "name": "Arithmetic accumulation loop plus iterative-Fibonacci calls",
+        "tier": "representative",
+        "args": [
+          "run",
+          "numeric.go"
+        ],
+        "files": [
+          {
+            "path": "numeric.go",
+            "content": "package main\n\nimport \"fmt\"\n\nfunc fib(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\ta, b := 0, 1\n\tfor i := 2; i <= n; i++ {\n\t\ta, b = b, a+b\n\t}\n\treturn b\n}\n\nfunc main() {\n\tsum := 0\n\tfor i := 0; i < 1500000; i++ {\n\t\tsum += (i * i) % 97\n\t}\n\n\tfibSum := 0\n\tfor i := 0; i < 30; i++ {\n\t\tfibSum += fib(i)\n\t}\n\n\tfmt.Printf(\"sum=%d fibSum=%d\\n\", sum, fibSum)\n}\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "A 1,500,000-iteration modulo-accumulation loop plus 30 calls into an iterative Fibonacci helper, interpreted as Go source; about 110-115 ms."
+      },
+      {
+        "id": "string-build-format",
+        "name": "strings.Builder concatenation and fmt.Fprintf formatting",
+        "tier": "representative",
+        "args": [
+          "run",
+          "strings.go"
+        ],
+        "files": [
+          {
+            "path": "strings.go",
+            "content": "package main\n\nimport (\n\t\"fmt\"\n\t\"strconv\"\n\t\"strings\"\n)\n\nfunc main() {\n\tvar sb strings.Builder\n\tfor i := 0; i < 90000; i++ {\n\t\tsb.WriteString(strconv.Itoa(i % 10))\n\t}\n\n\tvar lines strings.Builder\n\tfor i := 0; i < 20000; i++ {\n\t\tfmt.Fprintf(&lines, \"item-%04d: value=%d ratio=%.3f\\n\", i, i*3, float64(i)/7.0)\n\t}\n\n\tfmt.Printf(\"strlen=%d lineslen=%d\\n\", sb.Len(), lines.Len())\n}\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "Builds a 90,000-byte string via strings.Builder, then formats 20,000 lines with fmt.Fprintf into a second builder; about 70-75 ms."
+      },
+      {
+        "id": "map-churn-sort",
+        "name": "Map churn followed by sort.Strings/sort.Ints",
+        "tier": "representative",
+        "args": [
+          "run",
+          "mapsort.go"
+        ],
+        "files": [
+          {
+            "path": "mapsort.go",
+            "content": "package main\n\nimport (\n\t\"fmt\"\n\t\"sort\"\n\t\"strconv\"\n)\n\nfunc main() {\n\tcounts := map[string]int{}\n\tfor i := 0; i < 220000; i++ {\n\t\tkey := strconv.Itoa(i % 60)\n\t\tcounts[key]++\n\t}\n\n\tkeys := make([]string, 0, len(counts))\n\tfor k := range counts {\n\t\tkeys = append(keys, k)\n\t}\n\tsort.Strings(keys)\n\n\ttotal := 0\n\tfor _, k := range keys {\n\t\ttotal += counts[k]\n\t}\n\n\tnums := make([]int, 0, 12000)\n\tfor i := 0; i < 12000; i++ {\n\t\tnums = append(nums, (i*7919)%10007)\n\t}\n\tsort.Ints(nums)\n\n\tfmt.Printf(\"keys=%d maptotal=%d sorted_first=%d sorted_last=%d\\n\",\n\t\tlen(keys), total, nums[0], nums[len(nums)-1])\n}\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "Populates and increments a 60-key map across 220,000 insertions, sorts its keys with sort.Strings (Go map iteration order is not guaranteed, so the workload sorts before summing), then sorts a 12,000-element numeric list with sort.Ints; about 75-80 ms."
+      },
+      {
+        "id": "fib-arithmetic-stress",
+        "name": "Same arithmetic/recursion workload at much higher volume",
+        "tier": "stress",
+        "args": [
+          "run",
+          "numeric-stress.go"
+        ],
+        "files": [
+          {
+            "path": "numeric-stress.go",
+            "content": "package main\n\nimport \"fmt\"\n\nfunc fib(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\ta, b := 0, 1\n\tfor i := 2; i <= n; i++ {\n\t\ta, b = b, a+b\n\t}\n\treturn b\n}\n\nfunc main() {\n\tsum := 0\n\tfor i := 0; i < 70000000; i++ {\n\t\tsum += (i * i) % 97\n\t}\n\n\tfibSum := 0\n\tfor i := 0; i < 900; i++ {\n\t\tfibSum += fib(i % 30)\n\t}\n\n\tfmt.Printf(\"sum=%d fibSum=%d\\n\", sum, fibSum)\n}\n"
+          }
+        ],
+        "provenance": "manifest",
+        "description": "A 70,000,000-iteration version of fib-arithmetic's accumulation loop for the macOS sampler; about 4.6-4.8 s."
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples",
+        "tests"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}
