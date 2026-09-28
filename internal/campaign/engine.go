@@ -1481,6 +1481,10 @@ func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, nam
 }
 
 func (e *Engine) hotLocation(ctx context.Context, cpuProfile, name string) string {
+	// pprof's top listing marks inlined frames "name (inline)", a display
+	// suffix no symbol or declaration carries: chroma's lexers.Get stayed a
+	// bare name on every campaign because of it.
+	name = strings.TrimSuffix(name, " (inline)")
 	if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
 		return loc
 	}
@@ -1494,7 +1498,10 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 	if cpuProfile == "" {
 		return "", false
 	}
-	result, err := e.toolchain.PprofList(ctx, name, cpuProfile)
+	// -list takes a regular expression. Unquoted, a method name such as
+	// pkg.(*Function).CallInternal fails to parse, and unanchored, any name
+	// matches every symbol containing it.
+	result, err := e.toolchain.PprofList(ctx, "^"+regexp.QuoteMeta(name)+"$", cpuProfile)
 	if err != nil {
 		return "", false
 	}
@@ -1503,7 +1510,10 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 		return "", false
 	}
 	path, ok = e.repoRelative(path)
-	if !ok {
+	// A benchmark profile runs test helpers too (scc's filereader_test.go
+	// reached the hot list), and a patch may not edit a test file, so the
+	// location says nothing a candidate could act on.
+	if !ok || strings.HasSuffix(path, "_test.go") {
 		return "", false
 	}
 	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
@@ -1558,52 +1568,40 @@ func (e *Engine) hotLocationFromRepo(name string) (string, bool) {
 	if strings.Contains(name, ":") {
 		return "", false
 	}
-	// Sampler output uses runtime-style names (main.main,
-	// pkg.(*T).method) whose last segment is the source symbol.
-	for _, candidate := range functionNameCandidates(name) {
-		if path, line, ok := profile.FindFunctionInRepo(e.state.Repository, candidate); ok {
-			return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
-		}
+	sym := profile.ParseSymbol(enclosingFunction(name))
+	path, line, ok := e.findMainDeclaration(sym)
+	if !ok {
+		path, line, ok = profile.FindDeclaration(e.state.Repository, sym)
 	}
-	return "", false
+	if !ok {
+		return "", false
+	}
+	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
 }
 
-// functionNameCandidates lists the identifiers worth searching for in the
-// repository, most specific first. Profile frames name closures and methods in
-// forms no `func` declaration ever uses: pkg.outer.func1 for a closure (and
-// .func1.2 when nested), pkg.(*T).method for a method. Searching those
-// verbatim never matches, which is why a measured module symbol such as
-// cli.newJSONInputIter.func1 used to resolve to no source location at all.
-func functionNameCandidates(name string) []string {
-	candidates := []string{name}
-	add := func(candidate string) {
-		if candidate == "" {
-			return
-		}
-		for _, existing := range candidates {
-			if existing == candidate {
-				return
-			}
-		}
-		candidates = append(candidates, candidate)
+// findMainDeclaration resolves a main.* frame in the target's own main
+// package. A repository with several commands declares the same names in
+// each, and a repository-wide search refuses them as ambiguous.
+func (e *Engine) findMainDeclaration(sym profile.Symbol) (string, int, bool) {
+	build := e.state.Manifest.Target.Build
+	if sym.Package != "main" || !strings.HasPrefix(build.Package, ".") {
+		return "", 0, false
 	}
+	dir := filepath.Join(e.state.Repository, build.Directory, build.Package)
+	return profile.FindDeclarationInDir(e.state.Repository, dir, sym)
+}
 
-	// Strip closure suffixes until an enclosing declaration name remains.
-	enclosing := name
+// enclosingFunction strips closure suffixes until the declared function
+// remains. Profile frames name closures in forms no `func` declaration uses:
+// pkg.outer.func1 for a closure, pkg.outer.func1.2 when nested.
+func enclosingFunction(name string) string {
 	for {
-		trimmed, ok := trimClosureSuffix(enclosing)
+		trimmed, ok := trimClosureSuffix(name)
 		if !ok {
-			break
+			return name
 		}
-		enclosing = trimmed
-		add(enclosing)
+		name = trimmed
 	}
-
-	// The declared identifier is the final segment, with any method receiver
-	// removed: pkg.(*T).method declares "func (t *T) method(".
-	add(lastSegment(enclosing))
-	add(lastSegment(name))
-	return candidates
 }
 
 func isTestEntryPoint(segment string) bool {

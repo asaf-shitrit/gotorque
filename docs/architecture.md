@@ -876,9 +876,20 @@ reason about it as target code.
 
 Up to 15 surviving names (`hotFunctionBudget`) are annotated with source
 positions: `go tool pprof -list` over the same profile where it resolves,
-otherwise a repository search for the declaration, which matches through
-closure suffixes (`outer.func1`, `outer.func1.2`) and method receivers
-(`pkg.(*T).method`) that no `func` declaration is ever written with.
+otherwise a repository search for the declaration
+(`profile.FindDeclaration`). The pprof query is the name quoted and
+anchored, since `-list` takes a regular expression: unquoted,
+`pkg.(*T).method` does not parse, and unanchored, a name matches every
+symbol containing it. The search strips closure suffixes (`outer.func1`,
+`outer.func1.2`) and matches a method only on its own receiver type and a
+function only without one. A package inside the root module is searched in
+its own directory, among the files this platform builds, and a `main.*`
+frame in the manifest's build package, since it belongs to the binary that
+was sampled; anything else is searched repository-wide and must match
+exactly once. Test files are never
+searched. Matching the bare name instead sent starlark's
+`(*Function).CallInternal` to another package's `CallInternal`, `Binary` to a
+method named `Binary` in `lib/time`, and `Int.get` into `example_test.go`.
 `go tool pprof -list` reports absolute paths, and the excerpt collector
 refuses those because an absolute location is indistinguishable from one
 escaping the repository, so every profiled frame resolved to a location no
