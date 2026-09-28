@@ -86,20 +86,58 @@ type WorkloadConfiguration struct {
 }
 
 type SeedWorkload struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Tier        domain.WorkloadTier `json:"tier"`
-	Args        []string            `json:"args"`
-	Stdin       string              `json:"stdin,omitempty"`
-	Files       []FixtureFile       `json:"files,omitempty"`
-	Provenance  string              `json:"provenance"`
-	Description string              `json:"description,omitempty"`
-	Timeout     Duration            `json:"timeout,omitempty"`
+	ID    string              `json:"id"`
+	Name  string              `json:"name"`
+	Tier  domain.WorkloadTier `json:"tier"`
+	Args  []string            `json:"args"`
+	Stdin string              `json:"stdin,omitempty"`
+	// StdinHeader is written once before Stdin, and StdinRepeat is how many
+	// times Stdin is written after it (0 and 1 both mean once). Together they
+	// let a manifest describe a large input compactly: a header row and a
+	// block of generated rows repeated, instead of megabytes inlined.
+	StdinHeader string        `json:"stdin_header,omitempty"`
+	StdinRepeat int           `json:"stdin_repeat,omitempty"`
+	Files       []FixtureFile `json:"files,omitempty"`
+	Provenance  string        `json:"provenance"`
+	Description string        `json:"description,omitempty"`
+	Timeout     Duration      `json:"timeout,omitempty"`
 }
 
 type FixtureFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	// Header is written once before Content, and Repeat is how many times
+	// Content is written after it (0 and 1 both mean once); see
+	// SeedWorkload.StdinHeader.
+	Header string `json:"header,omitempty"`
+	Repeat int    `json:"repeat,omitempty"`
+}
+
+// Bytes is the file as the workload sees it: Header, then Content Repeat
+// times.
+func (f FixtureFile) Bytes() []byte { return expand(f.Header, f.Content, f.Repeat) }
+
+// StdinBytes is the standard input as the workload sees it: StdinHeader,
+// then Stdin StdinRepeat times.
+func (s SeedWorkload) StdinBytes() []byte { return expand(s.StdinHeader, s.Stdin, s.StdinRepeat) }
+
+// Fixtures is every file the workload needs, expanded, keyed by path.
+func (s SeedWorkload) Fixtures() map[string][]byte {
+	out := make(map[string][]byte, len(s.Files))
+	for _, f := range s.Files {
+		out[f.Path] = f.Bytes()
+	}
+	return out
+}
+
+func expand(header, block string, repeat int) []byte {
+	repeat = max(repeat, 1)
+	out := make([]byte, 0, len(header)+len(block)*repeat)
+	out = append(out, header...)
+	for range repeat {
+		out = append(out, block...)
+	}
+	return out
 }
 
 type DiscoverySettings struct {
