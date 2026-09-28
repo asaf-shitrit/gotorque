@@ -652,7 +652,7 @@ func writeVerifications(b *strings.Builder, state State) {
 	if len(state.Verifications) == 0 {
 		return
 	}
-	b.WriteString("## Verification\n\n| Attempt | Pairs | Originally | On verification | Load | Held |\n|---:|---:|---|---|---|---|\n")
+	b.WriteString("## Verification\n\n| Attempt | Pairs | Originally | On verification | Load | Output variants | Held |\n|---:|---:|---|---|---|---|---|\n")
 	for _, v := range state.Verifications {
 		held := "no"
 		if v.Confirmed() {
@@ -662,7 +662,11 @@ func writeVerifications(b *strings.Builder, state State) {
 		if v.LoadContended {
 			load += " (contended)"
 		}
-		fmt.Fprintf(b, "| %d | %d | %s | %s | %s | %s |\n", v.Attempt, v.Pairs, v.Original, v.Decision, orNone(load), held)
+		outputs := fmt.Sprintf("%d checked", len(v.OutputChecks))
+		if len(v.OutputMismatches) > 0 {
+			outputs += ", differ: " + strings.Join(v.OutputMismatches, ", ")
+		}
+		fmt.Fprintf(b, "| %d | %d | %s | %s | %s | %s | %s |\n", v.Attempt, v.Pairs, v.Original, v.Decision, orNone(load), outputs, held)
 	}
 	b.WriteString("\n")
 }
