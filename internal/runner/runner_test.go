@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"example.com/gotorque/internal/domain"
 	"example.com/gotorque/internal/toolchain"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeExecutor struct{ calls []toolchain.Invocation }
@@ -99,4 +101,47 @@ func TestSandboxFailsClosedWithoutNetworkGuard(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected network guard error")
 	}
+}
+
+// TestRunInterleavedAlternatesWhichSideRunsFirst pins the ABBA order: pairs
+// alternate baseline-first and candidate-first, and each result still lands
+// on its own side.
+func TestRunInterleavedAlternatesWhichSideRunsFirst(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewArtifactStore(filepath.Join(root, "artifacts"))
+	require.NoError(t, err)
+	fake := &fakeExecutor{}
+	r, err := New(Options{Executor: fake, Artifacts: store, SandboxRoot: filepath.Join(root, "sandboxes")})
+	require.NoError(t, err)
+	baseBinary, candBinary := filepath.Join(root, "base-bin"), filepath.Join(root, "cand-bin")
+	require.NoError(t, os.WriteFile(baseBinary, []byte("placeholder"), 0o600))
+	require.NoError(t, os.WriteFile(candBinary, []byte("placeholder"), 0o600))
+	workload := domain.Workload{ID: "w"}
+	baseline := RunRequest{Build: Build{ID: "base", BinaryPath: baseBinary}, Workload: workload, Mode: domain.RunModeMeasurement}
+	candidate := RunRequest{Build: Build{ID: "candidate", BinaryPath: candBinary}, Workload: workload, Mode: domain.RunModeMeasurement}
+	result, err := r.RunInterleaved(context.Background(), ABRequest{Baseline: baseline, Candidate: candidate, Repetitions: 4})
+	require.NoError(t, err)
+	require.Equal(t, "BCCBBCCB", runOrder(fake.calls))
+	require.Len(t, result.Baseline, 4)
+	require.Len(t, result.Candidate, 4)
+	for i := range 4 {
+		require.Equal(t, "base", result.Baseline[i].BuildID, "pair %d", i)
+		require.Equal(t, "candidate", result.Candidate[i].BuildID, "pair %d", i)
+	}
+}
+
+// runOrder spells the sequence of binaries the executor ran: B for the
+// baseline binary, C for the candidate's.
+func runOrder(calls []toolchain.Invocation) string {
+	var order strings.Builder
+	for _, call := range calls {
+		line := call.Path + " " + strings.Join(call.Args, " ")
+		switch {
+		case strings.Contains(line, "base-bin"):
+			order.WriteString("B")
+		case strings.Contains(line, "cand-bin"):
+			order.WriteString("C")
+		}
+	}
+	return order.String()
 }

@@ -490,8 +490,15 @@ type ABResult struct {
 	Candidate []domain.RunResult
 }
 
-// RunInterleaved serializes A/B measurements to prevent CPU contention. The
-// order is baseline,candidate for every pair, giving an A/B/A/B sequence.
+// RunInterleaved serializes A/B measurements to prevent CPU contention, and
+// alternates which side of a pair runs first (ABBA): even pairs run the
+// baseline first, odd pairs the candidate. Always running the baseline first
+// charged the candidate for the second position: on miller's
+// filter-value-threshold workload, two byte-identical binaries measured the
+// second run of each pair 2.66% slower (41 of 60 pairs), and three unrelated
+// patches were rejected there for "regressions" of 2.2-2.4% against a 2%
+// guardrail. Alternating spreads any position effect evenly over both
+// sides. Results stay paired by index.
 func (r *Runner) RunInterleaved(ctx context.Context, req ABRequest) (ABResult, error) {
 	if req.Repetitions <= 0 {
 		return ABResult{}, errors.New("repetitions must be positive")
@@ -503,19 +510,26 @@ func (r *Runner) RunInterleaved(ctx context.Context, req ABRequest) (ABResult, e
 		return ABResult{}, errors.New("baseline and candidate must use the same workload")
 	}
 	result := ABResult{Baseline: make([]domain.RunResult, 0, req.Repetitions), Candidate: make([]domain.RunResult, 0, req.Repetitions)}
-	for i := 0; i < req.Repetitions; i++ {
-		baseline, err := r.Run(ctx, req.Baseline)
-		result.Baseline = append(result.Baseline, baseline)
-		if err != nil {
+	for i := range req.Repetitions {
+		first, firstOut, second, secondOut := req.Baseline, &result.Baseline, req.Candidate, &result.Candidate
+		if i%2 == 1 {
+			first, firstOut, second, secondOut = second, secondOut, first, firstOut
+		}
+		if err := r.runInto(ctx, first, firstOut); err != nil {
 			return result, err
 		}
-		candidate, err := r.Run(ctx, req.Candidate)
-		result.Candidate = append(result.Candidate, candidate)
-		if err != nil {
+		if err := r.runInto(ctx, second, secondOut); err != nil {
 			return result, err
 		}
 	}
 	return result, nil
+}
+
+// runInto runs req and appends its result, successful or not, to out.
+func (r *Runner) runInto(ctx context.Context, req RunRequest, out *[]domain.RunResult) error {
+	run, err := r.Run(ctx, req)
+	*out = append(*out, run)
+	return err
 }
 
 func sortedLines(stdout []byte) []byte {
