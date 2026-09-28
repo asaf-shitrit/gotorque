@@ -59,8 +59,26 @@ func TestCanaryDriftToleratesSmallMovement(t *testing.T) {
 		answers[id] = Answer{Type: "noul", Probability: want}
 	}
 	moved := string(canaryCauses[0])
-	answers[moved] = Answer{Type: "noul", Probability: canaryRecorded[moved] + CanaryTolerance/2}
+	answers[moved] = Answer{Type: "noul", Probability: canaryRecorded[moved] + canaryTolerance(moved)/2}
 	if drift := canaryDrift(answers); len(drift) != 0 {
 		t.Fatalf("drift = %v, want movement inside tolerance ignored", drift)
+	}
+}
+
+func TestCanaryToleranceWidensForLooseAnswers(t *testing.T) {
+	for _, cause := range canaryCauses {
+		id := string(cause)
+		if _, ok := canarySpread[id]; !ok {
+			t.Errorf("canary question %s has no recorded spread", id)
+		}
+		if got := canaryTolerance(id); got < CanaryTolerance {
+			t.Errorf("tolerance for %s = %.3f, below the floor", id, got)
+		}
+	}
+	if got := canaryTolerance("superlinear"); got <= CanaryTolerance {
+		t.Errorf("superlinear tolerance = %.3f, want it widened past %.2f by its sd", got, CanaryTolerance)
+	}
+	if got := canaryTolerance("redundant"); got != CanaryTolerance {
+		t.Errorf("redundant tolerance = %.3f, want the %.2f floor", got, CanaryTolerance)
 	}
 }

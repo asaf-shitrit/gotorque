@@ -148,10 +148,11 @@ func RenderMarkdown(state State) string {
 	writeBaselineWorkloads(&b, state)
 	writeSandboxIsolationNotes(&b, state)
 	writeDegradedRoles(&b, state)
+	writeHistory(&b, state)
 	writeCandidateExperiments(&b, state)
 	writeTokenUsage(&b, state)
 	writeJevCache(&b, state)
-	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q%s\n```\n", state.Repository, state.ManifestPath, tradeoffFlags(state.Tradeoff))
+	fmt.Fprintf(&b, "## Reproduction\n\n```sh\ngotorque optimize --repo %q --manifest %q%s%s\n```\n", state.Repository, state.ManifestPath, tradeoffFlags(state.Tradeoff), historyFlags(state.HistorySources))
 	return b.String()
 }
 
@@ -361,6 +362,7 @@ func writeCandidateExperiments(b *strings.Builder, state State) {
 func writeCandidateRecord(b *strings.Builder, record CandidateRecord) {
 	fmt.Fprintf(b, "### Attempt %d: `%s` **%s**\n\n", record.Attempt, record.CandidateID, strings.ToUpper(string(record.Decision)))
 	writeCandidateMeta(b, record)
+	writeCandidateLoad(b, record)
 	writeCandidateFailure(b, record)
 	writeCandidateSamples(b, record)
 	writeCandidateComparisons(b, record)
@@ -377,8 +379,11 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	if record.PatchPath != "" {
 		fmt.Fprintf(b, "- Patch: `%s`%s\n", record.PatchPath, acceptedMarker(record.Accepted))
 	}
-	if record.Transport == FunctionSourceTransport {
+	switch record.Transport {
+	case FunctionSourceTransport:
 		b.WriteString("- Transport: function_source (code built the diff from the optimizer's replacement function)\n")
+	case MultiFunctionSourceTransport:
+		b.WriteString("- Transport: function_sources (code built a multi-file diff from the optimizer's replacement callee and callers, ADR 0027)\n")
 	}
 	if record.ProposalRepair != "" {
 		// A salvaged proposal is judged like any other; this line only keeps
@@ -578,4 +583,64 @@ func orNone(s string) string {
 		return "none"
 	}
 	return s
+}
+
+// writeHistory lists the earlier campaigns --history read and how many
+// measured targets each one carried into this campaign as already tried.
+func writeHistory(b *strings.Builder, state State) {
+	if len(state.HistorySources) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "## Campaign history\n\n%d target(s) earlier campaigns of this revision already measured were counted as tried, so no candidate here re-proposed them.\n\n", len(state.HistoryTargets))
+	b.WriteString("| Campaign | Directory | Targets carried |\n|---|---|---:|\n")
+	for _, s := range state.HistorySources {
+		carried := strconv.Itoa(s.Targets)
+		if s.Skipped != "" {
+			carried = "skipped: " + s.Skipped
+		}
+		fmt.Fprintf(b, "| `%s` | `%s` | %s |\n", orNone(s.CampaignID), s.Directory, carried)
+	}
+	for _, t := range state.HistoryTargets {
+		fmt.Fprintf(b, "\n- `%s` at `%s`, %s", t.Function, t.Location, t.Cause)
+	}
+	b.WriteString("\n\n")
+}
+
+func historyFlags(sources []HistorySource) string {
+	var b strings.Builder
+	for _, s := range sources {
+		fmt.Fprintf(&b, " --history %q", s.Directory)
+	}
+	return b.String()
+}
+
+// writeCandidateLoad shows the load averages sampled around a candidate's
+// measurement, and warns when the machine was contended (loadavg.go).
+func writeCandidateLoad(b *strings.Builder, record CandidateRecord) {
+	if record.QuietWait > 0 {
+		verdict := "until it was quiet"
+		if record.QuietWaitExpired {
+			verdict = "and gave up; it was measured while still contended"
+		}
+		fmt.Fprintf(b, "- Waited %s for the machine to go quiet before measuring, %s\n", record.QuietWait, verdict)
+	}
+	if len(record.DiscardedLoad) > 0 {
+		fmt.Fprintf(b, "- Measured twice: the first pass ended contended (load %s) and was discarded\n", joinLoads(record.DiscardedLoad))
+	}
+	if len(record.LoadAverages) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "- Load average during measurement: %s", joinLoads(record.LoadAverages))
+	if record.LoadContended {
+		b.WriteString(" **(contended: load above 0.7 per CPU; other work may have moved these timings)**")
+	}
+	b.WriteString("\n")
+}
+
+func joinLoads(loads []float64) string {
+	parts := make([]string, 0, len(loads))
+	for _, l := range loads {
+		parts = append(parts, strconv.FormatFloat(l, 'f', 2, 64))
+	}
+	return strings.Join(parts, " -> ")
 }

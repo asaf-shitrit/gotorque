@@ -57,28 +57,50 @@ func canaryQuestionSet() map[string]Question {
 // Valid only for canaryFunction and canaryQuestionSet exactly as they stand;
 // TestCanaryMatchesQuestions fails on any edit to either. Re-measure with
 // TestLiveCanary rather than pasting new numbers by hand.
-// Measured over 6 repeats, 2026-09-27, against the pinned build (jev.Model)
-// through OpenRouter's System One API (ADR 0030); per-answer sd 0.004–0.029.
-// canaryFunction is chosen so most answers sit mid-range: an answer pinned
-// near 0 or 1 barely moves when the model changes, so it would make a poor
-// drift signal.
+// Measured over 20 repeats, 2026-09-28, against the pinned build (jev.Model)
+// through OpenRouter's System One API (ADR 0030). canaryFunction is chosen so
+// most answers sit mid-range: an answer pinned near 0 or 1 barely moves when
+// the model changes, so it would make a poor drift signal.
 var canaryRecorded = map[string]float64{
-	"alloc":         0.8517,
-	"unbuffered_io": 0.6667,
-	"string_build":  0.7367,
-	"fast_path":     0.4100,
-	"superlinear":   0.2483,
-	"prealloc":      0.7617,
-	"redundant":     0.1583,
+	"alloc":         0.8495,
+	"unbuffered_io": 0.6540,
+	"string_build":  0.7365,
+	"fast_path":     0.4165,
+	"superlinear":   0.2435,
+	"prealloc":      0.7610,
+	"redundant":     0.1600,
 }
 
-// CanaryTolerance is how far a canary answer may move from canaryRecorded
-// before the preflight treats it as drift. TypeSafe reports a per-question sd
-// of 0.0102 (ADR 0012 measured 0.01 independently, and the canary's own
-// answers ranged 0.006–0.015), so 0.05 is at least three standard deviations: comfortably past ordinary sampling noise, and a
-// version change that shifts the cause baselines will almost certainly move
-// at least one of the seven canary answers past it.
-const CanaryTolerance = 0.05
+// canarySpread is each answer's standard deviation over the same 20 repeats.
+// The answers are not equally steady: superlinear's sd was 0.026 and
+// redundant's 0.006, so one tolerance for all seven was either blind on the
+// steady ones or noisy on the loose ones. With a flat 0.05, superlinear
+// failed the preflight twice in one night on the pinned build (0.17, then a
+// median of 0.19, against a recorded 0.248 that sat at the high end of its
+// own range).
+var canarySpread = map[string]float64{
+	"alloc":         0.0080,
+	"unbuffered_io": 0.0198,
+	"string_build":  0.0168,
+	"fast_path":     0.0203,
+	"superlinear":   0.0257,
+	"prealloc":      0.0151,
+	"redundant":     0.0063,
+}
+
+// CanaryTolerance is the least a canary answer may move before the preflight
+// treats it as drift; canaryTolerance widens it to canarySpreads standard
+// deviations for a question whose answers vary more. Together with the
+// median-of-three confirmation, a model change that moves the cause answers
+// by more than their noise still fails, and ordinary sampling does not.
+const (
+	CanaryTolerance = 0.05
+	canarySpreads   = 4
+)
+
+func canaryTolerance(id string) float64 {
+	return max(CanaryTolerance, canarySpreads*canarySpread[id])
+}
 
 const canaryDigest = "182d11791110d3da035f4f5913a9fbeffcae5f0cd2dcc932fb3ace35ae558711"
 
@@ -90,8 +112,8 @@ func checkCanaryDigest() string {
 
 // canaryDrift compares one evaluate response's canary answers against
 // canaryRecorded and reports, in canaryCauses order, every question that
-// moved by more than CanaryTolerance and any question canaryRecorded expects
-// but the response did not answer.
+// moved by more than its canaryTolerance and any question canaryRecorded
+// expects but the response did not answer.
 func canaryDrift(answers map[string]Answer) []string {
 	var drift []string
 	for _, cause := range canaryCauses {
@@ -105,7 +127,7 @@ func canaryDrift(answers map[string]Answer) []string {
 			drift = append(drift, id+": no answer")
 			continue
 		}
-		if delta := got.Probability - want; delta > CanaryTolerance || -delta > CanaryTolerance {
+		if delta, tol := got.Probability-want, canaryTolerance(id); delta > tol || -delta > tol {
 			drift = append(drift, fmt.Sprintf("%s: %.4f, recorded %.4f (Δ%.4f)", id, got.Probability, want, delta))
 		}
 	}

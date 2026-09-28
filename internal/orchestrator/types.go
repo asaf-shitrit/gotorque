@@ -38,6 +38,18 @@ type CampaignRequest struct {
 	// rank allocation causes ahead of others when the objective is memory; it
 	// is empty only in tests that build a CampaignRequest by hand.
 	Objective string `json:"objective,omitempty"`
+	// EarlierCandidates are candidates earlier campaigns of this revision
+	// measured (--history, ADR 0031): what was proposed and how it was
+	// judged. They are advice for the optimizer, shown so it does not
+	// re-derive a known verdict; triedTargets never reads them (the engine
+	// passes their targets through PriorTargets instead).
+	EarlierCandidates []PriorCandidate `json:"earlier_candidates,omitempty"`
+	// GoVersion is the language version the target module's go.mod declares
+	// (its go directive), so a patch does not reach for a builtin or API the
+	// module cannot compile: goawk declares go 1.20, and a free-choice
+	// candidate on overnight-goawk-2 failed to build over clear, which needs
+	// 1.21.
+	GoVersion string `json:"go_version,omitempty"`
 }
 
 // Inspection is deterministic repository and target inventory.
@@ -105,6 +117,10 @@ type CandidateRequest struct {
 	// Target is the function and cause code chose for this patch, or nil
 	// when the optimizer chose. The patch-shape check holds the patch to it.
 	Target *agents.Target `json:"target,omitempty"`
+	// RoleFailure is why the optimizer's call failed this cycle, when it did
+	// and the proposal is the degraded empty one, so the rejection can name
+	// the real cause instead of an empty patch.
+	RoleFailure string `json:"role_failure,omitempty"`
 }
 
 // CandidateEvidence records the candidate and deterministic measurements used
@@ -124,6 +140,20 @@ type CandidateEvidence struct {
 	// stderr tail) behind a rejection so later cycles can avoid repeating
 	// the same failed approach.
 	FailureDetail string `json:"failure_detail,omitempty"`
+	// LoadAverages are the machine's one-minute load averages sampled before
+	// and after the candidate's measurement, for the report to flag a
+	// contended one. The verdict never reads them.
+	LoadAverages []float64 `json:"load_averages,omitempty"`
+	// LoadContended is whether one of them exceeded 0.7 per CPU on the
+	// measuring machine.
+	LoadContended bool `json:"load_contended,omitempty"`
+	// QuietWait is how long the engine waited for the machine to go quiet
+	// before measuring, and QuietWaitExpired whether it gave up waiting.
+	QuietWait        time.Duration `json:"quiet_wait,omitempty"`
+	QuietWaitExpired bool          `json:"quiet_wait_expired,omitempty"`
+	// DiscardedLoad is the load around a first measurement pass that ended
+	// contended and was thrown away for a second one (measureSeedsOnQuietMachine).
+	DiscardedLoad []float64 `json:"discarded_load,omitempty"`
 	// Unmeasured is set when the candidate was rejected before measurement:
 	// its patch did not apply, failed the shape check, or did not build.
 	Unmeasured bool `json:"unmeasured,omitempty"`

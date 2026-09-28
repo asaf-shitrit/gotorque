@@ -147,14 +147,15 @@ func (e *Engine) campaignRequest() orchestrator.CampaignRequest {
 		BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...),
 		OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures,
 		PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive, PriorTargets: e.priorTargets(),
-		Objective: e.state.Manifest.Performance.PrimaryMetric,
+		Objective: e.state.Manifest.Performance.PrimaryMetric, EarlierCandidates: e.state.HistoryPriors, GoVersion: goDirective(e.state.Repository, e.state.Manifest.Target.Build.Directory),
 	}
 }
 
 // priorTargets are the targets earlier candidates tried, read back from the
-// persisted records, so a resumed campaign moves on instead of retrying them.
+// persisted records, so a resumed campaign moves on instead of retrying them,
+// plus the targets --history carried from earlier campaigns (loadHistory).
 func (e *Engine) priorTargets() []agents.Target {
-	var out []agents.Target
+	out := append([]agents.Target(nil), e.state.HistoryTargets...)
 	for _, record := range e.state.CandidateRecords {
 		if record.Target != nil {
 			out = append(out, *record.Target)
@@ -433,23 +434,28 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	})
 	// Persist the full verdict so reports can explain every decision.
 	record := CandidateRecord{
-		Attempt:         len(s.engine.state.CandidateRecords) + 1,
-		CandidateID:     input.Evidence.Candidate.ID,
-		Hypothesis:      input.Evidence.Candidate.Hypothesis,
-		Target:          input.Target,
-		ReviewConcerns:  input.Review.Concerns,
-		PatchPath:       input.Evidence.Candidate.PatchPath,
-		Transport:       input.Evidence.Candidate.Transport,
-		Summary:         input.Evidence.Summary,
-		Decision:        result.Decision,
-		Reasons:         result.Reasons,
-		Comparisons:     result.Comparisons,
-		BenchstatOutput: input.Evidence.BenchstatOutput,
-		Samples:         input.Evidence.RepSamples,
-		PgoComparisons:  input.Evidence.PgoComparisons,
-		PgoNote:         input.Evidence.PgoNote,
-		ProposalRepair:  string(input.Evidence.ProposalRepair),
-		FailureDetail:   input.Evidence.FailureDetail,
+		Attempt:          len(s.engine.state.CandidateRecords) + 1,
+		CandidateID:      input.Evidence.Candidate.ID,
+		Hypothesis:       input.Evidence.Candidate.Hypothesis,
+		Target:           input.Target,
+		ReviewConcerns:   input.Review.Concerns,
+		PatchPath:        input.Evidence.Candidate.PatchPath,
+		Transport:        input.Evidence.Candidate.Transport,
+		Summary:          input.Evidence.Summary,
+		Decision:         result.Decision,
+		Reasons:          result.Reasons,
+		Comparisons:      result.Comparisons,
+		BenchstatOutput:  input.Evidence.BenchstatOutput,
+		Samples:          input.Evidence.RepSamples,
+		PgoComparisons:   input.Evidence.PgoComparisons,
+		PgoNote:          input.Evidence.PgoNote,
+		ProposalRepair:   string(input.Evidence.ProposalRepair),
+		FailureDetail:    input.Evidence.FailureDetail,
+		LoadAverages:     input.Evidence.LoadAverages,
+		LoadContended:    input.Evidence.LoadContended,
+		QuietWait:        input.Evidence.QuietWait,
+		QuietWaitExpired: input.Evidence.QuietWaitExpired,
+		DiscardedLoad:    input.Evidence.DiscardedLoad,
 	}
 	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
 	// Persist immediately: an ADK failure later in the run must not lose

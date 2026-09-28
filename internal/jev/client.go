@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -280,6 +281,34 @@ func gatewayMessage(data []byte) string {
 // via Evaluate), so a wrong one already fails this call outright with no
 // override; EnvAllowDrift only downgrades the canary answer-drift check.
 func (c Client) Preflight(ctx context.Context) ([]string, error) {
+	answers, err := c.askCanary(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(canaryDrift(answers)) > 0 {
+		if answers, err = c.confirmCanary(ctx, answers); err != nil {
+			return nil, err
+		}
+	}
+	var warnings []string
+	if drift := canaryDrift(answers); len(drift) > 0 {
+		msg := fmt.Sprintf("Jev's canary answers moved: %s; re-measure with TestLiveCanary", strings.Join(drift, "; "))
+		if err := driftGuard(msg, true, &warnings); err != nil {
+			return warnings, err
+		}
+	}
+	return warnings, nil
+}
+
+// canaryConfirmations is how many more times Preflight asks the canary after
+// a drifted first answer. Jev's answers are not only noisy at the 0.01 level
+// the recorded sd shows: on the pinned build, one of ten repeats of the
+// canary came back 0.17 against a recorded 0.248 (sd 0.014), and failing the
+// preflight on that one sample stopped a campaign for nothing. The median of
+// three drops a single outlier and still fails on a model that really moved.
+const canaryConfirmations = 2
+
+func (c Client) askCanary(ctx context.Context) (map[string]Answer, error) {
 	resp, err := c.Evaluate(ctx, Request{State: canaryState, Questions: canaryQuestionSet()})
 	if err != nil {
 		return nil, fmt.Errorf("preflight against Jev: %w", err)
@@ -287,14 +316,38 @@ func (c Client) Preflight(ctx context.Context) ([]string, error) {
 	if len(resp.Answers) == 0 {
 		return nil, errors.New("preflight against Jev: response carried no answer")
 	}
-	var warnings []string
-	if drift := canaryDrift(resp.Answers); len(drift) > 0 {
-		msg := fmt.Sprintf("Jev's canary answers moved: %s; re-measure with TestLiveCanary", strings.Join(drift, "; "))
-		if err := driftGuard(msg, true, &warnings); err != nil {
-			return warnings, err
+	return resp.Answers, nil
+}
+
+// confirmCanary asks the canary canaryConfirmations more times and returns
+// each question's median answer across first and the confirmations.
+func (c Client) confirmCanary(ctx context.Context, first map[string]Answer) (map[string]Answer, error) {
+	samples := []map[string]Answer{first}
+	for range canaryConfirmations {
+		answers, err := c.askCanary(ctx)
+		if err != nil {
+			return nil, err
 		}
+		samples = append(samples, answers)
 	}
-	return warnings, nil
+	return medianAnswers(samples), nil
+}
+
+// medianAnswers takes, for every question the first sample answered, the
+// median probability across the samples that answered it.
+func medianAnswers(samples []map[string]Answer) map[string]Answer {
+	out := make(map[string]Answer, len(samples[0]))
+	for id, answer := range samples[0] {
+		ps := make([]float64, 0, len(samples))
+		for _, s := range samples {
+			if a, ok := s[id]; ok {
+				ps = append(ps, a.Probability)
+			}
+		}
+		slices.Sort(ps)
+		out[id] = Answer{Type: answer.Type, Probability: ps[len(ps)/2]}
+	}
+	return out
 }
 
 // driftGuard applies EnvAllowDrift to one preflight finding: msg is appended
