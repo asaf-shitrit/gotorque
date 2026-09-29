@@ -119,3 +119,25 @@ func TestTargetSignaturesOnMillerCrossesIntoPkgTypes(t *testing.T) {
 	require.Contains(t, strings.Join(got, "\n"), "// package types")
 	t.Logf("context:\n%s", strings.Join(got, "\n---\n"))
 }
+
+// TestTargetSignaturesShowsOneVariantOfABuildTaggedDeclaration is
+// klauspost/compress's internal/race: WriteSlice and ReadSlice are declared
+// in a race and a !race file. Only the variant this platform builds is
+// shown, so both functions the target calls fit the context.
+func TestTargetSignaturesShowsOneVariantOfABuildTaggedDeclaration(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		full := filepath.Join(repo, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o700))
+		require.NoError(t, os.WriteFile(full, []byte(src), 0o600))
+	}
+	write("go.mod", "module example.com/c\n\ngo 1.26\n")
+	write("internal/race/race.go", "//go:build race\n\npackage race\n\n// WriteSlice is the race variant.\nfunc WriteSlice[T any](s []T) {}\n\n// ReadSlice is the race variant.\nfunc ReadSlice[T any](s []T) {}\n")
+	write("internal/race/norace.go", "//go:build !race\n\npackage race\n\nfunc WriteSlice[T any](s []T) {}\n\nfunc ReadSlice[T any](s []T) {}\n")
+	write("s2/writer.go", "package s2\n\nimport \"example.com/c/internal/race\"\n\nfunc encode(in, out []byte) {\n\trace.WriteSlice(out)\n\trace.ReadSlice(in)\n}\n")
+
+	joined := strings.Join(targetSignatures(repo, agents.Target{Function: "encode", Location: "s2/writer.go:5"}), "\n")
+	require.Equal(t, 1, strings.Count(joined, "func WriteSlice"), joined)
+	require.Equal(t, 1, strings.Count(joined, "func ReadSlice"), joined)
+	require.NotContains(t, joined, "race variant", "the race-tagged file is not built by default")
+}

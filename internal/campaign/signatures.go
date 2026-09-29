@@ -3,6 +3,7 @@ package campaign
 import (
 	"bytes"
 	"go/ast"
+	"go/build"
 	"go/format"
 	"go/parser"
 	"go/token"
@@ -161,7 +162,12 @@ func modulePathOf(gomod []byte) string {
 	return ""
 }
 
-// packageFiles parses the non-test Go files directly in dir.
+// packageFiles parses the non-test Go files directly in dir that this
+// platform builds. A package can declare a function once per build-tag
+// variant: klauspost/compress's internal/race has WriteSlice and ReadSlice in
+// both a race and a !race file, so every variant was rendered, WriteSlice
+// filled the context budget twice, and the ReadSlice the target also calls
+// was never shown; the optimizer then invented a "trace" package for both.
 func packageFiles(fset *token.FileSet, dir string) []*ast.File {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -171,6 +177,9 @@ func packageFiles(fset *token.FileSet, dir string) []*ast.File {
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		if ok, err := build.Default.MatchFile(dir, name); err != nil || !ok {
 			continue
 		}
 		if f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution); err == nil {
