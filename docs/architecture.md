@@ -406,14 +406,20 @@ out.
 7. **Policy.** `internal/policy` applies the fixed verdict order: behavior
    and safety failures are hard rejections; missing evidence or a primary
    metric that is not statistically supported or improves less than 3 percent
-   is inconclusive; any guardrail (CPU time, peak memory, binary size)
-   regressing more than 2 percent rejects, and so does an eligible reading
-   that regresses past the limit significantly. Statistical support is required of
-   the primary metric, where it protects the win itself; a required guardrail
-   is judged against its own `maximum_regression_percent` limit, because
-   demanding proof of the absence of a regression from a jittery high-water
-   mark reports inconclusive for a candidate that moved it by a fraction of
-   the limit. Every verdict is persisted with
+   is inconclusive; a guardrail (CPU time, peak memory, binary size) or an
+   eligible reading that regresses past its limit rejects when the
+   difference is significant (ADR 0016, extended to guardrails by ADR 0033),
+   or on the point estimate alone when the manifest turns
+   `statistical_support_required` off. An insignificant over-limit reading
+   first gets a second series of pairs (`confirmRegressions`); if it stays
+   insignificant it is named in the reasons and neither rejects nor makes the
+   candidate inconclusive. A consistent regression is significant even with
+   no spread, and binary size compares exact sizes, so a real regression
+   still rejects: on the point estimate, 20 comment-only null candidates on
+   gron lost 2 to `cpu_time_ns` noise (+2.16%, +3.06%). A guardrail within
+   its limit never needs support: demanding proof of the absence of a
+   regression from a jittery high-water mark once reported inconclusive for
+   a candidate that moved it by a fraction of the limit. Every verdict is persisted with
    reasons and metric comparisons. An evaluation that never reached a
    behavior comparison carries a `FailureSummary` naming what actually
    happened (the patch failed to apply, the build failed, the upstream test

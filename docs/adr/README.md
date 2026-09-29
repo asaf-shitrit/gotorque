@@ -39,6 +39,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0030](0030-jev-openrouter-systemone.md) | Jev is reached through OpenRouter's System One API, pinned to an exact build | accepted |
 | [0031](0031-campaign-history-counts-measured-targets-as-tried.md) | Earlier campaigns' measured targets count as tried (`--history`) | accepted |
 | [0032](0032-measured-unbuffered-writes.md) | Measured unbuffered writes raise a code-derived target | accepted |
+| [0033](0033-guardrails-reject-on-significance.md) | Guardrails reject on significance, like workload regressions | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay

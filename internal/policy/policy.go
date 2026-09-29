@@ -106,6 +106,9 @@ func Evaluate(config Config, evidence Evidence) Result {
 	for _, comparison := range unconfirmed(config, eligible) {
 		result.Reasons = append(result.Reasons, fmt.Sprintf("%s read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", readingSubject(comparison), comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent))
 	}
+	for _, g := range unconfirmedGuardrails(config, byName) {
+		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", g.name, g.comparison.DeltaPercent, g.limit))
+	}
 	return result
 }
 
@@ -171,6 +174,40 @@ func unconfirmed(config Config, eligible []domain.MetricComparison) []domain.Met
 	for _, comparison := range eligible {
 		if overLimit(config, comparison) && !comparison.Significant {
 			readings = append(readings, comparison)
+		}
+	}
+	return readings
+}
+
+// UnconfirmedGuardrails returns the pooled guardrail readings over their
+// limit whose difference is not significant: the ones Evaluate will not
+// reject on. The engine measures again when there are any, as it does for
+// UnconfirmedRegressions.
+func UnconfirmedGuardrails(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
+	readings := unconfirmedGuardrails(withDefaults(config), indexComparisons(comparisonResults(comparisons)))
+	out := make([]domain.MetricComparison, 0, len(readings))
+	for _, g := range readings {
+		out = append(out, g.comparison)
+	}
+	return out
+}
+
+type guardrailReading struct {
+	name       string
+	limit      float64
+	comparison domain.MetricComparison
+}
+
+func unconfirmedGuardrails(config Config, byName map[string]domain.MetricComparison) []guardrailReading {
+	if !config.StatisticalSupportRequired {
+		return nil
+	}
+	var readings []guardrailReading
+	for _, guardrail := range config.Guardrails {
+		comparison, found := byName[guardrail.Name]
+		limit := guardrailLimit(config, guardrail)
+		if found && comparison.DeltaPercent > limit && !comparison.Significant {
+			readings = append(readings, guardrailReading{name: guardrail.Name, limit: limit, comparison: comparison})
 		}
 	}
 	return readings
@@ -329,16 +366,19 @@ func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]dom
 	if !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
 		return inconclusive(result, fmt.Sprintf("guardrail %q has invalid measurements", guardrail.Name)), true
 	}
-	// The manifest's guardrail contract is a threshold: reject when the
-	// guardrail regressed past maximum_regression_percent. Requiring
-	// statistical support here as well asked a required guardrail to prove
-	// the absence of a regression, which a jittery metric cannot do at seven
-	// samples. A measured +0.16% against the 2% limit was reported
-	// inconclusive and blocked a candidate whose primary metric improved
-	// 14.38% with support. StatisticalSupportRequired still guards the
-	// primary metric, where it protects the win itself.
-	if comparison.DeltaPercent > guardrailLimit(config, guardrail) {
-		return reject(result, fmt.Sprintf("guardrail %q regressed by %.2f%%, over the %.2f%% limit", guardrail.Name, comparison.DeltaPercent, guardrailLimit(config, guardrail))), true
+	// A guardrail past its limit rejects when the difference is significant,
+	// whenever the manifest asks for statistical support, the rule ADR 0016
+	// set for workload regressions. On the point estimate alone, 20 null
+	// candidates on gron (a comment line each, identical code) lost 2 to
+	// cpu_time_ns readings of +2.16% and +3.06% that were not significant: a
+	// 12% false-rejection rate. A consistent regression is significant, even
+	// with no spread at all, so a real one still rejects; an insignificant one
+	// is named in the reasons and never makes the candidate inconclusive,
+	// which is what once blocked a supported -14.38% win over a +0.16% memory
+	// reading. The engine measures again first (UnconfirmedGuardrails).
+	limit := guardrailLimit(config, guardrail)
+	if comparison.DeltaPercent > limit && (comparison.Significant || !config.StatisticalSupportRequired) {
+		return reject(result, fmt.Sprintf("guardrail %q regressed by %.2f%%, over the %.2f%% limit", guardrail.Name, comparison.DeltaPercent, limit)), true
 	}
 	return result, false
 }
