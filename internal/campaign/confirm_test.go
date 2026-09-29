@@ -58,9 +58,10 @@ func TestAnUnresolvedRegressionIsMeasuredAgain(t *testing.T) {
 func TestASettledVerdictIsNotMeasuredAgain(t *testing.T) {
 	engine, evidence, m, candidate := measuredEngine(t)
 	for _, planted := range [][]domain.MetricComparison{
-		{{Metric: "wall_time_ns", Baseline: 100, Candidate: 101.5}},                  // within the limit
-		{{Metric: "wall_time_ns", Baseline: 100, Candidate: 104, Significant: true}}, // a regression the policy rejects
-		{{Metric: "cpu_time_ns", Baseline: 100, Candidate: 104}},                     // not an eligible reading
+		{{Metric: "wall_time_ns", Baseline: 100, Candidate: 101.5}},                   // within the limit
+		{{Metric: "wall_time_ns", Baseline: 100, Candidate: 104, Significant: true}},  // a regression the policy rejects
+		{{Metric: "cpu_time_ns", Baseline: 100, Candidate: 104, Significant: true}},   // a guardrail the policy rejects
+		{{Metric: "cpu_time_ns", Workload: "fixture", Baseline: 100, Candidate: 104}}, // a per-workload guardrail reading, not the pooled one
 	} {
 		evidence.Comparisons = planted
 		require.True(t, engine.confirmRegressions(context.Background(), evidence, "candidate", candidate, m))
@@ -86,8 +87,26 @@ func TestAConfirmationSeriesIsHeldToBehaviour(t *testing.T) {
 }
 
 func TestConfirmationNoteNamesEveryReading(t *testing.T) {
-	note := confirmationNote([]domain.MetricComparison{{Workload: "small-doc", DeltaPercent: 4.01}, {DeltaPercent: 3.05}}, 2)
-	require.True(t, strings.HasPrefix(note, "small-doc +4.01%, pooled +3.05% over the 2.00% limit"), note)
+	note := confirmationNote([]domain.MetricComparison{
+		{Metric: "wall_time_ns", Workload: "small-doc", DeltaPercent: 4.01},
+		{Metric: "wall_time_ns", DeltaPercent: 3.05},
+		{Metric: "cpu_time_ns", DeltaPercent: 2.16},
+	}, 2, "wall_time_ns")
+	require.True(t, strings.HasPrefix(note, "small-doc +4.01%, pooled +3.05%, cpu_time_ns +2.16% over the 2.00% limit"), note)
+}
+
+// TestAnUnresolvedGuardrailIsMeasuredAgain: the null-gron case. A pooled
+// guardrail past its limit without significance no longer rejects on its
+// point estimate, so it gets the second series that lets a real regression
+// become significant.
+func TestAnUnresolvedGuardrailIsMeasuredAgain(t *testing.T) {
+	engine, evidence, m, candidate := measuredEngine(t)
+	evidence.Comparisons = []domain.MetricComparison{{Metric: "cpu_time_ns", Baseline: 100, Candidate: 103.06}}
+
+	require.True(t, engine.confirmRegressions(context.Background(), evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions)
+	require.Contains(t, evidence.Summary, "cpu_time_ns +3.06% over the 2.00% limit without significance after 25 pairs")
+	require.Contains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
 }
 
 // guardrailsUnaffected plants supported, non-regressing guardrail readings so

@@ -35,7 +35,7 @@ func TestEvaluateRejectsGuardrailRegression(t *testing.T) {
 		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
 		Comparisons: []domain.MetricComparison{
 			{Metric: "wall_time_ns", Baseline: 100, Candidate: 90, StatisticallyFit: true},
-			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 103, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 103, StatisticallyFit: true, Significant: true},
 			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		},
@@ -66,20 +66,48 @@ func TestEvaluateAcceptsWithinLimitUnsupportedGuardrail(t *testing.T) {
 	}
 }
 
-// TestEvaluateRejectsUnsupportedGuardrailOverLimit keeps the threshold binding
-// even when the guardrail measurement carries no statistical support.
-func TestEvaluateRejectsUnsupportedGuardrailOverLimit(t *testing.T) {
-	result := Evaluate(DefaultConfig(), Evidence{
-		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: []domain.MetricComparison{
-			{Metric: "wall_time_ns", Baseline: 100, Candidate: 85, StatisticallyFit: true},
-			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 106, StatisticallyFit: false},
-			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
-			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
-		},
-	})
-	if result.Decision != domain.DecisionRejected {
-		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+// TestEvaluateGuardrailOverLimitRejectsOnlyWhenSignificant: past its limit,
+// a guardrail rejects when the difference is significant, or when the
+// manifest does not ask for statistical support. An insignificant reading is
+// named in the reasons and neither rejects nor blocks the verdict: 20 null
+// candidates on gron lost 2 to cpu_time_ns noise of +2.16% and +3.06%.
+func TestEvaluateGuardrailOverLimitRejectsOnlyWhenSignificant(t *testing.T) {
+	evidence := func(significant bool) Evidence {
+		return Evidence{
+			BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+			Comparisons: []domain.MetricComparison{
+				{Metric: "wall_time_ns", Baseline: 100, Candidate: 85, StatisticallyFit: true},
+				{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+				{Metric: "cpu_time_ns", Baseline: 100, Candidate: 103.06, StatisticallyFit: false, Significant: significant},
+				{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			},
+		}
+	}
+	result := Evaluate(DefaultConfig(), evidence(false))
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("insignificant reading: decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if !strings.Contains(strings.Join(result.Reasons, "; "), `guardrail "cpu_time_ns" read +3.06%, over the 2.00% limit, but the difference is not statistically significant`) {
+		t.Fatalf("the insignificant reading is not named: %v", result.Reasons)
+	}
+	if got := UnconfirmedGuardrails(DefaultConfig(), evidence(false).Comparisons); len(got) != 1 || got[0].Metric != "cpu_time_ns" {
+		t.Fatalf("UnconfirmedGuardrails = %+v, want the cpu_time_ns reading", got)
+	}
+
+	if result := Evaluate(DefaultConfig(), evidence(true)); result.Decision != domain.DecisionRejected {
+		t.Fatalf("significant reading: decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if got := UnconfirmedGuardrails(DefaultConfig(), evidence(true).Comparisons); len(got) != 0 {
+		t.Fatalf("a significant reading is not unconfirmed: %+v", got)
+	}
+
+	pointEstimate := DefaultConfig()
+	pointEstimate.StatisticalSupportRequired = false
+	if result := Evaluate(pointEstimate, evidence(false)); result.Decision != domain.DecisionRejected {
+		t.Fatalf("without required support the limit decides alone: decision = %s", result.Decision)
+	}
+	if got := UnconfirmedGuardrails(pointEstimate, evidence(false).Comparisons); len(got) != 0 {
+		t.Fatalf("nothing is unconfirmed without required support: %+v", got)
 	}
 }
 

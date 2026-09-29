@@ -460,6 +460,10 @@ func (e *Engine) runSeries(ctx context.Context, runs *seedRuns, id, candidateBin
 func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	config := policyConfigFromManifest(e.state.Manifest)
 	unconfirmed := policy.UnconfirmedRegressions(config, eligibleReadings(config, evidence.Comparisons))
+	// A guardrail past its limit without significance gets the same second
+	// series: the policy no longer rejects on its point estimate, so more
+	// samples are what lets a real regression become significant.
+	unconfirmed = append(unconfirmed, policy.UnconfirmedGuardrails(config, evidence.Comparisons)...)
 	if len(unconfirmed) == 0 {
 		return true
 	}
@@ -469,7 +473,7 @@ func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.
 		}
 	}
 	e.rederive(ctx, evidence, m)
-	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent)
+	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
 	_ = e.saveEvent("measurement_confirmed", note, nil)
@@ -534,12 +538,15 @@ func (e *Engine) rederive(ctx context.Context, evidence *orchestrator.CandidateE
 	e.finalizeCandidateEvidence(ctx, evidence, m)
 }
 
-func confirmationNote(unconfirmed []domain.MetricComparison, limit float64) string {
+func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, primary string) string {
 	readings := make([]string, 0, len(unconfirmed))
 	for _, c := range unconfirmed {
 		name := "pooled"
 		if c.Workload != "" {
 			name = c.Workload
+		}
+		if c.Metric != "" && c.Metric != primary {
+			name = c.Metric
 		}
 		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
 	}
