@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"example.com/gotorque/internal/agents"
 	"example.com/gotorque/internal/jev"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +28,7 @@ func (c *countingEvaluator) Evaluate(_ context.Context, req jev.Request) (jev.Re
 	for id := range req.Questions {
 		answers[id] = jev.Answer{Type: "boolean", Probability: 0.42}
 	}
-	return jev.Response{Model: jev.Model, Answers: answers}, nil
+	return jev.Response{Model: jev.Model, Answers: answers, Usage: jev.Usage{InputTokens: 2400, Cost: 0.0001}}, nil
 }
 
 func newCacheTestEngine(t *testing.T) *Engine {
@@ -129,4 +130,33 @@ func TestCacheEvaluatorPassesThroughWithoutAStore(t *testing.T) {
 	inner := &countingEvaluator{}
 	wrapped := cacheEvaluator(&Engine{}, "analyst", inner)
 	require.Same(t, jev.Evaluator(inner), wrapped)
+}
+
+// TestCachedAnswerCarriesNoUsage: only the miss spent tokens, so only the miss
+// reports usage; the stored entry keeps the original request's, and the
+// analyst's usage row counts one request, not two.
+func TestCachedAnswerCarriesNoUsage(t *testing.T) {
+	engine := newCacheTestEngine(t)
+	cached := cacheEvaluator(engine, "analyst", &countingEvaluator{})
+	req := jev.Request{State: jev.SiteState("a.go", "func f() {}"), Questions: jev.Questions()}
+
+	first, err := cached.Evaluate(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, int64(2400), first.Usage.InputTokens)
+	second, err := cached.Evaluate(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, jev.Usage{}, second.Usage)
+
+	digest, err := jev.Digest(req)
+	require.NoError(t, err)
+	stored, ok, err := engine.store.JevCacheGet(digest)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, int64(2400), stored.Usage.InputTokens, "the cache keeps what the call cost")
+
+	usage := &agents.UsageCollector{}
+	analyst := causeAnalyst{usage: usage}
+	analyst.recordUsage(first.Usage)
+	analyst.recordUsage(second.Usage)
+	require.Equal(t, int64(1), usage.Snapshot()[string(agents.RoleAnalyst)].Requests)
 }

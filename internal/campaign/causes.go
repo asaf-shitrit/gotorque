@@ -194,6 +194,11 @@ func chooseKinds(v siteVerdict, answers map[string]jev.Answer) siteVerdict {
 }
 
 func (a causeAnalyst) recordUsage(u jev.Usage) {
+	// A cached answer carries no usage (cachingEvaluator), and counting it
+	// as a request would report calls that were never made.
+	if u == (jev.Usage{}) {
+		return
+	}
 	a.usage.Record(string(agents.RoleAnalyst), &genai.GenerateContentResponseUsageMetadata{
 		PromptTokenCount:     tokens32(u.InputTokens),
 		CandidatesTokenCount: tokens32(u.OutputTokens),
