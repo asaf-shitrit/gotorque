@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -185,4 +186,10 @@ func TestTestPassesAbsoluteMemprofile(t *testing.T) {
 		}
 	}
 	t.Fatalf("-memprofile flag missing: %#v", args)
+}
+
+func TestTestArgsTurnVetOff(t *testing.T) {
+	if !slices.Contains(testArgs(TestRequest{}), "-vet=off") {
+		t.Fatalf("testArgs = %v: a vet finding must not stop the gate's tests building", testArgs(TestRequest{}))
+	}
 }
