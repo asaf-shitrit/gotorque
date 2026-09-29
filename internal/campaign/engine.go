@@ -1163,12 +1163,32 @@ func (e *Engine) sampleFirstLiving(ctx context.Context) (manifest.SeedWorkload, 
 // sampleSeed samples one workload under the platform sampler, with its input
 // amplified so the target outlives the sampling window.
 func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
-	amplified := amplifyRepeats(seed)
+	result, err := e.sampleAmplified(ctx, seed, amplificationTarget, reportName)
+	// A fixed size cannot fit every CLI: 16 MiB of CSV kept held-out csvq
+	// busy for 0.48s, just short of the sampler's half-second. A target that
+	// exited that early, on inputs the manifest declares repeatable, gets one
+	// more try at eight times the size.
+	if errors.Is(err, profile.ErrTargetExitedEarly) && hasRepeatableInput(seed) {
+		result, err = e.sampleAmplified(ctx, seed, retryAmplificationTarget, reportName)
+	}
+	return result, err
+}
+
+// retryAmplificationTarget is the input size of the one retry for a target
+// that finished before the sampler could attach.
+const retryAmplificationTarget = 8 * amplificationTarget
+
+func (e *Engine) sampleAmplified(ctx context.Context, seed manifest.SeedWorkload, target int, reportName string) (profile.SampleResult, error) {
+	amplified := amplifyRepeats(seed, target)
 	stdin := amplified.StdinBytes()
 	if seed.StdinRepeat == 0 {
 		stdin = amplifyStdin(stdin)
 	}
 	return e.sampleWith(ctx, amplified, stdin, reportName)
+}
+
+func hasRepeatableInput(seed manifest.SeedWorkload) bool {
+	return seed.StdinRepeat > 0 || slices.ContainsFunc(seed.Files, func(f manifest.FixtureFile) bool { return f.Repeat > 0 })
 }
 
 // amplifyRepeats scales every input the manifest declares repeatable -- a
@@ -1180,14 +1200,14 @@ func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, rep
 // discovery fell back to benchmarks: every held-out target reads files.
 // Inputs without a declared repeat (a script, a single document) are left as
 // they are; a manifest keeps those sampleable with a long stress seed.
-func amplifyRepeats(seed manifest.SeedWorkload) manifest.SeedWorkload {
+func amplifyRepeats(seed manifest.SeedWorkload, target int) manifest.SeedWorkload {
 	if seed.StdinRepeat > 0 {
-		seed.StdinRepeat = scaledRepeat(len(seed.StdinHeader), len(seed.Stdin), seed.StdinRepeat)
+		seed.StdinRepeat = scaledRepeat(len(seed.StdinHeader), len(seed.Stdin), seed.StdinRepeat, target)
 	}
 	files := make([]manifest.FixtureFile, len(seed.Files))
 	for i, f := range seed.Files {
 		if f.Repeat > 0 {
-			f.Repeat = scaledRepeat(len(f.Header), len(f.Content), f.Repeat)
+			f.Repeat = scaledRepeat(len(f.Header), len(f.Content), f.Repeat, target)
 		}
 		files[i] = f
 	}
@@ -1196,12 +1216,12 @@ func amplifyRepeats(seed manifest.SeedWorkload) manifest.SeedWorkload {
 }
 
 // scaledRepeat is the repeat count that brings header plus block to about
-// amplificationTarget bytes, never fewer than the manifest's own count.
-func scaledRepeat(header, block, repeat int) int {
+// target bytes, never fewer than the manifest's own count.
+func scaledRepeat(header, block, repeat, target int) int {
 	if block <= 0 {
 		return repeat
 	}
-	return max(repeat, (amplificationTarget-header)/block)
+	return max(repeat, (target-header)/block)
 }
 
 // sampleWith samples one workload on the given input.

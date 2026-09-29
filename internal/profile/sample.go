@@ -285,6 +285,11 @@ func rankWeights(weights map[string]int) []Function {
 
 const maxSamplerOutputBytes = 8 << 20
 
+// ErrTargetExitedEarly reports a target that finished before the macOS sampler
+// could attach: it has to be alive half a second after it starts. The caller
+// can give it a larger input and try again.
+var ErrTargetExitedEarly = errors.New("target exited before sampling began")
+
 func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 	sampler := req.SampleBinary
 	if sampler == "" {
@@ -325,7 +330,7 @@ func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 	time.Sleep(500 * time.Millisecond)
 	if err := target.Process.Signal(syscall.Signal(0)); err != nil {
 		_, _ = target.Process.Wait()
-		return SampleResult{}, errors.New("target exited before sampling began")
+		return SampleResult{}, ErrTargetExitedEarly
 	}
 
 	temp, err := os.CreateTemp("", "gotorque-sample-*.txt")
