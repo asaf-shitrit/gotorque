@@ -29,19 +29,17 @@ These targets exist to judge whether gotorque generalizes. They are never used t
 - The manifests were written from each CLI's source and help text, before any campaign ran on it.
   Workload sizes were calibrated only by timing the unpatched binary.
 
-## Known limitations (as of 2026-09-29)
+## Onboarding findings (fixed)
 
-- **`jd` cannot be measured yet.** Its diff exits 1 whenever the inputs differ, the same convention as
-  `diff`, and the runner treats every nonzero exit as a failed run. This is a harness gap, not a jd
-  quirk: grep-like tools and linters that report findings through the exit code hit it too. The
-  fix is a per-workload expected exit code; until then jd is excluded from held-out sweeps.
-- **`otto`'s root package tests do not build under Go 1.26.** `go test` runs vet first, and vet
-  rejects two `Example` functions in `documentation_test.go` that name identifiers that do not
-  exist. The harness subtracts packages that fail to build on the baseline, so the interpreter's own
-  tests never run and otto's behavior gate is weak. Running the suite with `-vet=off` would restore
-  them. That is a general question, since newer toolchains' vet can disable any project's tests,
-  and it is undecided.
+Setting these targets up found two general gaps, both fixed on development fixtures rather than by
+tuning the targets:
 
-Calibration (unpatched binaries, 5 runs each): every workload is deterministic and exits 0, apart
-from jd's diffs, which exit 1. Representative workloads run in 10-160 ms. Test suites take 1-9 s,
-except klauspost/compress at about 104 s.
+- **Nonzero-exit CLIs could not be measured.** jd's diff exits 1 whenever the inputs differ, and the
+  runner treated every nonzero exit as a failed run. Seeds now declare `exit_code` (#56); jd's are 1.
+- **A newer toolchain's vet stopped otto's tests building.** Go 1.26 vet rejects two `Example`
+  functions in `documentation_test.go`, which silently removed the interpreter's 565 tests from the
+  gate. Every `go test` the harness runs now passes `-vet=off` (#57).
+
+Calibration (unpatched binaries, 5 runs each): every workload is deterministic and exits with its
+declared status. Representative workloads run in 10-160 ms. Test suites take 1-9 s, except
+klauspost/compress at about 104 s.

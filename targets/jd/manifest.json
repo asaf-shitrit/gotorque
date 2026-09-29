@@ -33,7 +33,8 @@
             "repeat": 200
           }
         ],
-        "provenance": "manifest"
+        "provenance": "manifest",
+        "exit_code": 1
       },
       {
         "id": "diff-yaml-sets",
@@ -57,7 +58,8 @@
             "repeat": 100
           }
         ],
-        "provenance": "manifest"
+        "provenance": "manifest",
+        "exit_code": 1
       },
       {
         "id": "diff-small",
@@ -80,7 +82,8 @@
             "repeat": 10
           }
         ],
-        "provenance": "manifest"
+        "provenance": "manifest",
+        "exit_code": 1
       },
       {
         "id": "diff-huge",
@@ -103,7 +106,8 @@
             "repeat": 2000
           }
         ],
-        "provenance": "manifest"
+        "provenance": "manifest",
+        "exit_code": 1
       }
     ],
     "discovery": {
