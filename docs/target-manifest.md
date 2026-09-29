@@ -96,6 +96,14 @@ fixture file's `repeat` and `header` do the same for its `content`. A
 workload needs 30-300 ms of work to rise above process startup, and inlining
 that much CSV or FASTA made manifests of 2-10 MB; a header plus a generated
 block of rows repeated keeps them to kilobytes. Omitted or 1 means once.
+
+Discovery samples the target running a seed, which needs the process to live
+past the sampler's half-second liveness check. An input declared with
+`repeat` or `stdin_repeat` is scaled up for that sampled run automatically, so
+such seeds can stay short. A seed whose inputs cannot be repeated, such as a
+script or a single document, cannot be stretched: give the manifest a
+`stress` seed of that kind that runs for at least a second, or discovery
+falls back to benchmarks.
 Repeated rows are identical, so a workload that deduplicates, groups by a
 key or sorts should be built from blocks where that is what you want
 measured.

@@ -71,6 +71,11 @@ type Inventory struct {
 	// repository's scripts or examples directory can hold sources the target
 	// never builds.
 	Unloadable []string `json:"unloadable,omitempty"`
+	// TargetImports are the module packages the target's build package
+	// imports, itself included, in the "./pkg" form BenchmarkPackages uses.
+	// Nil when the build package is not among the listed ones (a nested
+	// module), or in state saved before it was recorded.
+	TargetImports []string `json:"target_imports,omitempty"`
 }
 
 // CandidateRecord persists one evaluated model proposal with the policy
@@ -841,7 +846,8 @@ func (e *Engine) inspect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("inventory Go packages: %w", err)
 	}
-	inventory, err := decodeInventory(result.Stdout)
+	build := e.state.Manifest.Target.Build
+	inventory, err := decodeInventory(result.Stdout, e.state.Repository, filepath.Join(e.state.Repository, build.Directory, build.Package))
 	if err != nil {
 		return err
 	}
@@ -851,13 +857,16 @@ func (e *Engine) inspect(ctx context.Context) error {
 
 // decodeInventory reads go list -e -json output. A package with an Error is
 // recorded as unloadable instead of listed.
-func decodeInventory(stdout []byte) (Inventory, error) {
+func decodeInventory(stdout []byte, repository, targetDir string) (Inventory, error) {
 	decoder := json.NewDecoder(bytes.NewReader(stdout))
 	var inv Inventory
+	dirs := map[string]string{}
+	var targetDeps []string
 	for {
 		var item struct {
-			ImportPath, Name string
-			Error            *struct{ Err string }
+			ImportPath, Name, Dir string
+			Deps                  []string
+			Error                 *struct{ Err string }
 		}
 		if err := decoder.Decode(&item); errors.Is(err, io.EOF) {
 			break
@@ -869,6 +878,10 @@ func decodeInventory(stdout []byte) (Inventory, error) {
 			continue
 		}
 		inv.Packages = append(inv.Packages, item.ImportPath)
+		dirs[item.ImportPath] = item.Dir
+		if sameDir(item.Dir, targetDir) {
+			targetDeps = append([]string{item.ImportPath}, item.Deps...)
+		}
 		if item.Name == "main" {
 			inv.Commands = append(inv.Commands, item.ImportPath)
 		}
@@ -876,7 +889,45 @@ func decodeInventory(stdout []byte) (Inventory, error) {
 	sort.Strings(inv.Packages)
 	sort.Strings(inv.Commands)
 	sort.Strings(inv.Unloadable)
+	inv.TargetImports = moduleImports(targetDeps, dirs, repository)
 	return inv, nil
+}
+
+// moduleImports renders the deps that are packages of this module in the
+// "./pkg" form, sorted; the standard library and other modules have no
+// directory entry and are left out.
+func moduleImports(deps []string, dirs map[string]string, repository string) []string {
+	var out []string
+	for _, dep := range deps {
+		dir, ok := dirs[dep]
+		if !ok {
+			continue
+		}
+		if rel, err := filepath.Rel(resolvedPath(repository), resolvedPath(dir)); err == nil && !strings.HasPrefix(rel, "..") {
+			out = append(out, relativePackage(rel))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func relativePackage(rel string) string {
+	slashed := filepath.ToSlash(rel)
+	if slashed == "." || slashed == "" {
+		return "."
+	}
+	return "./" + slashed
+}
+
+func sameDir(a, b string) bool { return a != "" && resolvedPath(a) == resolvedPath(b) }
+
+// resolvedPath resolves symlinks where it can: go list reports a macOS
+// temporary directory through /private, the path it was given may not.
+func resolvedPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
 
 func firstLine(s string) string {
@@ -1112,7 +1163,45 @@ func (e *Engine) sampleFirstLiving(ctx context.Context) (manifest.SeedWorkload, 
 // sampleSeed samples one workload under the platform sampler, with its input
 // amplified so the target outlives the sampling window.
 func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
-	return e.sampleWith(ctx, seed, amplifyStdin(seed.StdinBytes()), reportName)
+	amplified := amplifyRepeats(seed)
+	stdin := amplified.StdinBytes()
+	if seed.StdinRepeat == 0 {
+		stdin = amplifyStdin(stdin)
+	}
+	return e.sampleWith(ctx, amplified, stdin, reportName)
+}
+
+// amplifyRepeats scales every input the manifest declares repeatable -- a
+// fixture file with repeat, stdin with stdin_repeat -- so that input expands
+// to about amplificationTarget bytes for the sampled run. The declaration is
+// what makes this safe: the manifest author wrote the content as a block that
+// may be written any number of times. Only stdin was amplified before, so a
+// CLI that reads files ran for milliseconds, the sampler could not attach, and
+// discovery fell back to benchmarks: every held-out target reads files.
+// Inputs without a declared repeat (a script, a single document) are left as
+// they are; a manifest keeps those sampleable with a long stress seed.
+func amplifyRepeats(seed manifest.SeedWorkload) manifest.SeedWorkload {
+	if seed.StdinRepeat > 0 {
+		seed.StdinRepeat = scaledRepeat(len(seed.StdinHeader), len(seed.Stdin), seed.StdinRepeat)
+	}
+	files := make([]manifest.FixtureFile, len(seed.Files))
+	for i, f := range seed.Files {
+		if f.Repeat > 0 {
+			f.Repeat = scaledRepeat(len(f.Header), len(f.Content), f.Repeat)
+		}
+		files[i] = f
+	}
+	seed.Files = files
+	return seed
+}
+
+// scaledRepeat is the repeat count that brings header plus block to about
+// amplificationTarget bytes, never fewer than the manifest's own count.
+func scaledRepeat(header, block, repeat int) int {
+	if block <= 0 {
+		return repeat
+	}
+	return max(repeat, (amplificationTarget-header)/block)
 }
 
 // sampleWith samples one workload on the given input.
@@ -1383,7 +1472,7 @@ func (e *Engine) benchmarkCPUProfile(ctx context.Context) (string, error) {
 	}
 	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
 	var benched bool
-	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory) {
+	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory, e.state.Inventory.TargetImports) {
 		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Cpuprofile: cpuProfile, Output: filepath.Join(dir, "bench.test"), Env: []string{"GOTOOLCHAIN=local"}})
 		if err != nil {
 			continue
@@ -1455,7 +1544,7 @@ func (e *Engine) profileAllocations(ctx context.Context) string {
 // -memprofile, target package first, stopping at the first one that actually
 // benchmarked something.
 func (e *Engine) benchAllocations(ctx context.Context, dir, memProfile string) bool {
-	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory) {
+	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory, e.state.Inventory.TargetImports) {
 		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Memprofile: memProfile, Output: filepath.Join(dir, "bench-mem.test"), Env: []string{"GOTOOLCHAIN=local"}})
 		if err != nil {
 			continue
@@ -1514,13 +1603,19 @@ func mergeAllocFirst(cpu, alloc []string, budget int) []string {
 // wrong package or fail outright; it is left out of the root module's
 // benchmark order in that case, and the nested module's own benchmarks, like
 // its own tests, are not run (documented in docs/target-manifest.md).
-func benchmarkPackageOrder(repository, targetPackage, directory string) []string {
+//
+// imports, when known, limits the rest to packages the target imports: a
+// benchmark of code the CLI never runs profiles the wrong program. The
+// held-out s2c target builds from klauspost/compress, whose richest benchmark
+// package is flate, which s2c never imports; its campaign spent both attempts
+// rewriting flate's StatelessDeflate.
+func benchmarkPackageOrder(repository, targetPackage, directory string, imports []string) []string {
 	var order []string
 	if directory == "" {
 		order = append(order, targetPackage)
 	}
 	for _, pkg := range profile.BenchmarkPackages(repository) {
-		if pkg != targetPackage {
+		if pkg != targetPackage && (imports == nil || slices.Contains(imports, pkg)) {
 			order = append(order, pkg)
 		}
 	}
