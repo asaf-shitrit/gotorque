@@ -66,6 +66,10 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 		// more (ADR 0017). It still needs an ID: the orchestrator stops the
 		// whole campaign on evidence without one.
 		id := stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), transport, err.Error())
+		// Kept like any other answer: held-out dyff lost two attempts here to
+		// "function_source must be a function declaration", and with nothing
+		// written there was no way to see what the optimizer had sent.
+		e.keepProposal(id, req.Proposal)
 		return orchestrator.CandidateEvidence{
 			Candidate:     domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, Transport: transport},
 			Summary:       fmt.Sprintf("candidate rejected before build: %v", err),
@@ -121,13 +125,22 @@ func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest, patchTex
 	if err := os.WriteFile(patchPath, []byte(patchText), 0o600); err != nil {
 		return "", "", err
 	}
-	// The optimizer's answer as it arrived, beside the diff built from it.
-	// Two cue candidates were rejected as malformed diffs, and without the
-	// answer nothing said whether a function_source had come with them.
-	if proposal, err := json.MarshalIndent(req.Proposal, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(patchDir, id+".proposal.json"), proposal, 0o600)
-	}
+	e.keepProposal(id, req.Proposal)
 	return id, patchPath, nil
+}
+
+// keepProposal writes the optimizer's answer as it arrived to
+// patches/<id>.proposal.json, best effort. Two cue candidates were rejected as
+// malformed diffs, and without the answer nothing said whether a
+// function_source had come with them.
+func (e *Engine) keepProposal(id string, proposal agents.OptimizerResult) {
+	dir := filepath.Join(e.dir, "patches")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	if data, err := json.MarshalIndent(proposal, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, id+".proposal.json"), data, 0o600)
+	}
 }
 
 func (e *Engine) prepareCandidate(ctx context.Context, req orchestrator.CandidateRequest, patchPath string, evidence *orchestrator.CandidateEvidence) (*candidate.Prepared, bool) {

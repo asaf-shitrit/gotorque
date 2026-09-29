@@ -488,3 +488,25 @@ func TestReplaceFunctionSourceAddsNewHelpers(t *testing.T) {
 	_, err = replaceFunctionSource(path, []byte(src), "f", "func f(n int) int { return n }\n\ntype T int", nil)
 	require.ErrorContains(t, err, "must be a function declaration")
 }
+
+// TestAProposalThatNeverBecameAPatchIsKept: held-out dyff lost two attempts to
+// a function_source rejection before any diff existed, and nothing recorded
+// what the optimizer had sent.
+func TestAProposalThatNeverBecameAPatchIsKept(t *testing.T) {
+	engine := newFuncSourceTestEngine(methodRepo(t))
+	engine.dir = t.TempDir()
+	req := orchestrator.CandidateRequest{
+		Attempt: 3,
+		Target:  &agents.Target{Location: "main.go:8", Function: "(*cli).printValues"},
+		Proposal: agents.OptimizerResult{
+			FunctionSource: "var cache = map[string]int{}\n\nfunc (c *cli) printValues(vs []string) error { return nil }",
+			Hypothesis:     "h",
+		},
+	}
+	evidence, err := engine.evaluateCandidate(context.Background(), req)
+	require.NoError(t, err)
+	require.Contains(t, evidence.Summary, "candidate rejected before build")
+	data, err := os.ReadFile(filepath.Join(engine.dir, "patches", evidence.Candidate.ID+".proposal.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(data), "var cache = map[string]int{}")
+}
