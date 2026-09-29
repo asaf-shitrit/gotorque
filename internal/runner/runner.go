@@ -112,6 +112,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 		Path: commandPath, Args: commandArgs,
 		Dir: sandbox.WorkDir, Env: env, Stdin: stdinReader,
 	})
+	// Judged before the resource-limit check, so a limit failure that happens
+	// to share the expected status is still reported as one.
+	runErr = expectedExit(req.Workload.ExpectedExitCode, commandResult.ExitCode, runErr)
 	if IsResourceLimitFailure(commandPath, commandResult.ExitCode) {
 		note := "the sandbox's memory rlimit (ulimit -S -v) could not be set for this run; it exited before the workload started rather than running unbounded"
 		isolationNotes = append(isolationNotes, note)
@@ -124,6 +127,24 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (domain.RunResult, err
 	}
 	success = runErr == nil
 	return result, runErr
+}
+
+// expectedExit judges a finished run against the exit status its workload
+// declares. A run that exited with a nonzero expected status succeeded, so
+// the command's "exit status N" error is dropped; one that exited 0 when a
+// nonzero status was expected did not do what the workload measures. A run
+// whose error is not an exit status (a timeout, a failed start) keeps it.
+func expectedExit(expected, got int, runErr error) error {
+	if expected == 0 {
+		return runErr
+	}
+	if got == expected {
+		return nil
+	}
+	if runErr == nil {
+		return fmt.Errorf("exited with status %d, but the workload expects %d", got, expected)
+	}
+	return runErr
 }
 
 // runPlan is what the Runner's sandbox policy resolves to for one run:

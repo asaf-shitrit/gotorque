@@ -2,8 +2,10 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -144,4 +146,46 @@ func runOrder(calls []toolchain.Invocation) string {
 		}
 	}
 	return order.String()
+}
+
+// exitingExecutor exits with a fixed status and, like the real toolchain,
+// returns an error for any nonzero one.
+type exitingExecutor struct{ code int }
+
+func (e exitingExecutor) Run(_ context.Context, _ toolchain.Invocation) (toolchain.Result, error) {
+	result := toolchain.Result{Stdout: []byte("differences"), Started: time.Unix(0, 0), Duration: time.Millisecond, ExitCode: e.code}
+	if e.code != 0 {
+		return result, errors.New("exit status " + strconv.Itoa(e.code))
+	}
+	return result, nil
+}
+
+// TestRunJudgesExitAgainstTheWorkloadsExpectedStatus: a diff tool exits 1
+// when its inputs differ, and that run worked. Every nonzero exit used to
+// fail the run, so such a target could not be measured.
+func TestRunJudgesExitAgainstTheWorkloadsExpectedStatus(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewArtifactStore(filepath.Join(root, "artifacts"))
+	require.NoError(t, err)
+	binary := filepath.Join(root, "binary")
+	require.NoError(t, os.WriteFile(binary, []byte("placeholder"), 0o600))
+	run := func(exit, expected int) (domain.RunResult, error) {
+		r, err := New(Options{Executor: exitingExecutor{code: exit}, Artifacts: store, SandboxRoot: filepath.Join(root, "sandboxes")})
+		require.NoError(t, err)
+		return r.Run(context.Background(), RunRequest{Build: Build{ID: "b", BinaryPath: binary}, Workload: domain.Workload{ID: "w", ExpectedExitCode: expected}, Mode: domain.RunModeMeasurement})
+	}
+
+	result, err := run(1, 1)
+	require.NoError(t, err, "exit 1 is what this workload does")
+	require.Equal(t, 1, result.ExitCode)
+	require.Empty(t, result.Error)
+
+	_, err = run(1, 0)
+	require.ErrorContains(t, err, "exit status 1", "an undeclared nonzero exit still fails")
+
+	_, err = run(0, 1)
+	require.ErrorContains(t, err, "exited with status 0, but the workload expects 1")
+
+	_, err = run(2, 1)
+	require.ErrorContains(t, err, "exit status 2", "a different nonzero status is a failure")
 }

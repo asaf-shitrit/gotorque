@@ -445,3 +445,22 @@ func TestGateIgnoresPointerAddressesInTestNames(t *testing.T) {
 	require.Empty(t, newTestFailures([]string{"p::T/(0xdeadbeef01)"}, []string{"p::T/(0x…)"}))
 	require.Equal(t, "p::T/0x12", stableTestName("p::T/0x12"), "short hex is not an address")
 }
+
+// TestBaselineSuiteRunsTestsVetWouldReject: otto's documentation_test.go has
+// Example functions naming identifiers that do not exist, which Go 1.26's vet
+// rejects before any test runs. The gate asks about behavior, so the tests
+// in that package still run and are required.
+func TestBaselineSuiteRunsTestsVetWouldReject(t *testing.T) {
+	const tests = "package main\n\nimport \"testing\"\n\nfunc TestKept(t *testing.T) {}\n\nfunc ExampleNoSuchIdentifier() {}\n"
+	repo := repositoryWithTestFile(t, tests)
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+
+	require.NoError(t, engine.runBaselineTestStep(context.Background()))
+	require.Empty(t, engine.State().BaselineUnbuildable)
+	require.Contains(t, engine.State().BaselineTestPasses, "test.local/fixture::TestKept")
+}

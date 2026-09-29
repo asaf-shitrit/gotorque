@@ -208,7 +208,10 @@ produced here or in policy.
    stops the campaign instead, because subtracting it would leave the gate
    switched off while still reporting verdicts. The baseline run also
    records every test that passed, subtests included
-   (`baseline_test_passes`). Comparing failures alone never noticed a
+   (`baseline_test_passes`). Every `go test` the harness runs passes
+   `-vet=off`: the gate asks about behavior, and a vet finding in upstream
+   test code stops the whole package's tests building. Under Go 1.26 that
+   silently removed 565 of otto's interpreter tests from its gate. Comparing failures alone never noticed a
    baseline-passing test that the candidate run skipped or never ran, so a
    test disabled by the patch passed the gate. Every candidate run is now
    classified, clean exits included, and a candidate is rejected when any
