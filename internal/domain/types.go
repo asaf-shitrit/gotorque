@@ -59,14 +59,17 @@ type Workload struct {
 	// the manifest's human description of it; reports and comparisons label a
 	// workload with Seed, because that is what an operator writes in the
 	// target manifest and edits by.
-	Seed        string        `json:"seed,omitempty"`
-	Tier        WorkloadTier  `json:"tier"`
-	Weight      float64       `json:"weight"`
-	Command     Command       `json:"command"`
-	StdinPath   string        `json:"stdin_path,omitempty"`
-	Timeout     time.Duration `json:"timeout"`
-	Provenance  string        `json:"provenance"`
-	Description string        `json:"description,omitempty"`
+	Seed      string        `json:"seed,omitempty"`
+	Tier      WorkloadTier  `json:"tier"`
+	Weight    float64       `json:"weight"`
+	Command   Command       `json:"command"`
+	StdinPath string        `json:"stdin_path,omitempty"`
+	Timeout   time.Duration `json:"timeout"`
+	// ExpectedExitCode is the manifest seed's exit_code: the status a
+	// working run exits with (runner.Run treats any other as a failure).
+	ExpectedExitCode int    `json:"expected_exit_code,omitempty"`
+	Provenance       string `json:"provenance"`
+	Description      string `json:"description,omitempty"`
 }
 
 type Metric struct {

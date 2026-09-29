@@ -696,7 +696,7 @@ func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, bin
 	wid := stableID("workload", e.state.ID, seed.ID)
 	req := runner.RunRequest{
 		Build:         runner.Build{ID: buildID, BinaryPath: binaryPath},
-		Workload:      domain.Workload{ID: wid, Name: seed.Name, Seed: seed.ID, Tier: seed.Tier, Command: domain.Command{Path: binaryPath, Args: args}, Timeout: timeout},
+		Workload:      domain.Workload{ID: wid, Name: seed.Name, Seed: seed.ID, Tier: seed.Tier, Command: domain.Command{Path: binaryPath, Args: args}, Timeout: timeout, ExpectedExitCode: seed.ExitCode},
 		Mode:          domain.RunModeMeasurement,
 		Stdin:         seed.StdinBytes(),
 		Fixtures:      fixtures,

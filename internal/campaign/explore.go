@@ -241,7 +241,7 @@ func (e *Engine) keepChangingVariants(ctx context.Context, seed manifest.SeedWor
 		// would be read as one more of them.
 		variant.Args = append([]string{r.flag.Name}, seed.Args...)
 		result, err := e.runner.Run(ctx, e.variantRequest(variant))
-		if err != nil || result.ExitCode != 0 || result.StdoutDigest == baseline.StdoutDigest {
+		if err != nil || result.ExitCode != seed.ExitCode || result.StdoutDigest == baseline.StdoutDigest {
 			continue
 		}
 		chosen = append(chosen, exploredWorkload{Seed: variant, Flag: r.flag.Name, Mode: r.probability})
