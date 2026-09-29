@@ -574,6 +574,15 @@ func (e *Engine) outputIsDeterministic(ctx context.Context, baseReq runner.RunRe
 }
 
 func recordBehaviorMatch(ab runner.ABResult, deterministicOutput bool, seedID string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
+	// The two-run probe misses output that varies only some of the time:
+	// scc's --by-file row order for files with equal counts differed in 31 of
+	// 40 runs of one binary, the probe's two runs agreed often enough to call
+	// it deterministic, and two live candidates were rejected for a byte
+	// mismatch at repetition 11. The A/B series already holds every baseline
+	// repetition, so any variation among them settles it.
+	if deterministicOutput && !sameStdout(ab.Baseline) {
+		deterministicOutput = false
+	}
 	for i := range ab.Baseline {
 		exitOK := ab.Baseline[i].ExitCode == ab.Candidate[i].ExitCode
 		stdoutOK := ab.Baseline[i].StdoutDigest == ab.Candidate[i].StdoutDigest
@@ -591,6 +600,16 @@ func recordBehaviorMatch(ab runner.ABResult, deterministicOutput bool, seedID st
 		evidence.Comparisons = comparisons
 		evidence.SafetyChecksPassed = true
 		return false
+	}
+	return true
+}
+
+// sameStdout reports whether every run printed byte-identical stdout.
+func sameStdout(runs []domain.RunResult) bool {
+	for _, run := range runs[min(1, len(runs)):] {
+		if run.StdoutDigest != runs[0].StdoutDigest {
+			return false
+		}
 	}
 	return true
 }

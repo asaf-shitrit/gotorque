@@ -33,6 +33,15 @@ func (e *Engine) runNullCandidates(ctx context.Context) (string, error) {
 		return "", err
 	}
 	for len(e.state.CandidateRecords) < e.state.NullCandidates {
+		// A spent max_duration cancels ctx. Every attempt after that failed
+		// on the dead context (a canceled measurement, then worktrees git
+		// could not create) and was recorded as a rejection: null-gron
+		// reported 4 false rejections that were the bound. Returning the
+		// context's error stops the campaign as interrupted and resumable,
+		// the way the agent path does.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		attempt := len(e.state.CandidateRecords) + 1
 		file := files[(attempt-1)%len(files)]
 		patch, err := nullPatch(e.state.Repository, file, attempt)
@@ -44,6 +53,9 @@ func (e *Engine) runNullCandidates(ctx context.Context) (string, error) {
 			Proposal: agents.OptimizerResult{Patch: patch, Hypothesis: fmt.Sprintf("null candidate %d: a comment line in %s, no code change", attempt, file)},
 		})
 		if err != nil {
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
 		record := candidateRecord(attempt, evidence, nil, agents.ReviewerResult{}, e.policyVerdict(evidence))

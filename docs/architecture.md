@@ -276,7 +276,11 @@ produced here or in policy.
    is executed twice against itself: if two identical runs produce different
    stdout digests, the workload is treated as nondeterministic and behavior
    comparison switches to an order-insensitive sorted-lines digest, so
-   cosmetic row ordering cannot reject a behavior-preserving patch.
+   cosmetic row ordering cannot reject a behavior-preserving patch. Two runs
+   miss output that varies only sometimes (scc's `--by-file` rows for files
+   with equal counts came out in a different order in 31 of 40 runs), so the
+   same switch is made whenever the baseline's own repetitions in the A/B
+   series printed different stdout (`sameStdout`).
    Exit codes must match in all cases. When an eligible reading (below)
    regresses past the limit without significance, every representative
    workload is measured over a second series of twenty-five pairs, held to

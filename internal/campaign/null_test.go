@@ -65,3 +65,22 @@ func TestNullTargetFiles(t *testing.T) {
 	_, err = nullTargetFiles(repo, "", "absent")
 	require.True(t, err != nil && strings.Contains(err.Error(), "list the build package"))
 }
+
+// TestNullCandidatesStopWhenTheContextEnds is null-gron's tail: once
+// max_duration cancels the campaign context, no further attempt is recorded
+// as a rejection; the run returns the context's error so the campaign stops
+// as interrupted.
+func TestNullCandidatesStopWhenTheContextEnds(t *testing.T) {
+	repo := makeRepository(t)
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true, NullCandidates: 3,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = engine.runNullCandidates(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, engine.State().CandidateRecords)
+}

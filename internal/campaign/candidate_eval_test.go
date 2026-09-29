@@ -443,8 +443,8 @@ func checkBehaviorNoRepetitions(t *testing.T, comparisons []domain.MetricCompari
 func checkBehaviorByteExactEqual(t *testing.T, comparisons []domain.MetricComparison) {
 	t.Helper()
 	ab := runner.ABResult{
-		Baseline:  []domain.RunResult{behaviorRun(0, "aaa", "a1"), behaviorRun(1, "bbb", "b1")},
-		Candidate: []domain.RunResult{behaviorRun(0, "aaa", "a2"), behaviorRun(1, "bbb", "b2")},
+		Baseline:  []domain.RunResult{behaviorRun(0, "aaa", "a1"), behaviorRun(0, "aaa", "a1")},
+		Candidate: []domain.RunResult{behaviorRun(0, "aaa", "a2"), behaviorRun(0, "aaa", "a2")},
 	}
 	if !recordBehaviorMatch(ab, true, "seed", &orchestrator.CandidateEvidence{}, comparisons) {
 		t.Fatal("identical byte-exact runs should match")
@@ -454,7 +454,7 @@ func checkBehaviorByteExactEqual(t *testing.T, comparisons []domain.MetricCompar
 func checkBehaviorDigestMismatch(t *testing.T, comparisons []domain.MetricComparison) {
 	t.Helper()
 	ab := runner.ABResult{
-		Baseline:  []domain.RunResult{behaviorRun(0, "aaa", "x"), behaviorRun(0, "bbb", "x")},
+		Baseline:  []domain.RunResult{behaviorRun(0, "aaa", "x"), behaviorRun(0, "aaa", "x")},
 		Candidate: []domain.RunResult{behaviorRun(0, "aaa", "x"), behaviorRun(0, "ccc", "x")},
 	}
 	evidence := orchestrator.CandidateEvidence{}
@@ -732,4 +732,21 @@ func TestSignificanceIsNotSupport(t *testing.T) {
 	if !flat.StatisticallyFit || flat.Significant {
 		t.Fatalf("a confidently flat reading is supported but not significant: %+v", flat)
 	}
+}
+
+// TestBehaviorMatchTreatsVaryingBaselineOutputAsUnordered is live8-scc: the
+// two-run probe called --by-file output deterministic, but the baseline's own
+// repetitions printed two row orders. The candidate's reordering then matches
+// on sorted lines, while a candidate whose lines differ is still rejected.
+func TestBehaviorMatchTreatsVaryingBaselineOutputAsUnordered(t *testing.T) {
+	ab := runner.ABResult{
+		Baseline:  []domain.RunResult{behaviorRun(0, "order-a", "rows"), behaviorRun(0, "order-b", "rows"), behaviorRun(0, "order-a", "rows")},
+		Candidate: []domain.RunResult{behaviorRun(0, "order-a", "rows"), behaviorRun(0, "order-a", "rows"), behaviorRun(0, "order-b", "rows")},
+	}
+	require.True(t, recordBehaviorMatch(ab, true, "small-tree", &orchestrator.CandidateEvidence{}, nil))
+
+	ab.Candidate[2] = behaviorRun(0, "order-c", "other-rows")
+	evidence := orchestrator.CandidateEvidence{}
+	require.False(t, recordBehaviorMatch(ab, true, "small-tree", &evidence, nil))
+	require.Contains(t, evidence.Summary, "order-insensitive comparison) on workload \"small-tree\" at repetition 3")
 }
