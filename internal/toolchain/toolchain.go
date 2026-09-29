@@ -161,7 +161,12 @@ func (t *Toolchain) Test(ctx context.Context, req TestRequest) (Result, error) {
 
 // testArgs renders the `go test` argument list for one request.
 func testArgs(req TestRequest) []string {
-	args := []string{"test", "-mod=readonly"}
+	// -vet=off: the harness asks go test whether behavior holds, and vet is a
+	// lint. go test runs vet before the tests and a vet finding stops the
+	// package's tests building, so a newer toolchain's vet disabled whole
+	// suites the gate relies on: Go 1.26 rejects two Example functions in
+	// otto's documentation_test.go, and 565 interpreter tests never ran.
+	args := []string{"test", "-mod=readonly", "-vet=off"}
 	if req.Race {
 		args = append(args, "-race")
 	}
