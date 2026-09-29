@@ -104,7 +104,7 @@ func TestAmplifyRepeatsScalesOnlyDeclaredRepeatableInputs(t *testing.T) {
 			{Path: "huge.txt", Content: block, Repeat: 1 << 20},
 		},
 	}
-	got := amplifyRepeats(seed)
+	got := amplifyRepeats(seed, amplificationTarget)
 	want := (amplificationTarget - 3) / 100
 	require.Equal(t, want, got.Files[0].Repeat)
 	require.Equal(t, 0, got.Files[1].Repeat, "a script has no repeat and is not repeated")
@@ -112,7 +112,18 @@ func TestAmplifyRepeatsScalesOnlyDeclaredRepeatableInputs(t *testing.T) {
 	require.Equal(t, (amplificationTarget-2)/100, got.StdinRepeat)
 	require.Equal(t, 10, seed.Files[0].Repeat, "the manifest's seed is not modified")
 
-	plain := amplifyRepeats(manifest.SeedWorkload{Stdin: "{}"})
+	plain := amplifyRepeats(manifest.SeedWorkload{Stdin: "{}"}, amplificationTarget)
 	require.Equal(t, 0, plain.StdinRepeat)
-	require.Equal(t, 5, scaledRepeat(0, 0, 5), "an empty block cannot be scaled")
+	require.Equal(t, 5, scaledRepeat(0, 0, 5, amplificationTarget), "an empty block cannot be scaled")
+}
+
+// TestSamplingRetryAppliesOnlyToRepeatableInputs: the larger retry only makes
+// sense for inputs the manifest declares repeatable; a script cannot grow.
+func TestSamplingRetryAppliesOnlyToRepeatableInputs(t *testing.T) {
+	require.True(t, hasRepeatableInput(manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: "a,b\n", Repeat: 10}}}))
+	require.True(t, hasRepeatableInput(manifest.SeedWorkload{Stdin: "x\n", StdinRepeat: 2}))
+	require.False(t, hasRepeatableInput(manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: "print(1)\n"}}}))
+
+	big := amplifyRepeats(manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: strings.Repeat("x", 100), Repeat: 10}}}, retryAmplificationTarget)
+	require.Equal(t, retryAmplificationTarget/100, big.Files[0].Repeat)
 }
