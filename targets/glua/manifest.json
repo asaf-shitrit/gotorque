@@ -67,7 +67,7 @@
         "files": [
           {
             "path": "bench.lua",
-            "content": "local function fib(n) if n < 2 then return n end return fib(n-1) + fib(n-2) end\nlocal t = {}\nfor i = 1, 500000 do t[i] = (i * 7919) % 10007 end\ntable.sort(t)\nlocal parts = {}\nfor i = 1, 500000, 200 do parts[#parts+1] = tostring(t[i]) end\nlocal s = table.concat(parts, \",\")\nlocal words = 0\nfor w in string.gmatch(s, \"[^,]+\") do words = words + 1 end\nprint(fib(29), #s, words, t[1], t[#t])\n"
+            "content": "local function fib(n) if n < 2 then return n end return fib(n-1) + fib(n-2) end\nlocal t = {}\nfor i = 1, 500000 do t[i] = (i * 7919) % 10007 end\ntable.sort(t)\nlocal parts = {}\nfor i = 1, 500000, 200 do parts[#parts+1] = tostring(t[i]) end\nlocal s = table.concat(parts, \",\")\nlocal words = 0\nfor w in string.gmatch(s, \"[^,]+\") do words = words + 1 end\nprint(fib(34), #s, words, t[1], t[#t])\n"
           }
         ],
         "provenance": "manifest"

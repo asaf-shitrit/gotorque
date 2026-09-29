@@ -3,9 +3,11 @@ package campaign
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"example.com/gotorque/internal/manifest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,13 +19,13 @@ func TestDecodeInventoryLeavesOutUnloadablePackages(t *testing.T) {
 {"ImportPath":"example.com/m/pkg/lib","Name":"lib"}
 {"ImportPath":"example.com/m/scripts/perf","Name":"","Error":{"Err":"C source files not allowed when not using cgo or SWIG: catc.c\nmore"}}
 `)
-	inv, err := decodeInventory(out)
+	inv, err := decodeInventory(out, "", "")
 	require.NoError(t, err)
 	require.Equal(t, []string{"example.com/m/cmd/mlr", "example.com/m/pkg/lib"}, inv.Packages)
 	require.Equal(t, []string{"example.com/m/cmd/mlr"}, inv.Commands)
 	require.Equal(t, []string{"example.com/m/scripts/perf: C source files not allowed when not using cgo or SWIG: catc.c"}, inv.Unloadable)
 
-	_, err = decodeInventory([]byte("{not json"))
+	_, err = decodeInventory([]byte("{not json"), "", "")
 	require.ErrorContains(t, err, "decode go list")
 }
 
@@ -45,4 +47,72 @@ func TestBaselineBinariesPresent(t *testing.T) {
 	require.NoError(t, os.WriteFile(coverage, nil, 0o600))
 	require.True(t, baselineBinariesPresent(State{BinaryPath: release, DiscoveryBinaryPath: coverage}))
 	require.True(t, baselineBinariesPresent(State{}), "a campaign that never built has nothing to check")
+}
+
+// TestInventoryRecordsTheModulePackagesTheTargetImports: the held-out s2c
+// target builds ./s2/cmd/s2c from klauspost/compress, which imports s2 but not
+// flate. Benchmark profiling may only fall back to packages the target runs.
+func TestInventoryRecordsTheModulePackagesTheTargetImports(t *testing.T) {
+	repo := t.TempDir()
+	for _, d := range []string{"s2/cmd/s2c", "s2", "flate", "internal/snapref"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(repo, d), 0o700))
+	}
+	out := []byte(`{"ImportPath":"example.com/c/flate","Name":"flate","Dir":"` + filepath.Join(repo, "flate") + `"}
+{"ImportPath":"example.com/c/internal/snapref","Name":"snapref","Dir":"` + filepath.Join(repo, "internal/snapref") + `"}
+{"ImportPath":"example.com/c/s2","Name":"s2","Dir":"` + filepath.Join(repo, "s2") + `","Deps":["bytes","example.com/c/internal/snapref"]}
+{"ImportPath":"example.com/c/s2/cmd/s2c","Name":"main","Dir":"` + filepath.Join(repo, "s2/cmd/s2c") + `","Deps":["bytes","example.com/c/internal/snapref","example.com/c/s2","flag"]}
+`)
+	inv, err := decodeInventory(out, repo, filepath.Join(repo, "./s2/cmd/s2c"))
+	require.NoError(t, err)
+	require.Equal(t, []string{"./internal/snapref", "./s2", "./s2/cmd/s2c"}, inv.TargetImports)
+
+	inv, err = decodeInventory(out, repo, filepath.Join(repo, "nested/cmd"))
+	require.NoError(t, err)
+	require.Nil(t, inv.TargetImports, "a build package go list did not report leaves the fallback unfiltered")
+}
+
+// TestBenchmarkOrderKeepsOnlyImportedPackages: with the imports known, a
+// benchmark-rich package the target never imports is not profiled.
+func TestBenchmarkOrderKeepsOnlyImportedPackages(t *testing.T) {
+	repo := t.TempDir()
+	for pkg, n := range map[string]int{"flate": 3, "s2": 1} {
+		require.NoError(t, os.MkdirAll(filepath.Join(repo, pkg), 0o700))
+		var body strings.Builder
+		body.WriteString("package " + pkg + "\n\nimport \"testing\"\n")
+		for i := range n {
+			body.WriteString("\nfunc BenchmarkX" + strconv.Itoa(i) + "(b *testing.B) {}\n")
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(repo, pkg, "x_test.go"), []byte(body.String()), 0o600))
+	}
+	require.Equal(t, []string{"./s2/cmd/s2c"}, benchmarkPackageOrder(repo, "./s2/cmd/s2c", "", []string{"./s2/cmd/s2c"}), "no imported package has benchmarks")
+	require.Equal(t, []string{"./s2/cmd/s2c", "./s2"}, benchmarkPackageOrder(repo, "./s2/cmd/s2c", "", []string{"./s2", "./s2/cmd/s2c"}))
+	require.Equal(t, []string{"./s2/cmd/s2c", "./flate", "./s2"}, benchmarkPackageOrder(repo, "./s2/cmd/s2c", "", nil), "unknown imports keep the old order")
+}
+
+// TestAmplifyRepeatsScalesOnlyDeclaredRepeatableInputs: a fixture or stdin the
+// manifest wrote with a repeat count grows to about amplificationTarget for
+// the sampled run; an input without one (a script) is left alone, and a count
+// already larger is kept.
+func TestAmplifyRepeatsScalesOnlyDeclaredRepeatableInputs(t *testing.T) {
+	block := strings.Repeat("x", 100)
+	seed := manifest.SeedWorkload{
+		ID:    "s",
+		Stdin: block, StdinHeader: "h\n", StdinRepeat: 3,
+		Files: []manifest.FixtureFile{
+			{Path: "rows.csv", Header: "id\n", Content: block, Repeat: 10},
+			{Path: "bench.lua", Content: "print(1)\n"},
+			{Path: "huge.txt", Content: block, Repeat: 1 << 20},
+		},
+	}
+	got := amplifyRepeats(seed)
+	want := (amplificationTarget - 3) / 100
+	require.Equal(t, want, got.Files[0].Repeat)
+	require.Equal(t, 0, got.Files[1].Repeat, "a script has no repeat and is not repeated")
+	require.Equal(t, 1<<20, got.Files[2].Repeat, "a count already past the target is kept")
+	require.Equal(t, (amplificationTarget-2)/100, got.StdinRepeat)
+	require.Equal(t, 10, seed.Files[0].Repeat, "the manifest's seed is not modified")
+
+	plain := amplifyRepeats(manifest.SeedWorkload{Stdin: "{}"})
+	require.Equal(t, 0, plain.StdinRepeat)
+	require.Equal(t, 5, scaledRepeat(0, 0, 5), "an empty block cannot be scaled")
 }

@@ -873,7 +873,15 @@ falls back to repeating raw bytes for input that is not JSON. Repeating bytes
 alone only lengthens the run for a target that consumes all of stdin. A
 single-shot JSON CLI reads one document and ignores the rest, so gron
 finished a 16 MiB concatenation of its 84 KiB seed in 21 ms, exactly as fast
-as the unamplified seed, and the sampler could never attach. Safer frames are
+as the unamplified seed, and the sampler could never attach. Inputs the
+manifest declares repeatable, a fixture file's `repeat` or stdin's
+`stdin_repeat`, are scaled to the same ~16 MiB instead (`amplifyRepeats`):
+the declaration says the block may be written any number of times. Only stdin
+used to be amplified, so a CLI that reads files ran for milliseconds and could
+not be sampled; all ten held-out targets read files, and each fell back to a
+benchmark profile. An input with no declared repeat (a script, one document)
+is left alone, so its manifest needs a stress seed that runs past the
+sampler's half-second liveness check. Sampler frames are
 annotated with source positions through the same repository search the
 benchmark path uses, because sampler frames name a symbol but no position.
 
@@ -919,7 +927,13 @@ then every benchmark-bearing package in the module, richest first:
 profile the same package. A CLI's command package typically declares no
 benchmarks while the library packages it drives do (gojq benchmarks its
 evaluator, not `./cmd/gojq`), and the widened attempt still gives those
-targets benchmark evidence when sampling is unavailable.
+targets benchmark evidence when sampling is unavailable. The widening is
+limited to module packages the target's build package imports
+(`Inventory.TargetImports`, from `go list`'s `Deps`): the held-out s2c target
+builds from klauspost/compress, whose richest benchmark package is flate,
+which s2c never imports, and its campaign spent both attempts rewriting
+flate's `StatelessDeflate`. When the imports are unknown (a nested module, or
+state saved before they were recorded), the order is unfiltered as before.
 
 The profile is summarized through `go tool pprof`. Summarizing scans four
 times the hot-function budget (`hotFunctionScanDepth`) to fill it, because a
