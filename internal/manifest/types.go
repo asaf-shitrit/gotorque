@@ -101,6 +101,12 @@ type SeedWorkload struct {
 	Provenance  string        `json:"provenance"`
 	Description string        `json:"description,omitempty"`
 	Timeout     Duration      `json:"timeout,omitempty"`
+	// ExitCode is the status the workload exits with when it works: 0 unless
+	// set. A diff tool exits 1 when its inputs differ, and a linter or a
+	// grep-like tool when it finds something; without this, every such run
+	// was treated as a failure and the target could not be measured at all.
+	// Baseline and candidate must still exit identically.
+	ExitCode int `json:"exit_code,omitempty"`
 }
 
 type FixtureFile struct {

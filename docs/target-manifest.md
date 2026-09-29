@@ -84,6 +84,12 @@ optional deterministic `stdin`, optional fixture `files`, an optional
 inside the temporary sandbox. `target.command` is a fixed prefix or
 subcommand; it is empty for a root CLI.
 
+`exit_code` (0-255, default 0) is the status a working run exits with. A diff
+tool exits 1 when its inputs differ, and a linter or grep-like tool when it
+finds something. Such a run is a success, so declare the status: any other
+exit, including 0 where 1 is declared, fails the run. Baseline and candidate
+must still exit identically.
+
 A large input can be described compactly instead of inlined: `stdin_repeat`
 writes `stdin` that many times, after `stdin_header` written once, and a
 fixture file's `repeat` and `header` do the same for its `content`. A
