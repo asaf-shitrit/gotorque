@@ -205,6 +205,12 @@ prose in `docs/target-manifest.md`. Unknown fields are rejected. Defaults live
 in the loader (3% minimum improvement, 2% guardrail regression ceiling,
 12 candidate patches).
 
+Ten targets are held out (`targets/HELDOUT.md`): they judge whether the harness
+generalizes and are never used to develop it. Do not run campaigns on them
+while changing the harness, and do not fix a failure they reveal by tuning
+against them; stability is claimed on that set, not on the development
+targets the fixes came from.
+
 CI globs `targets/*/manifest.json`, so a new target is validated automatically.
 `dedupe` and `numstats` point at an unpublished repo, so they validate but
 cannot run a campaign.

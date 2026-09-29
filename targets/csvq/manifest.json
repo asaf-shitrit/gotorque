@@ -1,0 +1,187 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "csvq CLI",
+  "target": {
+    "repository": "https://github.com/mithrandie/csvq",
+    "build": {
+      "package": ".",
+      "binary": "csvq"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "group-by-dept",
+        "name": "Group 40000 rows by department",
+        "tier": "representative",
+        "args": [
+          "--repository",
+          ".",
+          "--format",
+          "CSV",
+          "SELECT dept, COUNT(*), AVG(salary) FROM employees GROUP BY dept ORDER BY dept"
+        ],
+        "files": [
+          {
+            "path": "employees.csv",
+            "header": "id,name,dept,salary,city\n",
+            "content": "0,name-0,dept-0,40000,city-0\n1,name-1,dept-1,40137,city-1\n2,name-2,dept-2,40274,city-2\n3,name-3,dept-3,40411,city-3\n4,name-4,dept-4,40548,city-4\n5,name-5,dept-5,40685,city-5\n6,name-6,dept-6,40822,city-6\n7,name-7,dept-0,40959,city-7\n8,name-8,dept-1,41096,city-8\n9,name-9,dept-2,41233,city-9\n10,name-10,dept-3,41370,city-10\n11,name-11,dept-4,41507,city-11\n12,name-12,dept-5,41644,city-12\n13,name-13,dept-6,41781,city-0\n14,name-14,dept-0,41918,city-1\n15,name-15,dept-1,42055,city-2\n16,name-16,dept-2,42192,city-3\n17,name-17,dept-3,42329,city-4\n18,name-18,dept-4,42466,city-5\n19,name-19,dept-5,42603,city-6\n20,name-20,dept-6,42740,city-7\n21,name-21,dept-0,42877,city-8\n22,name-22,dept-1,43014,city-9\n23,name-23,dept-2,43151,city-10\n24,name-24,dept-3,43288,city-11\n25,name-25,dept-4,43425,city-12\n26,name-26,dept-5,43562,city-0\n27,name-27,dept-6,43699,city-1\n28,name-28,dept-0,43836,city-2\n29,name-29,dept-1,43973,city-3\n30,name-30,dept-2,44110,city-4\n31,name-31,dept-3,44247,city-5\n32,name-32,dept-4,44384,city-6\n33,name-33,dept-5,44521,city-7\n34,name-34,dept-6,44658,city-8\n35,name-35,dept-0,44795,city-9\n36,name-36,dept-1,44932,city-10\n37,name-37,dept-2,45069,city-11\n38,name-38,dept-3,45206,city-12\n39,name-39,dept-4,45343,city-0\n",
+            "repeat": 1000
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "filter-sort",
+        "name": "Filter and sort 20000 rows",
+        "tier": "representative",
+        "args": [
+          "--repository",
+          ".",
+          "--format",
+          "CSV",
+          "SELECT id, name, salary FROM employees WHERE salary > 60000 ORDER BY salary DESC, id LIMIT 500"
+        ],
+        "files": [
+          {
+            "path": "employees.csv",
+            "header": "id,name,dept,salary,city\n",
+            "content": "0,name-0,dept-0,40000,city-0\n1,name-1,dept-1,40137,city-1\n2,name-2,dept-2,40274,city-2\n3,name-3,dept-3,40411,city-3\n4,name-4,dept-4,40548,city-4\n5,name-5,dept-5,40685,city-5\n6,name-6,dept-6,40822,city-6\n7,name-7,dept-0,40959,city-7\n8,name-8,dept-1,41096,city-8\n9,name-9,dept-2,41233,city-9\n10,name-10,dept-3,41370,city-10\n11,name-11,dept-4,41507,city-11\n12,name-12,dept-5,41644,city-12\n13,name-13,dept-6,41781,city-0\n14,name-14,dept-0,41918,city-1\n15,name-15,dept-1,42055,city-2\n16,name-16,dept-2,42192,city-3\n17,name-17,dept-3,42329,city-4\n18,name-18,dept-4,42466,city-5\n19,name-19,dept-5,42603,city-6\n20,name-20,dept-6,42740,city-7\n21,name-21,dept-0,42877,city-8\n22,name-22,dept-1,43014,city-9\n23,name-23,dept-2,43151,city-10\n24,name-24,dept-3,43288,city-11\n25,name-25,dept-4,43425,city-12\n26,name-26,dept-5,43562,city-0\n27,name-27,dept-6,43699,city-1\n28,name-28,dept-0,43836,city-2\n29,name-29,dept-1,43973,city-3\n30,name-30,dept-2,44110,city-4\n31,name-31,dept-3,44247,city-5\n32,name-32,dept-4,44384,city-6\n33,name-33,dept-5,44521,city-7\n34,name-34,dept-6,44658,city-8\n35,name-35,dept-0,44795,city-9\n36,name-36,dept-1,44932,city-10\n37,name-37,dept-2,45069,city-11\n38,name-38,dept-3,45206,city-12\n39,name-39,dept-4,45343,city-0\n",
+            "repeat": 500
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "group-small",
+        "name": "Group 400 rows",
+        "tier": "plausible",
+        "args": [
+          "--repository",
+          ".",
+          "--format",
+          "CSV",
+          "SELECT dept, COUNT(*) FROM employees GROUP BY dept ORDER BY dept"
+        ],
+        "files": [
+          {
+            "path": "employees.csv",
+            "header": "id,name,dept,salary,city\n",
+            "content": "0,name-0,dept-0,40000,city-0\n1,name-1,dept-1,40137,city-1\n2,name-2,dept-2,40274,city-2\n3,name-3,dept-3,40411,city-3\n4,name-4,dept-4,40548,city-4\n5,name-5,dept-5,40685,city-5\n6,name-6,dept-6,40822,city-6\n7,name-7,dept-0,40959,city-7\n8,name-8,dept-1,41096,city-8\n9,name-9,dept-2,41233,city-9\n10,name-10,dept-3,41370,city-10\n11,name-11,dept-4,41507,city-11\n12,name-12,dept-5,41644,city-12\n13,name-13,dept-6,41781,city-0\n14,name-14,dept-0,41918,city-1\n15,name-15,dept-1,42055,city-2\n16,name-16,dept-2,42192,city-3\n17,name-17,dept-3,42329,city-4\n18,name-18,dept-4,42466,city-5\n19,name-19,dept-5,42603,city-6\n20,name-20,dept-6,42740,city-7\n21,name-21,dept-0,42877,city-8\n22,name-22,dept-1,43014,city-9\n23,name-23,dept-2,43151,city-10\n24,name-24,dept-3,43288,city-11\n25,name-25,dept-4,43425,city-12\n26,name-26,dept-5,43562,city-0\n27,name-27,dept-6,43699,city-1\n28,name-28,dept-0,43836,city-2\n29,name-29,dept-1,43973,city-3\n30,name-30,dept-2,44110,city-4\n31,name-31,dept-3,44247,city-5\n32,name-32,dept-4,44384,city-6\n33,name-33,dept-5,44521,city-7\n34,name-34,dept-6,44658,city-8\n35,name-35,dept-0,44795,city-9\n36,name-36,dept-1,44932,city-10\n37,name-37,dept-2,45069,city-11\n38,name-38,dept-3,45206,city-12\n39,name-39,dept-4,45343,city-0\n",
+            "repeat": 10
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "group-huge",
+        "name": "Group 400000 rows",
+        "tier": "stress",
+        "args": [
+          "--repository",
+          ".",
+          "--format",
+          "CSV",
+          "SELECT dept, COUNT(*), AVG(salary) FROM employees GROUP BY dept ORDER BY dept"
+        ],
+        "files": [
+          {
+            "path": "employees.csv",
+            "header": "id,name,dept,salary,city\n",
+            "content": "0,name-0,dept-0,40000,city-0\n1,name-1,dept-1,40137,city-1\n2,name-2,dept-2,40274,city-2\n3,name-3,dept-3,40411,city-3\n4,name-4,dept-4,40548,city-4\n5,name-5,dept-5,40685,city-5\n6,name-6,dept-6,40822,city-6\n7,name-7,dept-0,40959,city-7\n8,name-8,dept-1,41096,city-8\n9,name-9,dept-2,41233,city-9\n10,name-10,dept-3,41370,city-10\n11,name-11,dept-4,41507,city-11\n12,name-12,dept-5,41644,city-12\n13,name-13,dept-6,41781,city-0\n14,name-14,dept-0,41918,city-1\n15,name-15,dept-1,42055,city-2\n16,name-16,dept-2,42192,city-3\n17,name-17,dept-3,42329,city-4\n18,name-18,dept-4,42466,city-5\n19,name-19,dept-5,42603,city-6\n20,name-20,dept-6,42740,city-7\n21,name-21,dept-0,42877,city-8\n22,name-22,dept-1,43014,city-9\n23,name-23,dept-2,43151,city-10\n24,name-24,dept-3,43288,city-11\n25,name-25,dept-4,43425,city-12\n26,name-26,dept-5,43562,city-0\n27,name-27,dept-6,43699,city-1\n28,name-28,dept-0,43836,city-2\n29,name-29,dept-1,43973,city-3\n30,name-30,dept-2,44110,city-4\n31,name-31,dept-3,44247,city-5\n32,name-32,dept-4,44384,city-6\n33,name-33,dept-5,44521,city-7\n34,name-34,dept-6,44658,city-8\n35,name-35,dept-0,44795,city-9\n36,name-36,dept-1,44932,city-10\n37,name-37,dept-2,45069,city-11\n38,name-38,dept-3,45206,city-12\n39,name-39,dept-4,45343,city-0\n",
+            "repeat": 10000
+          }
+        ],
+        "provenance": "manifest"
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}

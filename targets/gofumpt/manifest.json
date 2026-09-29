@@ -1,0 +1,172 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "gofumpt CLI",
+  "target": {
+    "repository": "https://github.com/mvdan/gofumpt",
+    "build": {
+      "package": ".",
+      "binary": "gofumpt"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "format-generated",
+        "name": "Format a 1500-function Go file",
+        "tier": "representative",
+        "args": [
+          "big.go"
+        ],
+        "files": [
+          {
+            "path": "big.go",
+            "header": "package demo\n\nimport \"fmt\"\n\n",
+            "content": "func handle(items []string, limit int) (int, error) {\n  count:=0\n  for i:=0;i<len(items);i++ {\n     if items[i]==\"\" { continue }\n     if count>=limit {\n        return count, fmt.Errorf(\"limit %d reached after %d items, the remaining items were not processed at all\", limit, count)\n     }\n     count++\n  }\n  var result = map[string]int{\"alpha\": 1, \"beta\": 2, \"gamma\": 3, \"delta\": 4, \"epsilon\": 5, \"zeta\": 6, \"eta\": 7}\n  _ = result\n  return count,nil\n}\n\n",
+            "repeat": 1500
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "format-generated-extra",
+        "name": "Format 800 functions with -extra",
+        "tier": "representative",
+        "args": [
+          "-extra",
+          "big.go"
+        ],
+        "files": [
+          {
+            "path": "big.go",
+            "header": "package demo\n\nimport \"fmt\"\n\n",
+            "content": "func handle(items []string, limit int) (int, error) {\n  count:=0\n  for i:=0;i<len(items);i++ {\n     if items[i]==\"\" { continue }\n     if count>=limit {\n        return count, fmt.Errorf(\"limit %d reached after %d items, the remaining items were not processed at all\", limit, count)\n     }\n     count++\n  }\n  var result = map[string]int{\"alpha\": 1, \"beta\": 2, \"gamma\": 3, \"delta\": 4, \"epsilon\": 5, \"zeta\": 6, \"eta\": 7}\n  _ = result\n  return count,nil\n}\n\n",
+            "repeat": 800
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "format-small",
+        "name": "Format 30 functions",
+        "tier": "plausible",
+        "args": [
+          "big.go"
+        ],
+        "files": [
+          {
+            "path": "big.go",
+            "header": "package demo\n\nimport \"fmt\"\n\n",
+            "content": "func handle(items []string, limit int) (int, error) {\n  count:=0\n  for i:=0;i<len(items);i++ {\n     if items[i]==\"\" { continue }\n     if count>=limit {\n        return count, fmt.Errorf(\"limit %d reached after %d items, the remaining items were not processed at all\", limit, count)\n     }\n     count++\n  }\n  var result = map[string]int{\"alpha\": 1, \"beta\": 2, \"gamma\": 3, \"delta\": 4, \"epsilon\": 5, \"zeta\": 6, \"eta\": 7}\n  _ = result\n  return count,nil\n}\n\n",
+            "repeat": 30
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "format-huge",
+        "name": "Format 15000 functions",
+        "tier": "stress",
+        "args": [
+          "big.go"
+        ],
+        "files": [
+          {
+            "path": "big.go",
+            "header": "package demo\n\nimport \"fmt\"\n\n",
+            "content": "func handle(items []string, limit int) (int, error) {\n  count:=0\n  for i:=0;i<len(items);i++ {\n     if items[i]==\"\" { continue }\n     if count>=limit {\n        return count, fmt.Errorf(\"limit %d reached after %d items, the remaining items were not processed at all\", limit, count)\n     }\n     count++\n  }\n  var result = map[string]int{\"alpha\": 1, \"beta\": 2, \"gamma\": 3, \"delta\": 4, \"epsilon\": 5, \"zeta\": 6, \"eta\": 7}\n  _ = result\n  return count,nil\n}\n\n",
+            "repeat": 15000
+          }
+        ],
+        "provenance": "manifest"
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}

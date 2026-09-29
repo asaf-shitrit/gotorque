@@ -1,0 +1,217 @@
+{
+  "$schema": "https://example.com/gotorque/target-manifest-v1.schema.json",
+  "version": "v1",
+  "name": "dyff CLI",
+  "target": {
+    "repository": "https://github.com/homeport/dyff",
+    "build": {
+      "package": "./cmd/dyff",
+      "binary": "dyff"
+    },
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "between-lists",
+        "name": "Compare two 2000-item YAML documents",
+        "tier": "representative",
+        "args": [
+          "between",
+          "--omit-header",
+          "--color",
+          "off",
+          "a.yaml",
+          "b.yaml"
+        ],
+        "files": [
+          {
+            "path": "a.yaml",
+            "header": "items:\n",
+            "content": "- id: 0\n  name: item-0\n  price: 10\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: false\n- id: 1\n  name: item-1\n  price: 12\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: true\n- id: 2\n  name: item-2\n  price: 14\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: false\n- id: 3\n  name: item-3\n  price: 16\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: true\n- id: 4\n  name: item-4\n  price: 18\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: false\n- id: 5\n  name: item-5\n  price: 20\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: true\n- id: 6\n  name: item-6\n  price: 22\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: false\n- id: 7\n  name: item-7\n  price: 24\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: true\n- id: 8\n  name: item-8\n  price: 26\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: false\n- id: 9\n  name: item-9\n  price: 28\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: true\n- id: 10\n  name: item-10\n  price: 30\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: false\n- id: 11\n  name: item-11\n  price: 32\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: true\n- id: 12\n  name: item-12\n  price: 34\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: false\n- id: 13\n  name: item-13\n  price: 36\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: true\n- id: 14\n  name: item-14\n  price: 38\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: false\n- id: 15\n  name: item-15\n  price: 40\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: true\n- id: 16\n  name: item-16\n  price: 42\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: false\n- id: 17\n  name: item-17\n  price: 44\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: true\n- id: 18\n  name: item-18\n  price: 46\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: false\n- id: 19\n  name: item-19\n  price: 48\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: true\n",
+            "repeat": 20
+          },
+          {
+            "path": "b.yaml",
+            "header": "items:\n",
+            "content": "- id: 0\n  name: item-0\n  price: 10\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: true\n- id: 1\n  name: item-1\n  price: 13\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: false\n- id: 2\n  name: item-2\n  price: 16\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: true\n- id: 3\n  name: item-3\n  price: 19\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: false\n- id: 4\n  name: item-4\n  price: 22\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: true\n- id: 5\n  name: item-5\n  price: 25\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: false\n- id: 6\n  name: item-6\n  price: 28\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: true\n- id: 7\n  name: item-7\n  price: 31\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: false\n- id: 8\n  name: item-8\n  price: 34\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: true\n- id: 9\n  name: item-9\n  price: 37\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: false\n- id: 10\n  name: item-10\n  price: 40\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: true\n- id: 11\n  name: item-11\n  price: 43\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: false\n- id: 12\n  name: item-12\n  price: 46\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: true\n- id: 13\n  name: item-13\n  price: 49\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: false\n- id: 14\n  name: item-14\n  price: 52\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: true\n- id: 15\n  name: item-15\n  price: 55\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: false\n- id: 16\n  name: item-16\n  price: 58\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: true\n- id: 17\n  name: item-17\n  price: 61\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: false\n- id: 18\n  name: item-18\n  price: 64\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: true\n- id: 19\n  name: item-19\n  price: 67\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: false\n",
+            "repeat": 20
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "between-brief",
+        "name": "Compare them with the brief output",
+        "tier": "representative",
+        "args": [
+          "between",
+          "--omit-header",
+          "--color",
+          "off",
+          "--output",
+          "brief",
+          "a.yaml",
+          "b.yaml"
+        ],
+        "files": [
+          {
+            "path": "a.yaml",
+            "header": "items:\n",
+            "content": "- id: 0\n  name: item-0\n  price: 10\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: false\n- id: 1\n  name: item-1\n  price: 12\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: true\n- id: 2\n  name: item-2\n  price: 14\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: false\n- id: 3\n  name: item-3\n  price: 16\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: true\n- id: 4\n  name: item-4\n  price: 18\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: false\n- id: 5\n  name: item-5\n  price: 20\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: true\n- id: 6\n  name: item-6\n  price: 22\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: false\n- id: 7\n  name: item-7\n  price: 24\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: true\n- id: 8\n  name: item-8\n  price: 26\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: false\n- id: 9\n  name: item-9\n  price: 28\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: true\n- id: 10\n  name: item-10\n  price: 30\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: false\n- id: 11\n  name: item-11\n  price: 32\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: true\n- id: 12\n  name: item-12\n  price: 34\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: false\n- id: 13\n  name: item-13\n  price: 36\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: true\n- id: 14\n  name: item-14\n  price: 38\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: false\n- id: 15\n  name: item-15\n  price: 40\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: true\n- id: 16\n  name: item-16\n  price: 42\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: false\n- id: 17\n  name: item-17\n  price: 44\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: true\n- id: 18\n  name: item-18\n  price: 46\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: false\n- id: 19\n  name: item-19\n  price: 48\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: true\n",
+            "repeat": 100
+          },
+          {
+            "path": "b.yaml",
+            "header": "items:\n",
+            "content": "- id: 0\n  name: item-0\n  price: 10\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: true\n- id: 1\n  name: item-1\n  price: 13\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: false\n- id: 2\n  name: item-2\n  price: 16\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: true\n- id: 3\n  name: item-3\n  price: 19\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: false\n- id: 4\n  name: item-4\n  price: 22\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: true\n- id: 5\n  name: item-5\n  price: 25\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: false\n- id: 6\n  name: item-6\n  price: 28\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: true\n- id: 7\n  name: item-7\n  price: 31\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: false\n- id: 8\n  name: item-8\n  price: 34\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: true\n- id: 9\n  name: item-9\n  price: 37\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: false\n- id: 10\n  name: item-10\n  price: 40\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: true\n- id: 11\n  name: item-11\n  price: 43\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: false\n- id: 12\n  name: item-12\n  price: 46\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: true\n- id: 13\n  name: item-13\n  price: 49\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: false\n- id: 14\n  name: item-14\n  price: 52\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: true\n- id: 15\n  name: item-15\n  price: 55\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: false\n- id: 16\n  name: item-16\n  price: 58\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: true\n- id: 17\n  name: item-17\n  price: 61\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: false\n- id: 18\n  name: item-18\n  price: 64\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: true\n- id: 19\n  name: item-19\n  price: 67\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: false\n",
+            "repeat": 100
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "between-small",
+        "name": "Compare two 100-item documents",
+        "tier": "plausible",
+        "args": [
+          "between",
+          "--omit-header",
+          "--color",
+          "off",
+          "a.yaml",
+          "b.yaml"
+        ],
+        "files": [
+          {
+            "path": "a.yaml",
+            "header": "items:\n",
+            "content": "- id: 0\n  name: item-0\n  price: 10\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: false\n- id: 1\n  name: item-1\n  price: 12\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: true\n- id: 2\n  name: item-2\n  price: 14\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: false\n- id: 3\n  name: item-3\n  price: 16\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: true\n- id: 4\n  name: item-4\n  price: 18\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: false\n- id: 5\n  name: item-5\n  price: 20\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: true\n- id: 6\n  name: item-6\n  price: 22\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: false\n- id: 7\n  name: item-7\n  price: 24\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: true\n- id: 8\n  name: item-8\n  price: 26\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: false\n- id: 9\n  name: item-9\n  price: 28\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: true\n- id: 10\n  name: item-10\n  price: 30\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: false\n- id: 11\n  name: item-11\n  price: 32\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: true\n- id: 12\n  name: item-12\n  price: 34\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: false\n- id: 13\n  name: item-13\n  price: 36\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: true\n- id: 14\n  name: item-14\n  price: 38\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: false\n- id: 15\n  name: item-15\n  price: 40\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: true\n- id: 16\n  name: item-16\n  price: 42\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: false\n- id: 17\n  name: item-17\n  price: 44\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: true\n- id: 18\n  name: item-18\n  price: 46\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: false\n- id: 19\n  name: item-19\n  price: 48\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: true\n",
+            "repeat": 5
+          },
+          {
+            "path": "b.yaml",
+            "header": "items:\n",
+            "content": "- id: 0\n  name: item-0\n  price: 10\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: true\n- id: 1\n  name: item-1\n  price: 13\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: false\n- id: 2\n  name: item-2\n  price: 16\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: true\n- id: 3\n  name: item-3\n  price: 19\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: false\n- id: 4\n  name: item-4\n  price: 22\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: true\n- id: 5\n  name: item-5\n  price: 25\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: false\n- id: 6\n  name: item-6\n  price: 28\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: true\n- id: 7\n  name: item-7\n  price: 31\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: false\n- id: 8\n  name: item-8\n  price: 34\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: true\n- id: 9\n  name: item-9\n  price: 37\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: false\n- id: 10\n  name: item-10\n  price: 40\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: true\n- id: 11\n  name: item-11\n  price: 43\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: false\n- id: 12\n  name: item-12\n  price: 46\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: true\n- id: 13\n  name: item-13\n  price: 49\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: false\n- id: 14\n  name: item-14\n  price: 52\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: true\n- id: 15\n  name: item-15\n  price: 55\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: false\n- id: 16\n  name: item-16\n  price: 58\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: true\n- id: 17\n  name: item-17\n  price: 61\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: false\n- id: 18\n  name: item-18\n  price: 64\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: true\n- id: 19\n  name: item-19\n  price: 67\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: false\n",
+            "repeat": 5
+          }
+        ],
+        "provenance": "manifest"
+      },
+      {
+        "id": "between-huge",
+        "name": "Compare two 20000-item documents",
+        "tier": "stress",
+        "args": [
+          "between",
+          "--omit-header",
+          "--color",
+          "off",
+          "a.yaml",
+          "b.yaml"
+        ],
+        "files": [
+          {
+            "path": "a.yaml",
+            "header": "items:\n",
+            "content": "- id: 0\n  name: item-0\n  price: 10\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: false\n- id: 1\n  name: item-1\n  price: 12\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: true\n- id: 2\n  name: item-2\n  price: 14\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: false\n- id: 3\n  name: item-3\n  price: 16\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: true\n- id: 4\n  name: item-4\n  price: 18\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: false\n- id: 5\n  name: item-5\n  price: 20\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: true\n- id: 6\n  name: item-6\n  price: 22\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: false\n- id: 7\n  name: item-7\n  price: 24\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: true\n- id: 8\n  name: item-8\n  price: 26\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: false\n- id: 9\n  name: item-9\n  price: 28\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: true\n- id: 10\n  name: item-10\n  price: 30\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: false\n- id: 11\n  name: item-11\n  price: 32\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: true\n- id: 12\n  name: item-12\n  price: 34\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: false\n- id: 13\n  name: item-13\n  price: 36\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: true\n- id: 14\n  name: item-14\n  price: 38\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: false\n- id: 15\n  name: item-15\n  price: 40\n  tags: [a, b, c]\n  meta:\n    owner: team-0\n    active: true\n- id: 16\n  name: item-16\n  price: 42\n  tags: [a, b, c]\n  meta:\n    owner: team-1\n    active: false\n- id: 17\n  name: item-17\n  price: 44\n  tags: [a, b, c]\n  meta:\n    owner: team-2\n    active: true\n- id: 18\n  name: item-18\n  price: 46\n  tags: [a, b, c]\n  meta:\n    owner: team-3\n    active: false\n- id: 19\n  name: item-19\n  price: 48\n  tags: [a, b, c]\n  meta:\n    owner: team-4\n    active: true\n",
+            "repeat": 200
+          },
+          {
+            "path": "b.yaml",
+            "header": "items:\n",
+            "content": "- id: 0\n  name: item-0\n  price: 10\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: true\n- id: 1\n  name: item-1\n  price: 13\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: false\n- id: 2\n  name: item-2\n  price: 16\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: true\n- id: 3\n  name: item-3\n  price: 19\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: false\n- id: 4\n  name: item-4\n  price: 22\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: true\n- id: 5\n  name: item-5\n  price: 25\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: false\n- id: 6\n  name: item-6\n  price: 28\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: true\n- id: 7\n  name: item-7\n  price: 31\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: false\n- id: 8\n  name: item-8\n  price: 34\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: true\n- id: 9\n  name: item-9\n  price: 37\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: false\n- id: 10\n  name: item-10\n  price: 40\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: true\n- id: 11\n  name: item-11\n  price: 43\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: false\n- id: 12\n  name: item-12\n  price: 46\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: true\n- id: 13\n  name: item-13\n  price: 49\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: false\n- id: 14\n  name: item-14\n  price: 52\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: true\n- id: 15\n  name: item-15\n  price: 55\n  tags: [a, b, d]\n  meta:\n    owner: team-0\n    active: false\n- id: 16\n  name: item-16\n  price: 58\n  tags: [a, b, d]\n  meta:\n    owner: team-1\n    active: true\n- id: 17\n  name: item-17\n  price: 61\n  tags: [a, b, d]\n  meta:\n    owner: team-2\n    active: false\n- id: 18\n  name: item-18\n  price: 64\n  tags: [a, b, d]\n  meta:\n    owner: team-3\n    active: true\n- id: 19\n  name: item-19\n  price: 67\n  tags: [a, b, d]\n  meta:\n    owner: team-4\n    active: false\n",
+            "repeat": 200
+          }
+        ],
+        "provenance": "manifest"
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "sources": [
+        "help",
+        "examples"
+      ],
+      "strategies": [
+        "input_mutation",
+        "input_size_sweep"
+      ],
+      "seed": 20260928,
+      "max_cases": 200,
+      "max_depth": 4
+    },
+    "tiers": {
+      "representative": {
+        "weight": 1.0,
+        "acceptance_eligible": true
+      },
+      "plausible": {
+        "weight": 0.5,
+        "acceptance_eligible": false
+      },
+      "stress": {
+        "weight": 0.0,
+        "acceptance_eligible": false
+      }
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {
+      "read": "repo_and_assets",
+      "write": "temp_only"
+    },
+    "environment": {
+      "allow": [
+        "LANG",
+        "LC_ALL"
+      ],
+      "passthrough": []
+    },
+    "max_processes": 1,
+    "max_memory_bytes": 1073741824
+  },
+  "normalization": {
+    "stdout": {
+      "mode": "exact"
+    },
+    "stderr": {
+      "mode": "exact"
+    },
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {
+        "name": "peak_memory_bytes",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "cpu_time_ns",
+        "maximum_regression_percent": 2.0,
+        "required": true
+      },
+      {
+        "name": "binary_size_bytes",
+        "maximum_regression_percent": 5.0,
+        "required": false
+      }
+    ]
+  },
+  "campaign": {
+    "max_duration": "90m",
+    "max_candidate_patches": 12,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 2.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}
