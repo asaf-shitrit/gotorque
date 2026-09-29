@@ -63,6 +63,10 @@ func (c *cachingEvaluator) Evaluate(ctx context.Context, req jev.Request) (jev.R
 	}
 	if resp, ok, err := c.store.JevCacheGet(digest); err == nil && ok {
 		c.engine.bumpJevCache(c.role, true)
+		// A hit spends nothing. The stored usage is the original request's,
+		// and handing it back made the analyst record it again: live1-fzf's
+		// report showed 48 analyst requests for 12 paid ones.
+		resp.Usage = jev.Usage{}
 		return resp, nil
 	}
 	resp, err := c.inner.Evaluate(ctx, req)
