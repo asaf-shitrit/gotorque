@@ -215,3 +215,19 @@ func TestUnconfirmedImprovementsTruthTable(t *testing.T) {
 	noSupport.StatisticalSupportRequired = false
 	require.Empty(t, policy.UnconfirmedImprovements(noSupport, []domain.MetricComparison{{Baseline: 100, Candidate: 91}}))
 }
+
+// TestABorderlineAcceptIsMeasuredAgain: held-out dyff was accepted on a
+// supported -3.16% against the 3% minimum and verified at -2.17%. A supported
+// win that clears the minimum by less than twice it now gets the second series
+// before the verdict; a clear win does not (TestASettledImprovementVerdictIsNotMeasuredAgain).
+func TestABorderlineAcceptIsMeasuredAgain(t *testing.T) {
+	engine, evidence, m, candidate := measuredEngine(t)
+	evidence.Comparisons = append([]domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 96.84, StatisticallyFit: true, Significant: true},
+	}, guardrailsUnaffected()...)
+
+	require.True(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions)
+	require.Contains(t, evidence.Summary, "pooled improved by 3.16%, less than twice the 3.00% minimum, so every workload was measured over 25 more before the verdict")
+	require.Contains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
+}

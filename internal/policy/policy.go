@@ -240,6 +240,29 @@ func UnconfirmedImprovements(config Config, eligible []domain.MetricComparison) 
 	return readings
 }
 
+// borderlineFactor bounds a borderline accept: a best supported improvement
+// that cleared the minimum by less than this factor.
+const borderlineFactor = 2.0
+
+// BorderlineImprovements returns the reading an accept would rest on when it
+// cleared the minimum by less than borderlineFactor, or nothing. The engine
+// measures such a candidate again before the verdict, as it does an
+// unsupported improvement (UnconfirmedImprovements). A win just past the
+// threshold is where an overestimate turns into an accept: held-out dyff was
+// accepted on a supported -3.16% against a 3% minimum, and 60 fresh pairs put
+// it at -2.17%. A win well past the threshold needs no second look.
+func BorderlineImprovements(config Config, eligible []domain.MetricComparison) []domain.MetricComparison {
+	config = withDefaults(config)
+	if !config.StatisticalSupportRequired {
+		return nil
+	}
+	best, supported := bestImprovement(comparisonResults(eligible))
+	if !supported || !improvedAtLeastMinimum(config, best) || -best.DeltaPercent >= borderlineFactor*config.MinimumImprovementPercent {
+		return nil
+	}
+	return []domain.MetricComparison{best}
+}
+
 // improvedAtLeastMinimum reports whether a comparison's delta is an
 // improvement (a negative delta) at least as large in magnitude as the
 // manifest's minimum_improvement_percent.

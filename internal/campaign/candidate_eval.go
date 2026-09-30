@@ -512,19 +512,7 @@ func (e *Engine) confirmImprovements(ctx context.Context, evidence *orchestrator
 		return true
 	}
 	config := policyConfigFromManifest(e.state.Manifest)
-	eligible := eligibleReadings(config, evidence.Comparisons)
-	preview := policy.Evaluate(config, policy.Evidence{
-		BehaviorMatches:        evidence.BehaviorMatches,
-		FailureSummary:         evidence.Summary,
-		SafetyChecksPassed:     evidence.SafetyChecksPassed,
-		RepresentativeEvidence: evidence.RepresentativeEvidence,
-		Comparisons:            evidence.Comparisons,
-		Primary:                eligible,
-	})
-	if preview.Decision != domain.DecisionInconclusive {
-		return true
-	}
-	unconfirmed := policy.UnconfirmedImprovements(config, eligible)
+	unconfirmed, note := improvementsToConfirm(config, evidence)
 	if len(unconfirmed) == 0 {
 		return true
 	}
@@ -534,7 +522,6 @@ func (e *Engine) confirmImprovements(ctx context.Context, evidence *orchestrator
 		}
 	}
 	e.rederive(ctx, evidence, m)
-	note := improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
 	_ = e.saveEvent("improvement_confirmed", note, nil)
@@ -564,6 +551,45 @@ func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, prim
 		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
 	}
 	return fmt.Sprintf("%s over the %.2f%% limit without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), limit, measurementRepetitions, measurementRepetitions)
+}
+
+// improvementsToConfirm returns the readings a second series should settle,
+// with the note that explains it: an unsupported improvement past the
+// minimum on a candidate that would end inconclusive (ADR 0021), or the
+// borderline improvement an accept would rest on (ADR 0034).
+func improvementsToConfirm(config policy.Config, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, string) {
+	eligible := eligibleReadings(config, evidence.Comparisons)
+	preview := policy.Evaluate(config, policy.Evidence{
+		BehaviorMatches:        evidence.BehaviorMatches,
+		FailureSummary:         evidence.Summary,
+		SafetyChecksPassed:     evidence.SafetyChecksPassed,
+		RepresentativeEvidence: evidence.RepresentativeEvidence,
+		Comparisons:            evidence.Comparisons,
+		Primary:                eligible,
+	})
+	switch preview.Decision {
+	case domain.DecisionInconclusive:
+		unconfirmed := policy.UnconfirmedImprovements(config, eligible)
+		return unconfirmed, improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent)
+	case domain.DecisionAccepted:
+		borderline := policy.BorderlineImprovements(config, eligible)
+		return borderline, borderlineConfirmationNote(borderline, config.MinimumImprovementPercent)
+	case domain.DecisionRejected:
+		return nil, ""
+	}
+	return nil, ""
+}
+
+func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum float64) string {
+	if len(borderline) == 0 {
+		return ""
+	}
+	c := borderline[0]
+	name := "pooled"
+	if c.Workload != "" {
+		name = c.Workload
+	}
+	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -c.DeltaPercent, minimum, measurementRepetitions)
 }
 
 func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum float64) string {

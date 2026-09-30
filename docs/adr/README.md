@@ -40,6 +40,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0031](0031-campaign-history-counts-measured-targets-as-tried.md) | Earlier campaigns' measured targets count as tried (`--history`) | accepted |
 | [0032](0032-measured-unbuffered-writes.md) | Measured unbuffered writes raise a code-derived target | accepted |
 | [0033](0033-guardrails-reject-on-significance.md) | Guardrails reject on significance, like workload regressions | accepted |
+| [0034](0034-borderline-accepts-are-measured-again.md) | Borderline accepts are measured again before the verdict | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay
