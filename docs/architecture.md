@@ -296,10 +296,14 @@ produced here or in policy.
    inconclusive only because an eligible reading improved by at least
    `minimum_improvement_percent` without statistical support, and nothing is
    about to reject it, every workload is measured again the same way
-   (`confirmImprovements`, ADR 0021). At most one extra series runs per
-   candidate in total — if the regression confirmation already extended
-   every seed, the improvement check reuses that series instead of running a
-   third.
+   (`confirmImprovements`, ADR 0021). An accept that rests on a borderline
+   win, the best supported improvement clearing the minimum by less than a
+   factor of two (`policy.BorderlineImprovements`), is measured again the
+   same way before the verdict (ADR 0034): held-out dyff was accepted on a
+   supported -3.16% against 3% and verified at -2.17%. At most one extra
+   series runs per candidate in total — if the regression confirmation
+   already extended every seed, the improvement check reuses that series
+   instead of running a third.
 6. **Statistics.** Each metric gets a two-sample Welch t-test against a
    conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
    sample sizes); support is never reported from fewer than four samples per

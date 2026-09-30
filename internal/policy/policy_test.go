@@ -355,3 +355,30 @@ func TestUnconfirmedRegressionsAreOverTheLimitAndInsignificant(t *testing.T) {
 		t.Fatalf("UnconfirmedRegressions = %+v, want only the pooled +3%% reading", got)
 	}
 }
+
+// TestBorderlineImprovementsSelectsOnlyANearThresholdAccept: the reading an
+// accept would rest on is returned when it cleared the 3% minimum by less
+// than twice it; a clear win, an unsupported reading, one below the minimum,
+// or a manifest without required support returns nothing.
+func TestBorderlineImprovementsSelectsOnlyANearThresholdAccept(t *testing.T) {
+	reading := func(candidate float64, fit bool) []domain.MetricComparison {
+		return []domain.MetricComparison{{Metric: "wall_time_ns", Workload: "w", Baseline: 100, Candidate: candidate, StatisticallyFit: fit}}
+	}
+	if got := BorderlineImprovements(DefaultConfig(), reading(96.84, true)); len(got) != 1 || got[0].Workload != "w" {
+		t.Fatalf("a supported -3.16%% is borderline: %+v", got)
+	}
+	for name, eligible := range map[string][]domain.MetricComparison{
+		"clear win":     reading(90, true),
+		"unsupported":   reading(96.84, false),
+		"below minimum": reading(98, true),
+	} {
+		if got := BorderlineImprovements(DefaultConfig(), eligible); len(got) != 0 {
+			t.Fatalf("%s: got %+v, want nothing", name, got)
+		}
+	}
+	noSupport := DefaultConfig()
+	noSupport.StatisticalSupportRequired = false
+	if got := BorderlineImprovements(noSupport, reading(96.84, true)); len(got) != 0 {
+		t.Fatalf("without required support nothing is re-measured: %+v", got)
+	}
+}
