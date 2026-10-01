@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/policy"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/policy"
 )
 
 // jsonnetCandidate is the go-jsonnet candidate a live campaign rejected: 3.47%

@@ -10,10 +10,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/orchestrator"
-	"example.com/gotorque/internal/runner"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/runner"
 )
 
 func TestMean(t *testing.T) {

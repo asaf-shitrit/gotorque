@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 )
 
 // encoderSource mirrors gojq's encoder: an io.Writer it flushes to, and a

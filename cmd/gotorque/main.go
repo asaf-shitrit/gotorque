@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"example.com/gotorque/internal/cli"
+	"github.com/asaf-shitrit/gotorque/internal/cli"
 )
 
 func main() {

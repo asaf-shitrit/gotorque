@@ -7,10 +7,10 @@ import (
 	"runtime"
 	"testing"
 
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/profile"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/profile"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 	"github.com/stretchr/testify/require"
 )
 

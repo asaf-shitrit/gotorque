@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/gotorque/internal/runner"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/runner"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // sequenceExecutor returns one queued result per call, in order, so tests can

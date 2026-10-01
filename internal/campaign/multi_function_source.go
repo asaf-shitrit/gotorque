@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
 )
 
 // parsedFunctionSource is one of the optimizer's function_sources entries,

@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // Runner only launches a configured build artifact. It never accepts a shell

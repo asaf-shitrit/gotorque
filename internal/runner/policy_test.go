@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 // TestBuildEnvDropsUnlistedSecrets is the required regression: a workload's

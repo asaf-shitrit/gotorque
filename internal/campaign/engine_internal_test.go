@@ -12,9 +12,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/profile"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/profile"
 )
 
 func TestHotFunctionNamesDropsNonActionableFrames(t *testing.T) {

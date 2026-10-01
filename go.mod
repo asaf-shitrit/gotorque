@@ -1,4 +1,4 @@
-module example.com/gotorque
+module github.com/asaf-shitrit/gotorque
 
 go 1.26.5
 

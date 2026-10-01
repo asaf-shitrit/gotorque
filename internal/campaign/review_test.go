@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/jev"
-	"example.com/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 	"github.com/stretchr/testify/require"
 )
 

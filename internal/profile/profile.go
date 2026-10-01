@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/runner"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/runner"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 type Function struct {

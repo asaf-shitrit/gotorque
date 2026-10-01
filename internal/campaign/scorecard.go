@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 // Verdict classes a scorecard counts. A candidate lands in exactly one, first

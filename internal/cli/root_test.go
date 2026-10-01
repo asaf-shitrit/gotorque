@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/campaign"
-	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/orchestrator"
-	"example.com/gotorque/internal/version"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/campaign"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/version"
 	"github.com/stretchr/testify/require"
 )
 

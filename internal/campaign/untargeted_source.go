@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
 )
 
 // untargetedFunctionSourceDiff builds the diff for a free-choice proposal (no

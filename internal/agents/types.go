@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 )

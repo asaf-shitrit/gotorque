@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // TestMain clears the variables git uses to pick a repository before any test

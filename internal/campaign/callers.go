@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
 )
 
 // throwaway_result (ADR 0027) is a code-derived cause, not a Jev cause: code

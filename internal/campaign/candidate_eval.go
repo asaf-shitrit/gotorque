@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/candidate"
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/orchestrator"
-	"example.com/gotorque/internal/policy"
-	"example.com/gotorque/internal/runner"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/candidate"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/policy"
+	"github.com/asaf-shitrit/gotorque/internal/runner"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // measurementRepetitions is the interleaved A/B sample count per workload.

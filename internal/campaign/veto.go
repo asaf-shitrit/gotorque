@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strconv"
 
-	"example.com/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 )
 
 // codeVetoes are the causes whose mechanism code can see in a function's

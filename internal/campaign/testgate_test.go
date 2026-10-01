@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/orchestrator"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // The fixtures are captured from real `go test -json` runs rather than written

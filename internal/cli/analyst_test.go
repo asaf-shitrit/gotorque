@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/campaign"
-	"example.com/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/campaign"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/stretchr/testify/require"
 )
 

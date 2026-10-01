@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // testEvent is one decoded line of `go test -json` output. Only the fields the

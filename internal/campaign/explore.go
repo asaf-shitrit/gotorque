@@ -9,11 +9,11 @@ import (
 	"sort"
 	"strings"
 
-	"example.com/gotorque/internal/jev"
-	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/profile"
-	"example.com/gotorque/internal/runner"
-	"example.com/gotorque/internal/workload"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/profile"
+	"github.com/asaf-shitrit/gotorque/internal/runner"
+	"github.com/asaf-shitrit/gotorque/internal/workload"
 )
 
 // ExplorerJev marks a campaign whose extra discovery workloads were generated

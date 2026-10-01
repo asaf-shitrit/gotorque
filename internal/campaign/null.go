@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 )
 
 // A null candidate is a patch that changes nothing a workload can observe: it
