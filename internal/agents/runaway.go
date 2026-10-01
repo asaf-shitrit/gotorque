@@ -46,7 +46,7 @@ func reasoningBudgetFrom(ctx context.Context) *reasoningBudget {
 func reasoningOnly(resp incompleteResponse) bool {
 	u := resp.Usage
 	return resp.IncompleteDetails.Reason == "max_output_tokens" && u.OutputTokens > 0 &&
-		u.OutputTokensDetails.ReasoningTokens >= u.OutputTokens && strings.TrimSpace(visibleText(resp)) == ""
+		u.OutputTokensDetails.ReasoningTokens >= u.OutputTokens && strings.TrimSpace(itemText(resp, "message")) == ""
 }
 
 // reasoningOffTransport disables reasoning on a request whose call has

@@ -14,9 +14,10 @@ import (
 	"google.golang.org/genai"
 )
 
-// sseReasoningRunaway is golines' optimizer attempt: cut at max_output_tokens
-// with every output token spent reasoning and no visible text.
-const sseReasoningRunaway = "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"sequence_number\":4,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"incomplete\",\"model\":\"m\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":32768,\"total_tokens\":32771,\"output_tokens_details\":{\"reasoning_tokens\":32768}},\"output\":[{\"type\":\"reasoning\",\"content\":[]}]}}\n\n"
+// sseReasoningRunaway is the held-out optimizer runaway as OpenRouter sends
+// it: cut at max_output_tokens, every output token spent reasoning, and the
+// reasoning returned as an output item with text but no message item.
+const sseReasoningRunaway = "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"sequence_number\":4,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"incomplete\",\"model\":\"m\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":32768,\"total_tokens\":32771,\"output_tokens_details\":{\"reasoning_tokens\":32768}},\"output\":[{\"type\":\"reasoning\",\"content\":[{\"type\":\"reasoning_text\",\"text\":\"Hmm, decision: use race.ReadSlice. Hold on, let me reconsider\"}]}]}}\n\n"
 
 // TestAReasoningRunawayIsRetriedWithReasoningOff runs the real ladder, role
 // model and transport chain against a fake endpoint whose first answer is a
@@ -73,14 +74,17 @@ func TestReasoningOnlyNeedsAPureReasoningCutoff(t *testing.T) {
 		r.Usage.OutputTokens = out
 		r.Usage.OutputTokensDetails.ReasoningTokens = reasoning
 		if text != "" {
-			r.Output = append(r.Output, struct {
-				Content []struct {
-					Text string `json:"text"`
-				} `json:"content"`
-			}{Content: []struct {
+			item := outputItem{Type: "message"}
+			item.Content = append(item.Content, struct {
 				Text string `json:"text"`
-			}{{Text: text}}})
+			}{Text: text})
+			r.Output = append(r.Output, item)
 		}
+		reasoningItem := outputItem{Type: "reasoning"}
+		reasoningItem.Content = append(reasoningItem.Content, struct {
+			Text string `json:"text"`
+		}{Text: "thinking about the patch"})
+		r.Output = append(r.Output, reasoningItem)
 		return r
 	}
 	require.True(t, reasoningOnly(resp("max_output_tokens", 32768, 32768, "")))
