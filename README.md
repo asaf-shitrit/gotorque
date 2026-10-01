@@ -12,25 +12,56 @@ harness keeps the guessing and mechanizes the proof.
 
 ## Features
 
-- Campaign graph of five agent roles (coordinator, explorer, analyst,
-  optimizer, reviewer) over any OpenAI-compatible endpoint. Model routing
-  is per role, so cheap models can handle high-volume evidence work while
-  stronger ones handle synthesis.
-- Candidate evaluation: diff normalization, strict `git apply` with GNU
-  patch fuzz fallback, isolated Git worktrees, release-equivalent builds.
-- Behavior gating on the target's existing test suite plus byte-exact or
-  order-insensitive stdout comparison across A/B repetitions.
-- Deterministic acceptance policy. Agents advise; code decides. Every
-  verdict is persisted with reasons and metric comparisons.
-- bbolt-backed campaign state, mid-run resume, content-addressed
-  artifacts, Markdown/JSON reports.
+- Campaign graph of five roles (coordinator, explorer, analyst, optimizer,
+  reviewer) over any OpenAI-compatible endpoint, routed per role. Code, not a
+  model, picks what to optimize: discovery profiles the target's own
+  workloads, and `--analyst jev` classifies the hot functions' causes with
+  TypeSafe Jev, so the optimizer is handed one function, a cause and a remedy.
+- The optimizer returns whole function source; deterministic code turns it
+  into a diff against the campaign's base revision, so a model never has to
+  get hunk positions right.
+- Candidate evaluation: diff normalization, a patch-shape check, isolated Git
+  worktrees, release-equivalent builds, and the target's own test suite as a
+  gate. A patch can never edit the tests, testdata or dependency files that
+  judge it.
+- Behavior gating: byte-exact or order-insensitive stdout comparison across
+  every A/B repetition, plus each seed's expected exit code.
+- Statistics, not single runs: interleaved A/B pairs, benchstat's rank test,
+  and a confirmation series before any regression or guardrail breach
+  rejects. Borderline accepts are measured again before they stand.
+- Deterministic acceptance policy. Agents advise; code decides. Every verdict
+  is persisted with its reasons and metric comparisons.
+- `verify` re-measures accepted patches from their recorded diffs;
+  `--null-candidates` measures the harness's own false-accept and
+  false-reject rates with patches that change nothing; `scorecard` sums
+  verdicts across campaigns.
+- bbolt-backed campaign state, mid-run resume, content-addressed artifacts,
+  Markdown/JSON reports.
 - Sandboxed execution by default: network denial via bubblewrap
   (`--unshare-net`) on Linux and `sandbox-exec` on macOS, writes restricted
   to campaign directories.
 
+## Status
+
+Ten targets are held out from development (`targets/HELDOUT.md`) and used
+only to judge whether the harness generalizes. On the two most recent
+held-out sweeps, every accepted patch held when `verify` re-measured it over
+60 pairs, and 70 null candidates produced no false accept. Most campaigns end
+inconclusive: the harness is built to say "not proven" rather than accept
+noise.
+
 ## Install
 
-Requires Go 1.26+, Git, and GNU patch. `benchstat` is optional.
+Requires Git and GNU patch at run time. `benchstat` is optional.
+
+Prebuilt binaries for Linux and macOS (amd64, arm64) are attached to every
+[release](https://github.com/asaf-shitrit/gotorque/releases) from v0.2.0. With Go 1.26+:
+
+```sh
+go install github.com/asaf-shitrit/gotorque/cmd/gotorque@latest
+```
+
+From source:
 
 ```sh
 git clone https://github.com/asaf-shitrit/gotorque
@@ -43,7 +74,7 @@ go build -o /tmp/gotorque ./cmd/gotorque
 Validate a target manifest:
 
 ```sh
-/tmp/gotorque manifest validate targets/gojq/manifest.json
+gotorque manifest validate targets/gojq/manifest.json
 ```
 
 Run a model-driven campaign:
@@ -55,13 +86,18 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 # role only to tier cost against capability.
 export GOTORQUE_MODEL_OPTIMIZER=deepseek/deepseek-v4.1-flash
 
-/tmp/gotorque optimize \
+gotorque optimize \
   --repo /path/to/target-repo \
   --manifest targets/gojq/manifest.json \
-  --adk
+  --adk --analyst jev --reviewer jev --explorer jev
 
-/tmp/gotorque report <campaign-dir>
+gotorque report <campaign-dir>
+gotorque verify <campaign-dir>      # re-measure its accepted patches
 ```
+
+`--tradeoff speed|lean` and `--allow metric=percent` say what a campaign may
+give up for its improvement; `--history <dir>` skips targets an earlier
+campaign on the same revision already measured.
 
 Without an endpoint, `--adk-stub` runs the full pipeline with deterministic
 stub agents, which makes it usable in CI. Resume an interrupted campaign
@@ -141,6 +177,11 @@ Isolation note: Linux campaigns isolate workloads through bubblewrap. If
 the host cannot support it (some nested CI containers), gotorque detects
 this once and runs commands unwrapped rather than failing; use an
 environment with working bubblewrap when evidence must be fully isolated.
+
+Releases are cut with GoReleaser (pinned in the Makefile): `make
+release-snapshot` builds the archives into `dist/` without publishing; tag,
+push the tag, then `make release NOTES=<file>` publishes the GitHub release
+with hand-written notes.
 
 Architecture details are in [docs/architecture.md](docs/architecture.md).
 License: MIT ([LICENSE](LICENSE)).
