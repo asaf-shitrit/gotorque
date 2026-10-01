@@ -94,7 +94,7 @@ func SampleTargetProfile(ctx context.Context, req SampleTarget) (SampleResult, e
 		return SampleResult{}, fmt.Errorf("direct target sampling is unsupported on %s", runtime.GOOS)
 	}
 	result, err := sample(ctx, req)
-	if errors.Is(err, errNoFrames) {
+	if errors.Is(err, ErrNoFrames) {
 		// A sampler that attached to a live target and still recorded no
 		// frame failed transiently: on a dasel campaign /usr/bin/sample
 		// wrote an empty call graph for a target that ran 13 s, the
@@ -106,8 +106,10 @@ func SampleTargetProfile(ctx context.Context, req SampleTarget) (SampleResult, e
 	return result, err
 }
 
-// errNoFrames marks sampler output with no recognizable frame.
-var errNoFrames = errors.New("no recognizable frames in sampler output")
+// ErrNoFrames marks sampler output with no recognizable frame: a sampler that
+// attached and recorded nothing, transiently or because the target finished
+// as sampling began.
+var ErrNoFrames = errors.New("no recognizable frames in sampler output")
 
 // ParseMacOSSample extracts hot functions from `/usr/bin/sample` text output.
 // It prefers the "Sort by top of stack" section (self weights per frame) and
@@ -503,7 +505,7 @@ func finishSampleResult(sampler, outputPath, raw string, isolationNotes []string
 		functions, stacks = ParsePerfScript(limit), PerfScriptStacks(limit)
 	}
 	if len(functions) == 0 {
-		return SampleResult{}, errNoFrames
+		return SampleResult{}, ErrNoFrames
 	}
 	return SampleResult{Sampler: sampler, Functions: functions, Stacks: stacks, RawReport: outputPath, IsolationNotes: isolationNotes}, nil
 }
