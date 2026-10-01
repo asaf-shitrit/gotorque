@@ -231,7 +231,10 @@ six-minute attempt budget.
 Optional `GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}`
 (`low|medium|high`) sets per-role `reasoning.effort`. Unset sends nothing,
 except that the optimizer defaults to `low` under `--analyst jev`, and an
-invalid value fails the preflight. `--analyst jev`, `--reviewer jev`
+invalid value fails the preflight. An attempt cut off at max_output_tokens
+having written nothing but reasoning is retried with reasoning disabled
+(`reasoningBudget`, `internal/agents/runaway.go`): the identical retry ran
+away again every time. `--analyst jev`, `--reviewer jev`
 and `--explorer jev` replace those roles with Jev questions, reached through
 OpenRouter's System One API and pinned to an exact build (`OPENROUTER_API_KEY`,
 the same credential the optimizer role already uses; ADRs 0012, 0014, 0015,

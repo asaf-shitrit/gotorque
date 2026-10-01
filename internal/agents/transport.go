@@ -24,6 +24,7 @@ func (t eventStreamTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return resp, err
 	}
 	resp.Body = newEventStreamReader(resp.Body)
+	resp.Body.(*eventStreamReader).budget = reasoningBudgetFrom(req.Context())
 	// Dropped keepalives shorten the body, so a declared length would lie.
 	resp.ContentLength = -1
 	resp.Header.Del("Content-Length")
