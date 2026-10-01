@@ -30,12 +30,8 @@ checksum:
   name_template: checksums.txt
 
 changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^ci:"
+  # Notes are hand-written and passed with --release-notes (make release).
+  disable: true
 
 release:
   draft: false

@@ -1,3 +1,4 @@
 .env
 *.key
 coverage.out
+dist/

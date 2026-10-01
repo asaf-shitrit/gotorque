@@ -1,5 +1,6 @@
 GOLANGCI_LINT := github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 GO_CRAP := github.com/padiazg/go-crap@v0.5.1
+GORELEASER := github.com/goreleaser/goreleaser/v2@v2.18.2
 COVERAGE_PROFILE := coverage.out
 # Cross-package coverage: a function exercised by another package's tests is
 # tested, and a per-package profile reports it as 0%. Point this at a package
@@ -55,3 +56,16 @@ hooks:
 	git config core.hooksPath .githooks
 	@echo "hooks installed: pre-commit runs make lint, make cover, make crap-scan"
 	@echo "bypass a single commit with: git commit --no-verify"
+
+# Local dry run of a release: cross-built archives in dist/, nothing published.
+.PHONY: release-snapshot
+release-snapshot:
+	go run $(GORELEASER) release --snapshot --clean
+
+# Publish the GitHub release for the tag at HEAD, with hand-written notes from
+# $(NOTES): the commit log is 300-odd unprefixed subjects, not a changelog.
+# Usage: git tag v0.2.0 && git push origin v0.2.0 && make release NOTES=notes.md
+.PHONY: release
+release:
+	@test -n "$(NOTES)" || (echo "set NOTES=<release notes file>" && exit 1)
+	GITHUB_TOKEN=$$(gh auth token) go run $(GORELEASER) release --clean --release-notes $(NOTES)
