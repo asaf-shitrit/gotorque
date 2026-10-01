@@ -485,8 +485,26 @@ func TestReplaceFunctionSourceAddsNewHelpers(t *testing.T) {
 	require.ErrorContains(t, err, "redeclares g")
 	_, err = replaceFunctionSource(path, []byte(src), "f", "func h() {}\n\nfunc k() {}", nil)
 	require.ErrorContains(t, err, "not the target f")
-	_, err = replaceFunctionSource(path, []byte(src), "f", "func f(n int) int { return n }\n\ntype T int", nil)
-	require.ErrorContains(t, err, "must be a function declaration")
+	_, err = replaceFunctionSource(path, []byte(src), "f", "import \"fmt\"\n\nfunc f(n int) int { fmt.Println(); return n }", nil)
+	require.ErrorContains(t, err, "list import paths in imports instead")
+}
+
+// TestReplaceFunctionSourceAddsNewPackageLevelNames: held-out dyff's optimizer
+// hoisted a per-call map literal into a package-level var. New vars, consts
+// and types are placed before the target; one that redeclares a name the file
+// already has is refused.
+func TestReplaceFunctionSourceAddsNewPackageLevelNames(t *testing.T) {
+	src := "package main\n\nvar existing = 1\n\nfunc f(n int) int {\n\tm := map[string]int{\"a\": 1}\n\treturn m[\"a\"] + n\n}\n"
+	path := filepath.Join(t.TempDir(), "main.go")
+	hoisted := "var table = map[string]int{\"a\": 1}\n\ntype unit int\n\nfunc f(n int) int {\n\treturn table[\"a\"] + n + int(unit(0))\n}"
+	updated, err := replaceFunctionSource(path, []byte(src), "f", hoisted, nil)
+	require.NoError(t, err)
+	require.Contains(t, string(updated), "var table = map[string]int{\"a\": 1}\n\ntype unit int\n\nfunc f(n int) int {\n\treturn table[\"a\"] + n + int(unit(0))\n}")
+
+	_, err = replaceFunctionSource(path, []byte(src), "f", "var existing = 2\n\nfunc f(n int) int { return existing + n }", nil)
+	require.ErrorContains(t, err, "redeclares existing")
+	_, err = replaceFunctionSource(path, []byte(src), "f", "const f = 1", nil)
+	require.ErrorContains(t, err, "redeclares f")
 }
 
 // TestAProposalThatNeverBecameAPatchIsKept: held-out dyff lost two attempts to
@@ -499,7 +517,7 @@ func TestAProposalThatNeverBecameAPatchIsKept(t *testing.T) {
 		Attempt: 3,
 		Target:  &agents.Target{Location: "main.go:8", Function: "(*cli).printValues"},
 		Proposal: agents.OptimizerResult{
-			FunctionSource: "var cache = map[string]int{}\n\nfunc (c *cli) printValues(vs []string) error { return nil }",
+			FunctionSource: "import \"os\"\n\nfunc (c *cli) printValues(vs []string) error { return os.ErrClosed }",
 			Hypothesis:     "h",
 		},
 	}
@@ -508,5 +526,5 @@ func TestAProposalThatNeverBecameAPatchIsKept(t *testing.T) {
 	require.Contains(t, evidence.Summary, "candidate rejected before build")
 	data, err := os.ReadFile(filepath.Join(engine.dir, "patches", evidence.Candidate.ID+".proposal.json"))
 	require.NoError(t, err)
-	require.Contains(t, string(data), "var cache = map[string]int{}")
+	require.Contains(t, string(data), "import")
 }
