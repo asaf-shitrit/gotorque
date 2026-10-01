@@ -61,6 +61,9 @@ type eventStreamReader struct {
 	terminal bool
 	// err is returned once out is drained. It is sticky.
 	err error
+	// budget, when the call carries one, learns that an attempt was cut off
+	// having done nothing but reason (see reasoningBudget).
+	budget *reasoningBudget
 }
 
 func newEventStreamReader(body io.ReadCloser) *eventStreamReader {
@@ -163,6 +166,9 @@ func (r *eventStreamReader) classify() {
 		r.terminal = true
 	case "response.incomplete":
 		r.terminal = true
+		if r.budget != nil && reasoningOnly(event.Response) {
+			r.budget.exhausted.Store(true)
+		}
 		r.fail(incompleteError(event.Response))
 	}
 }

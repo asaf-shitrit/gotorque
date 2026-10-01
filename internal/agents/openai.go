@@ -131,6 +131,10 @@ func (p OpenAIProvider) modelClient(role Role) *http.Client {
 		base = http.DefaultTransport
 	}
 	var transport http.RoundTripper = providerTransport{base: eventStreamTransport{base: base}}
+	// Beneath the effort layer: a transport runs before the ones it wraps, so
+	// this one, wrapped, is the last to touch the body and its "reasoning off"
+	// is what is sent.
+	transport = reasoningOffTransport{base: transport}
 	if effort := p.Reasoning[role]; effort != "" {
 		transport = reasoningTransport{base: transport, effort: effort}
 	}

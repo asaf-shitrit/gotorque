@@ -116,6 +116,8 @@ func (m fenceStrippingModel) Name() string { return m.inner.Name() }
 func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		run := &generateRun{}
+		budget := &reasoningBudget{}
+		ctx := withReasoningBudget(ctx, budget)
 		var backoff time.Duration
 		for attempt := 0; attempt < m.attempts; attempt++ {
 			if err := waitBackoff(ctx, backoff); err != nil {
@@ -141,6 +143,12 @@ func (m fenceStrippingModel) GenerateContent(ctx context.Context, req *model.LLM
 			})
 			if done {
 				return
+			}
+			// An attempt that reasoned through its whole output budget will
+			// do so again on an identical request; the rest go out without
+			// reasoning (reasoningBudget).
+			if budget.exhausted.Load() {
+				budget.off.Store(true)
 			}
 			backoff = time.Duration(1<<uint(attempt)) * m.baseBackoff
 		}
