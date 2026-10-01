@@ -12,9 +12,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/profile"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/profile"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // daselRepo is the recorded dasel clone this replay gate was written against

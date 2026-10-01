@@ -3,8 +3,8 @@ package orchestrator
 import (
 	"context"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 // RunnerService owns reproducible repository inspection, workload execution,

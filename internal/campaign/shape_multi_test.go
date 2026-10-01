@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // shapeMultiTarget is a throwaway_result target over the fixture

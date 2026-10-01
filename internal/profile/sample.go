@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"example.com/gotorque/internal/runner"
+	"github.com/asaf-shitrit/gotorque/internal/runner"
 )
 
 // SampleTarget profiles an already-built target binary directly, without

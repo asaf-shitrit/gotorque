@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"example.com/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/stretchr/testify/require"
 	bolterrors "go.etcd.io/bbolt/errors"
 )

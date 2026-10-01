@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 func TestEvaluateAccepted(t *testing.T) {

@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/jev"
-	"example.com/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
 )
 
 // Report file names. A live campaign holds the database's exclusive lock, so

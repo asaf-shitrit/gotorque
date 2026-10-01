@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
 )
 
 func TestRenderMarkdownStatesWhatTheBehaviorGateVerified(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"example.com/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 	bolt "go.etcd.io/bbolt"
 	bolterrors "go.etcd.io/bbolt/errors"
 )

@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
 )
 
 func ValidateProposal(proposal agents.WorkloadProposal, m manifest.Manifest) error {

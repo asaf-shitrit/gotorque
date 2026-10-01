@@ -3,9 +3,9 @@ package workload
 import (
 	"testing"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/stretchr/testify/require"
 )
 

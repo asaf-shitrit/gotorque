@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"sort"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/domain"
-	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/orchestrator"
-	"example.com/gotorque/internal/policy"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/policy"
 )
 
 // verifyAttemptOffset keeps a verification's patch file and candidate ID

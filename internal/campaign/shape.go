@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 )
 
 // fileChange is what a patch did to one file, read from `git diff -U0` of the

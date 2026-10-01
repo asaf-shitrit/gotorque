@@ -3,7 +3,7 @@ package campaign
 import (
 	"context"
 
-	"example.com/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 )
 
 // Role names under which JevCacheSnapshot counters are kept, matching the

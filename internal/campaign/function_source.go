@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 )
 
 // Transport names, recorded on a candidate so a report can say how its diff

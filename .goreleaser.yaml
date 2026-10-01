@@ -19,7 +19,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X example.com/gotorque/internal/version.Version={{.Version}} -X example.com/gotorque/internal/version.Commit={{.Commit}} -X example.com/gotorque/internal/version.Date={{.Date}}
+      - -s -w -X github.com/asaf-shitrit/gotorque/internal/version.Version={{.Version}} -X github.com/asaf-shitrit/gotorque/internal/version.Commit={{.Commit}} -X github.com/asaf-shitrit/gotorque/internal/version.Date={{.Date}}
 
 archives:
   - formats: [tar.gz]

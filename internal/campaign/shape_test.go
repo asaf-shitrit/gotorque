@@ -9,10 +9,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/jev"
-	"example.com/gotorque/internal/orchestrator"
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // printerSource is the shape of gojq's printValues: a method that writes each

@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
 )
 
 const signaturesFixture = `package lib

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 )
 
 // HistorySource is one earlier campaign --history read, and what it

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"example.com/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 const (

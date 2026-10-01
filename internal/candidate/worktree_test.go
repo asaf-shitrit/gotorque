@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"example.com/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
 // preparedRepository commits a small module holding every kind of path a

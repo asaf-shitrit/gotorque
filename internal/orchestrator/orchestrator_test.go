@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"example.com/gotorque/internal/agents"
-	policy "example.com/gotorque/internal/policy"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	policy "github.com/asaf-shitrit/gotorque/internal/policy"
 
-	"example.com/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 	adkagent "google.golang.org/adk/v2/agent"
 	adkrunner "google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"

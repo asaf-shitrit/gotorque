@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
 )
 
 // maxSignatures bounds how many declarations a target carries.

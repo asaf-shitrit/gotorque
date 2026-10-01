@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/gotorque/internal/agents"
-	"example.com/gotorque/internal/jev"
-	"example.com/gotorque/internal/orchestrator"
-	"example.com/gotorque/internal/profile"
+	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
+	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/stretchr/testify/require"
 )
 

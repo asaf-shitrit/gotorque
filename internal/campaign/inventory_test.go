@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/gotorque/internal/manifest"
-	"example.com/gotorque/internal/profile"
+	"github.com/asaf-shitrit/gotorque/internal/manifest"
+	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/stretchr/testify/require"
 )
 

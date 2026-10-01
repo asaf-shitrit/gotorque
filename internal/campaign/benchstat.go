@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 // benchstatMaxOutputBytes bounds the raw benchstat output kept in the
