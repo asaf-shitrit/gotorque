@@ -1025,6 +1025,9 @@ func (e *Engine) collectDiscoveryProfile(ctx context.Context) string {
 		_, _ = e.benchmarkCPUProfile(ctx)
 		source = profileSourceTargetSample
 	default:
+		// Recorded even when the benchmark fallback succeeds: held-out csvq
+		// fell back twice with no trace of why its sample had failed.
+		_ = e.saveEvent("discovery_sample_failed", "direct target sampling failed, falling back to benchmarks: "+sampleErr.Error(), nil)
 		if benchErr := e.profileHotFunctions(ctx); benchErr == nil {
 			source = profileSourceBenchmark
 		} else {
@@ -1167,8 +1170,10 @@ func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, rep
 	// A fixed size cannot fit every CLI: 16 MiB of CSV kept held-out csvq
 	// busy for 0.48s, just short of the sampler's half-second. A target that
 	// exited that early, on inputs the manifest declares repeatable, gets one
-	// more try at eight times the size.
-	if errors.Is(err, profile.ErrTargetExitedEarly) && hasRepeatableInput(seed) {
+	// more try at eight times the size. Ending just after the liveness check
+	// fails differently: the sampler attaches and records an empty call graph
+	// (held-out csvq again, sampled 0.58s after launch), so that counts too.
+	if retriesLarger(err, seed) {
 		result, err = e.sampleAmplified(ctx, seed, retryAmplificationTarget, reportName)
 	}
 	return result, err
@@ -1185,6 +1190,13 @@ func (e *Engine) sampleAmplified(ctx context.Context, seed manifest.SeedWorkload
 		stdin = amplifyStdin(stdin)
 	}
 	return e.sampleWith(ctx, amplified, stdin, reportName)
+}
+
+// retriesLarger reports whether a failed sample is worth one more try on a
+// larger input: the target ended too soon and its inputs can grow.
+func retriesLarger(err error, seed manifest.SeedWorkload) bool {
+	tooShort := errors.Is(err, profile.ErrTargetExitedEarly) || errors.Is(err, profile.ErrNoFrames)
+	return tooShort && hasRepeatableInput(seed)
 }
 
 func hasRepeatableInput(seed manifest.SeedWorkload) bool {

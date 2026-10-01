@@ -1,6 +1,8 @@
 package campaign
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"example.com/gotorque/internal/manifest"
+	"example.com/gotorque/internal/profile"
 	"github.com/stretchr/testify/require"
 )
 
@@ -126,4 +129,17 @@ func TestSamplingRetryAppliesOnlyToRepeatableInputs(t *testing.T) {
 
 	big := amplifyRepeats(manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: strings.Repeat("x", 100), Repeat: 10}}}, retryAmplificationTarget)
 	require.Equal(t, retryAmplificationTarget/100, big.Files[0].Repeat)
+}
+
+// TestRetriesLargerOnATargetThatEndedTooSoon: a target dead before the
+// liveness check, or alive for it and gone before any sample landed (held-out
+// csvq's empty call graph), retries larger when its inputs can grow.
+func TestRetriesLargerOnATargetThatEndedTooSoon(t *testing.T) {
+	repeatable := manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: "a,b\n", Repeat: 10}}}
+	script := manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: "print(1)\n"}}}
+	require.True(t, retriesLarger(profile.ErrTargetExitedEarly, repeatable))
+	require.True(t, retriesLarger(fmt.Errorf("sample: %w", profile.ErrNoFrames), repeatable))
+	require.False(t, retriesLarger(profile.ErrNoFrames, script), "a script cannot grow")
+	require.False(t, retriesLarger(errors.New("sample tool unavailable"), repeatable))
+	require.False(t, retriesLarger(nil, repeatable))
 }
