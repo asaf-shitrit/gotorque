@@ -102,7 +102,12 @@ produced here or in policy.
    parses the target's file at the base revision, finds the `FuncDecl` named
    `target.Function` (the same format `causes.go`'s `funcName` produces),
    splices the gofmt'd new declaration over it (keeping the old doc comment
-   unless the new source carries one), adds any missing imports, drops any
+   unless the new source carries one), with any new helper functions after it
+   and any new package-level `var`, `const` or `type` before it. A name the
+   file already declares is refused, as is an `import` block (imports have
+   their own field). Held-out dyff's optimizer hoisted a per-call map literal
+   into a package-level `var`, which a hand-written diff may do and this path
+   used to reject. Building then adds any missing imports, drops any
    import the replacement took the file's last use of, and diffs the
    result against the original with `toolchain.DiffFiles`
    (`git diff --no-index`, headers rewritten to the repository-relative path).

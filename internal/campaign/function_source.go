@@ -253,18 +253,28 @@ func formatFunctionDecl(src string) (*ast.FuncDecl, string, error) {
 	if len(decls) != 1 {
 		return nil, "", fmt.Errorf("function_source must declare exactly one function, found %d declarations", len(decls))
 	}
+	if decls[0].fd == nil {
+		return nil, "", errors.New("function_source must be a function declaration")
+	}
 	return decls[0].fd, decls[0].text, nil
 }
 
-// formattedDecl is one function declaration from a function_source, with its
-// gofmt-formatted text, doc comment included.
+// formattedDecl is one declaration from a function_source, with its
+// gofmt-formatted text, doc comment included: a function (fd) or a
+// package-level var, const or type (gen).
 type formattedDecl struct {
 	fd   *ast.FuncDecl
+	gen  *ast.GenDecl
 	text string
 }
 
 // splitFunctionDecls formats src in isolation and returns each declaration
-// in it, all of which must be functions.
+// in it: functions, and the package-level vars, consts and types a rewrite
+// may need beside them. Held-out dyff's optimizer hoisted a map literal that
+// YAMLInRedishColors built on every call into a package-level var, a plain
+// allocation fix; a diff doing the same passes the shape check, but this
+// path accepted functions only and rejected both attempts. An import block
+// is refused: imports have their own field.
 func splitFunctionDecls(src string) ([]formattedDecl, error) {
 	trimmed := strings.TrimSpace(src)
 	if trimmed == "" {
@@ -281,17 +291,84 @@ func splitFunctionDecls(src string) ([]formattedDecl, error) {
 	}
 	decls := make([]formattedDecl, 0, len(file.Decls))
 	for _, d := range file.Decls {
-		fd, ok := d.(*ast.FuncDecl)
-		if !ok {
-			return nil, errors.New("function_source must be a function declaration")
+		decl, err := formatDecl(fset, formatted, d)
+		if err != nil {
+			return nil, err
 		}
-		start := fd.Pos()
-		if fd.Doc != nil {
-			start = fd.Doc.Pos()
-		}
-		decls = append(decls, formattedDecl{fd: fd, text: string(formatted[fset.Position(start).Offset:fset.Position(fd.End()).Offset])})
+		decls = append(decls, decl)
 	}
 	return decls, nil
+}
+
+func formatDecl(fset *token.FileSet, formatted []byte, d ast.Decl) (formattedDecl, error) {
+	text := func(start, end token.Pos) string {
+		return string(formatted[fset.Position(start).Offset:fset.Position(end).Offset])
+	}
+	switch decl := d.(type) {
+	case *ast.FuncDecl:
+		start := decl.Pos()
+		if decl.Doc != nil {
+			start = decl.Doc.Pos()
+		}
+		return formattedDecl{fd: decl, text: text(start, decl.End())}, nil
+	case *ast.GenDecl:
+		if decl.Tok == token.IMPORT {
+			return formattedDecl{}, errors.New("function_source carries an import block; list import paths in imports instead")
+		}
+		start := decl.Pos()
+		if decl.Doc != nil {
+			start = decl.Doc.Pos()
+		}
+		return formattedDecl{gen: decl, text: text(start, decl.End())}, nil
+	}
+	return formattedDecl{}, errors.New("function_source must contain only function, var, const or type declarations")
+}
+
+// checkNewNames refuses a package-level declaration whose names the file
+// already declares.
+func checkNewNames(file *ast.File, gen *ast.GenDecl) error {
+	for _, name := range genNames(gen) {
+		if fileDeclares(file, name) || findFuncDecl(file, name) != nil {
+			return fmt.Errorf("function_source redeclares %s, which already exists; add new package-level names only", name)
+		}
+	}
+	return nil
+}
+
+// missingTarget names what a function_source declared instead of the target.
+func missingTarget(decls []formattedDecl, function string) error {
+	for _, d := range decls {
+		if d.fd != nil {
+			return fmt.Errorf("function_source declares %s, not the target %s", funcName(d.fd), function)
+		}
+	}
+	return fmt.Errorf("function_source does not declare the target %s", function)
+}
+
+// genNames lists the names a var, const or type declaration introduces.
+func genNames(d *ast.GenDecl) []string {
+	var names []string
+	for _, spec := range d.Specs {
+		switch s := spec.(type) {
+		case *ast.ValueSpec:
+			for _, n := range s.Names {
+				names = append(names, n.Name)
+			}
+		case *ast.TypeSpec:
+			names = append(names, s.Name.Name)
+		}
+	}
+	return names
+}
+
+// fileDeclares reports whether file declares name at package level.
+func fileDeclares(file *ast.File, name string) bool {
+	for _, d := range file.Decls {
+		if gen, ok := d.(*ast.GenDecl); ok && slices.Contains(genNames(gen), name) {
+			return true
+		}
+	}
+	return false
 }
 
 // targetWithHelpers picks the declaration of function out of a
@@ -308,8 +385,15 @@ func targetWithHelpers(file *ast.File, function, src string) (*ast.FuncDecl, str
 		return nil, "", err
 	}
 	var target *formattedDecl
-	var helpers []string
+	var preamble, helpers []string
 	for i := range decls {
+		if gen := decls[i].gen; gen != nil {
+			if err := checkNewNames(file, gen); err != nil {
+				return nil, "", err
+			}
+			preamble = append(preamble, decls[i].text)
+			continue
+		}
 		name := funcName(decls[i].fd)
 		switch {
 		case name == function && target == nil:
@@ -321,9 +405,12 @@ func targetWithHelpers(file *ast.File, function, src string) (*ast.FuncDecl, str
 		}
 	}
 	if target == nil {
-		return nil, "", fmt.Errorf("function_source declares %s, not the target %s", funcName(decls[0].fd), function)
+		return nil, "", missingTarget(decls, function)
 	}
-	return target.fd, strings.Join(append([]string{target.text}, helpers...), "\n\n"), nil
+	// New package-level names go before the function, as they would in
+	// hand-written code; new helper functions after it.
+	parts := append(append(preamble, target.text), helpers...)
+	return target.fd, strings.Join(parts, "\n\n"), nil
 }
 
 // addImports adds every path in wanted that data does not already import,
