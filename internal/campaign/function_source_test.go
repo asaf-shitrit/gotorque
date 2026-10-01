@@ -239,19 +239,24 @@ func TestResolveCandidatePatchPrefersPatchOverFunctionSource(t *testing.T) {
 	require.Equal(t, PatchTransport, transport)
 }
 
+// noOpHunk is the otto answer's shape: headers and a hunk with one blank
+// context line, nothing added or removed.
+const noOpHunk = "--- a/main.go\n+++ b/main.go\n@@ -8,1 +8,1 @@\n \n"
+
 const handDiff = "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-x\n+y\n"
 
 // TestResolveCandidatePatchSkipsAPatchFieldWithNoDiff: live cue candidates
 // arrived with a patch of nothing but a newline, which used to win over the
-// function_source and be rejected as a malformed diff. A patch field with no
-// hunk now yields to a function_source, and is still used, and judged, when
-// no function_source came with it.
+// function_source and be rejected as a malformed diff, and a live otto
+// candidate sent a hunk that adds and removes nothing. A patch field with no
+// hunk, or none that changes a line, now yields to a function_source, and is
+// still used, and judged, when no function_source came with it.
 func TestResolveCandidatePatchSkipsAPatchFieldWithNoDiff(t *testing.T) {
 	repo := methodRepo(t)
 	engine := newFuncSourceTestEngine(repo)
 	target := &agents.Target{Location: "main.go:8", Function: "(*cli).printValues"}
 	src := "func (c *cli) printValues(vs []string) error { return nil }"
-	for _, blank := range []string{"\n", "  ", "see function_source"} {
+	for _, blank := range []string{"\n", "  ", "see function_source", noOpHunk} {
 		req := orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: blank, FunctionSource: src}}
 		patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
 		require.NoError(t, err)

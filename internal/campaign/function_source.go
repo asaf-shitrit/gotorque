@@ -102,9 +102,26 @@ func withTargetHeaders(patch string, target *agents.Target) string {
 }
 
 // patchWins reports whether the proposal's patch field is the candidate: it
-// is set, and either holds a diff or has no function source to yield to.
+// is set, and either holds a diff that changes a line or has no function
+// source to yield to. A live otto answer sent a hunk header with one blank
+// context line and nothing added or removed; it won, and git apply rejected
+// it as corrupt before the function_source could be tried.
 func patchWins(p agents.OptimizerResult) bool {
-	return p.Patch != "" && (isDiff(p.Patch) || !hasFunctionSource(p))
+	return p.Patch != "" && ((isDiff(p.Patch) && changesALine(p.Patch)) || !hasFunctionSource(p))
+}
+
+// changesALine reports whether a diff adds or removes any line, as opposed to
+// carrying only headers and context.
+func changesALine(patch string) bool {
+	for line := range strings.SplitSeq(patch, "\n") {
+		if strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- ") {
+			continue
+		}
+		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasFunctionSource(p agents.OptimizerResult) bool {
