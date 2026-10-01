@@ -201,11 +201,16 @@ type incompleteResponse struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"output_tokens_details"`
 	} `json:"usage"`
-	Output []struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"output"`
+	Output []outputItem `json:"output"`
+}
+
+// outputItem is one entry of a response's output: a "message" carries the
+// answer, a "reasoning" item the model's reasoning text.
+type outputItem struct {
+	Type    string `json:"type"`
+	Content []struct {
+		Text string `json:"text"`
+	} `json:"content"`
 }
 
 // incompleteTail is how much of a cut answer's visible text the error keeps.
@@ -225,21 +230,35 @@ func incompleteError(resp incompleteResponse) error {
 	if u := resp.Usage; u.OutputTokens > 0 {
 		detail = fmt.Sprintf("; %d output tokens, %d of them reasoning", u.OutputTokens, u.OutputTokensDetails.ReasoningTokens)
 	}
-	if text := strings.TrimSpace(visibleText(resp)); text != "" {
-		if len(text) > incompleteTail {
-			text = "…" + text[len(text)-incompleteTail:]
-		}
-		detail += fmt.Sprintf("; visible output ends %q", text)
+	if text := strings.TrimSpace(itemText(resp, "message")); text != "" {
+		detail += fmt.Sprintf("; visible output ends %q", tailOf(text))
+	} else if text := strings.TrimSpace(itemText(resp, "reasoning")); text != "" {
+		detail += fmt.Sprintf("; no visible output, reasoning ends %q", tailOf(text))
 	}
 	return fmt.Errorf("%w: the endpoint sent response.incomplete (reason: %s%s)", ErrStreamIncomplete, reason, detail)
 }
 
-func visibleText(resp incompleteResponse) string {
+// itemText joins the text of the output items of one type. OpenRouter returns
+// the model's reasoning as an output item of its own, with text, so counting
+// every item's text as the answer read a reasoning-only cutoff as one that had
+// written output: held-out s2c's optimizer ran out reasoning twice in a row
+// and the ladder never switched reasoning off.
+func itemText(resp incompleteResponse, kind string) string {
 	var b strings.Builder
 	for _, item := range resp.Output {
+		if item.Type != kind {
+			continue
+		}
 		for _, c := range item.Content {
 			b.WriteString(c.Text)
 		}
 	}
 	return b.String()
+}
+
+func tailOf(text string) string {
+	if len(text) > incompleteTail {
+		return "…" + text[len(text)-incompleteTail:]
+	}
+	return text
 }

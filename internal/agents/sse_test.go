@@ -205,3 +205,15 @@ func TestIncompleteErrorReportsTokensAndTheOutputTail(t *testing.T) {
 	require.ErrorContains(t, err, `w.WriteString(s)")`)
 	require.NotContains(t, err.Error(), "patch", "only the tail is kept")
 }
+
+// A reasoning-only cutoff's diagnostic names the reasoning as reasoning, not
+// as visible output: the first version quoted s2c's reasoning as "visible
+// output", and the same misreading kept the runaway fallback from firing.
+func TestIncompleteErrorLabelsReasoningAsReasoning(t *testing.T) {
+	event := `data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},` +
+		`"usage":{"output_tokens":32768,"output_tokens_details":{"reasoning_tokens":32768}},` +
+		`"output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"let me reconsider the entire approach"}]}]}}` + "\n\n"
+	_, err := readFiltered(t, strings.NewReader(sseCreated+event))
+	require.ErrorContains(t, err, `no visible output, reasoning ends "let me reconsider the entire approach"`)
+	require.NotContains(t, err.Error(), "visible output ends")
+}
