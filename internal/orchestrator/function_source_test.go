@@ -34,15 +34,11 @@ func (r *proposalRecorder) EvaluateCandidate(ctx context.Context, req CandidateR
 func TestGraphPassesFunctionSourceThroughWithNoTarget(t *testing.T) {
 	var calls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "o", NextExperiment: "e"}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
 		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{
 			Hypothesis:     "buffer output",
 			FunctionSource: "func f() {}",
 			Imports:        []string{"bufio"},
 		}, &calls),
-		Reviewer: staticAgent(t, "reviewer", agents.ReviewerResult{}, &calls),
 	}
 	runner := &proposalRecorder{}
 	seq := &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}}
@@ -73,11 +69,7 @@ func TestGraphPassesFunctionSourceThroughWithNoTarget(t *testing.T) {
 func TestGraphPassesPatchThroughWithATarget(t *testing.T) {
 	var calls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "h", Patch: "diff"}, &calls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{}, &calls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "h", Patch: "diff"}, &calls),
 	}
 	runner := &proposalRecorder{}
 	policy := &targetPolicy{}

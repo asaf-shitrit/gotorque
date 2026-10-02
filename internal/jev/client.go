@@ -167,7 +167,7 @@ func (c Client) backoff() []time.Duration {
 // Evaluate sends req, retrying throttled and transient failures.
 func (c Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 	if c.APIKey == "" {
-		return Response{}, errors.New(EnvAPIKey + " is required for --analyst jev")
+		return Response{}, errors.New(EnvAPIKey + " is required for Jev")
 	}
 	if req.Model == "" {
 		req.Model = Model

@@ -18,10 +18,10 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0009](0009-deferred-evaluation-module-seam.md) | Deferred: give candidate evaluation its own module seam | deferred |
 | [0010](0010-verify-model-availability-before-routing.md) | Verify a model is available before a campaign spends on it | accepted |
 | [0011](0011-no-upstream-proposals.md) | No upstream proposals from this effort | deferred |
-| [0012](0012-jev-cause-analyst.md) | Jev cause classification may replace the analyst model | accepted (opt-in) |
+| [0012](0012-jev-cause-analyst.md) | Jev cause classification may replace the analyst model | accepted, amended by 0035 |
 | [0013](0013-code-chooses-the-target.md) | With causes ranked, code chooses each candidate's target | accepted (opt-in) |
-| [0014](0014-jev-reviewer.md) | Jev behaviour-hazard checks may replace the reviewer model, and reviews are kept | accepted (opt-in) |
-| [0015](0015-jev-explorer.md) | Code-generated option variants, judged by Jev, may replace the explorer model | accepted (opt-in) |
+| [0014](0014-jev-reviewer.md) | Jev behaviour-hazard checks may replace the reviewer model, and reviews are kept | accepted, amended by 0035 |
+| [0015](0015-jev-explorer.md) | Code-generated option variants, judged by Jev, may replace the explorer model | accepted, amended by 0035 |
 | [0016](0016-regressions-reject-on-significance.md) | A regression rejects only when it is significant, after a second series if needed | accepted |
 | [0017](0017-patch-shape-check.md) | A patch is held to its shape before it is built, and an unmeasured target is retried once | accepted |
 | [0018](0018-targets-weigh-evidence-against-hotness.md) | Targets are ordered by evidence discounted by hotness | accepted |
@@ -41,7 +41,10 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0032](0032-measured-unbuffered-writes.md) | Measured unbuffered writes raise a code-derived target | accepted |
 | [0033](0033-guardrails-reject-on-significance.md) | Guardrails reject on significance, like workload regressions | accepted |
 | [0034](0034-borderline-accepts-are-measured-again.md) | Borderline accepts are measured again before the verdict | accepted |
+| [0035](0035-the-optimizer-is-the-only-model-role.md) | The optimizer is the only model role | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay
 accurate as history).
+`amended by <n>` marks an ADR whose decision still holds but whose opt-in or alternative it describes was
+removed or made the only path by a later one.

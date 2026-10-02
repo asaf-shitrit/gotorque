@@ -37,12 +37,13 @@ const (
 	stopReasonConsecutiveInconclusive = "consecutive inconclusive limit reached"
 	// stopReasonProviderFailure is followed by the last failure of the cycle
 	// that tripped it.
-	stopReasonProviderFailure = "model provider unavailable: every model role failed in the same cycle; last failure: "
+	stopReasonProviderFailure = "model provider unavailable: the optimizer failed in two consecutive cycles; last failure: "
 )
 
-// ErrProviderUnavailable marks a campaign the graph stopped because every model
-// role failed in one cycle. A caller that sees CampaignResult.ProviderFailure
-// wraps it, so the campaign ends as a failure rather than as completed.
+// ErrProviderUnavailable marks a campaign the graph stopped because the
+// optimizer, its one model role, failed in consecutive cycles. A caller that
+// sees CampaignResult.ProviderFailure wraps it, so the campaign ends as a
+// failure rather than as completed.
 var ErrProviderUnavailable = errors.New("model provider unavailable")
 
 // Dependencies are intentionally narrow so deterministic execution, policy,
@@ -52,11 +53,9 @@ type Dependencies struct {
 	Policy PolicyService
 	Jobs   JobService
 	Agents agents.Set
-	// Causes, when set, replaces the analyst agent with deterministic cause
-	// classification. Agents.Analyst is then built but never run.
+	// Causes serves the analyst node: Jev cause classification ranked in code.
 	Causes CauseAnalyst
-	// Review, when set, replaces the reviewer agent with deterministic
-	// behaviour-hazard checks. Agents.Reviewer is then built but never run.
+	// Review serves the reviewer node: Jev behaviour-hazard checks.
 	Review ReviewAnalyst
 }
 
@@ -104,7 +103,7 @@ func (g *campaignGraph) build() (*Orchestrator, error) {
 	root, err := adkagent.New(adkagent.Config{
 		Name:        "go_agent_optimizer",
 		Description: "Runs a bounded, evidence-driven Go CLI optimization campaign.",
-		SubAgents:   g.deps.Agents.All(),
+		SubAgents:   []adkagent.Agent{g.deps.Agents.Optimizer},
 		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
 			return wf.Run(ctx)
 		},
@@ -129,23 +128,23 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 		route:            workflow.NewFunctionNode("route_campaign", g.route, det),
 		finalize:         workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
 	}
-	if err := n.setAgents(g.deps.Agents, agt, g.deps.Jobs); err != nil {
+	optimizer, err := agentNode(g.deps.Agents.Optimizer, agt, string(agents.RoleOptimizer), g.deps.Jobs)
+	if err != nil {
 		return n, err
 	}
-	if g.deps.Causes != nil {
-		// The node keeps the role's name, so a degraded classification is
-		// reported against "analyst" exactly as a failed model call would be,
-		// and falls back to discovery's hot paths the same way.
-		n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Jobs)
-		// With causes ranked, code chooses each cycle's target after the
-		// analysis (planTarget), so the coordinator model has nothing to
-		// decide: on a live gron campaign it took up to 2m40s a cycle and its
-		// free-text plan steered the optimizer away from the top target.
-		n.coordinator = workflow.NewFunctionNode(string(agents.RoleCoordinator), planCoordinator, det)
-	}
-	if g.deps.Review != nil {
-		n.reviewer = degradeNode(workflow.NewFunctionNode(string(agents.RoleReviewer), g.reviewPatch, agt), string(agents.RoleReviewer), g.deps.Jobs)
-	}
+	n.optimizer = optimizer
+	// Code chooses each cycle's target after the analysis (planTarget), so
+	// the coordinator has nothing to decide: as a model, on a live gron
+	// campaign it took up to 2m40s a cycle and its free-text plan steered the
+	// optimizer away from the top target. The explorer's workloads are chosen
+	// by code and Jev before discovery runs.
+	n.coordinator = workflow.NewFunctionNode(string(agents.RoleCoordinator), planCoordinator, det)
+	n.explorer = workflow.NewFunctionNode(string(agents.RoleExplorer), planExplorer, det)
+	// The Jev nodes keep their role's name, so a degraded classification or
+	// review is reported against "analyst" or "reviewer", and the analyst
+	// falls back to discovery's hot paths.
+	n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Jobs)
+	n.reviewer = degradeNode(workflow.NewFunctionNode(string(agents.RoleReviewer), g.reviewPatch, agt), string(agents.RoleReviewer), g.deps.Jobs)
 	return n, nil
 }
 
@@ -153,8 +152,8 @@ func (g *campaignGraph) reviewPatch(ctx adkagent.Context, state CampaignState) (
 	return g.deps.Review.ReviewPatch(ctx, ReviewRequest{Campaign: state.Request, Target: state.Target, Proposal: state.Proposal, Candidate: state.Candidate})
 }
 
-// planCoordinator states the plan the coordinator model used to write. The
-// concrete experiment is filled in by planTarget once the analysis exists.
+// planCoordinator states the campaign's plan. The concrete experiment is
+// filled in by planTarget once the analysis exists.
 func planCoordinator(_ adkagent.Context, _ CampaignState) (agents.CoordinatorResult, error) {
 	return agents.CoordinatorResult{
 		Objective:      targetObjective,
@@ -164,28 +163,13 @@ func planCoordinator(_ adkagent.Context, _ CampaignState) (agents.CoordinatorRes
 
 const targetObjective = "patch the highest-ranked cause the analysis flagged that no earlier candidate has tried"
 
-func (g *campaignGraph) analyzeCauses(ctx adkagent.Context, state CampaignState) (agents.AnalystResult, error) {
-	return g.deps.Causes.AnalyzeCauses(ctx, CauseRequest{Campaign: state.Request, Discovery: state.Discovery})
+// planExplorer states how discovery's extra workloads were chosen.
+func planExplorer(_ adkagent.Context, _ CampaignState) (agents.ExplorerResult, error) {
+	return agents.ExplorerResult{Rationale: []string{"workloads were chosen before discovery: the target's own options that Jev judged processing modes, kept when they change the output"}}, nil
 }
 
-func (n *graphNodes) setAgents(roleSet agents.Set, agt workflow.NodeConfig, jobs JobService) error {
-	var err error
-	if n.coordinator, err = agentNode(roleSet.Coordinator, agt, "coordinator", jobs); err != nil {
-		return err
-	}
-	if n.explorer, err = agentNode(roleSet.Explorer, agt, "explorer", jobs); err != nil {
-		return err
-	}
-	if n.analyst, err = agentNode(roleSet.Analyst, agt, "analyst", jobs); err != nil {
-		return err
-	}
-	if n.optimizer, err = agentNode(roleSet.Optimizer, agt, "optimizer", jobs); err != nil {
-		return err
-	}
-	if n.reviewer, err = agentNode(roleSet.Reviewer, agt, "reviewer", jobs); err != nil {
-		return err
-	}
-	return nil
+func (g *campaignGraph) analyzeCauses(ctx adkagent.Context, state CampaignState) (agents.AnalystResult, error) {
+	return g.deps.Causes.AnalyzeCauses(ctx, CauseRequest{Campaign: state.Request, Discovery: state.Discovery})
 }
 
 func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string, jobs JobService) (workflow.Node, error) {
@@ -463,8 +447,7 @@ func optimizerBrief(state CampaignState) OptimizerBrief {
 // sees only that function's source, and its instruction forbids patching any
 // other. Left to choose from a ranked list, the optimizer on a live gron
 // campaign ignored the top target, the output loop whose bufio fix was once
-// accepted at -11.8%, and micro-optimized validIdentifier instead. A model
-// analyst ranks nothing, so this leaves its path exactly as it was.
+// accepted at -11.8%, and micro-optimized validIdentifier instead.
 func planTarget(state *CampaignState) {
 	state.Target = nil
 	tried := triedTargets(*state)
@@ -751,19 +734,19 @@ func countDecision(state *CampaignState, decision domain.Decision, separateIncon
 	}
 }
 
-// route finishes the campaign or starts the next cycle. A cycle in which every
-// model role failed is checked before any bound: its candidate was rejected for
+// route finishes the campaign or starts the next cycle. A cycle in which the
+// optimizer failed is checked before any bound: its candidate was rejected for
 // an empty patch no model wrote, so naming the candidate budget or the
 // rejection streak would blame the patches for the provider.
 func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
 	next := routeFinish
-	failure, down := g.providerFailure(state)
+	failure, down := providerFailure(state)
 	if down {
 		state.OutageCycles++
 	} else {
 		state.OutageCycles = 0
 	}
-	if down && state.OutageCycles >= g.outageCycles() {
+	if down && state.OutageCycles >= outageCycles {
 		state.ProviderFailure = failure
 		state.StopReason = stopReasonProviderFailure + failure
 	} else if reason := g.stopReason(state); reason != "" {
@@ -779,74 +762,26 @@ func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*sessi
 	return ev, nil
 }
 
-// modelRoles are the roles whose answers come from the model provider. A role
-// Jev serves is not one of them: with a cause analyst (--analyst jev), neither
-// the analyst nor the coordinator, which becomes a deterministic plan that
-// never calls a model; with a review analyst (--reviewer jev), not the
-// reviewer; with an explore evaluator (--explorer jev), not the explorer, a
-// stub that reports the variants discovery sampled. Jev is served by a different gateway on a different key, so
-// counting any of them would keep a campaign running whose other roles all
-// failed, because none of them can fail the same way.
-func (g *campaignGraph) modelRoles() []string {
-	roles := make([]string, 0, len(agents.AllRoles))
-	for _, role := range agents.AllRoles {
-		if !g.servedByJev(role) {
-			roles = append(roles, string(role))
+// outageCycles is how many consecutive cycles the optimizer, the one model
+// role, must fail before the breaker stops the campaign. One cycle is the
+// single call the degrading wrapper already absorbs: once Jev and code served
+// every other role, one slow cycle, its three attempts each cut while still
+// producing, ended a gojq campaign two candidates early. A revoked key or an
+// empty balance still stops the campaign quickly, since those HTTP statuses
+// are not retried.
+const outageCycles = 2
+
+// providerFailure reports the cycle's last optimizer failure when the
+// optimizer failed in it. A failing Jev role is the transient case the
+// degrading wrapper exists for; Jev is served on a different endpoint and
+// cannot fail the way the model provider does.
+func providerFailure(state CampaignState) (string, bool) {
+	for i := len(state.CycleFailures) - 1; i >= 0; i-- {
+		if f := state.CycleFailures[i]; f.Role == string(agents.RoleOptimizer) {
+			return f.Role + ": " + f.Cause, true
 		}
 	}
-	return roles
-}
-
-func (g *campaignGraph) servedByJev(role agents.Role) bool {
-	switch role {
-	case agents.RoleAnalyst, agents.RoleCoordinator:
-		return g.deps.Causes != nil
-	case agents.RoleReviewer:
-		return g.deps.Review != nil
-	case agents.RoleExplorer:
-		return g.deps.Agents.ExploreEvaluator != nil
-	case agents.RoleOptimizer:
-		return false
-	}
-	return false
-}
-
-// outageCycles is how many consecutive cycles must lose every model role
-// before the breaker stops the campaign. With two or more model roles, one
-// cycle in which all of them failed is an outage. With one, it is the same
-// single call that the degrading wrapper already absorbs when other roles
-// answer: once Jev and code served every role but the optimizer, one slow
-// cycle, its three attempts each cut while still producing, ended a gojq
-// campaign two candidates early. So a lone model role must fail two cycles in
-// a row. A revoked key or an empty balance still stops the campaign quickly,
-// since those HTTP statuses are not retried.
-func (g *campaignGraph) outageCycles() int {
-	if len(g.modelRoles()) == 1 {
-		return 2
-	}
-	return 1
-}
-
-// providerFailure reports the cycle's last failure when every model role failed
-// in it. One role failing, or several, is the transient case the degrading
-// wrapper exists for; every role failing in the same cycle is a provider that
-// is down or a key that was revoked, and another cycle would only spend the
-// same retries to reach the same empty patch.
-func (g *campaignGraph) providerFailure(state CampaignState) (string, bool) {
-	if len(state.CycleFailures) == 0 {
-		return "", false
-	}
-	failed := make(map[string]bool, len(state.CycleFailures))
-	for _, f := range state.CycleFailures {
-		failed[f.Role] = true
-	}
-	for _, role := range g.modelRoles() {
-		if !failed[role] {
-			return "", false
-		}
-	}
-	last := state.CycleFailures[len(state.CycleFailures)-1]
-	return last.Role + ": " + last.Cause, true
+	return "", false
 }
 
 // stopReason reports why the campaign should finish instead of trying another
@@ -891,10 +826,14 @@ func validateDependencies(deps Dependencies) error {
 	if deps.Jobs == nil {
 		return errors.New("job service is required")
 	}
-	for i, a := range deps.Agents.All() {
-		if a == nil {
-			return fmt.Errorf("%s agent is required", agents.AllRoles[i])
-		}
+	if deps.Agents.Optimizer == nil {
+		return errors.New("optimizer agent is required")
+	}
+	if deps.Causes == nil {
+		return errors.New("cause analyst is required")
+	}
+	if deps.Review == nil {
+		return errors.New("review analyst is required")
 	}
 	return nil
 }

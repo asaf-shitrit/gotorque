@@ -40,15 +40,11 @@ func (r *hotRunner) EvaluateCandidate(ctx context.Context, req CandidateRequest)
 	return r.fakeRunnerService.EvaluateCandidate(ctx, req)
 }
 
-func causeGraph(t *testing.T, analyst *fakeCauseAnalyst, analystCalls *int) (*Orchestrator, *hotRunner, *fakeJobService) {
+func causeGraph(t *testing.T, analyst *fakeCauseAnalyst) (*Orchestrator, *hotRunner, *fakeJobService) {
 	t.Helper()
 	var calls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "objective", NextExperiment: "experiment"}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"from the model"}}, analystCalls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &calls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}, &calls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &calls),
 	}
 	runner := &hotRunner{}
 	jobs := &fakeJobService{}
@@ -70,23 +66,18 @@ var causeCampaign = CampaignRequest{
 	OptimizationMode: domain.PolicyIdiomatic,
 }
 
-// TestCauseAnalystReplacesTheAnalystAgent: with a cause analyst configured the
-// analyst model is never called, the analyst sees discovery's hot functions,
-// and its result is the analysis every candidate is evaluated with.
-func TestCauseAnalystReplacesTheAnalystAgent(t *testing.T) {
+// TestCauseAnalystServesTheAnalystNode: the analyst sees discovery's hot
+// functions, and its result is the analysis every candidate is evaluated with.
+func TestCauseAnalystServesTheAnalystNode(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{
 		HotPaths:            []agents.HotPath{{Location: "main.go:207"}},
 		CandidateHypotheses: []string{"buffer the per-statement writes"},
 	}}
-	var analystAgentCalls int
-	orch, runner, _ := causeGraph(t, analyst, &analystAgentCalls)
+	orch, runner, _ := causeGraph(t, analyst)
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-causes", causeCampaign, "finalize_campaign")
 
 	if result.CandidatesTried != 2 {
 		t.Fatalf("candidates tried = %d, want 2", result.CandidatesTried)
-	}
-	if analystAgentCalls != 0 {
-		t.Errorf("analyst model called %d times, want never", analystAgentCalls)
 	}
 	if len(analyst.requests) != 2 {
 		t.Fatalf("cause analyst calls = %d, want one per cycle", len(analyst.requests))
@@ -101,13 +92,12 @@ func TestCauseAnalystReplacesTheAnalystAgent(t *testing.T) {
 	}
 }
 
-// TestFailingCauseAnalystDegradesLikeTheAgent: a gateway that refuses every
+// TestFailingCauseAnalystDegradesLikeAnyRole: a gateway that refuses every
 // request costs the analysis, not the campaign, and the cause is recorded
 // against the analyst role.
-func TestFailingCauseAnalystDegradesLikeTheAgent(t *testing.T) {
+func TestFailingCauseAnalystDegradesLikeAnyRole(t *testing.T) {
 	analyst := &fakeCauseAnalyst{err: errors.New("gateway returned HTTP 429 for Jev")}
-	var analystAgentCalls int
-	orch, runner, jobs := causeGraph(t, analyst, &analystAgentCalls)
+	orch, runner, jobs := causeGraph(t, analyst)
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-causes-degraded", causeCampaign, "finalize_campaign")
 
 	if result.CandidatesTried != 2 {
@@ -125,13 +115,9 @@ func TestFailingCauseAnalystDegradesLikeTheAgent(t *testing.T) {
 // and room for more candidates than the analysis has targets.
 func exhaustionGraph(t *testing.T, analyst *fakeCauseAnalyst, stop bool) (*Orchestrator, *int) {
 	t.Helper()
-	var calls, optimizerCalls int
+	var optimizerCalls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "objective", NextExperiment: "experiment"}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &optimizerCalls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}, &calls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &optimizerCalls),
 	}
 	orch := mustNew(t, Dependencies{
 		Runner: &hotRunner{},
@@ -168,7 +154,7 @@ func TestCampaignStopsWhenEveryFlaggedTargetWasTried(t *testing.T) {
 }
 
 // TestCampaignKeepsFreeChoiceWithoutTheStop pins the previous behavior when
-// the stop is off (--free-choice, or a model analyst).
+// the stop is off (--free-choice).
 func TestCampaignKeepsFreeChoiceWithoutTheStop(t *testing.T) {
 	orch, _ := exhaustionGraph(t, oneTargetAnalyst(), false)
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-free", causeCampaign, "finalize_campaign")

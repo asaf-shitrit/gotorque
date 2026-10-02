@@ -23,20 +23,15 @@ type ExcerptCollector interface {
 	CollectExcerpts(ctx context.Context, analysis agents.AnalystResult) ([]SourceExcerpt, error)
 }
 
-// CauseAnalyst is an optional deterministic replacement for the analyst agent.
-// When Dependencies.Causes is set the analyst node calls it instead of a model:
-// it classifies discovery's measured hot functions and returns the same
-// AnalystResult the agent would, so merge_analysis and every later node are
-// unchanged. Its output is advice to the optimizer like the agent's; it never
-// reaches the policy decision.
+// CauseAnalyst serves the analyst node: it classifies discovery's measured hot
+// functions with Jev and ranks the answers in code. Its output is advice to the
+// optimizer; it never reaches the policy decision.
 type CauseAnalyst interface {
 	AnalyzeCauses(ctx context.Context, req CauseRequest) (agents.AnalystResult, error)
 }
 
-// ReviewAnalyst is an optional deterministic replacement for the reviewer
-// agent. When Dependencies.Review is set the reviewer node calls it instead of a
-// model and records the same ReviewerResult. Like the agent's, its answer is
-// advice: the policy never reads it.
+// ReviewAnalyst serves the reviewer node with Jev behaviour-hazard checks. Its
+// answer is advice: the policy never reads it.
 type ReviewAnalyst interface {
 	ReviewPatch(ctx context.Context, req ReviewRequest) (agents.ReviewerResult, error)
 }

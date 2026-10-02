@@ -159,43 +159,19 @@ func staticAgent[T any](t *testing.T, name string, output T, calls *int) adkagen
 	return a
 }
 
-// failingAgent models a role whose model call never succeeds: the provider
-// stalls past the retry ladder, so the node yields an error instead of an
-// answer.
-func failingAgent(t *testing.T, name string, calls *int) adkagent.Agent {
-	t.Helper()
-	a, err := adkagent.New(adkagent.Config{
-		Name: name,
-		Run: func(adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
-			return func(yield func(*session.Event, error) bool) {
-				*calls++
-				yield(nil, errors.New("provider stalled past the retry ladder"))
-			}
-		},
-	})
-	if err != nil {
-		t.Fatalf("create %s agent: %v", name, err)
-	}
-	return a
-}
-
 // TestCampaignSurvivesRoleFailures pins the campaign-level bound: a role whose
 // model call fails costs one candidate, not the run. Without the degrading
 // node the same failure ended the workflow, so a campaign that had built a
 // baseline and run discovery was recorded as failed with nothing evaluated.
 func TestCampaignSurvivesRoleFailures(t *testing.T) {
-	var coordinatorCalls, explorerCalls, analystCalls, optimizerCalls, reviewerCalls int
-	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "objective", NextExperiment: "experiment"}, &coordinatorCalls),
-		Explorer:    failingAgent(t, "explorer", &explorerCalls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"hypothesis"}}, &analystCalls),
-		Optimizer:   failingAgent(t, "optimizer", &optimizerCalls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: false}, &reviewerCalls),
-	}
+	// The optimizer fails on the first cycle only: two failed cycles in a row
+	// would trip the provider breaker instead of the rejection bound.
+	roleSet := scriptedOptimizerSet(t, 1)
+	causes := &fakeCauseAnalyst{err: errors.New("provider stalled past the retry ladder")}
 	seq := &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected, domain.DecisionRejected}}
 	runnerService := &fakeRunnerService{}
 	jobs := &fakeJobService{}
-	orch := mustNew(t, Dependencies{Runner: runnerService, Policy: seq, Jobs: jobs, Agents: roleSet}, Config{
+	orch := mustNew(t, Dependencies{Runner: runnerService, Policy: seq, Jobs: jobs, Agents: roleSet, Causes: causes}, Config{
 		MaxCandidates:          8,
 		MaxConsecutiveFailures: 2,
 		DeterministicTimeout:   time.Second,
@@ -218,26 +194,38 @@ func TestCampaignSurvivesRoleFailures(t *testing.T) {
 	if result.StopReason != "consecutive rejection/inconclusive limit reached" {
 		t.Errorf("stop reason = %q", result.StopReason)
 	}
-	if explorerCalls == 0 || optimizerCalls == 0 {
-		t.Errorf("failed roles were never called: explorer=%d optimizer=%d", explorerCalls, optimizerCalls)
+	if len(causes.requests) == 0 {
+		t.Errorf("the failing cause analyst was never called")
 	}
 	// A degraded role used to report its cause to the process's stderr, where no
 	// report could read it; the campaign now records it.
 	seen := map[string]int{}
 	for _, degraded := range jobs.degraded {
 		seen[degraded.role]++
-		if !strings.Contains(degraded.cause, "provider stalled past the retry ladder") {
-			t.Errorf("degraded %s cause = %q, want the agent's error", degraded.role, degraded.cause)
+		if !strings.Contains(degraded.cause, "provider stalled past the retry ladder") && !strings.Contains(degraded.cause, providerDown) {
+			t.Errorf("degraded %s cause = %q, want the role's error", degraded.role, degraded.cause)
 		}
 	}
-	if seen["explorer"] == 0 || seen["optimizer"] == 0 {
-		t.Errorf("degraded roles recorded = %v, want both explorer and optimizer", seen)
+	if seen["analyst"] == 0 || seen["optimizer"] == 0 {
+		t.Errorf("degraded roles recorded = %v, want both analyst and optimizer", seen)
 	}
+}
+
+// withJev supplies the Jev-backed services the graph requires, for tests that
+// do not care what they answer. A test that does passes its own.
+func withJev(deps Dependencies) Dependencies {
+	if deps.Causes == nil {
+		deps.Causes = &fakeCauseAnalyst{result: agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}}
+	}
+	if deps.Review == nil {
+		deps.Review = &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
+	}
+	return deps
 }
 
 func mustNew(t *testing.T, deps Dependencies, cfg Config) *Orchestrator {
 	t.Helper()
-	orch, err := New(deps, cfg)
+	orch, err := New(withJev(deps), cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -329,14 +317,12 @@ func assertRoleCalls(t *testing.T, want int, calls map[string]int) {
 }
 
 func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
-	var coordinatorCalls, explorerCalls, analystCalls, optimizerCalls, reviewerCalls int
+	var optimizerCalls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "find a measured hot path", NextExperiment: "profile scan"}, &coordinatorCalls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}, WorkloadStrategies: []string{"size sweep"}}, &explorerCalls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}, &analystCalls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &optimizerCalls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true, BehaviorArgument: "outputs unchanged"}, &reviewerCalls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &optimizerCalls),
 	}
+	causes := &fakeCauseAnalyst{result: agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}}
+	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true, BehaviorArgument: "outputs unchanged"}}
 	runnerService := &fakeRunnerService{}
 	seq := &sequencePolicy{decisions: []domain.Decision{
 		domain.DecisionAccepted,
@@ -350,6 +336,8 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 		Policy: seq,
 		Jobs:   jobs,
 		Agents: roleSet,
+		Causes: causes,
+		Review: review,
 	}, Config{
 		MaxCandidates:          8,
 		MaxConsecutiveFailures: 2,
@@ -378,11 +366,9 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 	}
 	assertAcceptedPromoted(t, result.AcceptedCandidates, runnerService.promoted)
 	assertRoleCalls(t, 3, map[string]int{
-		"coordinator": coordinatorCalls,
-		"explorer":    explorerCalls,
-		"analyst":     analystCalls,
-		"optimizer":   optimizerCalls,
-		"reviewer":    reviewerCalls,
+		"analyst":   len(causes.requests),
+		"optimizer": optimizerCalls,
+		"reviewer":  len(review.requests),
 	})
 	if len(jobs.progress) != 3 || jobs.complete != 1 {
 		t.Errorf("job progress/complete = %d/%d, want 3/1", len(jobs.progress), jobs.complete)
@@ -415,11 +401,7 @@ func collectPriorCandidates(t *testing.T, orch *Orchestrator, req CampaignReques
 func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
 	var calls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "cut allocations", NextExperiment: "patch parser"}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}, &calls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &calls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: false, BehaviorArgument: "suspect"}, &calls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &calls),
 	}
 	runnerService := &fakeRunnerService{failureDetail: ".go:9:2: undefined: fasterParse"}
 	orch := mustNew(t, Dependencies{
@@ -427,6 +409,7 @@ func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
 		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
 		Jobs:   &fakeJobService{},
 		Agents: roleSet,
+		Review: &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: false, BehaviorArgument: "suspect"}},
 	}, Config{
 		MaxCandidates:          1,
 		MaxConsecutiveFailures: 1,
@@ -450,6 +433,42 @@ func TestNewRejectsMissingDeterministicDependency(t *testing.T) {
 	_, err := New(Dependencies{}, DefaultConfig())
 	if err == nil || !strings.Contains(err.Error(), "runner service is required") {
 		t.Fatalf("New() error = %v, want missing runner", err)
+	}
+}
+
+// TestNewRequiresTheOptimizerAndBothJevServices: the analyst and reviewer are
+// always Jev and the optimizer is the one model role, so a graph missing any
+// of them has a node with nothing to run and must be refused at construction.
+func TestNewRequiresTheOptimizerAndBothJevServices(t *testing.T) {
+	var calls int
+	full := Dependencies{
+		Runner: &fakeRunnerService{},
+		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+		Jobs:   &fakeJobService{},
+		Agents: agents.Set{Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{}, &calls)},
+		Causes: &fakeCauseAnalyst{},
+		Review: &fakeReviewAnalyst{},
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*Dependencies)
+		wantErr string
+	}{
+		{name: "optimizer", mutate: func(d *Dependencies) { d.Agents = agents.Set{} }, wantErr: "optimizer agent is required"},
+		{name: "cause analyst", mutate: func(d *Dependencies) { d.Causes = nil }, wantErr: "cause analyst is required"},
+		{name: "review analyst", mutate: func(d *Dependencies) { d.Review = nil }, wantErr: "review analyst is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := full
+			tc.mutate(&deps)
+			_, err := New(deps, DefaultConfig())
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("New() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+	if _, err := New(full, DefaultConfig()); err != nil {
+		t.Fatalf("New() with every dependency error = %v", err)
 	}
 }
 
@@ -511,11 +530,7 @@ func (a *acceptingRunnerService) EvaluateCandidate(ctx context.Context, req Cand
 func TestCampaignGraphAcceptsStatisticallySupportedCandidate(t *testing.T) {
 	var calls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "cut runtime", NextExperiment: "patch allocation"}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"preallocate"}}, &calls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "preallocate slice", Patch: "diff --git a/a.go b/a.go"}, &calls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}, &calls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "preallocate slice", Patch: "diff --git a/a.go b/a.go"}, &calls),
 	}
 	runnerService := &acceptingRunnerService{fakeRunnerService{failureDetail: ""}}
 	jobs := &fakeJobService{}
@@ -567,11 +582,7 @@ func runExpectingError(t *testing.T, orch *Orchestrator, sessionID string, req C
 func rejectingRoleSet(t *testing.T, calls *int) agents.Set {
 	t.Helper()
 	return agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "cut runtime", NextExperiment: "patch parser"}, calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}, calls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, calls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}, calls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, calls),
 	}
 }
 
@@ -707,13 +718,9 @@ func TestInconclusiveBoundRunsSeparatelyFromFailures(t *testing.T) {
 		{name: "separate bound keeps evaluating", maxInconclusive: 4, wantTried: 4, wantStopReason: "consecutive inconclusive limit reached"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var coordinatorCalls, explorerCalls, analystCalls, optimizerCalls, reviewerCalls int
+			var optimizerCalls int
 			roleSet := agents.Set{
-				Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "find a measured hot path", NextExperiment: "profile scan"}, &coordinatorCalls),
-				Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}, WorkloadStrategies: []string{"size sweep"}}, &explorerCalls),
-				Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}, &analystCalls),
-				Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &optimizerCalls),
-				Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true, BehaviorArgument: "outputs unchanged"}, &reviewerCalls),
+				Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &optimizerCalls),
 			}
 			// Every verdict is unresolved: nothing was accepted and nothing was
 			// definitively rejected either.

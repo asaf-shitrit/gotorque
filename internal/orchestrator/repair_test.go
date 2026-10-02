@@ -32,17 +32,12 @@ func (p *recordingPolicy) Evaluate(ctx context.Context, input PolicyInput) (doma
 // TestRepairedRoleOutputIsRecorded: an answer the decoder had to salvage used
 // to be indistinguishable from the one the model sent. A patch cut off at the
 // output-token cap now reaches the candidate's evidence with the repair named,
-// every repaired role is reported, and a clean answer reports nothing.
+// the repair is reported against the optimizer, the one role that decodes
+// model output.
 func TestRepairedRoleOutputIsRecorded(t *testing.T) {
 	var calls int
 	truncated := `{"hypothesis":"buffer output","patch":["--- a/m.go","+++ b/m.go","@@ -1,1 +1,1 @@","-a()","+b(`
-	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", "{\"objective\":\"line one\nline two\",\"next_experiment\":\"n\"}", &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"scan"}}, &calls),
-		Analyst:     staticAgent(t, "analyst", `{"candidate_hypotheses":["reuse buffer"]`, &calls),
-		Optimizer:   staticAgent(t, "optimizer", truncated, &calls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}, &calls),
-	}
+	roleSet := agents.Set{Optimizer: staticAgent(t, "optimizer", truncated, &calls)}
 	policy := &recordingPolicy{sequencePolicy: sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}}}
 	jobs := &fakeJobService{}
 	orch := mustNew(t, Dependencies{Runner: &fakeRunnerService{}, Policy: policy, Jobs: jobs, Agents: roleSet},
@@ -50,8 +45,6 @@ func TestRepairedRoleOutputIsRecorded(t *testing.T) {
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-repair", repairCampaign, "finalize_campaign")
 
 	want := []repairedRole{
-		{role: "coordinator", repair: agents.RepairEscapedControlChars},
-		{role: "analyst", repair: agents.RepairAddedClosers},
 		{role: "optimizer", repair: agents.RepairTerminatedString},
 	}
 	if !slices.Equal(jobs.repaired, want) {

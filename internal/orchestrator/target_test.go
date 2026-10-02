@@ -72,14 +72,14 @@ func TestPlanTargetKeepsAllExcerptsWhenTheTargetHasNone(t *testing.T) {
 	}
 }
 
-// TestPlanTargetLeavesTheModelAnalystPathAlone: a model analyst ranks nothing,
-// so its coordinator plan and excerpts pass through untouched.
-func TestPlanTargetLeavesTheModelAnalystPathAlone(t *testing.T) {
-	coordinator := agents.CoordinatorResult{Objective: "from the model", NextExperiment: "profile scan"}
+// TestPlanTargetLeavesAnUnrankedAnalysisAlone: an analysis that ranks nothing
+// leaves the coordinator plan and excerpts untouched.
+func TestPlanTargetLeavesAnUnrankedAnalysisAlone(t *testing.T) {
+	coordinator := agents.CoordinatorResult{Objective: "no ranking", NextExperiment: "profile scan"}
 	state := CampaignState{Coordinator: coordinator, SourceExcerpts: excerptsFor("a.go:1", "b.go:2"), Target: &targetLoop}
 	planTarget(&state)
-	if state.Target != nil || state.Coordinator.Objective != "from the model" || len(state.SourceExcerpts) != 2 {
-		t.Errorf("state changed on the model path: target %+v, coordinator %+v, %d excerpts", state.Target, state.Coordinator, len(state.SourceExcerpts))
+	if state.Target != nil || state.Coordinator.Objective != "no ranking" || len(state.SourceExcerpts) != 2 {
+		t.Errorf("state changed on the unranked path: target %+v, coordinator %+v, %d excerpts", state.Target, state.Coordinator, len(state.SourceExcerpts))
 	}
 }
 
@@ -92,17 +92,13 @@ func (p *targetPolicy) Evaluate(_ context.Context, input PolicyInput) (domain.Ev
 	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: domain.DecisionRejected}, nil
 }
 
-// TestCodeChoosesEachCycleTarget drives the graph for three cycles: the
-// coordinator model is never called, each cycle attacks the next untried
+// TestCodeChoosesEachCycleTarget drives the graph for three cycles: each
+// cycle attacks the next untried
 // target, and once the targets run out the optimizer is left to choose.
 func TestCodeChoosesEachCycleTarget(t *testing.T) {
-	var coordinatorCalls, calls int
+	var calls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "from the model"}, &coordinatorCalls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &calls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{}, &calls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &calls),
 	}
 	policy := &targetPolicy{}
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
@@ -112,9 +108,6 @@ func TestCodeChoosesEachCycleTarget(t *testing.T) {
 
 	if result.CandidatesTried != 3 {
 		t.Fatalf("candidates tried = %d, want 3", result.CandidatesTried)
-	}
-	if coordinatorCalls != 0 {
-		t.Errorf("coordinator model called %d times, want never", coordinatorCalls)
 	}
 	if len(policy.targets) != 3 || policy.targets[0] == nil || !reflect.DeepEqual(*policy.targets[0], targetLoop) ||
 		policy.targets[1] == nil || !reflect.DeepEqual(*policy.targets[1], targetAlloc) || policy.targets[2] != nil {
@@ -154,15 +147,8 @@ func inputRecorder(t *testing.T, inputs *[]string) adkagent.Agent {
 // of the discovery evidence or analysis it is told not to act on. Once the
 // targets run out it chooses for itself, so it gets the full state again.
 func TestTheOptimizerReadsOnlyItsBrief(t *testing.T) {
-	var calls int
 	var inputs []string
-	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
-		Optimizer:   inputRecorder(t, &inputs),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{}, &calls),
-	}
+	roleSet := agents.Set{Optimizer: inputRecorder(t, &inputs)}
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop}}}
 	orch := mustNew(t, Dependencies{Runner: &hotRunner{}, Policy: &targetPolicy{}, Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
 		Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
@@ -248,15 +234,8 @@ func (r *unmeasuredRunner) EvaluateCandidate(ctx context.Context, req CandidateR
 // candidate never reaches measurement, and the second is told to attack the
 // same target, with the target on the evaluation request both times.
 func TestTheGraphRetriesATargetItNeverMeasured(t *testing.T) {
-	var calls int
 	var inputs []string
-	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
-		Optimizer:   inputRecorder(t, &inputs),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{}, &calls),
-	}
+	roleSet := agents.Set{Optimizer: inputRecorder(t, &inputs)}
 	policy := &targetPolicy{}
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	runner := &unmeasuredRunner{}

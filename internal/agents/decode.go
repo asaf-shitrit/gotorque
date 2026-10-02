@@ -520,35 +520,6 @@ func firstString(object map[string]any, keys ...string) string {
 	return ""
 }
 
-// flexBool decodes a JSON boolean, or common boolean spellings sent as strings.
-type flexBool bool
-
-func (b *flexBool) UnmarshalJSON(data []byte) error {
-	trimmed := trimSpaceBytes(data)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	if trimmed[0] == '"' {
-		var text string
-		if err := json.Unmarshal(trimmed, &text); err != nil {
-			return err
-		}
-		switch text {
-		case "true", "True", "TRUE", "yes", "Yes", "proceed":
-			*b = true
-		default:
-			*b = false
-		}
-		return nil
-	}
-	var value bool
-	if err := json.Unmarshal(trimmed, &value); err != nil {
-		return err
-	}
-	*b = flexBool(value)
-	return nil
-}
-
 func trimSpaceBytes(data []byte) []byte {
 	start := 0
 	for start < len(data) && isJSONSpace(data[start]) {

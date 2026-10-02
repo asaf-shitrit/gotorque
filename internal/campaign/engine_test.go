@@ -14,6 +14,7 @@ import (
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 	"github.com/asaf-shitrit/gotorque/internal/profile"
@@ -62,7 +63,9 @@ func TestCreateRejectsDirtyRepository(t *testing.T) {
 
 func TestRunADKFullGraphWithDeterministicAgents(t *testing.T) {
 	repo := makeRepository(t)
-	engine, err := Create(context.Background(), Options{Repository: repo, ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true})
+	// FreeChoice: the fixture has no profiled hot function for Jev to rank, so
+	// without it the graph would finish on an exhausted ranking, not a candidate.
+	engine, err := Create(context.Background(), Options{Repository: repo, ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true, FreeChoice: true})
 	require.NoError(t, err)
 	require.NoError(t, engine.Run(context.Background()))
 	defer func() { _ = engine.Close() }()
@@ -82,12 +85,11 @@ func TestRunADKFullGraphWithDeterministicAgents(t *testing.T) {
 		return a
 	}
 	roles := agents.Set{
-		Coordinator: static("coordinator", agents.CoordinatorResult{Objective: "test", NextExperiment: "test"}),
-		Explorer:    static("explorer", agents.ExplorerResult{EntryPoints: []string{"main"}, Proposals: []agents.WorkloadProposal{{Name: "test", Tier: "plausible", Provenance: "test", ExpectedValid: true}}}),
-		Analyst:     static("analyst", agents.AnalystResult{CandidateHypotheses: []string{"test"}}),
-		Optimizer:   static("optimizer", agents.OptimizerResult{Hypothesis: "test", Patch: "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n"}),
-		Reviewer:    static("reviewer", agents.ReviewerResult{Proceed: true}),
+		Optimizer: static("optimizer", agents.OptimizerResult{Hypothesis: "test", Patch: "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n"}),
+		Jev:       jev.Stub{},
 	}
+	// RunADK takes its Jev evaluators from the engine, which SetADK fills.
+	engine.SetADK(&roles, nil)
 	result, err := engine.RunADK(context.Background(), roles, orchestrator.Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: time.Second, AgentTimeout: time.Second})
 	require.NoError(t, err)
 	require.Equal(t, engine.State().ID, result.CampaignID)
@@ -128,11 +130,8 @@ func staticAgent(t *testing.T, name string, value any) adkagent.Agent {
 func rejectingRoles(t *testing.T) agents.Set {
 	t.Helper()
 	return agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{Objective: "test", NextExperiment: "test"}),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{EntryPoints: []string{"main"}}),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{CandidateHypotheses: []string{"test"}}),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "test", Patch: "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n"}),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true}),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "test", Patch: "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n"}),
+		Jev:       jev.Stub{},
 	}
 }
 
@@ -143,11 +142,13 @@ func rejectingRoles(t *testing.T) agents.Set {
 func TestConsecutiveFailureBoundSurvivesResume(t *testing.T) {
 	repo := makeRepository(t)
 	campaignDir := filepath.Join(t.TempDir(), "campaign")
-	engine, err := Create(context.Background(), Options{Repository: repo, ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: campaignDir, TestingUnsafeDisableIsolation: true})
+	// FreeChoice: no ranked target in the fixture, so the graph keeps going.
+	engine, err := Create(context.Background(), Options{Repository: repo, ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: campaignDir, TestingUnsafeDisableIsolation: true, FreeChoice: true})
 	require.NoError(t, err)
 	require.NoError(t, engine.Run(context.Background()))
 
 	roles := rejectingRoles(t)
+	engine.SetADK(&roles, nil)
 	bounded := func(maxCandidates int) orchestrator.Config {
 		return orchestrator.Config{MaxCandidates: maxCandidates, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Minute, AgentTimeout: time.Minute}
 	}
@@ -163,6 +164,7 @@ func TestConsecutiveFailureBoundSurvivesResume(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resumed.Close() }()
 	require.Equal(t, 2, resumed.State().ConsecutiveFailures, "tally must survive the process boundary")
+	resumed.SetADK(&roles, nil)
 
 	// Second process: a slack candidate ceiling, so only the carried-in tally
 	// can stop it. Before the fix this ran the full four rejections again.
@@ -267,8 +269,9 @@ func TestCampaignStopsWhenSuspensionSpendsTheDurationBudget(t *testing.T) {
 	clock := &suspendedClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	roles := rejectingRoles(t)
 	// The fixture manifest allows a minute, which the stub graph never spends
-	// for real; only the simulated suspension can exhaust it.
-	roles.Coordinator = suspendingAgent(t, "coordinator", agents.CoordinatorResult{Objective: "test", NextExperiment: "test"}, clock, 2*time.Minute, 5*time.Second)
+	// for real; only the simulated suspension can exhaust it. The optimizer is
+	// the one role still served by a model, so the nap lands inside its call.
+	roles.Optimizer = suspendingAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "test", Patch: "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n"}, clock, 2*time.Minute, 5*time.Second)
 	cfg := orchestrator.Config{MaxCandidates: 4, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Minute, AgentTimeout: time.Minute}
 
 	campaignDir := filepath.Join(t.TempDir(), "campaign")
@@ -277,6 +280,7 @@ func TestCampaignStopsWhenSuspensionSpendsTheDurationBudget(t *testing.T) {
 		ManifestPath:                  writeManifest(t, t.TempDir()),
 		CampaignDir:                   campaignDir,
 		TestingUnsafeDisableIsolation: true,
+		FreeChoice:                    true,
 		Now:                           clock.Now,
 		ADKAgents:                     &roles,
 		ADKConfig:                     &cfg,

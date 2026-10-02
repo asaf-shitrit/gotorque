@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/adk/v2/model"
 )
 
@@ -19,63 +20,33 @@ func (stubModel) GenerateContent(context.Context, *model.LLMRequest, bool) iter.
 	return func(func(*model.LLMResponse, error) bool) {}
 }
 
-func TestNewSetUsesInjectedModelsForEveryRole(t *testing.T) {
-	var got []Role
-	set, err := NewSet(context.Background(), ModelProviderFunc(func(_ context.Context, role Role) (model.LLM, error) {
-		got = append(got, role)
-		return stubModel{name: string(role)}, nil
+func TestNewSetBuildsTheOptimizerOnTheInjectedModel(t *testing.T) {
+	calls := 0
+	set, err := NewSet(context.Background(), ModelProviderFunc(func(context.Context) (model.LLM, error) {
+		calls++
+		return stubModel{name: "optimizer"}, nil
 	}))
-	if err != nil {
-		t.Fatalf("NewSet() error = %v", err)
-	}
-	if !reflect.DeepEqual(got, AllRoles) {
-		t.Fatalf("provider roles = %v, want %v", got, AllRoles)
-	}
-
-	wantNames := []string{"coordinator", "explorer", "analyst", "optimizer", "reviewer"}
-	for i, a := range set.All() {
-		if a == nil {
-			t.Fatalf("agent %d is nil", i)
-		}
-		if a.Name() != wantNames[i] {
-			t.Errorf("agent %d name = %q, want %q", i, a.Name(), wantNames[i])
-		}
-	}
+	require.NoError(t, err)
+	require.Equal(t, 1, calls, "the optimizer is the only model role")
+	require.NotNil(t, set.Optimizer)
+	require.Equal(t, "optimizer", set.Optimizer.Name())
 }
 
 func TestNewSetReportsProviderFailure(t *testing.T) {
 	wantErr := errors.New("model unavailable")
-	_, err := NewSet(context.Background(), ModelProviderFunc(func(_ context.Context, role Role) (model.LLM, error) {
-		if role == RoleAnalyst {
-			return nil, wantErr
-		}
-		return stubModel{name: string(role)}, nil
+	_, err := NewSet(context.Background(), ModelProviderFunc(func(context.Context) (model.LLM, error) {
+		return nil, wantErr
 	}))
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("NewSet() error = %v, want wrapped %v", err, wantErr)
-	}
+	require.ErrorIs(t, err, wantErr)
 }
 
-func TestRoleResponseSchemaCoversEveryRole(t *testing.T) {
-	for _, role := range AllRoles {
-		schema, err := roleResponseSchema(role)
-		if err != nil {
-			t.Fatalf("roleResponseSchema(%s) error = %v", role, err)
-		}
-		if schema["type"] != "object" {
-			t.Errorf("roleResponseSchema(%s) type = %v, want object", role, schema["type"])
-		}
-		properties, ok := schema["properties"].(map[string]any)
-		if !ok || len(properties) == 0 {
-			t.Errorf("roleResponseSchema(%s) has no properties", role)
-		}
-	}
-}
-
-func TestRoleResponseSchemaRejectsUnknownRole(t *testing.T) {
-	if _, err := roleResponseSchema(Role("nonexistent")); err == nil {
-		t.Fatal("roleResponseSchema(nonexistent) error = nil, want registration failure")
-	}
+func TestNewSetRejectsMissingProviderAndNilModel(t *testing.T) {
+	_, err := NewSet(context.Background(), nil)
+	require.ErrorContains(t, err, "model provider is required")
+	// A provider that answers with neither a model nor an error is exactly
+	// the case NewSet must refuse.
+	_, err = NewSet(context.Background(), ModelProviderFunc(func(context.Context) (model.LLM, error) { return nil, nil })) //nolint:nilnil // the nil model is the case under test
+	require.ErrorContains(t, err, "optimizer model is nil")
 }
 
 // A target's kind rides in its JSON, and a target saved before kinds existed

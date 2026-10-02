@@ -14,11 +14,10 @@ import (
 	"google.golang.org/genai"
 )
 
-// ReviewerJev marks a campaign whose reviewer was Jev behaviour-hazard checks
-// rather than a model role.
+// ReviewerJev marks a campaign whose reviewer was Jev behaviour-hazard checks.
 const ReviewerJev = "jev"
 
-// reviewAnalyst is the deterministic reviewer selected by --reviewer jev. It
+// reviewAnalyst is the campaign's reviewer. It
 // asks Jev one yes/no question per behaviour hazard about the patch and raises
 // the hazards whose answers stand well above Jev's usual answers on real,
 // merged performance patches. Its result is advice: it is recorded with the

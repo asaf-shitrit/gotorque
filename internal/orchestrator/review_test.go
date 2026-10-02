@@ -23,15 +23,11 @@ func (f *fakeReviewAnalyst) ReviewPatch(_ context.Context, req ReviewRequest) (a
 	return f.result, f.err
 }
 
-func reviewGraph(t *testing.T, review *fakeReviewAnalyst, reviewerCalls *int) (*Orchestrator, *fakeJobService) {
+func reviewGraph(t *testing.T, review *fakeReviewAnalyst) (*Orchestrator, *fakeJobService) {
 	t.Helper()
 	var calls int
 	roleSet := agents.Set{
-		Coordinator: staticAgent(t, "coordinator", agents.CoordinatorResult{}, &calls),
-		Explorer:    staticAgent(t, "explorer", agents.ExplorerResult{}, &calls),
-		Analyst:     staticAgent(t, "analyst", agents.AnalystResult{}, &calls),
-		Optimizer:   staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "--- a/main.go\n+++ b/main.go\n"}, &calls),
-		Reviewer:    staticAgent(t, "reviewer", agents.ReviewerResult{Proceed: true, BehaviorArgument: "from the model"}, reviewerCalls),
+		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "--- a/main.go\n+++ b/main.go\n"}, &calls),
 	}
 	jobs := &fakeJobService{}
 	orch := mustNew(t, Dependencies{
@@ -42,18 +38,14 @@ func reviewGraph(t *testing.T, review *fakeReviewAnalyst, reviewerCalls *int) (*
 	return orch, jobs
 }
 
-// TestReviewAnalystReplacesTheReviewerAgent: the model reviewer is never
-// called, the review sees the patch and its target, and its concerns reach the
-// next cycle through prior_candidates instead of being discarded.
-func TestReviewAnalystReplacesTheReviewerAgent(t *testing.T) {
+// TestReviewAnalystServesTheReviewerNode: the review sees the patch and its
+// target, and its concerns reach the next cycle through prior_candidates
+// instead of being discarded.
+func TestReviewAnalystServesTheReviewerNode(t *testing.T) {
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Concerns: []string{"an error from a call that can fail is discarded"}}}
-	var reviewerCalls int
-	orch, _ := reviewGraph(t, review, &reviewerCalls)
+	orch, _ := reviewGraph(t, review)
 	prior := collectPriorCandidates(t, orch, causeCampaign)
 
-	if reviewerCalls != 0 {
-		t.Errorf("reviewer model called %d times, want never", reviewerCalls)
-	}
 	if len(review.requests) != 2 || review.requests[0].Proposal.Hypothesis != "buffer output" || review.requests[0].Target == nil || !reflect.DeepEqual(*review.requests[0].Target, targetLoop) {
 		t.Fatalf("review requests = %+v, want the patch and its target each cycle", review.requests)
 	}
@@ -62,10 +54,9 @@ func TestReviewAnalystReplacesTheReviewerAgent(t *testing.T) {
 	}
 }
 
-func TestFailingReviewAnalystDegradesLikeTheAgent(t *testing.T) {
+func TestFailingReviewAnalystDegradesLikeAnyRole(t *testing.T) {
 	review := &fakeReviewAnalyst{err: errors.New("gateway returned HTTP 429 for Jev")}
-	var reviewerCalls int
-	orch, jobs := reviewGraph(t, review, &reviewerCalls)
+	orch, jobs := reviewGraph(t, review)
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-review-degraded", causeCampaign, "finalize_campaign")
 	if result.CandidatesTried != 2 {
 		t.Errorf("candidates tried = %d, want the campaign to continue", result.CandidatesTried)

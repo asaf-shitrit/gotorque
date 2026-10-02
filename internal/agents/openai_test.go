@@ -13,52 +13,51 @@ import (
 )
 
 func TestOpenAIProviderValidatesEndpointAndModelsWithoutPersistingCredentials(t *testing.T) {
-	routing := Routing{RoleCoordinator: "sol", RoleExplorer: "luna", RoleAnalyst: "terra", RoleOptimizer: "sol", RoleReviewer: "terra"}
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		require.Equal(t, "/v1/models", r.URL.Path)
 		require.Equal(t, "Bearer secret", r.Header.Get("Authorization"))
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"sol"},{"id":"luna"},{"id":"terra"}]}`)), Header: make(http.Header), Request: r}, nil
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"sol"},{"id":"luna"}]}`)), Header: make(http.Header), Request: r}, nil
 	})}
-	provider := OpenAIProvider{APIKey: "secret", BaseURL: "https://example.test/v1", Routing: routing, Client: client}
+	provider := OpenAIProvider{APIKey: "secret", BaseURL: "https://example.test/v1", Model: "sol", Client: client}
 	require.NoError(t, provider.ValidateConnectivity(context.Background()))
 }
 
 // catalogueProvider serves one /models document to ValidateConnectivity.
-func catalogueProvider(catalogue string) OpenAIProvider {
+func catalogueProvider(model, catalogue string) OpenAIProvider {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(catalogue)), Header: make(http.Header), Request: r}, nil
 	})}
-	routing := Routing{RoleCoordinator: "sol", RoleExplorer: "luna", RoleAnalyst: "terra", RoleOptimizer: "sol", RoleReviewer: "terra"}
-	return OpenAIProvider{APIKey: "secret", BaseURL: "https://example.test/v1", Routing: routing, Client: client}
+	return OpenAIProvider{APIKey: "secret", BaseURL: "https://example.test/v1", Model: model, Client: client}
 }
 
 // A request for more completion tokens than the model allows cannot succeed,
-// and without the check the campaign learned that only at its first role
+// and without the check the campaign learned that only at its first optimizer
 // call, after discovery had already run.
 func TestOpenAIProviderRejectsAModelBelowTheOutputBudget(t *testing.T) {
-	provider := catalogueProvider(`{"data":[
+	catalogue := `{"data":[
 		{"id":"sol","top_provider":{"max_completion_tokens":400000}},
-		{"id":"luna","top_provider":{"max_completion_tokens":16384}},
-		{"id":"terra","top_provider":{"max_completion_tokens":32768}}]}`)
-	err := provider.ValidateConnectivity(context.Background())
+		{"id":"luna","top_provider":{"max_completion_tokens":16384}}]}`
+	require.NoError(t, catalogueProvider("sol", catalogue).ValidateConnectivity(context.Background()))
+	err := catalogueProvider("luna", catalogue).ValidateConnectivity(context.Background())
 	require.ErrorContains(t, err, `"luna"`)
-	require.ErrorContains(t, err, string(RoleExplorer))
 	require.ErrorContains(t, err, "16384")
 }
 
 // Not every endpoint advertises a ceiling, and OpenRouter's router models
 // report it as null. A missing value is no evidence of a low one.
 func TestOpenAIProviderAcceptsModelsWithoutAnAdvertisedCeiling(t *testing.T) {
-	provider := catalogueProvider(`{"data":[
+	catalogue := `{"data":[
 		{"id":"sol"},
 		{"id":"luna","top_provider":{"max_completion_tokens":null}},
-		{"id":"terra","context_length":163840,"top_provider":{"context_length":163840,"max_completion_tokens":0}}]}`)
-	require.NoError(t, provider.ValidateConnectivity(context.Background()))
+		{"id":"terra","context_length":163840,"top_provider":{"context_length":163840,"max_completion_tokens":0}}]}`
+	for _, id := range []string{"sol", "luna", "terra"} {
+		require.NoError(t, catalogueProvider(id, catalogue).ValidateConnectivity(context.Background()), id)
+	}
 }
 
 func TestOpenAIProviderRejectsAnInvalidReasoningEffortBeforeTheNetwork(t *testing.T) {
 	contacted := false
-	provider := OpenAIProvider{APIKey: "secret", Routing: DefaultRouting(), Reasoning: Reasoning{RoleOptimizer: "extreme"}, Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	provider := OpenAIProvider{APIKey: "secret", Model: DefaultModel, Reasoning: "extreme", Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		contacted = true
 		return nil, errors.New("unexpected request")
 	})}}
@@ -67,8 +66,8 @@ func TestOpenAIProviderRejectsAnInvalidReasoningEffortBeforeTheNetwork(t *testin
 }
 
 func TestOpenAIProviderRejectsAnUnadvertisedModel(t *testing.T) {
-	err := catalogueProvider(`{"data":[{"id":"sol"},{"id":"luna"}]}`).ValidateConnectivity(context.Background())
-	require.ErrorContains(t, err, `configured model "terra" for analyst is not advertised`)
+	err := catalogueProvider("terra", `{"data":[{"id":"sol"},{"id":"luna"}]}`).ValidateConnectivity(context.Background())
+	require.ErrorContains(t, err, `configured optimizer model "terra" is not advertised`)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
