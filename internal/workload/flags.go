@@ -1,3 +1,5 @@
+// Package workload reads the boolean options a target's source declares, which
+// the explorer turns into discovery variants.
 package workload
 
 import (

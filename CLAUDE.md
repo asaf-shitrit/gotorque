@@ -36,9 +36,9 @@ CLI surface (`internal/cli/root.go`):
 ```sh
 gotorque manifest validate targets/gojq/manifest.json
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk-stub
-gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --analyst jev --reviewer jev --explorer jev
-gotorque optimize --repo /path/to/repo --manifest targets/go-jsonnet/manifest.json --adk --analyst jev --tradeoff speed --allow memory=5%
-gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --analyst jev --history <earlier-campaign-dir>
+gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk
+gotorque optimize --repo /path/to/repo --manifest targets/go-jsonnet/manifest.json --adk --tradeoff speed --allow memory=5%
+gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --history <earlier-campaign-dir>
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
 gotorque verify <campaign-dir> [--attempt N] [--pairs 60]
@@ -46,10 +46,10 @@ gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --n
 gotorque scorecard <campaign-dir>...
 ```
 
-`--adk-stub` runs the whole pipeline with deterministic stub agents and no
-network. That is the fast way to exercise engine changes end to end, and it is
-what CI runs. `--adk` needs `OPENROUTER_API_KEY` (see `.env`, gitignored) and
-spends tokens.
+`--adk-stub` runs the whole pipeline with a stub optimizer and `jev.Stub` and
+no network. That is the fast way to exercise engine changes end to end, and it is
+what CI runs. `--adk` is the optimizer model via OpenRouter plus Jev; it needs
+`OPENROUTER_API_KEY` (see `.env`, gitignored) and spends tokens.
 
 ## Lint gates
 
@@ -110,7 +110,9 @@ deliberately kept current. Keep it that way: a doc-sync commit (`8e92b07`)
 exists because sixteen engine commits landed without touching it.
 
 Flow: CLI -> `internal/campaign` engine -> ADK workflow graph
-(`internal/orchestrator`) alternating agent nodes with deterministic nodes:
+(`internal/orchestrator`) alternating agent nodes with deterministic nodes. The optimizer is the only
+model; the analyst, reviewer and explorer are Jev, and the coordinator and
+explorer stage nodes are code (`planCoordinator`, `planExplorer`):
 
 ```
 inspect_repository -> coordinator -> explorer -> run_discovery -> analyst
@@ -126,17 +128,17 @@ Package map:
   `adk.go` bridges engine state into the ADK graph; `store.go` is bbolt state;
   `excerpts.go` feeds real source windows to the optimizer.
 - `internal/orchestrator`: graph construction, node wiring, service interfaces.
-- `internal/agents`: role definitions, OpenAI-compatible provider, model
+- `internal/agents`: the optimizer agent, OpenAI-compatible provider, model
   routing, and the model-boundary leniency layer (`fence.go`, `decode.go`,
   `types.go`). This layer only removes parse failures; it never relaxes policy.
 - `internal/jev`: TypeSafe Jev client (OpenRouter's System One API,
   `/systemone`, pinned to an exact build), the seven cause questions, their
-  measured baseline, and the pure ranking used by
-  `--analyst jev` (`internal/campaign/causes.go` is the analyst node itself),
-  plus the reviewer's hazard questions and the explorer's option question.
-- `internal/workload`: validates explorer proposals and reads the boolean
-  options a target's source declares, which `--explorer jev`
-  (`internal/campaign/explore.go`) turns into discovery variants.
+  measured baseline, and the pure ranking used by the analyst
+  (`internal/campaign/causes.go` is the analyst node itself), plus the
+  reviewer's hazard questions and the explorer's option question.
+- `internal/workload`: reads the boolean options a target's source declares,
+  which the explorer (`internal/campaign/explore.go`) turns into discovery
+  variants.
 - `internal/policy`: pure acceptance decision. No filesystem, process, or
   network access; keep it that way.
 - `internal/candidate`: unified-diff normalization, validation, worktrees.
@@ -162,7 +164,9 @@ Package map:
 - Resume: `--resume DIR` requires re-supplying `--adk` or `--adk-stub` (agent
   clients cannot be serialized) and rejects `--repo`, `--manifest`, and
   `--campaign-dir`. Anything that must survive resume has to be persisted in
-  bbolt; in-graph `CampaignState` is rebuilt on every entry.
+  bbolt; in-graph `CampaignState` is rebuilt on every entry. A campaign that
+  ran model roles (`ADKMode` set, analyst not `jev`) is refused: it ran model
+  roles this build no longer has; start a new campaign.
 - Test gate (`internal/candidate/patch.go`, `worktree.go`,
   `internal/campaign/testgate.go`): a patch must never be able to edit what
   judges it. Protected paths (tests, `testdata/`, dependency files) are
@@ -221,24 +225,25 @@ the schema without keeping them consistent fails the test suite by design.
 
 ## Model routing
 
-Per-role model IDs come from `GOTORQUE_MODEL_{COORDINATOR,EXPLORER,ANALYST,
-OPTIMIZER,REVIEWER}`, defaulting to `deepseek/deepseek-v4.1-flash` via
+The optimizer is the only model role. Its model ID comes from
+`GOTORQUE_MODEL_OPTIMIZER`, defaulting to `deepseek/deepseek-v4.1-flash` via
 OpenRouter (`internal/agents/routing.go`). `OPENROUTER_BASE_URL` overrides the
 endpoint. Requests to openrouter.ai ask for providers sorted by throughput
 (`providerTransport`): one model id is served by providers from 8 to 193
 tokens/s, and a slow one makes a 10-20k-token optimizer answer overrun its
 six-minute attempt budget.
-Optional `GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}`
-(`low|medium|high`) sets per-role `reasoning.effort`. Unset sends nothing,
-except that the optimizer defaults to `low` under `--analyst jev`, and an
-invalid value fails the preflight. An attempt cut off at max_output_tokens
+Optional `GOTORQUE_REASONING_OPTIMIZER` (`low|medium|high`) sets
+`reasoning.effort`. Unset, it defaults to `low`, because code always chooses
+the target and the optimizer only writes one small diff; an invalid value
+fails the preflight. An attempt cut off at max_output_tokens
 having written nothing but reasoning is retried with reasoning disabled
 (`reasoningBudget`, `internal/agents/runaway.go`): the identical retry ran
-away again every time. `--analyst jev`, `--reviewer jev`
-and `--explorer jev` replace those roles with Jev questions, reached through
-OpenRouter's System One API and pinned to an exact build (`OPENROUTER_API_KEY`,
-the same credential the optimizer role already uses; ADRs 0012, 0014, 0015,
-0030).
+away again every time. The analyst, reviewer and explorer are always Jev
+questions, reached through OpenRouter's System One API and pinned to an exact
+build (`OPENROUTER_API_KEY`, the same credential the optimizer already uses;
+ADRs 0012, 0014, 0015, 0030, 0035). The campaign breaker counts only the
+optimizer: two consecutive failed cycles stop it as failed, and Jev failures
+degrade without tripping it.
 Credentials are never persisted into campaign state.
 
 ## Commit messages

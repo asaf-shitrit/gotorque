@@ -70,7 +70,7 @@ func optionsEngine(t *testing.T, evaluator jev.Evaluator) *Engine {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = engine.Close() })
 	require.NoError(t, engine.Run(context.Background()))
-	engine.SetADK(&agents.Set{ExploreEvaluator: evaluator}, nil)
+	engine.SetADK(&agents.Set{Jev: evaluator}, nil)
 	return engine
 }
 
@@ -117,7 +117,7 @@ func TestExploreKeepsTheLikeliestModesThatChangeTheOutput(t *testing.T) {
 // the same base revision, so the target's command and --help text, and the
 // options declared against them, are identical every time until a candidate
 // is accepted. Wrapping the explore evaluator in the campaign cache (ADR
-// 0028, SetADK/attachADK -> noteAnalyst) must turn a second cycle's rankModes
+// 0028, SetADK/attachADK -> attachJev) must turn a second cycle's rankModes
 // request into a cache hit instead of a second call to Jev.
 func TestExploreIsCachedAcrossRepeatedCycles(t *testing.T) {
 	evaluator := &modeEvaluator{modes: map[string]float64{"--upper": 0.97}}

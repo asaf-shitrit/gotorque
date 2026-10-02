@@ -53,22 +53,18 @@ func serveFakeEndpoint(t *testing.T, e *fakeEndpoint) OpenAIProvider {
 	}
 	server := httptest.NewServer(e)
 	t.Cleanup(server.Close)
-	routing := Routing{}
-	for _, role := range AllRoles {
-		routing[role] = "test/model"
-	}
-	return OpenAIProvider{APIKey: "secret", BaseURL: server.URL + "/v1", Routing: routing}
+	return OpenAIProvider{APIKey: "secret", BaseURL: server.URL + "/v1", Model: "test/model"}
 }
 
 func sseFakeEndpoint(reply string) *fakeEndpoint {
 	return &fakeEndpoint{contentType: "text/event-stream", reply: reply}
 }
 
-// callRoleModel runs one call on the undecorated role model, the layer ADK
+// callOptimizerModel runs one call on the undecorated optimizer model, the layer ADK
 // hands straight to openai-go, and returns the answer text it produced.
-func callRoleModel(t *testing.T, p OpenAIProvider, role Role, stream bool) (string, error) {
+func callOptimizerModel(t *testing.T, p OpenAIProvider, stream bool) (string, error) {
 	t.Helper()
-	llm, err := p.roleModel(context.Background(), role)
+	llm, err := p.endpointModel(context.Background())
 	require.NoError(t, err)
 	req := &model.LLMRequest{
 		Contents: []*genai.Content{{Role: "user", Parts: []*genai.Part{{Text: "answer & <return> json"}}}},
@@ -91,7 +87,7 @@ func callRoleModel(t *testing.T, p OpenAIProvider, role Role, stream bool) (stri
 // with `unexpected end of JSON input`.
 func TestModelCallSurvivesEndpointKeepalives(t *testing.T) {
 	e := sseFakeEndpoint(sseKeepalive + sseCreated + sseKeepalive + sseItemAdded + sseDeltaOne + sseKeepalive + sseDeltaTwo + sseCompleted)
-	got, err := callRoleModel(t, serveFakeEndpoint(t, e), RoleCoordinator, true)
+	got, err := callOptimizerModel(t, serveFakeEndpoint(t, e), true)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"ok":true}`, got)
 }
@@ -100,7 +96,7 @@ func TestModelCallSurvivesEndpointKeepalives(t *testing.T) {
 // partial text as the final answer, with a nil error.
 func TestModelCallFailsAStreamCutBeforeCompletion(t *testing.T) {
 	e := sseFakeEndpoint(sseCreated + sseItemAdded + sseDeltaOne)
-	_, err := callRoleModel(t, serveFakeEndpoint(t, e), RoleCoordinator, true)
+	_, err := callOptimizerModel(t, serveFakeEndpoint(t, e), true)
 	require.ErrorIs(t, err, ErrStreamIncomplete)
 }
 
@@ -108,7 +104,7 @@ func TestModelCallFailsAStreamCutBeforeCompletion(t *testing.T) {
 // yielded as if it were whole.
 func TestModelCallFailsAnAnswerCutAtTheTokenLimit(t *testing.T) {
 	e := sseFakeEndpoint(sseCreated + sseItemAdded + sseDeltaOne + sseIncomplete)
-	_, err := callRoleModel(t, serveFakeEndpoint(t, e), RoleCoordinator, true)
+	_, err := callOptimizerModel(t, serveFakeEndpoint(t, e), true)
 	require.ErrorIs(t, err, ErrStreamIncomplete)
 	require.ErrorContains(t, err, "max_output_tokens")
 }
@@ -117,7 +113,7 @@ func TestModelCallFailsAnAnswerCutAtTheTokenLimit(t *testing.T) {
 // cut stream is an error the ladder can retry, not a response.
 func TestStreamedModelSurfacesACutStreamAsAnError(t *testing.T) {
 	p := serveFakeEndpoint(t, sseFakeEndpoint(sseCreated+sseItemAdded+sseDeltaOne+sseDeltaTwo))
-	inner, err := p.roleModel(context.Background(), RoleExplorer)
+	inner, err := p.endpointModel(context.Background())
 	require.NoError(t, err)
 	req := &model.LLMRequest{Contents: []*genai.Content{{Role: "user", Parts: []*genai.Part{{Text: "go"}}}}}
 	for resp, err := range newStreamedModel(inner).GenerateContent(context.Background(), req, false) {
@@ -128,7 +124,7 @@ func TestStreamedModelSurfacesACutStreamAsAnError(t *testing.T) {
 
 func TestModelCallLeavesNonStreamingResponsesAlone(t *testing.T) {
 	e := &fakeEndpoint{contentType: "application/json", reply: `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"{\"ok\":true}","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`}
-	got, err := callRoleModel(t, serveFakeEndpoint(t, e), RoleCoordinator, false)
+	got, err := callOptimizerModel(t, serveFakeEndpoint(t, e), false)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"ok":true}`, got)
 }
@@ -137,18 +133,18 @@ func TestModelCallLeavesNonStreamingResponsesAlone(t *testing.T) {
 // when the body claims to be a stream.
 func TestModelCallKeepsTheStatusOfAFailedStreamRequest(t *testing.T) {
 	e := &fakeEndpoint{contentType: "text/event-stream", status: http.StatusBadRequest, reply: `{"error":{"message":"bad model","type":"invalid_request_error"}}`}
-	_, err := callRoleModel(t, serveFakeEndpoint(t, e), RoleCoordinator, true)
+	_, err := callOptimizerModel(t, serveFakeEndpoint(t, e), true)
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrStreamIncomplete)
 	require.ErrorContains(t, err, "400")
 }
 
-func TestModelCallSendsTheRolesReasoningEffort(t *testing.T) {
+func TestModelCallSendsTheConfiguredReasoningEffort(t *testing.T) {
 	e := sseFakeEndpoint(sseCreated + sseItemAdded + sseDeltaOne + sseDeltaTwo + sseCompleted)
 	p := serveFakeEndpoint(t, e)
-	p.Reasoning = Reasoning{RoleOptimizer: ReasoningHigh}
+	p.Reasoning = ReasoningHigh
 
-	_, err := callRoleModel(t, p, RoleOptimizer, true)
+	_, err := callOptimizerModel(t, p, true)
 	require.NoError(t, err)
 	body := e.lastBody(t)
 	require.Equal(t, map[string]any{"effort": "high"}, body["reasoning"])
@@ -157,30 +153,36 @@ func TestModelCallSendsTheRolesReasoningEffort(t *testing.T) {
 	require.Equal(t, true, body["stream"])
 	require.InDelta(t, MaxOutputTokens, body["max_output_tokens"], 0)
 
-	// A role without an effort sends no reasoning field at all, which is the
-	// behavior before the knob existed.
-	_, err = callRoleModel(t, p, RoleCoordinator, true)
+	// Without an effort the request carries no reasoning field at all, which
+	// is the behavior before the knob existed.
+	p.Reasoning = ""
+	_, err = callOptimizerModel(t, p, true)
 	require.NoError(t, err)
 	require.NotContains(t, e.lastBody(t), "reasoning")
 }
 
-func TestRoleModelRejectsAnInvalidReasoningEffort(t *testing.T) {
+func TestOptimizerModelRejectsAnInvalidReasoningEffort(t *testing.T) {
 	p := serveFakeEndpoint(t, sseFakeEndpoint(""))
-	p.Reasoning = Reasoning{RoleAnalyst: "max"}
-	_, err := p.roleModel(context.Background(), RoleAnalyst)
-	require.ErrorContains(t, err, EnvAnalystReasoning)
-	_, err = p.ModelFor(context.Background(), RoleAnalyst)
-	require.ErrorContains(t, err, EnvAnalystReasoning)
+	p.Reasoning = "max"
+	_, err := p.endpointModel(context.Background())
+	require.ErrorContains(t, err, EnvOptimizerReasoning)
+	_, err = p.OptimizerModel(context.Background())
+	require.ErrorContains(t, err, EnvOptimizerReasoning)
+}
+
+func TestOptimizerModelRequiresAModelID(t *testing.T) {
+	_, err := OpenAIProvider{APIKey: "secret"}.OptimizerModel(context.Background())
+	require.ErrorContains(t, err, "optimizer model ID is required")
 }
 
 func TestModelClientWrapsWithoutMutatingAnInjectedClient(t *testing.T) {
 	injected := &http.Client{}
-	p := OpenAIProvider{Client: injected, Reasoning: Reasoning{RoleReviewer: ReasoningLow}}
+	p := OpenAIProvider{Client: injected, Reasoning: ReasoningLow}
 
-	reviewer := p.modelClient(RoleReviewer)
-	require.NotSame(t, injected, reviewer)
+	withEffortClient := p.modelClient()
+	require.NotSame(t, injected, withEffortClient)
 	require.Nil(t, injected.Transport, "the injected client must not be modified")
-	withEffort, ok := reviewer.Transport.(reasoningTransport)
+	withEffort, ok := withEffortClient.Transport.(reasoningTransport)
 	require.True(t, ok)
 	require.Equal(t, ReasoningLow, withEffort.effort)
 	off, ok := withEffort.base.(reasoningOffTransport)
@@ -191,16 +193,16 @@ func TestModelClientWrapsWithoutMutatingAnInjectedClient(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, http.DefaultTransport, streams.base)
 
-	coordinator := p.modelClient(RoleCoordinator)
-	off, ok = coordinator.Transport.(reasoningOffTransport)
+	p.Reasoning = ""
+	off, ok = p.modelClient().Transport.(reasoningOffTransport)
 	require.True(t, ok)
 	routed, ok = off.base.(providerTransport)
-	require.True(t, ok, "a role without an effort still gets provider routing")
+	require.True(t, ok, "no effort still gets provider routing")
 	_, ok = routed.base.(eventStreamTransport)
 	require.True(t, ok, "and stream filtering")
 
 	// The provider's own client keeps its bounded transport underneath.
-	off, ok = OpenAIProvider{}.modelClient(RoleCoordinator).Transport.(reasoningOffTransport)
+	off, ok = OpenAIProvider{}.modelClient().Transport.(reasoningOffTransport)
 	require.True(t, ok)
 	routed, ok = off.base.(providerTransport)
 	require.True(t, ok)

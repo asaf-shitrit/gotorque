@@ -27,11 +27,12 @@ const (
 type OpenAIProvider struct {
 	APIKey  string
 	BaseURL string
-	Routing Routing
-	Client  *http.Client
+	// Model is the optimizer's model ID.
+	Model  string
+	Client *http.Client
 
-	// Reasoning sets reasoning.effort per role; a role left out sends none.
-	Reasoning Reasoning
+	// Reasoning sets the optimizer's reasoning.effort; empty sends none.
+	Reasoning ReasoningEffort
 
 	// Usage accumulates per-role token usage across every model this provider
 	// decorates. It is shared by pointer when the value struct is copied.
@@ -43,7 +44,7 @@ type OpenAIProvider struct {
 }
 
 func NewOpenAIProviderFromEnvironment() OpenAIProvider {
-	return OpenAIProvider{APIKey: os.Getenv(EnvAPIKey), BaseURL: os.Getenv(EnvBaseURL), Routing: RoutingFromEnvironment(), Reasoning: ReasoningFromEnvironment(), Usage: NewUsageCollector()}
+	return OpenAIProvider{APIKey: os.Getenv(EnvAPIKey), BaseURL: os.Getenv(EnvBaseURL), Model: ModelFromEnvironment(), Reasoning: ReasoningFromEnvironment(), Usage: NewUsageCollector()}
 }
 
 // endpoint resolves the base URL every caller must use. It exists so model
@@ -58,25 +59,29 @@ func (p OpenAIProvider) endpoint() string {
 	return DefaultOpenRouterBaseURL
 }
 
-func (p OpenAIProvider) ModelFor(ctx context.Context, role Role) (model.LLM, error) {
-	inner, err := p.roleModel(ctx, role)
+func (p OpenAIProvider) OptimizerModel(ctx context.Context) (model.LLM, error) {
+	inner, err := p.endpointModel(ctx)
 	if err != nil {
 		return nil, err
 	}
 	// Streaming sits inside the fence so the fence still sees one response per
 	// attempt, and the endpoint still sends bytes while the model works.
-	return NewFenceStrippingModel(newStreamedModel(inner), string(role), p.Usage, p.Observer), nil
+	return NewFenceStrippingModel(newStreamedModel(inner), string(RoleOptimizer), p.Usage, p.Observer), nil
 }
 
-// roleModel returns one role's endpoint model before any decoration.
-func (p OpenAIProvider) roleModel(ctx context.Context, role Role) (model.LLM, error) {
-	if err := p.Routing.Validate(); err != nil {
+// endpointModel returns the optimizer's endpoint model before any decoration.
+func (p OpenAIProvider) endpointModel(ctx context.Context) (model.LLM, error) {
+	if err := p.validateConfig(); err != nil {
 		return nil, err
 	}
-	if err := p.Reasoning.Validate(); err != nil {
-		return nil, err
+	return openaimodel.NewModel(ctx, p.Model, &openaimodel.ClientConfig{APIKey: p.APIKey, BaseURL: p.endpoint(), HTTPClient: p.modelClient()})
+}
+
+func (p OpenAIProvider) validateConfig() error {
+	if p.Model == "" {
+		return errors.New("optimizer model ID is required")
 	}
-	return openaimodel.NewModel(ctx, p.Routing[role], &openaimodel.ClientConfig{APIKey: p.APIKey, BaseURL: p.endpoint(), HTTPClient: p.modelClient(role)})
+	return p.Reasoning.Validate()
 }
 
 // attemptTimeout bounds one attempt of the retry ladder in fence.go. It is the
@@ -120,11 +125,11 @@ func (p OpenAIProvider) httpClient() *http.Client {
 	}
 }
 
-// modelClient returns the client one role's model calls use: httpClient's,
-// with every event stream filtered by eventStreamTransport and, when the role
-// has an effort configured, every request carrying it. An injected Client is
+// modelClient returns the client the optimizer's model calls use: httpClient's,
+// with every event stream filtered by eventStreamTransport and, when an effort
+// is configured, every request carrying it. An injected Client is
 // copied rather than modified, so a caller sharing it sees no change.
-func (p OpenAIProvider) modelClient(role Role) *http.Client {
+func (p OpenAIProvider) modelClient() *http.Client {
 	client := *p.httpClient()
 	base := client.Transport
 	if base == nil {
@@ -135,8 +140,8 @@ func (p OpenAIProvider) modelClient(role Role) *http.Client {
 	// this one, wrapped, is the last to touch the body and its "reasoning off"
 	// is what is sent.
 	transport = reasoningOffTransport{base: transport}
-	if effort := p.Reasoning[role]; effort != "" {
-		transport = reasoningTransport{base: transport, effort: effort}
+	if p.Reasoning != "" {
+		transport = reasoningTransport{base: transport, effort: p.Reasoning}
 	}
 	client.Transport = transport
 	return &client
@@ -154,22 +159,14 @@ func (p OpenAIProvider) ValidateConnectivity(ctx context.Context) error {
 	if p.APIKey == "" {
 		return errors.New(EnvAPIKey + " is required for --adk")
 	}
-	if err := p.Routing.Validate(); err != nil {
-		return err
-	}
-	if err := p.Reasoning.Validate(); err != nil {
+	if err := p.validateConfig(); err != nil {
 		return err
 	}
 	available, err := p.listEndpointModels(ctx)
 	if err != nil {
 		return err
 	}
-	for _, role := range AllRoles {
-		if err := checkAdvertised(role, p.Routing[role], available); err != nil {
-			return err
-		}
-	}
-	return nil
+	return checkAdvertised(p.Model, available)
 }
 
 // advertisedModel is the part of an endpoint's /models entry the preflight
@@ -182,18 +179,18 @@ type advertisedModel struct {
 	} `json:"top_provider"`
 }
 
-// checkAdvertised fails a role whose model the endpoint does not list, or
-// whose advertised completion ceiling is below MaxOutputTokens. A model
-// capped below that budget cannot deliver the output the budget was sized
-// for, and learning so from the first role call wastes the discovery work the
-// campaign did before it.
-func checkAdvertised(role Role, id string, available map[string]advertisedModel) error {
+// checkAdvertised fails a model the endpoint does not list, or whose
+// advertised completion ceiling is below MaxOutputTokens. A model capped below
+// that budget cannot deliver the output the budget was sized for, and learning
+// so from the first optimizer call wastes the discovery work the campaign did
+// before it.
+func checkAdvertised(id string, available map[string]advertisedModel) error {
 	advertised, ok := available[id]
 	if !ok {
-		return fmt.Errorf("configured model %q for %s is not advertised by endpoint", id, role)
+		return fmt.Errorf("configured optimizer model %q is not advertised by endpoint", id)
 	}
 	if ceiling := advertised.TopProvider.MaxCompletionTokens; ceiling > 0 && ceiling < MaxOutputTokens {
-		return fmt.Errorf("configured model %q for %s allows at most %d completion tokens, below the %d every role requests", id, role, ceiling, MaxOutputTokens)
+		return fmt.Errorf("configured optimizer model %q allows at most %d completion tokens, below the %d the optimizer requests", id, ceiling, MaxOutputTokens)
 	}
 	return nil
 }

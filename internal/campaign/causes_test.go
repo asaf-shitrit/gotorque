@@ -290,7 +290,7 @@ func TestRunADKWithJevAnalyst(t *testing.T) {
 	roles, err := agents.NewDeterministicSet()
 	require.NoError(t, err)
 	roles.Usage = agents.NewUsageCollector()
-	roles.CauseEvaluator = &scriptedEvaluator{answers: map[string]map[jev.Cause]float64{"main": {jev.CauseUnbufferedIO: 0.8}}}
+	roles.Jev = &scriptedEvaluator{answers: map[string]map[jev.Cause]float64{"main": {jev.CauseUnbufferedIO: 0.8}}}
 	engine.SetADK(&roles, nil)
 	engine.state.DiscoveryHotFunctions = []string{"main.go:3"}
 

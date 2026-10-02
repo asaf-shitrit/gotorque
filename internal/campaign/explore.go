@@ -75,10 +75,7 @@ func (e *Engine) exploreWorkloads(ctx context.Context, seed manifest.SeedWorkloa
 }
 
 func (e *Engine) exploreEvaluator() jev.Evaluator {
-	if e.adkAgents == nil {
-		return nil
-	}
-	return e.adkAgents.ExploreEvaluator
+	return e.exploreJev
 }
 
 // untriedFlags lists the target's boolean options the seed does not already

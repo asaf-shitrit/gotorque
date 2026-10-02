@@ -148,7 +148,7 @@ func TestResumeCompletedCampaign(t *testing.T) {
 
 func TestAttachResumeADKRequiresFlagForModelCampaign(t *testing.T) {
 	f := optimizeFlags{resume: "campaign-dir"}
-	engine := resumeEngine(t, campaign.State{ID: "campaign-test", ADKMode: "live"})
+	engine := resumeEngine(t, campaign.State{ID: "campaign-test", ADKMode: "live", Analyst: campaign.AnalystJev})
 
 	require.ErrorContains(t, attachResumeADK(context.Background(), io.Discard, engine, f, nil, nil), "pass --adk or --adk-stub")
 }
@@ -162,7 +162,7 @@ func TestAttachResumeADKRejectsRunWithoutManifest(t *testing.T) {
 
 func TestAttachResumeADKStubUsesProvidedRoles(t *testing.T) {
 	f := optimizeFlags{resume: "campaign-dir", runADKStub: true}
-	engine := resumeEngine(t, campaign.State{ID: "campaign-test", ADKMode: "live"})
+	engine := resumeEngine(t, campaign.State{ID: "campaign-test", ADKMode: "live", Analyst: campaign.AnalystJev})
 	roleSet, err := agents.NewDeterministicSet()
 	require.NoError(t, err)
 

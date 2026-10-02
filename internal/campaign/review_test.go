@@ -101,7 +101,7 @@ func TestHunkChangesFindsTheOldSideLine(t *testing.T) {
 
 func TestReviewConcernsAreRecordedAndReported(t *testing.T) {
 	engine := pgoLaneTestEngine(t)
-	roles := agents.Set{ReviewEvaluator: jev.Stub{}}
+	roles := agents.Set{Jev: jev.Stub{}}
 	engine.SetADK(&roles, nil)
 	_, err := adkServices{engine: engine}.Evaluate(context.Background(), orchestrator.PolicyInput{
 		Evidence: orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "candidate-1"}},

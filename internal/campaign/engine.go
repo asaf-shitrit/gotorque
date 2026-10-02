@@ -26,6 +26,7 @@ import (
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 	"github.com/asaf-shitrit/gotorque/internal/profile"
@@ -145,23 +146,20 @@ type State struct {
 	Repository   string `json:"repository"`
 	ManifestPath string `json:"manifest_path"`
 	ADKMode      string `json:"adk_mode,omitempty"`
-	// Analyst is AnalystJev when the analyst role was Jev cause classification
-	// rather than a model, so a report says which kind of analysis its
-	// hypotheses came from and a resume can insist on the same one.
-	Analyst string `json:"analyst,omitempty"`
-	// Reviewer is ReviewerJev when the reviewer role was Jev behaviour-hazard
-	// checks rather than a model.
+	// Analyst, Reviewer and Explorer are AnalystJev, ReviewerJev and
+	// ExplorerJev when the campaign ran its agent graph, which Jev serves
+	// with the optimizer; empty for a campaign that ran none
+	// (--null-candidates), so a report names Jev only when Jev answered.
+	Analyst  string `json:"analyst,omitempty"`
 	Reviewer string `json:"reviewer,omitempty"`
-	// Explorer is ExplorerJev when discovery's extra workloads were generated
-	// by code and judged by Jev instead of proposed by the explorer model.
 	Explorer string `json:"explorer,omitempty"`
 	// Tradeoff is the trade-off the campaign was started with. Manifest
 	// already holds the performance block it produced, which is what every
 	// verdict and a resume read; this records where that block came from.
 	Tradeoff manifest.Tradeoff `json:"tradeoff,omitzero"`
 	// SchemaVersion is stamped by WriteReports onto the artifact it writes, so a
-	// report carries the shape it was written in. It stays zero for state that
-	// predates versioning, which readers report rather than assume.
+	// report carries the shape it was written in. Loading refuses any other
+	// version (checkSchemaVersion); state from before versioning carries zero.
 	SchemaVersion int `json:"schema_version,omitempty"`
 	// HistoryTargets are targets earlier campaigns of this revision already
 	// measured (--history); priorTargets counts them as tried. They are
@@ -335,6 +333,9 @@ type Engine struct {
 	now       func() time.Time
 	adkAgents *agents.Set
 	adkConfig orchestrator.Config
+	// causeJev, reviewJev and exploreJev serve the analyst, reviewer and
+	// explorer; attachJev derives them from adkAgents.Jev.
+	causeJev, reviewJev, exploreJev jev.Evaluator
 	// tokenUsageBaseline anchors this process's contribution to
 	// State.TokenUsage, the same way runStartedAt/elapsedBefore anchor its
 	// contribution to State.ElapsedRunTime. See recordTokenUsage in adk.go.
@@ -497,34 +498,27 @@ func attachADK(e *Engine, opts Options) {
 	if opts.ADKAgents != nil {
 		e.state.ADKMode = "live"
 	}
-	e.noteAnalyst(opts.ADKAgents)
+	e.attachJev(opts.ADKAgents)
 }
 
-// noteAnalyst records a switch of the analyst, reviewer, or explorer to Jev. It never
-// clears a mark: a campaign any part of which ran on Jev says so.
-func (e *Engine) noteAnalyst(roleSet *agents.Set) {
-	if roleSet == nil {
+// attachJev records that Jev serves the analyst, reviewer and explorer, and
+// derives each role's evaluator from the set's one.
+func (e *Engine) attachJev(roleSet *agents.Set) {
+	if roleSet == nil || roleSet.Jev == nil {
 		return
 	}
-	if roleSet.CauseEvaluator != nil {
-		e.state.Analyst = AnalystJev
-		// The analyst re-runs every cycle against the same base revision and,
-		// until a candidate is accepted, the same hot functions: caching its
-		// answers is what turns a 16-request cycle into zero requests on every
-		// cycle after the first (ADR 0028).
-		roleSet.CauseEvaluator = cacheEvaluator(e, jevCacheRoleAnalyst, roleSet.CauseEvaluator)
-	}
-	if roleSet.ReviewEvaluator != nil {
-		e.state.Reviewer = ReviewerJev
-		// Not cached: the reviewer's state carries the candidate's own patch
-		// text, which differs by construction from one candidate to the next.
-	}
-	if roleSet.ExploreEvaluator != nil {
-		e.state.Explorer = ExplorerJev
-		// The explorer asks about the target's command and --help text, which
-		// do not change between cycles at the same base revision either.
-		roleSet.ExploreEvaluator = cacheEvaluator(e, jevCacheRoleExplorer, roleSet.ExploreEvaluator)
-	}
+	e.state.Analyst, e.state.Reviewer, e.state.Explorer = AnalystJev, ReviewerJev, ExplorerJev
+	// The analyst re-runs every cycle against the same base revision and,
+	// until a candidate is accepted, the same hot functions: caching its
+	// answers is what turns a 16-request cycle into zero requests on every
+	// cycle after the first (ADR 0028).
+	e.causeJev = cacheEvaluator(e, jevCacheRoleAnalyst, roleSet.Jev)
+	// Not cached: the reviewer's state carries the candidate's own patch
+	// text, which differs by construction from one candidate to the next.
+	e.reviewJev = roleSet.Jev
+	// The explorer asks about the target's command and --help text, which
+	// do not change between cycles at the same base revision either.
+	e.exploreJev = cacheEvaluator(e, jevCacheRoleExplorer, roleSet.Jev)
 }
 
 func Resume(dir string, progress io.Writer) (*Engine, error) {
@@ -820,7 +814,7 @@ func (e *Engine) finishCampaign(ctx context.Context) error {
 			return err
 		}
 		if result.ProviderFailure != "" {
-			// Every model role failed in one cycle: no bound was reached, so
+			// The optimizer failed in consecutive cycles: no bound was reached, so
 			// "completed" would misreport the campaign, and a completed campaign
 			// cannot be resumed once the provider answers again. Returning the
 			// failure lets captureRunFailure record it as failed with this stop
@@ -2097,7 +2091,7 @@ func ciEnvironment() map[string]string {
 	return result
 }
 
-// SetADK attaches model agents to a resumed campaign. Mid-workflow stops
+// SetADK attaches the optimizer and Jev to a resumed campaign. Mid-workflow stops
 // lose the in-memory agent clients, so resume flows must re-supply them
 // before Run re-enters the ADK graph.
 func (e *Engine) SetADK(roleSet *agents.Set, cfg *orchestrator.Config) {
@@ -2105,5 +2099,5 @@ func (e *Engine) SetADK(roleSet *agents.Set, cfg *orchestrator.Config) {
 	if cfg != nil {
 		e.adkConfig = *cfg
 	}
-	e.noteAnalyst(roleSet)
+	e.attachJev(roleSet)
 }

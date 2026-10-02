@@ -12,11 +12,12 @@ harness keeps the guessing and mechanizes the proof.
 
 ## Features
 
-- Campaign graph of five roles (coordinator, explorer, analyst, optimizer,
-  reviewer) over any OpenAI-compatible endpoint, routed per role. Code, not a
-  model, picks what to optimize: discovery profiles the target's own
-  workloads, and `--analyst jev` classifies the hot functions' causes with
-  TypeSafe Jev, so the optimizer is handed one function, a cause and a remedy.
+- The optimizer is the only model role, run over any OpenAI-compatible
+  endpoint. Code, not a model, picks what to optimize: discovery profiles the
+  target's own workloads, and TypeSafe Jev classifies the hot functions'
+  causes, checks each patch for behaviour hazards and picks the option variants
+  discovery samples, so the optimizer is handed one function, a cause and a
+  remedy.
 - The optimizer returns whole function source; deterministic code turns it
   into a diff against the campaign's base revision, so a model never has to
   get hunk positions right.
@@ -82,14 +83,13 @@ Run a model-driven campaign:
 ```sh
 export OPENROUTER_API_KEY=sk-or-v1-...
 
-# Optional. Every role defaults to deepseek/deepseek-v4.1-flash; override a
-# role only to tier cost against capability.
+# Optional. The optimizer defaults to deepseek/deepseek-v4.1-flash.
 export GOTORQUE_MODEL_OPTIMIZER=deepseek/deepseek-v4.1-flash
 
 gotorque optimize \
   --repo /path/to/target-repo \
   --manifest targets/gojq/manifest.json \
-  --adk --analyst jev --reviewer jev --explorer jev
+  --adk
 
 gotorque report <campaign-dir>
 gotorque verify <campaign-dir>      # re-measure its accepted patches
@@ -99,26 +99,27 @@ gotorque verify <campaign-dir>      # re-measure its accepted patches
 give up for its improvement; `--history <dir>` skips targets an earlier
 campaign on the same revision already measured.
 
-Without an endpoint, `--adk-stub` runs the full pipeline with deterministic
-stub agents, which makes it usable in CI. Resume an interrupted campaign
+`--adk` needs `OPENROUTER_API_KEY` for both the optimizer model and Jev. Without
+an endpoint, `--adk-stub` runs the full pipeline with a stub optimizer and a
+no-network Jev stub, which makes it usable in CI. Resume an interrupted campaign
 with `optimize --resume <dir> --adk`.
 
-Any OpenRouter slug works for a role: the routing variables take whatever the
-endpoint advertises, and a campaign's preflight asks the endpoint's catalogue
-before it spends any repository work, so a typo fails with `configured model
-"..." for <role> is not advertised by endpoint` rather than a confusing decode
-error later. To check a model actually answers in the shape the roles require
-before spending a campaign on it:
+Any OpenRouter slug works for the optimizer: `GOTORQUE_MODEL_OPTIMIZER` takes
+whatever the endpoint advertises, and a campaign's preflight asks the endpoint's
+catalogue before it spends any repository work, so a typo fails with
+`configured optimizer model "..." is not advertised by endpoint` rather than a
+confusing decode error later. To check a model actually answers in the shape the
+optimizer requires before spending a campaign on it:
 
 ```sh
 GOTORQUE_LIVE_MODEL=deepseek/deepseek-v4.1-flash \
-  go test ./internal/agents -run TestLiveModelAnswersARolePrompt -v
+  go test ./internal/agents -run TestLiveModelAnswersAnOptimizerPrompt -v
 ```
 
 Free and stealth slugs (`...:free`, `stealth/...`) are worth checking with that
 test before trusting them with a campaign, for two reasons. They generally
 retain prompts for the provider's own purposes, and a campaign sends source
-excerpts and candidate patches, so route a role to one only for targets you are
+excerpts and candidate patches, so route the optimizer to one only for targets you are
 happy to share. They are also temporary: `stealth/union-alpha` answered role
 prompts at zero cost and was retired mid-flight, leaving a campaign that stalled
 on ten of thirteen attempts and a later 404 naming its paid successor.

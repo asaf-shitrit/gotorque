@@ -21,8 +21,7 @@ import (
 	"google.golang.org/genai"
 )
 
-// AnalystJev marks a campaign whose analyst was Jev cause classification
-// rather than a model role.
+// AnalystJev marks a campaign whose analyst was Jev cause classification.
 const AnalystJev = "jev"
 
 const (
@@ -44,7 +43,7 @@ const (
 // not allocate at all (ADR 0024).
 const objectivePeakMemory = "peak_memory_bytes"
 
-// causeAnalyst is the deterministic analyst selected by --analyst jev. It asks
+// causeAnalyst is the campaign's analyst. It asks
 // Jev the same yes/no questions about every measured hot function, ranks each
 // function's answers against Jev's usual answers, and turns the causes that
 // stand out into the analysis the optimizer reads. Jev supplies the evidence;

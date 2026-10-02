@@ -11,6 +11,7 @@ import (
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 	"github.com/stretchr/testify/require"
 	adkagent "google.golang.org/adk/v2/agent"
@@ -32,19 +33,14 @@ func unreachableAgent(t *testing.T, name string) adkagent.Agent {
 
 func unreachableRoles(t *testing.T) agents.Set {
 	t.Helper()
-	return agents.Set{
-		Coordinator: unreachableAgent(t, "coordinator"),
-		Explorer:    unreachableAgent(t, "explorer"),
-		Analyst:     unreachableAgent(t, "analyst"),
-		Optimizer:   unreachableAgent(t, "optimizer"),
-		Reviewer:    unreachableAgent(t, "reviewer"),
-	}
+	return agents.Set{Optimizer: unreachableAgent(t, "optimizer"), Jev: jev.Stub{}}
 }
 
-// TestProviderOutageFailsTheCampaignAndResumes: a campaign whose every model
-// role failed used to end `completed` at the rejection bound, blaming its empty
-// patches, and a completed campaign cannot be resumed. It now fails after one
-// cycle, names the provider, and resumes once the roles answer again.
+// TestProviderOutageFailsTheCampaignAndResumes: a campaign whose optimizer
+// failed every cycle used to end `completed` at the rejection bound, blaming
+// its empty patches, and a completed campaign cannot be resumed. It now fails
+// after two consecutive failed cycles, names the provider, and resumes once
+// the optimizer answers again.
 func TestProviderOutageFailsTheCampaignAndResumes(t *testing.T) {
 	roles := unreachableRoles(t)
 	cfg := orchestrator.Config{MaxCandidates: 4, MaxConsecutiveFailures: 4, DeterministicTimeout: time.Minute, AgentTimeout: time.Minute}
@@ -54,6 +50,7 @@ func TestProviderOutageFailsTheCampaignAndResumes(t *testing.T) {
 		ManifestPath:                  writeManifest(t, t.TempDir()),
 		CampaignDir:                   campaignDir,
 		TestingUnsafeDisableIsolation: true,
+		FreeChoice:                    true,
 		ADKAgents:                     &roles,
 		ADKConfig:                     &cfg,
 	})
@@ -66,8 +63,10 @@ func TestProviderOutageFailsTheCampaignAndResumes(t *testing.T) {
 	require.True(t, strings.HasPrefix(state.StopReason, "model provider unavailable"), "stop reason %q must name the provider", state.StopReason)
 	require.Contains(t, state.StopReason, "401 Unauthorized")
 	require.False(t, state.CompletedSteps["complete"], "a campaign stopped by its provider must not be reported as finished")
-	require.Len(t, state.CandidateRecords, 1, "one cycle of total failure must be enough to stop")
-	require.Equal(t, domain.DecisionRejected, state.CandidateRecords[0].Decision, "the breaker must not change the verdict")
+	require.Len(t, state.CandidateRecords, 2, "two consecutive failed cycles must be enough to stop")
+	for _, record := range state.CandidateRecords {
+		require.Equal(t, domain.DecisionRejected, record.Decision, "the breaker must not change the verdict")
+	}
 	snapshot, err := loadReportSnapshot(filepath.Join(campaignDir, ReportJSONName))
 	require.NoError(t, err)
 	require.Equal(t, StatusFailed, snapshot.Status, "the report on disk must carry the terminal status")

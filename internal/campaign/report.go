@@ -76,30 +76,19 @@ func primaryComparisonSummary(comparisons []domain.MetricComparison, primaryMetr
 }
 
 // comparisonLabel names a comparison the way a verdict does: the workload it
-// was measured on, or the metric when the reading is the pooled one. A record
-// written before comparisons carried their workload keeps the old shape and
-// reports that it has no label rather than an empty cell.
+// was measured on, or the metric when the reading is the pooled one.
 func comparisonLabel(comparison domain.MetricComparison) string {
 	if comparison.Workload != "" {
 		return comparison.Workload
 	}
-	return metricLabel(comparison)
+	return comparison.Metric
 }
 
 // tableLabel names a comparison inside the metric tables, where the metric is
 // not a column of its own and therefore has to be part of the label.
 func tableLabel(comparison domain.MetricComparison) string {
-	if comparison.Workload != "" && comparison.Metric != "" {
+	if comparison.Workload != "" {
 		return comparison.Workload + "/" + comparison.Metric
-	}
-	return metricLabel(comparison)
-}
-
-// metricLabel falls back to the metric name, and to a placeholder for records
-// that predate structured comparisons and therefore carry neither field.
-func metricLabel(comparison domain.MetricComparison) string {
-	if comparison.Metric == "" {
-		return unlabelledWorkload
 	}
 	return comparison.Metric
 }
@@ -121,9 +110,19 @@ func oneLine(text string, limit int) string {
 // reader could not tell an old artifact from a broken one.
 //
 // Bump it when a field a reader depends on changes meaning or disappears, and
-// note in docs/adr what the new number covers. A report without the field
-// predates versioning and is reported as such rather than silently rendered.
+// note in docs/adr what the new number covers. State of any other version is
+// refused when it is loaded (checkSchemaVersion), so every reader can rely on
+// the current shape instead of rendering around missing fields.
 const ReportSchemaVersion = 1
+
+// checkSchemaVersion refuses state written in a shape this build does not
+// read. Campaigns from before versioning carry version 0.
+func checkSchemaVersion(state State) error {
+	if state.SchemaVersion != ReportSchemaVersion {
+		return fmt.Errorf("campaign state has report schema %d, this build reads %d; re-run the campaign", state.SchemaVersion, ReportSchemaVersion)
+	}
+	return nil
+}
 
 func WriteReports(dir string, state State) error {
 	// The stamp belongs to the artifact, not to the engine's internal state, so
@@ -143,7 +142,6 @@ func WriteReports(dir string, state State) error {
 func RenderMarkdown(state State) string {
 	var b strings.Builder
 	writeReportHeader(&b, state)
-	writeLegacyNotice(&b, state)
 	writeInventory(&b, state)
 	writeBehaviorGate(&b, state)
 	writeBaselineWorkloads(&b, state)
@@ -175,8 +173,7 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.DiscoveryProfileSource != "" {
 		fmt.Fprintf(b, "- Discovery profile: targets chosen from %s\n", state.DiscoveryProfileSource)
 	}
-	b.WriteString("\n")
-	writeSchemaNotice(b, state)
+	fmt.Fprintf(b, "\n- Report schema: `%d`\n\n", state.SchemaVersion)
 }
 
 // tradeoffName names the trade-off a campaign's verdicts were judged under.
@@ -212,44 +209,6 @@ func tradeoffFlags(t manifest.Tradeoff) string {
 		}
 	}
 	return flags.String()
-}
-
-// writeSchemaNotice says which shape a report is in. A directory written before
-// reports carried a version cannot promise the fields a current reader expects,
-// and saying so is the difference between an old artifact and a broken one.
-func writeSchemaNotice(b *strings.Builder, state State) {
-	if state.SchemaVersion == ReportSchemaVersion {
-		fmt.Fprintf(b, "- Report schema: `%d`\n\n", state.SchemaVersion)
-		return
-	}
-	fmt.Fprintf(b, "- Report schema: unversioned (current is `%d`)\n\n", ReportSchemaVersion)
-	fmt.Fprintf(b, "> This report was written before reports carried a schema version, so fields added since — structured workload identity among them — may be missing or blank in the sections below. Re-run the campaign to produce a current report.\n\n")
-}
-
-// writeLegacyNotice explains a report whose comparisons predate structured
-// workload identities. A campaign directory outlives the build that wrote it,
-// so an operator can open one from before the change; those rows carry neither
-// a metric nor a workload and render as `unlabelled`, which is honest but
-// opaque without this line.
-func writeLegacyNotice(b *strings.Builder, state State) {
-	legacy := 0
-	for _, record := range state.CandidateRecords {
-		legacy += unlabelledComparisons(record.Comparisons) + unlabelledComparisons(record.PgoComparisons)
-	}
-	if legacy == 0 {
-		return
-	}
-	fmt.Fprintf(b, "> %d comparison row(s) in this report were recorded before comparisons carried structured workload identities, so they cannot name the workload they measured and appear as `%s`. Re-run the campaign to label them.\n\n", legacy, unlabelledWorkload)
-}
-
-func unlabelledComparisons(comparisons []domain.MetricComparison) int {
-	count := 0
-	for _, comparison := range comparisons {
-		if comparison.Metric == "" {
-			count++
-		}
-	}
-	return count
 }
 
 func writeInventory(b *strings.Builder, state State) {
@@ -299,24 +258,10 @@ func writeUnbuildable(b *strings.Builder, packages []string) {
 	}
 }
 
-// unlabelledWorkload is what a report prints where a workload label is missing,
-// which means a record written before runs and comparisons carried one.
-// Printing nothing would read as a rendering fault, and printing the derived
-// run identifier would name something no operator can act on.
-const unlabelledWorkload = "unlabelled"
-
-// labelOrUnlabelled renders a workload label, falling back to the placeholder.
-func labelOrUnlabelled(label string) string {
-	if label == "" {
-		return unlabelledWorkload
-	}
-	return label
-}
-
 func writeBaselineWorkloads(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "\n## Baseline workloads\n\n| Workload | Exit | Wall time | Evidence |\n|---|---:|---:|---|\n")
 	for _, run := range state.Runs {
-		fmt.Fprintf(b, "| `%s` | %d | %s | `%s` |\n", labelOrUnlabelled(run.Workload), run.ExitCode, run.Duration, run.ID)
+		fmt.Fprintf(b, "| `%s` | %d | %s | `%s` |\n", run.Workload, run.ExitCode, run.Duration, run.ID)
 	}
 }
 
@@ -343,7 +288,7 @@ func writeDegradedRoles(b *strings.Builder, state State) {
 	if len(state.DegradedRoles) == 0 {
 		return
 	}
-	b.WriteString("\n## Degraded roles\n\nA role whose model call failed is absorbed rather than fatal: the campaign continues with an empty result, so a candidate below may be missing that role's output. A cycle in which every model role failed stops the campaign as `failed` instead, naming the provider; resume it once the provider answers.\n\n")
+	b.WriteString("\n## Degraded roles\n\nA role whose model call failed is absorbed rather than fatal: the campaign continues with an empty result, so a candidate below may be missing that role's output. Two consecutive cycles in which the optimizer failed stop the campaign as `failed` instead, naming the provider; resume it once the provider answers.\n\n")
 	for _, degraded := range state.DegradedRoles {
 		fmt.Fprintf(b, "- `%s`: %s\n", degraded.Role, degraded.Cause)
 	}
@@ -435,7 +380,7 @@ func writeCandidateSamples(b *strings.Builder, record CandidateRecord) {
 	}
 	b.WriteString("\nPer-repetition wall times (ns):\n\n")
 	for _, s := range record.Samples {
-		fmt.Fprintf(b, "- `%s` baseline %v / candidate %v\n", labelOrUnlabelled(s.Workload), fmtFloats(s.BaselineNs), fmtFloats(s.CandidateNs))
+		fmt.Fprintf(b, "- `%s` baseline %v / candidate %v\n", s.Workload, fmtFloats(s.BaselineNs), fmtFloats(s.CandidateNs))
 	}
 	b.WriteString("\n")
 }
@@ -586,7 +531,7 @@ func loadReportSnapshot(path string) (State, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return State{}, err
 	}
-	return state, nil
+	return state, checkSchemaVersion(state)
 }
 
 func fmtFloats(values []float64) string {

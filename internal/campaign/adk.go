@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 	"github.com/asaf-shitrit/gotorque/internal/policy"
-	"github.com/asaf-shitrit/gotorque/internal/workload"
 	adkagent "google.golang.org/adk/v2/agent"
 	adkrunner "google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
@@ -35,7 +33,7 @@ func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrato
 	// result meant a budget-spent campaign — exactly the outcome the patch
 	// budget is meant to reach — reported no cost at all.
 	defer e.recordTokenUsage(roleSet)
-	cfg.StopWhenRankingExhausted = e.state.Analyst == AnalystJev && !e.state.FreeChoice
+	cfg.StopWhenRankingExhausted = !e.state.FreeChoice
 	adk, message, err := e.prepareADK(roleSet, cfg)
 	if err != nil {
 		return orchestrator.CampaignResult{}, err
@@ -115,11 +113,11 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 	}
 	services := adkServices{engine: e}
 	deps := orchestrator.Dependencies{Runner: services, Policy: services, Jobs: services, Agents: roleSet}
-	if roleSet.CauseEvaluator != nil {
-		deps.Causes = causeAnalyst{engine: e, evaluator: roleSet.CauseEvaluator, usage: roleSet.Usage}
+	if e.causeJev != nil {
+		deps.Causes = causeAnalyst{engine: e, evaluator: e.causeJev, usage: roleSet.Usage}
 	}
-	if roleSet.ReviewEvaluator != nil {
-		deps.Review = reviewAnalyst{engine: e, evaluator: roleSet.ReviewEvaluator, usage: roleSet.Usage}
+	if e.reviewJev != nil {
+		deps.Review = reviewAnalyst{engine: e, evaluator: e.reviewJev, usage: roleSet.Usage}
 	}
 	orch, err := orchestrator.New(deps, cfg)
 	if err != nil {
@@ -311,38 +309,20 @@ func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result 
 func (s adkServices) Inspect(_ context.Context, _ orchestrator.CampaignRequest) (orchestrator.Inspection, error) {
 	return orchestrator.Inspection{Packages: append([]string(nil), s.engine.state.Inventory.Packages...), Commands: append([]string(nil), s.engine.state.Inventory.Commands...), Metadata: map[string]string{"authority": s.engine.state.Environment.Authority}}, nil
 }
-func (s adkServices) Discover(_ context.Context, req orchestrator.DiscoveryRequest) (orchestrator.DiscoveryEvidence, error) {
+func (s adkServices) Discover(_ context.Context, _ orchestrator.DiscoveryRequest) (orchestrator.DiscoveryEvidence, error) {
 	runs := make([]string, 0, len(s.engine.state.Runs))
 	for _, run := range s.engine.state.Runs {
 		runs = append(runs, run.ID)
 	}
 	hotFunctions := append([]string(nil), s.engine.state.DiscoveryHotFunctions...)
-	metadata := map[string]string{"entry_points": strconv.Itoa(len(req.Explorer.EntryPoints))}
+	metadata := map[string]string{}
 	if s.engine.state.DiscoveryProfileSummaryPath != "" {
 		metadata["profile_summary"] = s.engine.state.DiscoveryProfileSummaryPath
 	}
 	if len(s.engine.state.DiscoveryWorkloads) > 0 {
 		metadata["explored_workloads"] = strings.Join(s.engine.state.DiscoveryWorkloads, "; ")
 	}
-	// Explorer proposals are model output: validate each one deterministically
-	// and drop invalid proposals instead of failing the whole turn, mirroring
-	// the fixture-shape tolerance used elsewhere.
-	accepted := 0
-	var rejections []string
-	for _, proposal := range req.Explorer.Proposals {
-		if err := workload.ValidateProposal(proposal, s.engine.state.Manifest); err != nil {
-			rejections = append(rejections, fmt.Sprintf("%s: %v", proposal.Name, err))
-			continue
-		}
-		accepted++
-	}
-	metadata["proposals_accepted"] = strconv.Itoa(accepted)
-	metadata["proposals_rejected"] = strconv.Itoa(len(rejections))
-	if len(rejections) > 0 {
-		metadata["proposal_rejections"] = strings.Join(rejections, "; ")
-	}
-	summary := fmt.Sprintf("baseline discovery evidence (%d/%d explorer proposals valid)", accepted, len(req.Explorer.Proposals))
-	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: summary, Metadata: metadata, HotFunctionWeights: s.engine.state.DiscoveryHotFunctionWeights, UnbufferedWrites: s.engine.state.DiscoveryUnbufferedWrites}, nil
+	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: "baseline discovery evidence", Metadata: metadata, HotFunctionWeights: s.engine.state.DiscoveryHotFunctionWeights, UnbufferedWrites: s.engine.state.DiscoveryUnbufferedWrites}, nil
 }
 func (s adkServices) EvaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
 	return s.engine.evaluateCandidate(ctx, req)

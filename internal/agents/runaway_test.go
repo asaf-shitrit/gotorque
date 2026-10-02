@@ -40,12 +40,8 @@ func TestAReasoningRunawayIsRetriedWithReasoningOff(t *testing.T) {
 		_, _ = io.WriteString(w, sseCreated+sseItemAdded+sseDeltaOne+sseDeltaTwo+sseCompleted)
 	}))
 	t.Cleanup(server.Close)
-	routing := Routing{}
-	for _, role := range AllRoles {
-		routing[role] = "test/model"
-	}
-	p := OpenAIProvider{APIKey: "secret", BaseURL: server.URL + "/v1", Routing: routing, Reasoning: Reasoning{RoleOptimizer: ReasoningLow}}
-	inner, err := p.roleModel(context.Background(), RoleOptimizer)
+	p := OpenAIProvider{APIKey: "secret", BaseURL: server.URL + "/v1", Model: "test/model", Reasoning: ReasoningLow}
+	inner, err := p.endpointModel(context.Background())
 	require.NoError(t, err)
 	m := &fenceStrippingModel{inner: newStreamedModel(inner), role: string(RoleOptimizer), attempts: 3}
 

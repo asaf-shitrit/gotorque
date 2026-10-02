@@ -85,8 +85,7 @@ type RunResult struct {
 	// Workload is the manifest seed the run measured, copied from the request
 	// so a report can name a workload the way an operator writes it in the
 	// target manifest. WorkloadID stays the derived identifier the artifacts
-	// are keyed by; empty means the label is unknown (a run recorded before
-	// runs carried one).
+	// are keyed by.
 	Workload          string            `json:"workload,omitempty"`
 	Mode              RunMode           `json:"mode"`
 	StartedAt         time.Time         `json:"started_at"`
@@ -117,8 +116,7 @@ type Candidate struct {
 	// optimizer-authored unified diff (the default, and the fallback for a
 	// candidate with no target), or "function_source" when code built the
 	// diff from the optimizer's whole replacement function declaration
-	// (ADR 0022). Empty is equivalent to "patch" for records written before
-	// this field existed.
+	// (ADR 0022).
 	Transport string `json:"transport,omitempty"`
 }
 
@@ -143,8 +141,7 @@ type MetricComparison struct {
 	// acceptance-eligible workload. Eligibility is therefore structural: a
 	// comparison is eligible for a verdict when its Metric is the primary one,
 	// and it is the aggregate rather than a single workload when Workload is
-	// empty. Both used to be encoded in one string name ("<id>/<metric>"),
-	// which three packages had to agree on.
+	// empty (ADR 0001).
 	Workload         string  `json:"workload,omitempty"`
 	Unit             string  `json:"unit"`
 	Baseline         float64 `json:"baseline"`

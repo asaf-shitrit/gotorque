@@ -16,7 +16,9 @@ ADK workflow graph -------- campaign state and artifacts (bbolt)
     |
     +-- deterministic nodes: inspect, discovery, evaluate candidate, policy, routing
     |
-    +-- specialist agents: coordinator, explorer, analyst, optimizer, reviewer
+    +-- optimizer: the only model role
+    |
+    +-- Jev (TypeSafe): analyst, reviewer and explorer questions, ranked in code
 ```
 
 Campaign state lives in a bbolt store (`campaign.db`) inside the campaign
@@ -28,21 +30,23 @@ under the campaign directory.
 ## ADK workflow
 
 The workflow is a bounded graph rather than an unconstrained chat loop. The
-actual node sequence built by `internal/orchestrator` is:
+optimizer is the only node that calls a model. The coordinator and explorer
+nodes are function nodes over code (`planCoordinator`, `planExplorer`), and the
+analyst and reviewer are function nodes over `Dependencies.Causes` and
+`Dependencies.Review`, which Jev answers (ADR 0035). The actual node sequence
+built by `internal/orchestrator` is:
 
 ```text
 initialize_campaign
   -> inspect_repository
-  -> coordinator (choose next experiment)
-  -> explorer (propose workload strategies; with --explorer jev, a stub that
-              reports the variants discovery already sampled)
-  -> run_discovery (deterministic; validates each proposal)
-  -> analyst (interpret profile and coverage evidence; with --analyst jev,
-             deterministic Jev cause classification instead of a model)
+  -> coordinator (code: choose next experiment)
+  -> explorer (code: reports the variants discovery will sample)
+  -> run_discovery (deterministic; baseline discovery evidence)
+  -> analyst (Jev cause classification, ranked in code)
   -> merge_analysis (deterministic; attach source excerpts)
   -> optimizer (one focused patch)
   -> evaluate_candidate (deterministic; see below)
-  -> reviewer (adversarial review, advisory only)
+  -> reviewer (Jev behaviour-hazard checks, advisory only)
   -> apply_policy (deterministic acceptance decision)
   -> route_campaign
         continue -> back to coordinator
@@ -54,29 +58,25 @@ consecutive-failure limit is reached; the engine's `max_duration` bound (see
 Campaign bounds) can also end a run from outside the graph, at whatever node
 is executing when it expires.
 
-A role whose model call fails degrades to an empty result (`role_degraded`)
-instead of ending the run, because every role has a deterministic fallback
-for an absent answer. A provider that is down, or a revoked key, used to
-exploit that: every role degraded on every cycle, the optimizer's empty patch
-was rejected as if a model had written it, and the campaign ended
-`completed` at the rejection streak, blaming the patches for the provider.
-Each degraded role now appends to `CampaignState.CycleFailures`, and route
-checks it before any bound. When every model role failed in the same cycle,
-the campaign stops with a stop reason naming the last failure, and
-`finishCampaign` returns `ErrProviderUnavailable`, so it ends `failed` and can
-be resumed once the provider answers. The record is cleared every cycle, so
-roles that fail in different cycles never add up to an outage. A role Jev
-serves is not counted: with `--analyst jev` neither the analyst nor the
-coordinator, which becomes a deterministic plan that never calls a model, with
-`--reviewer jev` not the reviewer, and with `--explorer jev` not the explorer,
-a stub that reports the variants discovery sampled. Jev is served by a different endpoint,
-so a role it answers would otherwise keep the breaker from ever tripping. When
-those roles leave the optimizer as the only model role, one cycle in which it
-failed is the same single failed call the degrading wrapper absorbs whenever
-another role answers, so the breaker then waits for two consecutive failed
-cycles (`outageCycles`). One slow cycle had ended a gojq campaign two
-candidates early. Permanent HTTP statuses are still not retried, so a revoked
-key stops a campaign within two quick cycles.
+A role whose call fails degrades to an empty result (`role_degraded`) instead
+of ending the run, because every role has a deterministic fallback for an
+absent answer. A provider that is down, or a revoked key, used to exploit that:
+every role degraded on every cycle, the optimizer's empty patch was rejected as
+if a model had written it, and the campaign ended `completed` at the rejection
+streak, blaming the patches for the provider. Each degraded role appends to
+`CampaignState.CycleFailures`, and route checks it before any bound. The
+optimizer is the only model role, and only its failures count: Jev is served by
+a different endpoint, and a Jev failure degrades its role to discovery's hot
+paths or no concerns without ever tripping the breaker. When the optimizer
+fails in two consecutive cycles (`outageCycles`), the campaign stops with a
+stop reason naming the last failure, and `finishCampaign` returns
+`ErrProviderUnavailable`, so it ends `failed` and can be resumed once the
+provider answers. A cycle in which the optimizer succeeds clears the record, so
+failures that are not consecutive never add up to an outage. One failed cycle
+is not enough because the degrading wrapper already absorbs a single failed
+call, and one slow cycle had ended a gojq campaign two candidates early.
+Permanent HTTP statuses are still not retried, so a revoked key stops a
+campaign within two quick cycles.
 
 The final acceptance transition is
 always produced by deterministic policy (`internal/policy`); agent output,
@@ -458,23 +458,22 @@ Locations that are absolute, escape the repository root, repeat a
 silently. The cap counts excerpts actually produced rather than locations
 examined: capping candidates first meant five unusable leading locations
 yielded nothing even when later ones resolved cleanly. The excerpts travel in campaign state as `source_excerpts`, and
-both coordinator and optimizer instructions direct the optimizer to anchor
+the optimizer's instructions direct it to anchor
 diff context lines to excerpt text rather than guessing, which is what keeps
 strict `git apply` viable on model-generated patches.
 
 ## Jev cause analyst
 
-`--analyst jev` (with `--adk` or `--adk-stub`) replaces the analyst model role
-with cause classification ranked in code (ADR 0012). The orchestrator swaps the
-analyst agent node for a function node of the same name that calls
+The analyst is always Jev: cause classification ranked in code (ADR 0012).
+The orchestrator's analyst node is a function node that calls
 `Dependencies.Causes`; `internal/campaign/causes.go` implements it and
 `internal/jev` holds the System One client, the questions, their baseline, and the
-ranking. The node returns the same `AnalystResult`, so `merge_analysis`,
-excerpts, and the optimizer are unchanged, and a failure degrades like a failed
-model call: an empty result, a `role_degraded` record against `analyst`, and
-discovery's hot paths as the fallback. Only a cycle in which no function could
-be classified fails the node; a single function that fails is listed in
-`additional_checks` instead.
+ranking. The node returns an `AnalystResult`, so `merge_analysis`, excerpts, and
+the optimizer consume it directly, and a failure degrades like any failed role:
+an empty result, a `role_degraded` record against `analyst`, and discovery's hot
+paths as the fallback. Only a cycle in which no function could be classified
+fails the node; a single function that fails is listed in `additional_checks`
+instead.
 
 Jev (TypeSafe, reached through OpenRouter's System One API `/systemone`, which
 the OpenAI-compatible API does not serve; ADR 0030) answers typed questions
@@ -594,8 +593,7 @@ request, and a 20-function live replay against the real gateway
 pick between asking the two sets separately and asking them together, so only
 the number of requests changed. When a kind leads
 its cause's next kind by at least `KindGate` (0.25 sd) at a z of at least 0,
-the target carries `fix_kind` and that kind's narrower remedy. Hot paths keep discovery's `path:line` verbatim, which the model
-analyst used to reformat. Per-function scores are persisted with a
+the target carries `fix_kind` and that kind's narrower remedy. Hot paths keep discovery's `path:line` verbatim. Per-function scores are persisted with a
 `cause_analysis` event, Jev's token usage is recorded under the analyst role,
 and the report header names the analyst. None of it reaches `apply_policy`.
 
@@ -625,14 +623,12 @@ deterministic nodes, and a cycle with no target left hands the optimizer
 everything, as before. Tried targets
 are recorded with each verdict and handed back on resume, so no measured
 target is attacked twice (an unmeasured one gets one retry, see step 3 of the
-evaluation). Once every flagged target has been tried, a Jev-analyst
-campaign finishes ("every target the analysis flagged has been tried") rather
+evaluation). Once every flagged target has been tried, the campaign finishes ("every target the analysis flagged has been tried") rather
 than handing the optimizer free choice: across the 2026-09-28 overnight
 campaigns, 35 free-choice candidates produced no new accepted fix (the two
 they accepted rediscovered known ones) and failed to build or apply at
 nearly twice the rate of code-chosen targets. `--free-choice` keeps the old
-behavior, where the optimizer then chooses freely; a model analyst, which
-ranks nothing, always does. `--history DIR` (repeatable, ADR 0031) extends "tried"
+behavior, where the optimizer then chooses freely. `--history DIR` (repeatable, ADR 0031) extends "tried"
 across campaigns: every target an earlier campaign of the same revision
 measured is loaded when the campaign is created, persisted as
 `HistoryTargets`, and counted as tried by `priorTargets`, so a new campaign
@@ -641,13 +637,13 @@ revision is listed in the report as skipped rather than trusted, because its
 locations may point at different code. The measured candidates' IDs (a digest of
 revision and normalized patch) are carried too, and a candidate whose patch
 this revision already measured, in a history campaign or earlier in this one,
-is rejected before it is built (`rejectMeasuredDuplicate`). The coordinator model is not called in this mode, because
-nothing is left for it to decide. On a live gron campaign it took up to 2m40s a
-cycle, and left with a ranked list the optimizer ignored the top target and
+is rejected before it is built (`rejectMeasuredDuplicate`). The coordinator is code (`planCoordinator`) and
+calls no model, because nothing is left for a model to decide. When it was a
+model it took up to 2m40s a cycle on a live gron campaign, and left with a
+ranked list the optimizer ignored the top target and
 micro-optimized `validIdentifier` (inconclusive, -0.85%) before taking the top
 target on its second attempt: the bufio writer around the output loop, accepted
-at -15.1% wall time. A model analyst ranks nothing, so none of this changes its
-path.
+at -15.1% wall time.
 
 **Multi-function targets (ADR 0027, proposed, `internal/campaign/callers.go`).** Every
 target above is confined to one function. A separate, code-only signal —
@@ -724,9 +720,8 @@ access, and the pinned build (`typesafe/jev-1.13-20260917`, ADR 0030) all
 work before the analyst node is reached. Calls are sequential and
 retry HTTP 429 and 5xx with 1-16 s backoff: the provider throttled 36% of
 attempts at twelve in flight, and even sequential calls met a 429 that
-outlasted a 15 s ladder. `--adk-stub --analyst jev` uses a no-network stub,
-and a resumed campaign that started with `--analyst jev` must be given it
-again, the same rule as `--adk`.
+outlasted a 15 s ladder. `--adk-stub` uses a no-network stub (`jev.Stub`), and
+a resumed campaign must be given `--adk` or `--adk-stub` again.
 
 Jev only classifies what discovery lists. On gron the output loop behind the
 accepted `bufio` patch appears in discovery only as `fmt.(*pp).doPrintln`, a
@@ -736,9 +731,8 @@ I/O at +3.3 sd.
 
 ## Jev reviewer
 
-`--reviewer jev` (with `--adk` or `--adk-stub`) replaces the reviewer model role
-the same way (ADR 0014): `Dependencies.Review` swaps in a function node named
-`reviewer` that calls `internal/campaign/review.go`, which asks Jev one yes/no
+The reviewer is always Jev (ADR 0014): `Dependencies.Review` supplies the
+function node named `reviewer`, which calls `internal/campaign/review.go`, which asks Jev one yes/no
 question per behaviour hazard about the patch: output order that depends on map
 iteration or scheduling, changed errors or exit status, a dropped error from a
 call that can fail, an effect skipped on some path, reused-buffer aliasing, new
@@ -760,18 +754,18 @@ baseline breaks that.
 Until this, the reviewer's answer reached a policy input the policy ignores and
 nothing kept it. Its concerns are now recorded with the verdict, printed in the
 report under the candidate, and carried into the next cycle's
-`prior_candidates`, whichever reviewer ran. They remain advice: the policy
+`prior_candidates`. They remain advice: the policy
 never reads them.
 
 ## Jev explorer
 
-`--explorer jev` (with `--adk` or `--adk-stub`) replaces the explorer model role
-(ADR 0015). The model's proposals were validated by `run_discovery` and counted,
-but never run, so discovery only ever sampled the manifest's first seed and a
-CLI's other modes were invisible to it: gron's `--stream` runs `gronStream`,
-which the seed never reaches. With the flag, the variants are chosen before
-discovery samples anything (`internal/campaign/explore.go`), and the explorer
-node answers at once with that plan (`agents.PlannedExplorer`):
+The explorer is always Jev (ADR 0015). Without it discovery would only sample
+the manifest's first seed, and a CLI's other modes would be invisible to it:
+gron's `--stream` runs `gronStream`, which the seed never reaches. The variants
+are chosen before discovery samples anything (`internal/campaign/explore.go`),
+and the explorer node (`planExplorer`, code) reports that plan. `run_discovery`
+does not validate explorer proposals, and `internal/workload` only reads the
+target's boolean options (`flags.go`):
 
 1. Code lists the boolean options the target declares
    (`internal/workload.BoolFlags`): standard `flag` and pflag/cobra `Bool`,
@@ -832,10 +826,10 @@ go-jsonnet and 42 for 3 on dasel, almost all of them a rerun of the previous
 cycle's question. `internal/campaign/jevcache.go` (ADR 0028) memoizes a Jev
 response by `jev.Digest(req)` — the exact model id, state, and question set a
 request carries, the same three things `Evaluate` sends over the wire — so a
-repeated request is answered without a round trip. `noteAnalyst`
+repeated request is answered without a round trip. `attachJev`
 (`engine.go`, called from both `attachADK` on a fresh campaign and `SetADK` on
-resume) wraps `roleSet.CauseEvaluator` and `roleSet.ExploreEvaluator` in a
-`cachingEvaluator` before either reaches the graph; the reviewer is not
+resume) derives the cause and explore evaluators from the set's one Jev
+evaluator and wraps each in a `cachingEvaluator` before either reaches the graph; the reviewer is not
 wrapped, because its state carries the candidate's own patch text, which
 differs by construction from one candidate to the next, so it was checked and
 found not to repeat.
@@ -991,7 +985,7 @@ further candidates until the budget holds fifteen distinct entries.
 
 The annotated locations are stored in campaign state as
 `discovery_hot_functions` along with the raw summary artifact, and surface to
-the analyst and coordinator as measured hot functions. Only when both sources
+the analyst as measured hot functions. Only when both sources
 fail does the engine record a `discovery_profile_skipped` event and leave
 discovery evidence empty, rather than failing the campaign.
 
@@ -1082,17 +1076,17 @@ only removes parse failures of otherwise usable recommendations.
   had its hunk counts recomputed by normalization, and read in every record
   like one the model meant. The repaired value is still judged normally, and
   policy never reads the field.
-- Retry and usage decoration: the OpenAI-compatible provider wraps every
-  role model in a decorator that transparently retries up to three attempts
+- Retry and usage decoration: the OpenAI-compatible provider wraps the
+  optimizer model in a decorator that transparently retries up to three attempts
   of at most six minutes each, with 15 then 30 second backoff, while a call
   fails before producing
   any content (shared-pool rate limits otherwise abort multi-hour campaigns),
-  and records per-role token usage into a collector persisted with campaign
+  and records token usage into a collector persisted with campaign
   state. Endpoint credentials and API keys are never persisted. HTTP 400,
   401, 402, 403, 404 and 422 end the ladder on the first attempt: they
   describe the request, the credential or the account, so a revoked key or
   an OpenRouter balance too low for the request (402 Payment Required) used
-  to spend the whole ladder on every role before degrading anyway. They are
+  to spend the whole ladder before degrading anyway. They are
   recognized with `errors.As` against openai-go's `*openai.Error`, which ADK
   yields raw on the streaming path. 408, 409, 429, 5xx, transport errors, stalls and
   incomplete streams still retry. The per-attempt deadline is a
@@ -1126,38 +1120,34 @@ only removes parse failures of otherwise usable recommendations.
 
 ## Model routing
 
-Each ADK role receives its model through an injected OpenAI-compatible
-provider. Per-role model IDs come from environment variables:
-`GOTORQUE_MODEL_COORDINATOR`, `GOTORQUE_MODEL_EXPLORER`,
-`GOTORQUE_MODEL_ANALYST`, `GOTORQUE_MODEL_OPTIMIZER`,
-`GOTORQUE_MODEL_REVIEWER`. Unset roles fall back to the built-in defaults
-(`deepseek/deepseek-v4.1-flash` for every role). Per-role overrides remain a
-cost/latency lever: a cheap model can handle high-volume evidence work while a
-stronger one handles synthesis. All builds, measurements, behavior checks,
-and acceptance transitions remain deterministic and model-independent.
+The optimizer is the only model role, and it receives its model through an
+injected OpenAI-compatible provider (ADR 0035). Its model ID comes from
+`GOTORQUE_MODEL_OPTIMIZER` and defaults to `deepseek/deepseek-v4.1-flash`
+(`ModelFromEnvironment`). The other roles' variables no longer exist: the
+coordinator is code, and the analyst, reviewer and explorer are Jev. All
+builds, measurements, behavior checks, and acceptance transitions remain
+deterministic and model-independent.
 
 Before expensive repository work starts, the provider validates connectivity:
 it requires `OPENROUTER_API_KEY`, checks endpoint reachability via
 `OPENROUTER_BASE_URL` (defaulting to `https://openrouter.ai/api/v1`), and
-verifies every configured model ID is advertised by the endpoint. It also
-rejects a routed model whose advertised `top_provider.max_completion_tokens`
-is below `MaxOutputTokens` (32768, what every role requests), naming the role.
+verifies the configured optimizer model ID is advertised by the endpoint. It also
+rejects a model whose advertised `top_provider.max_completion_tokens`
+is below `MaxOutputTokens` (32768, what the optimizer requests).
 Such a model would otherwise fail every call with a client error at request
 time. A model that does not advertise the field passes.
 
-Reasoning effort is optional per role:
-`GOTORQUE_REASONING_{COORDINATOR,EXPLORER,ANALYST,OPTIMIZER,REVIEWER}` takes
+Reasoning effort is optional: `GOTORQUE_REASONING_OPTIMIZER` takes
 `low`, `medium` or `high`, and anything else fails the preflight. ADK's
 openaimodel maps only `MaxOutputTokens` onto the Responses API request, never
-`ThinkingConfig`, so a per-role transport (`reasoningTransport`) sets
-`reasoning.effort` on the request body. Unset sends nothing and leaves the
-provider's default, with one exception: under `--analyst jev` code chooses the
-target and remedy, the optimizer only writes one small diff, and its effort
-defaults to `low`. At the provider's default a live gojq campaign ran past the
+`ThinkingConfig`, so a transport (`reasoningTransport`) sets
+`reasoning.effort` on the request body. Unset, the effort defaults to `low`:
+code chooses the target and remedy, and the optimizer only writes one small
+diff. At the provider's default a live gojq campaign ran past the
 32k completion budget on all four attempts of a cycle and the breaker ended
 it; at `low` every call answered in two to three minutes. An explicit
-`GOTORQUE_REASONING_OPTIMIZER` still wins. Campaign state does not record the routed model IDs or
-efforts.
+`GOTORQUE_REASONING_OPTIMIZER` still wins. Campaign state does not record the
+routed model ID or effort.
 
 Model calls and that preflight resolve their base URL through the same
 `endpoint()` accessor, so they cannot disagree. Passing an empty `BaseURL` to
@@ -1193,25 +1183,23 @@ non-thought deltas instead and holds the last item back until another arrives,
 so the answer is delivered once; usage metadata still comes from that last item,
 which is where the endpoint reports it.
 
-Per-role token accounting survives the change: verified against the live
+Token accounting survives the change: verified against the live
 endpoint, one call yields exactly one response with its usage attached.
 
 The attempt deadline in `fence.go` (four minutes per ladder attempt) remains as
 the backstop, sized so attempts×timeout + backoff fits the orchestrator's
 twenty-minute per-node agent deadline.
 
-`--analyst jev` takes the analyst off this path entirely: it calls OpenRouter's
-System One API with `OPENROUTER_API_KEY`, pinned to an exact Jev build (see
-Jev cause analyst, ADR 0030). The analyst's routed model is still validated
-and built, but never called.
+The analyst, reviewer and explorer are not on this path at all: they call
+OpenRouter's System One API with `OPENROUTER_API_KEY`, pinned to an exact Jev
+build (see Jev cause analyst, ADR 0030).
 
-Role output shape is not enforced by the endpoint. Each role's instruction
+The optimizer's output shape is not enforced by the endpoint. Its instruction
 states strict JSON rules, and `internal/agents/decode.go` repairs the defects
 models actually emit (fenced blocks, unterminated strings, missing brackets).
-`roleResponseSchema` can derive a structured-output schema per role, but
-requesting one restricts OpenRouter to providers advertising
-`structured_outputs`, which for the default model is a single saturated
-provider; see the comment on that function before enabling it.
+Requesting a structured-output schema would restrict OpenRouter to providers
+advertising `structured_outputs`, which for the default model is a single
+saturated provider, so none is requested.
 
 ## Campaign bounds
 
@@ -1272,11 +1260,13 @@ spent of it.
 Campaign steps are checkpointed in bbolt (`CompletedSteps`), so an
 interrupted campaign resumes completed phases instead of redoing them.
 In-memory agent clients cannot be serialized, so `optimize --resume DIR`
-requires re-supplying the agent mode: pass `--adk` again for live agents
-(the provider and role set are rebuilt from the environment) or `--adk-stub`
-for deterministic stubs. Campaign state records `adk_mode`, and resuming a
+requires re-supplying the agent mode: pass `--adk` again for the live
+optimizer and Jev (the provider is rebuilt from the environment) or `--adk-stub`
+for the stubs. Campaign state records `adk_mode`, and resuming a
 campaign that was started with agents without passing either flag fails with
-an explicit error. Because a resumed campaign takes its manifest from
+an explicit error. A campaign that ran model roles (`adk_mode` set, analyst not
+`jev`) is refused with `ran model roles this build no longer has; start a new
+campaign`. Because a resumed campaign takes its manifest from
 persisted state and `--resume` rejects an explicit `--manifest`, the resume
 path reads the manifest path out of state rather than requiring the flag.
 Demanding one made `optimize --resume DIR --adk` impossible to satisfy in
