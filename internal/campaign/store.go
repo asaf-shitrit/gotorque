@@ -81,7 +81,10 @@ func (s *Store) Load() (State, error) {
 		}
 		return json.Unmarshal(data, &state)
 	})
-	return state, err
+	if err != nil {
+		return State{}, err
+	}
+	return state, checkSchemaVersion(state)
 }
 
 func (s *Store) Append(event Event) error {

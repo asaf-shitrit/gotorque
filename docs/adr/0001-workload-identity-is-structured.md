@@ -23,8 +23,9 @@ primary`), and the policy consumes the domain type directly.
 
 `policy.Comparison`, `policy.ComparisonResult` and two conversion blocks are gone. Verdicts and all
 three report tables name seeds the way an operator writes them (`workload "flatten-users" improved
-by 3.26%`), and benchstat sample files are named by seed. Artifacts written before this render
-`unlabelled` and say why.
+by 3.26%`), and benchstat sample files are named by seed. Artifacts written before this rendered
+`unlabelled` until 2026-10-02; since then a campaign directory from before report schema 1 is
+refused when it is loaded, and the report asks for a re-run.
 
 ## Alternatives considered
 

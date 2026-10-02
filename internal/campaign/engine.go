@@ -160,8 +160,8 @@ type State struct {
 	// verdict and a resume read; this records where that block came from.
 	Tradeoff manifest.Tradeoff `json:"tradeoff,omitzero"`
 	// SchemaVersion is stamped by WriteReports onto the artifact it writes, so a
-	// report carries the shape it was written in. It stays zero for state that
-	// predates versioning, which readers report rather than assume.
+	// report carries the shape it was written in. Loading refuses any other
+	// version (checkSchemaVersion); state from before versioning carries zero.
 	SchemaVersion int `json:"schema_version,omitempty"`
 	// HistoryTargets are targets earlier campaigns of this revision already
 	// measured (--history); priorTargets counts them as tried. They are

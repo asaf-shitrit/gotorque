@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
@@ -105,22 +106,24 @@ func TestLoadReportFallsBackToSnapshotWhileDatabaseIsLocked(t *testing.T) {
 	}
 }
 
-// A campaign directory outlives the build that wrote it, so a report recorded
-// before comparisons carried structured workload identities has to say why its
-// rows are unlabelled instead of leaving an operator to guess.
-func TestRenderMarkdownExplainsUnlabelledRows(t *testing.T) {
-	legacy := RenderMarkdown(State{CandidateRecords: []CandidateRecord{{
-		Attempt:     1,
-		Comparisons: []domain.MetricComparison{{Baseline: 100, Candidate: 90, DeltaPercent: -10}},
-	}}})
-	require.Contains(t, legacy, "unlabelled")
-	require.Contains(t, legacy, "before comparisons carried structured workload identities")
+// A campaign directory outlives the build that wrote it. One written before
+// report schema 1 lacks fields every reader relies on, so loading it fails
+// with a request to re-run instead of rendering around the gaps.
+func TestLoadRefusesStateOfAnotherSchema(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, DatabaseName))
+	require.NoError(t, err)
+	require.NoError(t, store.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(stateBucket).Put(stateKey, []byte(`{"id":"c0"}`))
+	}))
+	require.NoError(t, store.Close())
+	_, err = LoadReport(dir)
+	require.ErrorContains(t, err, "report schema 0, this build reads 1; re-run the campaign")
 
-	current := RenderMarkdown(State{CandidateRecords: []CandidateRecord{{
-		Attempt:     1,
-		Comparisons: []domain.MetricComparison{{Metric: "wall_time_ns", Workload: "flatten-users", Baseline: 100, Candidate: 90, DeltaPercent: -10}},
-	}}})
-	require.NotContains(t, current, "unlabelled", "a current report must not carry the legacy notice")
+	snapshot := filepath.Join(t.TempDir(), ReportJSONName)
+	require.NoError(t, os.WriteFile(snapshot, []byte(`{"id":"c0"}`), 0o600))
+	_, err = loadReportSnapshot(snapshot)
+	require.ErrorContains(t, err, "report schema 0")
 }
 
 // The baseline table names workloads too. It was the third surface still
@@ -129,11 +132,9 @@ func TestRenderMarkdownExplainsUnlabelledRows(t *testing.T) {
 func TestRenderMarkdownLabelsBaselineWorkloads(t *testing.T) {
 	report := RenderMarkdown(State{Runs: []domain.RunResult{
 		{ID: "run-1", WorkloadID: "5995c3425253fee0f8a7d340", Workload: "flatten-users", Duration: time.Second},
-		{ID: "run-2", WorkloadID: "6aacd1da6417eb05f09fefb9", Duration: time.Second},
 	}})
 	require.Contains(t, report, "`flatten-users`")
 	require.NotContains(t, report, "5995c3425253fee0f8a7d340", "a report must not print a derived run identifier as a workload")
-	require.Contains(t, report, "`"+unlabelledWorkload+"`", "a run recorded before labels must say so")
 }
 
 // TestRenderMarkdownNamesTheDiscoveryProfileSource: a lean campaign's
@@ -183,13 +184,6 @@ func TestWriteReportsStampsTheSchemaVersion(t *testing.T) {
 	markdown, err := os.ReadFile(filepath.Join(dir, ReportMarkdownName))
 	require.NoError(t, err)
 	require.Contains(t, string(markdown), "- Report schema: `1`")
-	require.NotContains(t, string(markdown), "unversioned")
-}
-
-func TestRenderMarkdownMarksAnUnversionedReport(t *testing.T) {
-	legacy := RenderMarkdown(State{ID: "campaign-old"})
-	require.Contains(t, legacy, "Report schema: unversioned")
-	require.Contains(t, legacy, "written before reports carried a schema version")
 }
 
 // TestTheEventHeadlinesTheCampaignsOwnMetric: under --tradeoff lean a verdict
