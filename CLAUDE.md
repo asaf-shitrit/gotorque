@@ -111,11 +111,12 @@ exists because sixteen engine commits landed without touching it.
 
 Flow: CLI -> `internal/campaign` engine -> ADK workflow graph
 (`internal/orchestrator`) alternating agent nodes with deterministic nodes. The optimizer is the only
-model; the analyst, reviewer and explorer are Jev, and the coordinator and
-explorer stage nodes are code (`planCoordinator`, `planExplorer`):
+model; the analyst and reviewer are Jev nodes, the explorer's workloads are
+chosen by code and Jev before the graph starts, and code picks each cycle's
+target after the analysis (`planTarget`):
 
 ```
-inspect_repository -> coordinator -> explorer -> run_discovery -> analyst
+inspect_repository -> run_discovery -> analyst
   -> merge_analysis -> optimizer -> evaluate_candidate -> reviewer
   -> apply_policy -> route_campaign (loop or finalize)
 ```

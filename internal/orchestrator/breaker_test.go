@@ -161,9 +161,8 @@ func TestPartialFailuresKeepTheCampaignRunning(t *testing.T) {
 }
 
 // TestProviderOutageTripsWhileJevKeepsAnswering: the analyst and reviewer are
-// served by a different gateway on a different key, and the coordinator and
-// explorer by code, so a model provider outage must trip the breaker even while
-// all four keep answering. The optimizer is the only model role, so the
+// served by a different gateway on a different key, so a model provider
+// outage must trip the breaker even while both keep answering. The optimizer is the only model role, so the
 // breaker waits for a second failed cycle (outageCycles). The analysis ranks
 // targets, as Jev's always does.
 func TestProviderOutageTripsWhileJevKeepsAnswering(t *testing.T) {

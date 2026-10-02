@@ -68,7 +68,7 @@ func TestLiveModelAnswersAnOptimizerPrompt(t *testing.T) {
 	raw := strings.Join(parts, "")
 	require.NotEmpty(t, raw, "the model returned no text")
 
-	decoded, err := DecodeResult[CoordinatorResult](raw)
+	decoded, err := DecodeResult[planResult](raw)
 	require.NoError(t, err, "raw model output: %q", raw)
 	require.NotEmpty(t, decoded.Objective, "decoded: %+v", decoded)
 

@@ -61,13 +61,11 @@ type Inspection struct {
 	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
-// DiscoveryRequest joins agent strategy with immutable campaign context for
-// the deterministic runner.
+// DiscoveryRequest is the campaign context the deterministic runner discovers
+// against.
 type DiscoveryRequest struct {
-	Campaign    CampaignRequest          `json:"campaign"`
-	Attempt     int                      `json:"attempt"`
-	Coordinator agents.CoordinatorResult `json:"coordinator"`
-	Explorer    agents.ExplorerResult    `json:"explorer"`
+	Campaign CampaignRequest `json:"campaign"`
+	Attempt  int             `json:"attempt"`
 }
 
 // DiscoveryEvidence is normalized measured evidence, with raw data referenced
@@ -228,13 +226,11 @@ type RoleFailure struct {
 // nodes, and the degrading wrapper, which records a failed role call in
 // CycleFailures without ever reading the model output it failed to get.
 type CampaignState struct {
-	Request     CampaignRequest          `json:"request"`
-	Job         domain.Job               `json:"job"`
-	Inspection  Inspection               `json:"inspection"`
-	Coordinator agents.CoordinatorResult `json:"coordinator"`
-	Explorer    agents.ExplorerResult    `json:"explorer"`
-	Discovery   DiscoveryEvidence        `json:"discovery"`
-	Analysis    agents.AnalystResult     `json:"analysis"`
+	Request    CampaignRequest      `json:"request"`
+	Job        domain.Job           `json:"job"`
+	Inspection Inspection           `json:"inspection"`
+	Discovery  DiscoveryEvidence    `json:"discovery"`
+	Analysis   agents.AnalystResult `json:"analysis"`
 	// Target is the function and cause code chose for this cycle's patch, or
 	// nil when the analysis ranks no causes and the optimizer chooses.
 	Target              *agents.Target         `json:"target,omitempty"`
@@ -254,7 +250,7 @@ type CampaignState struct {
 	StartedAt               time.Time `json:"started_at"`
 	StopReason              string    `json:"stop_reason,omitempty"`
 	// CycleFailures lists the role calls that failed and were absorbed during
-	// the current coordinator-to-reviewer cycle. The degrading wrapper appends
+	// the current discovery-to-reviewer cycle. The degrading wrapper appends
 	// to it and the route node clears it before the next cycle, so the route
 	// can tell one flaky call from a provider that answered nothing all cycle.
 	// It never outlives a cycle: a resumed campaign starts a fresh one, so it

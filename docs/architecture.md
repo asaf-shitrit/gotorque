@@ -30,17 +30,16 @@ under the campaign directory.
 ## ADK workflow
 
 The workflow is a bounded graph rather than an unconstrained chat loop. The
-optimizer is the only node that calls a model. The coordinator and explorer
-nodes are function nodes over code (`planCoordinator`, `planExplorer`), and the
-analyst and reviewer are function nodes over `Dependencies.Causes` and
-`Dependencies.Review`, which Jev answers (ADR 0035). The actual node sequence
+optimizer is the only node that calls a model. The analyst and reviewer are
+function nodes over `Dependencies.Causes` and `Dependencies.Review`, which Jev
+answers (ADR 0035). Nothing plans a cycle before discovery: the extra workloads
+are chosen before the graph starts (Jev explorer, below), and code chooses each
+cycle's target after the analysis (`planTarget`). The actual node sequence
 built by `internal/orchestrator` is:
 
 ```text
 initialize_campaign
   -> inspect_repository
-  -> coordinator (code: choose next experiment)
-  -> explorer (code: reports the variants discovery will sample)
   -> run_discovery (deterministic; baseline discovery evidence)
   -> analyst (Jev cause classification, ranked in code)
   -> merge_analysis (deterministic; attach source excerpts)
@@ -49,7 +48,7 @@ initialize_campaign
   -> reviewer (Jev behaviour-hazard checks, advisory only)
   -> apply_policy (deterministic acceptance decision)
   -> route_campaign
-        continue -> back to coordinator
+        continue -> back to run_discovery
         finish   -> finalize_campaign
 ```
 
@@ -600,8 +599,8 @@ and the report header names the analyst. None of it reaches `apply_policy`.
 With causes ranked, code rather than a model chooses what each candidate
 attacks (ADR 0013). The analysis carries its flags as structured `targets`
 (function, location, cause, remedy) in the order above, and `merge_analysis`
-picks the first one no earlier candidate tried (`planTarget`), writes its remedy
-as the coordinator's experiment, and cuts the source excerpts down to that
+picks the first one no earlier candidate tried (`planTarget`) and cuts the
+source excerpts down to that
 function; the optimizer's instruction forbids patching any other. With a
 target, the optimizer's instruction also tells it to answer with
 `function_source` (the target function's whole new declaration) and
@@ -637,9 +636,9 @@ revision is listed in the report as skipped rather than trusted, because its
 locations may point at different code. The measured candidates' IDs (a digest of
 revision and normalized patch) are carried too, and a candidate whose patch
 this revision already measured, in a history campaign or earlier in this one,
-is rejected before it is built (`rejectMeasuredDuplicate`). The coordinator is code (`planCoordinator`) and
-calls no model, because nothing is left for a model to decide. When it was a
-model it took up to 2m40s a cycle on a live gron campaign, and left with a
+is rejected before it is built (`rejectMeasuredDuplicate`). No coordinator plans
+the cycle, because nothing is left for one to decide. When a coordinator model
+did, it took up to 2m40s a cycle on a live gron campaign, and left with a
 ranked list the optimizer ignored the top target and
 micro-optimized `validIdentifier` (inconclusive, -0.85%) before taking the top
 target on its second attempt: the bufio writer around the output loop, accepted
@@ -763,8 +762,7 @@ The explorer is always Jev (ADR 0015). Without it discovery would only sample
 the manifest's first seed, and a CLI's other modes would be invisible to it:
 gron's `--stream` runs `gronStream`, which the seed never reaches. The variants
 are chosen before discovery samples anything (`internal/campaign/explore.go`),
-and the explorer node (`planExplorer`, code) reports that plan. `run_discovery`
-does not validate explorer proposals, and `internal/workload` only reads the
+and the graph has no explorer node. `run_discovery` validates no proposals, and `internal/workload` only reads the
 target's boolean options (`flags.go`):
 
 1. Code lists the boolean options the target declares
@@ -817,8 +815,7 @@ verdict reads them. The chosen variants are kept in campaign state
 
 ## Jev answer cache
 
-The graph loops (`route_campaign` back to `coordinator` -> `explorer` ->
-`run_discovery` -> `analyst`) until a candidate is accepted or a bound is hit,
+The graph loops (`route_campaign` back to `run_discovery` -> `analyst`) until a candidate is accepted or a bound is hit,
 and at the same base revision every one of those cycles asks the analyst about
 the same hot functions and the explorer about the same command and `--help`
 text: recorded campaigns made 64 analyst requests for 4 optimizer calls on
@@ -1123,8 +1120,8 @@ only removes parse failures of otherwise usable recommendations.
 The optimizer is the only model role, and it receives its model through an
 injected OpenAI-compatible provider (ADR 0035). Its model ID comes from
 `GOTORQUE_MODEL_OPTIMIZER` and defaults to `deepseek/deepseek-v4.1-flash`
-(`ModelFromEnvironment`). The other roles' variables no longer exist: the
-coordinator is code, and the analyst, reviewer and explorer are Jev. All
+(`ModelFromEnvironment`). The other roles' variables no longer exist: the analyst,
+reviewer and explorer are Jev, and code plans each cycle. All
 builds, measurements, behavior checks, and acceptance transitions remain
 deterministic and model-independent.
 

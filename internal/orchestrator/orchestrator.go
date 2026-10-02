@@ -73,10 +73,9 @@ type campaignGraph struct {
 }
 
 type graphNodes struct {
-	initialize, inspect, coordinator, mergeCoordinator workflow.Node
-	explorer, discover, analyst, mergeAnalysis         workflow.Node
-	optimizer, evaluate, reviewer, decide              workflow.Node
-	route, finalize                                    workflow.Node
+	initialize, inspect, discover, analyst workflow.Node
+	mergeAnalysis, optimizer, evaluate     workflow.Node
+	reviewer, decide, route, finalize      workflow.Node
 }
 
 // New builds the bounded campaign graph.
@@ -118,28 +117,20 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 	det := workflow.NodeConfig{Timeout: g.cfg.DeterministicTimeout}
 	agt := workflow.NodeConfig{Timeout: g.cfg.AgentTimeout}
 	n := graphNodes{
-		initialize:       workflow.NewFunctionNode("initialize_campaign", g.initialize, det),
-		inspect:          workflow.NewFunctionNode("inspect_repository", g.inspect, det),
-		mergeCoordinator: workflow.NewFunctionNode("merge_coordinator", g.mergeCoordinator, det),
-		discover:         workflow.NewFunctionNode("run_discovery", g.discover, det),
-		mergeAnalysis:    workflow.NewFunctionNode("merge_analysis", g.mergeAnalysis, det),
-		evaluate:         workflow.NewFunctionNode("evaluate_candidate", g.evaluate, det),
-		decide:           workflow.NewFunctionNode("apply_policy", g.applyPolicy, det),
-		route:            workflow.NewFunctionNode("route_campaign", g.route, det),
-		finalize:         workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
+		initialize:    workflow.NewFunctionNode("initialize_campaign", g.initialize, det),
+		inspect:       workflow.NewFunctionNode("inspect_repository", g.inspect, det),
+		discover:      workflow.NewFunctionNode("run_discovery", g.discover, det),
+		mergeAnalysis: workflow.NewFunctionNode("merge_analysis", g.mergeAnalysis, det),
+		evaluate:      workflow.NewFunctionNode("evaluate_candidate", g.evaluate, det),
+		decide:        workflow.NewFunctionNode("apply_policy", g.applyPolicy, det),
+		route:         workflow.NewFunctionNode("route_campaign", g.route, det),
+		finalize:      workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
 	}
 	optimizer, err := agentNode(g.deps.Agents.Optimizer, agt, string(agents.RoleOptimizer), g.deps.Jobs)
 	if err != nil {
 		return n, err
 	}
 	n.optimizer = optimizer
-	// Code chooses each cycle's target after the analysis (planTarget), so
-	// the coordinator has nothing to decide: as a model, on a live gron
-	// campaign it took up to 2m40s a cycle and its free-text plan steered the
-	// optimizer away from the top target. The explorer's workloads are chosen
-	// by code and Jev before discovery runs.
-	n.coordinator = workflow.NewFunctionNode(string(agents.RoleCoordinator), planCoordinator, det)
-	n.explorer = workflow.NewFunctionNode(string(agents.RoleExplorer), planExplorer, det)
 	// The Jev nodes keep their role's name, so a degraded classification or
 	// review is reported against "analyst" or "reviewer", and the analyst
 	// falls back to discovery's hot paths.
@@ -150,22 +141,6 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 
 func (g *campaignGraph) reviewPatch(ctx adkagent.Context, state CampaignState) (agents.ReviewerResult, error) {
 	return g.deps.Review.ReviewPatch(ctx, ReviewRequest{Campaign: state.Request, Target: state.Target, Proposal: state.Proposal, Candidate: state.Candidate})
-}
-
-// planCoordinator states the campaign's plan. The concrete experiment is
-// filled in by planTarget once the analysis exists.
-func planCoordinator(_ adkagent.Context, _ CampaignState) (agents.CoordinatorResult, error) {
-	return agents.CoordinatorResult{
-		Objective:      targetObjective,
-		NextExperiment: "chosen by code after cause analysis",
-	}, nil
-}
-
-const targetObjective = "patch the highest-ranked cause the analysis flagged that no earlier candidate has tried"
-
-// planExplorer states how discovery's extra workloads were chosen.
-func planExplorer(_ adkagent.Context, _ CampaignState) (agents.ExplorerResult, error) {
-	return agents.ExplorerResult{Rationale: []string{"workloads were chosen before discovery: the target's own options that Jev judged processing modes, kept when they change the output"}}, nil
 }
 
 func (g *campaignGraph) analyzeCauses(ctx adkagent.Context, state CampaignState) (agents.AnalystResult, error) {
@@ -268,10 +243,7 @@ func (n graphNodes) edges() []workflow.Edge {
 		Add(workflow.Start, n.initialize).
 		AddRoute(n.initialize, n.inspect, workflow.StringRoute(routeContinue)).
 		AddRoute(n.initialize, n.finalize, workflow.StringRoute(routeFinish)).
-		Add(n.inspect, n.coordinator).
-		Add(n.coordinator, n.mergeCoordinator).
-		Add(n.mergeCoordinator, n.explorer).
-		Add(n.explorer, n.discover).
+		Add(n.inspect, n.discover).
 		Add(n.discover, n.analyst).
 		Add(n.analyst, n.mergeAnalysis).
 		AddRoute(n.mergeAnalysis, n.optimizer, workflow.StringRoute(routeContinue)).
@@ -280,7 +252,7 @@ func (n graphNodes) edges() []workflow.Edge {
 		Add(n.evaluate, n.reviewer).
 		Add(n.reviewer, n.decide).
 		Add(n.decide, n.route).
-		AddRoute(n.route, n.coordinator, workflow.StringRoute(routeContinue)).
+		AddRoute(n.route, n.discover, workflow.StringRoute(routeContinue)).
 		AddRoute(n.route, n.finalize, workflow.StringRoute(routeFinish)).
 		Build()
 }
@@ -347,34 +319,20 @@ func recordRepair(ctx context.Context, jobs JobService, role agents.Role, repair
 	_ = jobs.RecordRoleRepaired(ctx, string(role), repair)
 }
 
-func (g *campaignGraph) mergeCoordinator(ctx adkagent.Context, raw any) (*session.Event, error) {
-	result, _, err := decodeRole[agents.CoordinatorResult](ctx, g.deps.Jobs, agents.RoleCoordinator, raw)
-	if err != nil {
-		return nil, fmt.Errorf("coordinator output: %w", err)
-	}
+// discover runs at the start of every cycle. The workloads it measures beyond
+// the manifest's seeds were chosen before the graph started, by code and Jev
+// (internal/campaign/explore.go), and code chooses the cycle's target after
+// the analysis (planTarget); a model coordinator and explorer once filled both
+// jobs, and on a live gron campaign the coordinator took up to 2m40s a cycle
+// and its free-text plan steered the optimizer away from the top target.
+func (g *campaignGraph) discover(ctx adkagent.Context, _ any) (*session.Event, error) {
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
 	}
-	state.Coordinator = result
-	return stateEvent(ctx, state), nil
-}
-
-func (g *campaignGraph) discover(ctx adkagent.Context, raw any) (*session.Event, error) {
-	result, _, err := decodeRole[agents.ExplorerResult](ctx, g.deps.Jobs, agents.RoleExplorer, raw)
-	if err != nil {
-		return nil, fmt.Errorf("explorer output: %w", err)
-	}
-	state, err := loadState(ctx)
-	if err != nil {
-		return nil, err
-	}
-	state.Explorer = result
 	evidence, err := g.deps.Runner.Discover(ctx, DiscoveryRequest{
-		Campaign:    state.Request,
-		Attempt:     state.CandidatesTried + 1,
-		Coordinator: state.Coordinator,
-		Explorer:    result,
+		Campaign: state.Request,
+		Attempt:  state.CandidatesTried + 1,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("run discovery: %w", err)
@@ -456,11 +414,6 @@ func planTarget(state *CampaignState) {
 		return
 	}
 	state.Target = &target
-	state.Coordinator = agents.CoordinatorResult{
-		Objective:      targetObjective,
-		NextExperiment: target.Remedy,
-		Rationale:      []string{fmt.Sprintf("the analysis flagged %s in %s at %+.1f sd; %d target(s) already tried", target.Cause, target.Function, target.Z, len(tried))},
-	}
 	if excerpts := excerptsAt(state.SourceExcerpts, target); len(excerpts) > 0 {
 		state.SourceExcerpts = excerpts
 	}
