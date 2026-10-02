@@ -7,21 +7,30 @@ import (
 	"google.golang.org/genai"
 )
 
+// planResult is a stand-in result with the scalar and list fields the generic
+// decoder has to handle; the decoder does not depend on which role's type it
+// fills.
+type planResult struct {
+	Objective      string   `json:"objective"`
+	NextExperiment string   `json:"next_experiment"`
+	Rationale      []string `json:"rationale,omitempty"`
+}
+
 func TestDecodeResultFromStringVariants(t *testing.T) {
 	t.Run("plain json string", func(t *testing.T) {
-		got, err := DecodeResult[CoordinatorResult](`{"objective":"o","next_experiment":"n","rationale":["r1"]}`)
+		got, err := DecodeResult[planResult](`{"objective":"o","next_experiment":"n","rationale":["r1"]}`)
 		if err != nil || got.NextExperiment != "n" || len(got.Rationale) != 1 {
 			t.Fatalf("got %+v err %v", got, err)
 		}
 	})
 	t.Run("fenced json string", func(t *testing.T) {
-		got, err := DecodeResult[CoordinatorResult]("```json\n{\"objective\":\"o\",\"next_experiment\":\"n\",\"rationale\":[\"single\"]}\n```")
+		got, err := DecodeResult[planResult]("```json\n{\"objective\":\"o\",\"next_experiment\":\"n\",\"rationale\":[\"single\"]}\n```")
 		if err != nil || got.NextExperiment != "n" || len(got.Rationale) != 1 || got.Rationale[0] != "single" {
 			t.Fatalf("got %+v err %v", got, err)
 		}
 	})
 	t.Run("prose wrapped json", func(t *testing.T) {
-		got, err := DecodeResult[CoordinatorResult]("Sure, here it is:\n{\"objective\":\"o\",\"next_experiment\":\"n\"}\nThanks!")
+		got, err := DecodeResult[planResult]("Sure, here it is:\n{\"objective\":\"o\",\"next_experiment\":\"n\"}\nThanks!")
 		if err != nil || got.Objective != "o" {
 			t.Fatalf("got %+v err %v", got, err)
 		}
@@ -53,7 +62,7 @@ func TestRepairCommonMalformations(t *testing.T) {
 		}
 	}
 
-	_, err := DecodeResult[CoordinatorResult]("bad {\"a\": ] tail")
+	_, err := DecodeResult[planResult]("bad {\"a\": ] tail")
 	if err == nil || len(err.Error()) < 20 {
 		t.Fatalf("expected diagnostic error, got %v", err)
 	}
@@ -97,7 +106,7 @@ func testEscapeNestedJSON(t *testing.T) {
 
 func testEscapeProse(t *testing.T) {
 	raw := `{"next_experiment":"pad = {sprintf(\"k%03d\", i): (i*31+7)} for 8192 blobs","objective":"o"}`
-	got, err := DecodeResult[CoordinatorResult](raw)
+	got, err := DecodeResult[planResult](raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -402,7 +411,7 @@ func TestDecodeResultWithRepairNamesTheRepair(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, repair, err := DecodeResultWithRepair[CoordinatorResult](tc.raw)
+			got, repair, err := DecodeResultWithRepair[planResult](tc.raw)
 			if err != nil {
 				t.Fatalf("decode: %v", err)
 			}
@@ -418,7 +427,7 @@ func TestDecodeResultWithRepairNamesTheRepair(t *testing.T) {
 
 func TestDecodeResultWithRepairReportsNoRepairOnFailure(t *testing.T) {
 	for _, raw := range []any{nil, (*genai.Content)(nil), "not json at all", make(chan int), 42} {
-		if _, repair, err := DecodeResultWithRepair[CoordinatorResult](raw); err == nil || repair != "" {
+		if _, repair, err := DecodeResultWithRepair[planResult](raw); err == nil || repair != "" {
 			t.Fatalf("DecodeResultWithRepair(%T) = repair %q, err %v; want an error and no repair", raw, repair, err)
 		}
 	}

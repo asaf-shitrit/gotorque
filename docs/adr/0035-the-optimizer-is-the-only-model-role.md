@@ -41,8 +41,8 @@ discovery.
 - A campaign that ran model roles (`ADKMode` set, analyst not `jev`) cannot be resumed. Resume
   refuses it with "ran model roles this build no longer has; start a new campaign". Its report
   still reads.
-- The graph keeps the coordinator and explorer stage nodes, now code. Collapsing them into their
-  neighbours is deferred.
+- The coordinator and explorer stage nodes, left as code by this change, were removed from the
+  graph the same day: each cycle now starts at `run_discovery`.
 - Older ADRs that introduced the flags (0012, 0014, 0015, 0030) stay as written; they are the
   record of why each Jev role exists.
 

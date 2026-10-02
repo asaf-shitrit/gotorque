@@ -17,18 +17,15 @@ import (
 	"google.golang.org/adk/v2/model"
 )
 
-// Role names one judgment stage of the campaign graph. Only the optimizer is a
-// model; the analyst, reviewer and explorer are Jev questions ranked in code,
-// and the coordinator is code. The names stay because degradation, usage and
-// reports are recorded against them.
+// Role names a judgment node of the campaign graph. Only the optimizer is a
+// model; the analyst and reviewer are Jev questions ranked in code. The names
+// are what degradation, repairs and token usage are recorded against.
 type Role string
 
 const (
-	RoleCoordinator Role = "coordinator"
-	RoleExplorer    Role = "explorer"
-	RoleAnalyst     Role = "analyst"
-	RoleOptimizer   Role = "optimizer"
-	RoleReviewer    Role = "reviewer"
+	RoleAnalyst   Role = "analyst"
+	RoleOptimizer Role = "optimizer"
+	RoleReviewer  Role = "reviewer"
 )
 
 // ModelProvider keeps model construction, credentials, and routing outside
@@ -62,21 +59,6 @@ type Set struct {
 	Usage *UsageCollector
 
 	Jev jev.Evaluator
-}
-
-// CoordinatorResult states the campaign's objective. Code writes it; the
-// experiment itself is chosen after the analysis (planTarget).
-type CoordinatorResult struct {
-	Objective      string   `json:"objective"`
-	NextExperiment string   `json:"next_experiment"`
-	Rationale      []string `json:"rationale,omitempty"`
-}
-
-// ExplorerResult states how discovery's extra workloads were chosen: before
-// discovery, code finds the target's boolean options and Jev judges which
-// select a processing mode.
-type ExplorerResult struct {
-	Rationale []string `json:"rationale,omitempty"`
 }
 
 // HotPath is a measured hot function as the analyst reports it.

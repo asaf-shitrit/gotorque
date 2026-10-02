@@ -112,7 +112,7 @@ func assertLadderBounded(t *testing.T, attemptTimeout, callerTimeout, wantAtLeas
 	t.Helper()
 	inner := &stallingLLM{}
 	m := &fenceStrippingModel{
-		inner: inner, role: "explorer", attempts: 3,
+		inner: inner, role: "optimizer", attempts: 3,
 		baseBackoff: 0, attemptTimeout: attemptTimeout,
 	}
 	// The clock starts before the deadline is set, so the deadline can never
@@ -240,7 +240,7 @@ func TestFenceStrippingModelRetriesFirstFailure(t *testing.T) {
 // exceeded its 4m0s budget" for an attempt that had answered.
 func TestFenceStrippingModelReportsASuccessfulRetryWithoutTheEarlierError(t *testing.T) {
 	inner := &flakyLLM{fail: true, resp: &model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: `{"ok":1}`}}}}}
-	decorated := fastModel(inner, "explorer", nil)
+	decorated := fastModel(inner, "optimizer", nil)
 	var finished []CallInfo
 	decorated.observer = func(info CallInfo) {
 		if !info.Started {
@@ -553,7 +553,7 @@ func TestFenceStrippingModelRetriesUnparseableJSON(t *testing.T) {
 		{Content: badContent},
 		{Content: goodContent},
 	}}
-	decorated := fastModel(seq, "explorer", NewUsageCollector())
+	decorated := fastModel(seq, "optimizer", NewUsageCollector())
 	count := 0
 	for resp, err := range decorated.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
 		if err != nil {

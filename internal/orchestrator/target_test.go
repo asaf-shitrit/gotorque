@@ -40,9 +40,6 @@ func TestPlanTargetPicksTheFirstUntriedTarget(t *testing.T) {
 	if state.Target == nil || !reflect.DeepEqual(*state.Target, targetAlloc) {
 		t.Fatalf("target = %+v, want the untried alloc target", state.Target)
 	}
-	if state.Coordinator.NextExperiment != targetAlloc.Remedy || state.Coordinator.Objective != targetObjective {
-		t.Errorf("coordinator = %+v, want the target's remedy as the experiment", state.Coordinator)
-	}
 	if len(state.SourceExcerpts) != 1 || state.SourceExcerpts[0].HotPath != "statements.go:26" {
 		t.Errorf("excerpts = %+v, want only the target's source", state.SourceExcerpts)
 	}
@@ -73,13 +70,12 @@ func TestPlanTargetKeepsAllExcerptsWhenTheTargetHasNone(t *testing.T) {
 }
 
 // TestPlanTargetLeavesAnUnrankedAnalysisAlone: an analysis that ranks nothing
-// leaves the coordinator plan and excerpts untouched.
+// clears the target and leaves the excerpts untouched.
 func TestPlanTargetLeavesAnUnrankedAnalysisAlone(t *testing.T) {
-	coordinator := agents.CoordinatorResult{Objective: "no ranking", NextExperiment: "profile scan"}
-	state := CampaignState{Coordinator: coordinator, SourceExcerpts: excerptsFor("a.go:1", "b.go:2"), Target: &targetLoop}
+	state := CampaignState{SourceExcerpts: excerptsFor("a.go:1", "b.go:2"), Target: &targetLoop}
 	planTarget(&state)
-	if state.Target != nil || state.Coordinator.Objective != "no ranking" || len(state.SourceExcerpts) != 2 {
-		t.Errorf("state changed on the unranked path: target %+v, coordinator %+v, %d excerpts", state.Target, state.Coordinator, len(state.SourceExcerpts))
+	if state.Target != nil || len(state.SourceExcerpts) != 2 {
+		t.Errorf("state changed on the unranked path: target %+v, %d excerpts", state.Target, len(state.SourceExcerpts))
 	}
 }
 
@@ -167,7 +163,7 @@ func TestTheOptimizerReadsOnlyItsBrief(t *testing.T) {
 			t.Errorf("brief lacks %q: %s", key, inputs[0])
 		}
 	}
-	for _, key := range []string{"discovery", "analysis", "inspection", "explorer", "request"} {
+	for _, key := range []string{"discovery", "analysis", "inspection", "request"} {
 		if _, ok := brief[key]; ok {
 			t.Errorf("brief carries %q, which the optimizer is not to act on", key)
 		}
