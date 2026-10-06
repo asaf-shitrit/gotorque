@@ -150,15 +150,19 @@ func multiFunctionSources(target agents.Target, proposal agents.OptimizerResult)
 // base revision, splices functionSource in over the function target.Function
 // names, adds any imports it needs that the file does not already have, and
 // turns the result into a unified diff via `git diff --no-index`
-// (toolchain.DiffFiles). The base revision is read from ev.repository,
-// the canonical checkout, which is clean at that revision for the duration of
-// a candidate's evaluation.
+// (toolchain.DiffFiles). The base revision is read from the evaluator's base
+// tree, never from the canonical checkout, which anything may have dirtied
+// since the campaign began (ADR 0036).
 func (ev *evaluator) buildFunctionSourceDiff(ctx context.Context, target agents.Target, functionSource string, imports []string) (string, error) {
 	relPath := targetPath(target.Location)
 	if relPath == "" || target.Function == "" {
 		return "", errors.New("function_source requires a target with a location and function name")
 	}
-	fullPath := filepath.Join(ev.repository, filepath.FromSlash(relPath))
+	root, err := ev.baseRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	fullPath := filepath.Join(root, filepath.FromSlash(relPath))
 	original, err := os.ReadFile(fullPath)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", relPath, err)

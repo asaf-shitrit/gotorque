@@ -79,6 +79,7 @@ func (ev *evaluator) evaluate(ctx context.Context, req orchestrator.CandidateReq
 	if err := ev.requireFreeSpace(); err != nil {
 		return orchestrator.CandidateEvidence{}, err
 	}
+	defer ev.releaseBase(ctx)
 	patchText, transport, err := ev.resolveCandidatePatch(ctx, req)
 	if err != nil {
 		return ev.rejectUnresolvedPatch(req, transport, err), nil

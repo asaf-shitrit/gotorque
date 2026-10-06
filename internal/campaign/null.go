@@ -28,7 +28,7 @@ import (
 // NullCandidates records, through the same evaluation and policy as any
 // candidate, and returns the stop reason.
 func (e *Engine) runNullCandidates(ctx context.Context) (string, error) {
-	files, err := nullTargetFiles(e.state.Repository, e.state.Manifest.Target.Build.Directory, e.state.Manifest.Target.Build.Package)
+	files, err := e.nullFilesFromBase(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -44,7 +44,10 @@ func (e *Engine) runNullCandidates(ctx context.Context) (string, error) {
 		}
 		attempt := len(e.state.CandidateRecords) + 1
 		file := files[(attempt-1)%len(files)]
-		patch, err := nullPatch(e.state.Repository, file, attempt)
+		// Read from the base tree, checked again for every attempt, so a null
+		// patch is built against the base revision whatever has happened to
+		// the canonical checkout.
+		patch, err := e.nullPatchFromBase(ctx, file, attempt)
 		if err != nil {
 			return "", err
 		}
@@ -63,6 +66,31 @@ func (e *Engine) runNullCandidates(ctx context.Context) (string, error) {
 		}
 	}
 	return fmt.Sprintf("%d null candidates evaluated", e.state.NullCandidates), nil
+}
+
+// nullFilesFromBase lists the files a null candidate may go in, read from the
+// base tree.
+func (e *Engine) nullFilesFromBase(ctx context.Context) ([]string, error) {
+	ev := e.newEvaluator(e.campaignSettings())
+	defer ev.releaseBase(ctx)
+	root, err := ev.baseRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return nullTargetFiles(root, e.state.Manifest.Target.Build.Directory, e.state.Manifest.Target.Build.Package)
+}
+
+// nullPatchFromBase builds a null candidate's patch against the base tree,
+// checked again for every attempt, so a null patch is built against the base
+// revision whatever has happened to the canonical checkout.
+func (e *Engine) nullPatchFromBase(ctx context.Context, file string, attempt int) (string, error) {
+	ev := e.newEvaluator(e.campaignSettings())
+	defer ev.releaseBase(ctx)
+	root, err := ev.baseRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	return nullPatch(root, file, attempt)
 }
 
 // nullTargetFiles lists the non-test Go files of the build package,

@@ -38,9 +38,12 @@ type evaluator struct {
 	pgoBuildTimeout time.Duration
 	toolchain       *toolchain.Toolchain
 	runner          *runner.Runner
-	journal         journal
-	machine         machine
-	baseline        testBaseline
+	// base is the pristine checkout of baseRevision that source transports
+	// read from.
+	base     *baseTree
+	journal  journal
+	machine  machine
+	baseline testBaseline
 	// now and elapsed are the wall clock and the campaign's spent run time,
 	// for the PGO lane's budget guard.
 	now     func() time.Time
@@ -63,6 +66,7 @@ func (e *Engine) newEvaluator(s evalSettings) *evaluator {
 		pgoBuildTimeout: e.pgoBuildTimeout,
 		toolchain:       e.toolchain,
 		runner:          e.runner,
+		base:            newBaseTree(e.toolchain, e.dir, e.state.Repository, e.state.Environment.Revision),
 		journal:         e.evalJournal(),
 		machine:         e.evalMachine(),
 		baseline:        e.evalBaseline(s),

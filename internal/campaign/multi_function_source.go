@@ -45,7 +45,11 @@ func (ev *evaluator) buildMultiFunctionSourceDiff(ctx context.Context, target ag
 	if err != nil {
 		return "", err
 	}
-	byFile, err := groupByFile(ev.repository, calleeRel, knownFunctions(target, calleeRel), decls)
+	root, err := ev.baseRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	byFile, err := groupByFile(root, calleeRel, knownFunctions(target, calleeRel), decls)
 	if err != nil {
 		return "", err
 	}
@@ -185,7 +189,11 @@ func applyEdits(original []byte, edits []sourceEdit) []byte {
 // false, with no error, when rel's content after every edit is byte-identical
 // to its original -- a file diffAgainstBase would refuse rather than skip.
 func (ev *evaluator) buildOneFileDiff(ctx context.Context, rel, calleeFunction, calleeRel string, decls []parsedFunctionSource, imports []string) (diff string, changed bool, err error) {
-	fullPath := filepath.Join(ev.repository, filepath.FromSlash(rel))
+	root, err := ev.baseRoot(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	fullPath := filepath.Join(root, filepath.FromSlash(rel))
 	original, err := os.ReadFile(fullPath)
 	if err != nil {
 		return "", false, fmt.Errorf("read %s: %w", rel, err)

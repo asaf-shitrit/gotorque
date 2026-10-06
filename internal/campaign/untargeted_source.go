@@ -32,7 +32,11 @@ func (ev *evaluator) untargetedFunctionSourceDiff(ctx context.Context, proposal 
 		return "", err
 	}
 	name := funcName(decl)
-	location, err := locateFunction(ev.repository, name, hotPaths)
+	root, err := ev.baseRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	location, err := locateFunction(root, name, hotPaths)
 	if err != nil {
 		return "", err
 	}

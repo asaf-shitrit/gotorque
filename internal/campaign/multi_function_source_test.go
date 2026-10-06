@@ -59,7 +59,7 @@ func (s *Store) Double() int {
 // and, once applied, builds.
 func TestBuildMultiFunctionSourceDiffAppliesAndBuilds(t *testing.T) {
 	repo := throwawayFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := agents.Target{
 		Location: "a.go:9",
@@ -117,7 +117,7 @@ func TestBuildMultiFunctionSourceDiffAppliesAndBuilds(t *testing.T) {
 // a silent rewrite of a function the shape check never agreed to.
 func TestBuildMultiFunctionSourceDiffRejectsANameOutsideTheSet(t *testing.T) {
 	repo := throwawayFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := agents.Target{
 		Location: "a.go:9",
@@ -198,7 +198,7 @@ func throwawayImportSources() []string {
 // must add the import to b.go, not a.go, and the result must build.
 func TestMultiFunctionSourceAddsImportToTheFileThatNeedsIt(t *testing.T) {
 	repo := throwawayImportFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	diff, err := engine.campaignEvaluator().buildMultiFunctionSourceDiff(context.Background(), throwawayImportTarget(), throwawayImportSources(), []string{"strconv"})
 	require.NoError(t, err)
@@ -230,7 +230,7 @@ func TestMultiFunctionSourceAddsImportToTheFileThatNeedsIt(t *testing.T) {
 // b.go so the candidate builds.
 func TestMultiFunctionSourceInfersStdlibImportWithNoImportsListed(t *testing.T) {
 	repo := throwawayImportFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	diff, err := engine.campaignEvaluator().buildMultiFunctionSourceDiff(context.Background(), throwawayImportTarget(), throwawayImportSources(), nil)
 	require.NoError(t, err)
@@ -252,7 +252,7 @@ func TestMultiFunctionSourceInfersStdlibImportWithNoImportsListed(t *testing.T) 
 // referenced by no touched file's new code is added nowhere.
 func TestMultiFunctionSourceNeverAddsAnUnusedImport(t *testing.T) {
 	repo := throwawayFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := agents.Target{
 		Location: "a.go:9",
