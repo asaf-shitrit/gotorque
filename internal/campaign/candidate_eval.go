@@ -70,6 +70,11 @@ type evalSettings struct {
 	// pgoLane runs the informational profile-guided lane after an ordinary
 	// verdict.
 	pgoLane bool
+	// baseline is the set of tests the test gate holds a candidate to. Nil
+	// means the campaign's own, which the gate may narrow and persist; a
+	// verification passes a copy it can narrow without touching the
+	// campaign's.
+	baseline testBaseline
 }
 
 // campaignSettings are the settings of a campaign's own attempts.
@@ -137,7 +142,7 @@ func (e *Engine) judgePrepared(ctx context.Context, req orchestrator.CandidateRe
 	if !e.patchHasShape(ctx, s, worktree, req.Target, evidence) {
 		return
 	}
-	candidateBinary, ok := e.buildAndTestCandidate(ctx, worktree, id, evidence)
+	candidateBinary, ok := e.buildAndTestCandidate(ctx, s, worktree, id, evidence)
 	if !ok {
 		return
 	}
@@ -285,14 +290,14 @@ func (e *Engine) patchHasShape(ctx context.Context, s evalSettings, worktree str
 	return true
 }
 
-func (e *Engine) buildAndTestCandidate(ctx context.Context, worktree, id string, evidence *orchestrator.CandidateEvidence) (string, bool) {
+func (e *Engine) buildAndTestCandidate(ctx context.Context, s evalSettings, worktree, id string, evidence *orchestrator.CandidateEvidence) (string, bool) {
 	binDir := filepath.Join(e.dir, "builds")
 	candidateBinary := filepath.Join(binDir, id+"-"+filepath.Base(e.state.Manifest.Target.Build.Binary))
 	if !e.buildCandidateBinary(ctx, worktree, candidateBinary, evidence) {
 		return "", false
 	}
 	evidence.ArtifactURIs = append(evidence.ArtifactURIs, candidateBinary)
-	if !e.candidateTestsPassed(ctx, worktree, evidence) {
+	if !e.candidateTestsPassed(ctx, s, worktree, evidence) {
 		return "", false
 	}
 	return candidateBinary, true
@@ -312,15 +317,16 @@ func (e *Engine) buildCandidateBinary(ctx context.Context, worktree, candidateBi
 	return true
 }
 
-func (e *Engine) candidateTestsPassed(ctx context.Context, worktree string, evidence *orchestrator.CandidateEvidence) bool {
+func (e *Engine) candidateTestsPassed(ctx context.Context, s evalSettings, worktree string, evidence *orchestrator.CandidateEvidence) bool {
 	// Behavior gate: the upstream test suite must not regress against the
 	// unpatched revision. Failures that predate the patch are subtracted
 	// rather than charged to it. A clean exit is classified too: it is what a
 	// suite reports after a test the baseline passed was skipped or dropped.
 	testResult, testErr := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: worktree, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
-	reason, passed := e.classifyTestOutcome(testResult, testErr)
-	if !passed && e.pruneUnstablePasses(ctx, testResult) {
-		reason, passed = e.classifyTestOutcome(testResult, testErr)
+	baseline := e.evalBaseline(s)
+	reason, passed := classifyTestOutcome(baseline, testResult, testErr)
+	if !passed && e.pruneUnstablePasses(ctx, baseline, testResult) {
+		reason, passed = classifyTestOutcome(baseline, testResult, testErr)
 	}
 	if passed {
 		return true

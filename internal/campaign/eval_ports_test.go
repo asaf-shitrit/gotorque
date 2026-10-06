@@ -190,3 +190,26 @@ func TestMeasurementFlagsContentionFromTheMachine(t *testing.T) {
 	require.Equal(t, []float64{1, 9}, evidence.LoadAverages)
 	require.True(t, evidence.LoadContended)
 }
+
+// TestScratchBaselineNarrowsWithoutTouchingTheCampaigns: both adapters narrow
+// the required passes and spend a re-check, but only the campaign's reaches the
+// persisted state.
+func TestScratchBaselineNarrowsWithoutTouchingTheCampaigns(t *testing.T) {
+	state := State{BaselineTestPasses: []string{"p::A", "p::B"}, BaselineTestFailures: []string{"p::F"}, BaselineUnbuildable: []string{"q"}}
+
+	scratch := scratchBaselineFrom(campaignBaseline{&state})
+	scratch.requirePasses([]string{"p::A"})
+	scratch.spendRecheck()
+	require.Equal(t, []string{"p::A"}, scratch.passes())
+	require.Equal(t, 1, scratch.rechecks())
+	require.Equal(t, []string{"p::F"}, scratch.failures())
+	require.Equal(t, []string{"q"}, scratch.unbuildable())
+	require.Equal(t, []string{"p::A", "p::B"}, state.BaselineTestPasses)
+	require.Zero(t, state.BaselineRechecks)
+
+	campaign := campaignBaseline{&state}
+	campaign.requirePasses([]string{"p::A"})
+	campaign.spendRecheck()
+	require.Equal(t, []string{"p::A"}, state.BaselineTestPasses)
+	require.Equal(t, 1, state.BaselineRechecks)
+}

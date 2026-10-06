@@ -257,7 +257,7 @@ func baselineTestMessage(outcome testOutcome) string {
 // A clean exit is not enough on its own. A suite exits zero after a test was
 // skipped, deleted, or never compiled into the binary, and comparing failure
 // sets could not see any of those: a test that stops running cannot fail.
-func (e *Engine) classifyTestOutcome(result toolchain.Result, testErr error) (reason string, passed bool) {
+func classifyTestOutcome(b testBaseline, result toolchain.Result, testErr error) (reason string, passed bool) {
 	// Failing tests arrive with a non-nil testErr, so the parsed outcome decides
 	// whether the candidate is at fault; the error only matters when there is no
 	// output to read. A clean exit with nothing to read still has to show the
@@ -269,13 +269,13 @@ func (e *Engine) classifyTestOutcome(result toolchain.Result, testErr error) (re
 		}
 		return "test run failed without parseable output: " + tail(string(result.Stderr), 400), false
 	}
-	if broken := newTestFailures(e.state.BaselineUnbuildable, outcome.Packages); len(broken) > 0 {
+	if broken := newTestFailures(b.unbuildable(), outcome.Packages); len(broken) > 0 {
 		return "test build or setup failed in: " + describeTestFailures(broken), false
 	}
-	if reason := e.newFailureReason(outcome.Tests); reason != "" {
+	if reason := newFailureReason(b, outcome.Tests); reason != "" {
 		return reason, false
 	}
-	if lost := lostBaselinePasses(e.state.BaselineTestPasses, outcome); len(lost) > 0 {
+	if lost := lostBaselinePasses(b.passes(), outcome); len(lost) > 0 {
 		return "tests that passed on the unpatched revision did not pass: " + describeTestFailures(lost), false
 	}
 	return "", true
@@ -298,26 +298,26 @@ const maxBaselineRechecks = 2
 // of the unpatched revision in a fresh worktree, so nothing a patch does can
 // decide which tests count as unstable, and a test the fresh run passes
 // stays required: a candidate that stopped running it is still rejected.
-func (e *Engine) pruneUnstablePasses(ctx context.Context, result toolchain.Result) bool {
-	if e.state.BaselineRechecks >= maxBaselineRechecks {
+func (e *Engine) pruneUnstablePasses(ctx context.Context, b testBaseline, result toolchain.Result) bool {
+	if b.rechecks() >= maxBaselineRechecks {
 		return false
 	}
 	outcome, ok := parseTestFailures(string(result.Stdout))
-	if !ok || !e.onlyVanished(outcome) {
+	if !ok || !onlyVanished(b, outcome) {
 		return false
 	}
-	e.state.BaselineRechecks++
+	b.spendRecheck()
 	fresh, err := e.runBaselineSuite(ctx, 1)
 	if err != nil {
 		_ = e.evalJournal().event("baseline_tests_rechecked", "re-running the unpatched suite failed, so every baseline pass stays required: "+err.Error(), nil)
 		return false
 	}
-	stable, unstable := splitStable(e.state.BaselineTestPasses, fresh.Passed)
+	stable, unstable := splitStable(b.passes(), fresh.Passed)
 	if len(unstable) == 0 {
 		_ = e.evalJournal().event("baseline_tests_rechecked", "every baseline pass passed again on the unpatched revision, so the candidate's missing tests are its own", nil)
 		return false
 	}
-	e.state.BaselineTestPasses = stable
+	b.requirePasses(stable)
 	_ = e.evalJournal().event("baseline_tests_rechecked", fmt.Sprintf("%d baseline-passing test(s) did not pass on a second run of the unpatched revision and are no longer required: %s", len(unstable), describeTestFailures(unstable)), map[string]any{"unstable": unstable})
 	return true
 }
@@ -325,11 +325,11 @@ func (e *Engine) pruneUnstablePasses(ctx context.Context, result toolchain.Resul
 // onlyVanished reports whether the outcome's one fault is baseline-passing
 // tests that did not run. A skip, a new failure or a broken package is a
 // verdict a baseline re-run cannot change, so it is not worth the run.
-func (e *Engine) onlyVanished(outcome testOutcome) bool {
-	if len(newTestFailures(e.state.BaselineUnbuildable, outcome.Packages)) > 0 || e.newFailureReason(outcome.Tests) != "" {
+func onlyVanished(b testBaseline, outcome testOutcome) bool {
+	if len(newTestFailures(b.unbuildable(), outcome.Packages)) > 0 || newFailureReason(b, outcome.Tests) != "" {
 		return false
 	}
-	lost := lostBaselinePasses(e.state.BaselineTestPasses, outcome)
+	lost := lostBaselinePasses(b.passes(), outcome)
 	for _, name := range lost {
 		if !strings.HasSuffix(name, " (did not run)") {
 			return false
@@ -379,14 +379,14 @@ func topLevelTest(name string) (string, bool) {
 	return pkg + "::" + top, sub
 }
 
-func (e *Engine) newFailureReason(failures []string) string {
-	introduced := newTestFailures(e.state.BaselineTestFailures, failures)
+func newFailureReason(b testBaseline, failures []string) string {
+	introduced := newTestFailures(b.failures(), failures)
 	if len(introduced) == 0 {
 		return ""
 	}
 	reason := "new failing tests: " + describeTestFailures(introduced)
-	if len(e.state.BaselineTestFailures) > 0 {
-		reason += fmt.Sprintf(" (ignoring %d failure(s) that predate the patch)", len(e.state.BaselineTestFailures))
+	if n := len(b.failures()); n > 0 {
+		reason += fmt.Sprintf(" (ignoring %d failure(s) that predate the patch)", n)
 	}
 	return reason
 }
@@ -453,20 +453,4 @@ func (e *Engine) baselineWorktree(ctx context.Context) (string, func(), error) {
 	}
 	cleanup := func() { _, _ = e.toolchain.RemoveWorktree(context.WithoutCancel(ctx), e.state.Repository, dir) }
 	return dir, cleanup, nil
-}
-
-// baselineGateState is the part of the campaign's state the test gate can
-// change while judging a candidate: the set of baseline passes it requires,
-// and how many re-runs of the unpatched suite it has spent shrinking that set.
-type baselineGateState struct {
-	passes   []string
-	rechecks int
-}
-
-func (e *Engine) baselineGate() baselineGateState {
-	return baselineGateState{passes: e.state.BaselineTestPasses, rechecks: e.state.BaselineRechecks}
-}
-
-func (e *Engine) restoreBaselineGate(g baselineGateState) {
-	e.state.BaselineTestPasses, e.state.BaselineRechecks = g.passes, g.rechecks
 }

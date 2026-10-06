@@ -74,3 +74,62 @@ func (e *Engine) evalMachine() machine {
 	}
 	return hostMachine{}
 }
+
+// testBaseline is the set of tests a candidate is held to: what the unpatched
+// revision failed, what it passed, which packages could not build, and how many
+// times the gate has re-run the unpatched suite to shrink the passes. The test
+// gate may narrow it, which is a fact about a campaign for its own candidates
+// (a test that names its subtests at random stops being required) and must not
+// be one for a verification. campaignBaseline reads and writes the campaign's
+// persisted state; scratchBaseline is a copy that persists nothing.
+type testBaseline interface {
+	failures() []string
+	passes() []string
+	unbuildable() []string
+	rechecks() int
+	// spendRecheck counts one re-run of the unpatched suite.
+	spendRecheck()
+	// requirePasses replaces the passes the gate requires.
+	requirePasses(passes []string)
+}
+
+// campaignBaseline is the campaign's baseline: it is the persisted state, so a
+// change to it is saved with the next event.
+type campaignBaseline struct{ state *State }
+
+func (b campaignBaseline) failures() []string    { return b.state.BaselineTestFailures }
+func (b campaignBaseline) passes() []string      { return b.state.BaselineTestPasses }
+func (b campaignBaseline) unbuildable() []string { return b.state.BaselineUnbuildable }
+func (b campaignBaseline) rechecks() int         { return b.state.BaselineRechecks }
+func (b campaignBaseline) spendRecheck()         { b.state.BaselineRechecks++ }
+func (b campaignBaseline) requirePasses(passes []string) {
+	b.state.BaselineTestPasses = passes
+}
+
+// scratchBaseline is a copy of a baseline that changes in memory only.
+type scratchBaseline struct {
+	failuresSet, passesSet, unbuildableSet []string
+	spent                                  int
+}
+
+func scratchBaselineFrom(b testBaseline) *scratchBaseline {
+	return &scratchBaseline{failuresSet: b.failures(), passesSet: b.passes(), unbuildableSet: b.unbuildable(), spent: b.rechecks()}
+}
+
+func (b *scratchBaseline) failures() []string    { return b.failuresSet }
+func (b *scratchBaseline) passes() []string      { return b.passesSet }
+func (b *scratchBaseline) unbuildable() []string { return b.unbuildableSet }
+func (b *scratchBaseline) rechecks() int         { return b.spent }
+func (b *scratchBaseline) spendRecheck()         { b.spent++ }
+func (b *scratchBaseline) requirePasses(passes []string) {
+	b.passesSet = passes
+}
+
+// evalBaseline is the baseline a candidate's test gate uses: the settings' own,
+// or the campaign's.
+func (e *Engine) evalBaseline(s evalSettings) testBaseline {
+	if s.baseline != nil {
+		return s.baseline
+	}
+	return campaignBaseline{&e.state}
+}
