@@ -5,11 +5,8 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 
-	"github.com/asaf-shitrit/gotorque/internal/domain"
-	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 	"github.com/stretchr/testify/require"
@@ -127,45 +124,6 @@ func TestResolveHotLocationsStopsAtTheBudget(t *testing.T) {
 	e := gronEngine()
 	e.state.Repository = t.TempDir()
 	require.Len(t, e.resolveHotLocations(context.Background(), "", names), discovery.HotFunctionBudget)
-}
-
-// recordedTranscript loads a sampler transcript recorded from a real run.
-func recordedTranscript(t *testing.T, name string) profile.Transcript {
-	t.Helper()
-	transcript, err := profile.LoadTranscript(filepath.Join("..", "profile", "testdata", "transcripts", name+".json"))
-	require.NoError(t, err)
-	return transcript
-}
-
-// TestSamplingFallsBackToALongerStressSeed: a seed whose input is files runs
-// only as long as its files make it, and the macOS sampler cannot attach to a
-// process that exits at once. Discovery then samples the manifest's stress
-// seed instead of giving up. The sampler is scripted, so this runs on any OS:
-// the quick seeds find the target already gone, the long one is sampled.
-func TestSamplingFallsBackToALongerStressSeed(t *testing.T) {
-	busy := recordedTranscript(t, "macos-busy")
-	e := &Engine{dir: t.TempDir()}
-	e.sampler = profile.SamplerFunc(func(_ context.Context, req profile.SampleTarget) (profile.Transcript, error) {
-		if slices.Contains(req.Args, "long") {
-			return busy, nil
-		}
-		return profile.Transcript{Sampler: profile.SamplerMacOS, ExitedBeforeAttach: true}, nil
-	})
-	e.state.BinaryPath = "/bin/sh"
-	e.state.Manifest.Workloads.Seeds = []manifest.SeedWorkload{
-		{ID: "quick", Tier: domain.TierRepresentative, Args: []string{"quick"}},
-		{ID: "medium", Tier: domain.TierPlausible, Args: []string{"medium"}},
-		{ID: "long", Tier: domain.TierStress, Args: []string{"long"}},
-	}
-	seed, result, err := e.sampleFirstLiving(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "long", seed.ID)
-	require.NotEmpty(t, result.Functions)
-
-	e.state.Manifest.Workloads.Seeds = e.state.Manifest.Workloads.Seeds[:2]
-	_, _, err = e.sampleFirstLiving(context.Background())
-	require.ErrorContains(t, err, "quick: ", "with no stress seed the first seed's failure is reported")
-	require.NotContains(t, err.Error(), "medium", "only stress seeds are tried after the first")
 }
 
 // TestResolveHotLocationsSkipsTestFilesInTheProfile profiles a benchmark

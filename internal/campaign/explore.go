@@ -131,40 +131,19 @@ func richestFlagPackage(repo string) []workload.Flag {
 	return best
 }
 
-// sampleExplored samples each explored variant. One that cannot be sampled is
-// recorded and left out; discovery still has the seed's sample.
-func (e *Engine) sampleExplored(ctx context.Context, seed manifest.SeedWorkload) []profile.SampleResult {
-	var results []profile.SampleResult
-	for i, explored := range e.exploreWorkloads(ctx, seed) {
-		result, err := e.sampleVariant(ctx, explored.Seed, fmt.Sprintf("sample-report-%d.txt", i+1))
-		if err != nil {
-			_ = e.saveEvent("workload_sample_skipped", fmt.Sprintf("%s could not be sampled: %v", explored.Seed.ID, err), nil)
-			continue
-		}
-		results = append(results, result)
+// sampleExplored samples the explored variants after the seed through the
+// ladder, and records what the ladder reports about them.
+func (e *Engine) sampleExplored(ctx context.Context, ladder *discovery.Ladder, seed manifest.SeedWorkload) []profile.SampleResult {
+	explored := e.exploreWorkloads(ctx, seed)
+	variants := make([]manifest.SeedWorkload, len(explored))
+	for i, w := range explored {
+		variants[i] = w.Seed
+	}
+	results := ladder.Variants(ctx, variants)
+	for _, event := range ladder.TakeEvents() {
+		_ = e.saveEvent(event.Kind, event.Message, event.Data)
 	}
 	return results
-}
-
-// sampleVariant samples a variant on the seed's amplified input and, failing
-// that, on the seed input repeated one copy per line. A mode can read its
-// input differently from the default: gron --stream reads one document per
-// line of at most 1 MiB, so on the 16 MiB single-line document the seed is
-// sampled with it exits before the sampler attaches, and gronStream, the code
-// the variant was chosen to reach, never showed in the profile. The default
-// mode reads one document and ignores the rest, so the same line-repeated
-// input would end it in 10 ms; neither shape serves both.
-func (e *Engine) sampleVariant(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
-	result, err := e.sampleSeed(ctx, seed, reportName)
-	if err == nil || seed.Stdin == "" {
-		return result, err
-	}
-	result, lineErr := e.sampleWith(ctx, seed, discovery.RepeatLines(seed.StdinBytes()), reportName)
-	if lineErr != nil {
-		return result, fmt.Errorf("%w; with one copy per line: %w", err, lineErr)
-	}
-	_ = e.saveEvent("workload_sample_input", fmt.Sprintf("%s sampled on its input repeated one copy per line; the amplified document failed: %v", seed.ID, err), nil)
-	return result, nil
 }
 
 // variantRequest runs a workload on the release binary under the isolation

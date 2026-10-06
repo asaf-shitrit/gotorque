@@ -1078,11 +1078,13 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	if len(e.state.Manifest.Workloads.Seeds) == 0 {
 		return errors.New("manifest defines no seed workloads to sample")
 	}
-	seed, result, err := e.sampleFirstLiving(ctx)
+	ladder := discovery.NewLadder(e.discoveryInputs(), e.targetSampler())
+	defer func() { e.recordIsolationNotes(ladder.Notes()) }()
+	seed, result, err := ladder.FirstLiving(ctx)
 	if err != nil {
 		return err
 	}
-	results := append([]profile.SampleResult{result}, e.sampleExplored(ctx, seed)...)
+	results := append([]profile.SampleResult{result}, e.sampleExplored(ctx, ladder, seed)...)
 	names, weights := e.sampledHotNamesAndWeights(results...)
 	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", names)
 	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
@@ -1145,74 +1147,15 @@ func (e *Engine) writeEvidence(ctx context.Context, site profile.WriteSite) (orc
 	return w, true
 }
 
-// sampleFirstLiving samples the first seed, and when that fails, each
-// stress-tier seed in manifest order, returning the first that sampled.
-//
-// Amplification only grows stdin, so a seed whose input is files runs as long
-// as its files make it. go-jsonnet evaluates a .jsonnet file in 90 ms, and the
-// macOS sampler cannot attach to a process that short: every attempt, even with
-// sample -wait, wrote an empty call graph. Discovery then fell back to the
-// module's benchmarks, which exercise unrelated code, and no target was chosen.
-// A stress seed is the manifest's own larger version of a workload, so it can
-// run long enough to sample.
-func (e *Engine) sampleFirstLiving(ctx context.Context) (manifest.SeedWorkload, profile.SampleResult, error) {
-	seeds := e.state.Manifest.Workloads.Seeds
-	candidates := []manifest.SeedWorkload{seeds[0]}
-	for _, seed := range seeds[1:] {
-		if seed.Tier == domain.TierStress {
-			candidates = append(candidates, seed)
-		}
-	}
-	var failures []string
-	for _, seed := range candidates {
-		result, err := e.sampleSeed(ctx, seed, "sample-report.txt")
-		if err == nil {
-			return seed, result, nil
-		}
-		failures = append(failures, seed.ID+": "+err.Error())
-	}
-	return manifest.SeedWorkload{}, profile.SampleResult{}, errors.New(strings.Join(failures, "; "))
-}
-
-// sampleSeed samples one workload under the platform sampler, with its input
-// amplified so the target outlives the sampling window.
-func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
-	result, err := e.sampleAmplified(ctx, seed, discovery.AmplificationTarget, reportName)
-	// A fixed size cannot fit every CLI: 16 MiB of CSV kept held-out csvq
-	// busy for 0.48s, just short of the sampler's half-second. A target that
-	// exited that early, on inputs the manifest declares repeatable, gets one
-	// more try at eight times the size. Ending just after the liveness check
-	// fails differently: the sampler attaches and records an empty call graph
-	// (held-out csvq again, sampled 0.58s after launch), so that counts too.
-	if discovery.RetriesLarger(err, seed) {
-		result, err = e.sampleAmplified(ctx, seed, discovery.RetryAmplificationTarget, reportName)
-	}
-	return result, err
-}
-
-func (e *Engine) sampleAmplified(ctx context.Context, seed manifest.SeedWorkload, target int, reportName string) (profile.SampleResult, error) {
-	amplified := discovery.AmplifyRepeats(seed, target)
-	stdin := amplified.StdinBytes()
-	if seed.StdinRepeat == 0 {
-		stdin = discovery.AmplifyStdin(stdin)
-	}
-	return e.sampleWith(ctx, amplified, stdin, reportName)
-}
-
-// sampleWith samples one workload on the given input.
-func (e *Engine) sampleWith(ctx context.Context, seed manifest.SeedWorkload, stdin []byte, reportName string) (profile.SampleResult, error) {
-	fixtures := seed.Fixtures()
-	result, err := profile.Sample(ctx, e.targetSampler(), profile.SampleTarget{
+// discoveryInputs is the plain data discovery samples from.
+func (e *Engine) discoveryInputs() discovery.Inputs {
+	return discovery.Inputs{
 		BinaryPath: e.state.BinaryPath,
-		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),
-		Stdin:      stdin,
-		Fixtures:   fixtures,
-		Duration:   4 * time.Second,
-		OutputPath: filepath.Join(e.dir, "profile-sample", reportName),
+		Command:    e.state.Manifest.Target.Command,
+		Seeds:      e.state.Manifest.Workloads.Seeds,
 		Sandbox:    sandboxPolicy(e.state.Manifest.Sandbox),
-	})
-	e.recordIsolationNotes(result.IsolationNotes)
-	return result, err
+		Dir:        e.dir,
+	}
 }
 
 func (e *Engine) targetSampler() profile.Sampler {
