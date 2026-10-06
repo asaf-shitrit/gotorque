@@ -63,10 +63,15 @@ absent answer. A provider that is down, or a revoked key, used to exploit that:
 every role degraded on every cycle, the optimizer's empty patch was rejected as
 if a model had written it, and the campaign ended `completed` at the rejection
 streak, blaming the patches for the provider. Each degraded role appends to
-`CampaignState.CycleFailures`, and route checks it before any bound. The
-optimizer is the only model role, and only its failures count: Jev is served by
-a different endpoint, and a Jev failure degrades its role to discovery's hot
-paths or no concerns without ever tripping the breaker. When the optimizer
+`CampaignState.CycleFailures`. How a campaign ends is decided in one place,
+`ended` (`internal/orchestrator/termination.go`), at three checkpoints: before
+the first cycle, after the analysis and after each verdict. The graph only
+routes on its answer. The optimizer's failures count toward an outage; a
+failing Jev role degrades to discovery's hot paths or no concerns. Jev and the
+optimizer share one OpenRouter account (ADR 0030), though, so when the analyst
+answered for no hot function in a campaign that stops on an empty ranking,
+`ended` stops it as `analysis unavailable`, failed, instead of reporting that
+the analysis flagged nothing (#86). When the optimizer
 fails in two consecutive cycles (`outageCycles`), the campaign stops with a
 stop reason naming the last failure, and `finishCampaign` returns
 `ErrProviderUnavailable`, so it ends `failed` and can be resumed once the

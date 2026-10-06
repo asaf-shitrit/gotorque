@@ -814,7 +814,8 @@ func (e *Engine) finishCampaign(ctx context.Context) error {
 			return err
 		}
 		if result.ProviderFailure != "" {
-			// The optimizer failed in consecutive cycles: no bound was reached, so
+			// A role could not answer (the optimizer in consecutive cycles, or the
+			// analyst for every hot function): no bound was reached, so
 			// "completed" would misreport the campaign, and a completed campaign
 			// cannot be resumed once the provider answers again. Returning the
 			// failure lets captureRunFailure record it as failed with this stop

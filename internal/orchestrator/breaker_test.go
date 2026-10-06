@@ -160,11 +160,11 @@ func TestPartialFailuresKeepTheCampaignRunning(t *testing.T) {
 	}
 }
 
-// TestProviderOutageTripsWhileJevKeepsAnswering: the analyst and reviewer are
-// served by a different gateway on a different key, so a model provider
-// outage must trip the breaker even while both keep answering. The optimizer is the only model role, so the
-// breaker waits for a second failed cycle (outageCycles). The analysis ranks
-// targets, as Jev's always does.
+// TestProviderOutageTripsWhileJevKeepsAnswering: an optimizer outage must trip
+// the breaker even while the analyst and reviewer keep answering, as they do
+// when only the optimizer's model or provider is down. The breaker waits for
+// a second failed cycle (outageCycles). The analysis ranks targets, as Jev's
+// always does.
 func TestProviderOutageTripsWhileJevKeepsAnswering(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
@@ -186,8 +186,8 @@ func TestProviderOutageTripsWhileJevKeepsAnswering(t *testing.T) {
 	}
 }
 
-// TestProviderFailureCountsOnlyTheOptimizer: Jev roles fail on a different
-// endpoint, so their failures never make a cycle an outage cycle, and the
+// TestProviderFailureCountsOnlyTheOptimizer: Jev failures never make a cycle an
+// outage cycle (a Jev outage is caught by ended after the analysis), and the
 // failure reported is the optimizer's even when a Jev role failed after it.
 func TestProviderFailureCountsOnlyTheOptimizer(t *testing.T) {
 	jevOnly := CampaignState{CycleFailures: []RoleFailure{{"analyst", "a"}, {"reviewer", "b"}}}
