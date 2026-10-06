@@ -96,10 +96,15 @@ type Evidence struct {
 
 // Run gathers the evidence. It is best-effort throughout: a profile that
 // cannot be had is recorded as an event and the next source is tried, so a
-// missing source never fails a campaign.
+// missing source never fails a campaign. The one error is the context's: a
+// campaign stopped inside discovery has no evidence, and reporting "no source"
+// instead would have the engine mark the step done, so a resume would skip it.
 func Run(ctx context.Context, in Inputs, sampler profile.Sampler, tc *toolchain.Toolchain) (Evidence, error) {
 	r := &run{in: in, sampler: sampler, tc: tc, loc: locator{repository: in.Repository, build: in.Build, tc: tc}}
 	r.collect(ctx)
+	if err := ctx.Err(); err != nil {
+		return Evidence{}, err
+	}
 	return r.ev, nil
 }
 
