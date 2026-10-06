@@ -3,6 +3,7 @@ package campaign
 import (
 	"context"
 	"fmt"
+	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -158,7 +159,7 @@ func (e *Engine) sampleVariant(ctx context.Context, seed manifest.SeedWorkload, 
 	if err == nil || seed.Stdin == "" {
 		return result, err
 	}
-	result, lineErr := e.sampleWith(ctx, seed, repeatLines(seed.StdinBytes()), reportName)
+	result, lineErr := e.sampleWith(ctx, seed, discovery.RepeatLines(seed.StdinBytes()), reportName)
 	if lineErr != nil {
 		return result, fmt.Errorf("%w; with one copy per line: %w", err, lineErr)
 	}

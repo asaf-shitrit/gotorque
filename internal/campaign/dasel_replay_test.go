@@ -3,6 +3,7 @@ package campaign
 import (
 	"context"
 	"fmt"
+	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"io"
 	"os"
 	"os/exec"
@@ -109,7 +110,7 @@ func TestThrowawayCallerRankingOnDaselRealProfile(t *testing.T) {
 	stacks := profile.MacOSSampleStacks(string(report))
 	require.NotEmpty(t, stacks, "the fixture must actually parse into stacks, or this test proves nothing")
 	own := func(s string) bool { return strings.HasPrefix(s, "github.com/tomwright/dasel/v3") }
-	weights := hotFunctionWeights(profile.AttributeToOwn(stacks, own))
+	weights := discovery.HotFunctionWeights(profile.AttributeToOwn(stacks, own))
 	require.NotEmpty(t, weights)
 
 	ranked := analysis.consumingCallers(weights)

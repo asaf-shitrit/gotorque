@@ -17,7 +17,6 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
-	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/stretchr/testify/require"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
@@ -439,21 +438,6 @@ func git(t *testing.T, dir string, args ...string) string {
 	return string(output)
 }
 
-func TestHotFunctionNamesSkipsRuntimeAndDeduplicates(t *testing.T) {
-	functions := []profile.Function{
-		{Name: "runtime.schedule"},
-		{Name: " main.handle "},
-		{Name: "main.handle"},
-		{Name: ""},
-		{Name: "main.parse"},
-	}
-	got := hotFunctionNames(functions, 15)
-	require.Equal(t, []string{"main.handle", "main.parse"}, got)
-	require.Empty(t, hotFunctionNames(nil, 15))
-	capped := hotFunctionNames([]profile.Function{{Name: "main.a"}, {Name: "main.b"}}, 1)
-	require.Equal(t, []string{"main.a"}, capped)
-}
-
 // TestBenchmarkProfilingLeavesTheCheckoutClean: go test keeps the test binary
 // it profiled in the working directory, the canonical checkout, which then no
 // longer matches its revision and stops the campaign. go-jsonnet, the first
@@ -496,14 +480,4 @@ func TestAllocationProfilingLeavesTheCheckoutClean(t *testing.T) {
 	require.Equal(t, "a benchmark alloc_space profile", source)
 	require.NotEmpty(t, engine.state.DiscoveryAllocProfileSummaryPath)
 	require.Empty(t, git(t, repo, "status", "--porcelain", "--untracked-files=all", "--ignored"), "allocation profiling must not write into the checkout")
-}
-
-func TestMergeAllocFirstPrefersAllocatorsWithoutDroppingCPUEvidence(t *testing.T) {
-	cpu := []string{"a.go:1", "b.go:2", "c.go:3"}
-	alloc := []string{"c.go:3", "d.go:4"}
-
-	got := mergeAllocFirst(cpu, alloc, 4)
-	require.Equal(t, []string{"c.go:3", "d.go:4", "a.go:1", "b.go:2"}, got, "allocators lead, deduplicated, then the rest of the CPU list")
-
-	require.Equal(t, []string{"c.go:3", "d.go:4"}, mergeAllocFirst(cpu, alloc, 2), "budget still caps the merged list")
 }

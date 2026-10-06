@@ -5,13 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
-	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/stretchr/testify/require"
 )
 
@@ -165,31 +163,4 @@ func TestFlagsAreFoundWhereTheCommandKeepsThem(t *testing.T) {
 	require.Len(t, flags, 1)
 	require.Equal(t, "--slurp", flags[0].Name)
 	require.Empty(t, engine.untriedFlags(manifest.SeedWorkload{Args: []string{"-s"}}))
-}
-
-// TestMergedSamplesWeighEachWorkloadEqually: a mode only one variant reaches
-// ranks by its share of that variant's time, not behind the seed's totals.
-func TestMergedSamplesWeighEachWorkloadEqually(t *testing.T) {
-	seedSample := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.sort"}, Weight: 900}, {Frames: []string{"main.print"}, Weight: 100}}}
-	variantSample := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.stream"}, Weight: 40}}}
-	merged := mergeAttributed([]profile.SampleResult{seedSample, variantSample}, func(s string) bool { return strings.HasPrefix(s, "main.") })
-	names := make([]string, 0, len(merged))
-	for _, fn := range merged {
-		names = append(names, fn.Name)
-	}
-	require.Equal(t, []string{"main.stream", "main.sort", "main.print"}, names)
-}
-
-// TestLineRepetitionFeedsALineOrientedMode: gron --stream reads one document per
-// line, so the fallback input is the seed, newline-terminated, many times over.
-func TestLineRepetitionFeedsALineOrientedMode(t *testing.T) {
-	seed := []byte(`{"users":[1,2]}` + "\n")
-	amplified := repeatLines(seed[:len(seed)-1])
-	require.GreaterOrEqual(t, len(amplified), amplificationTarget)
-	lines := strings.Split(strings.TrimSuffix(string(amplified), "\n"), "\n")
-	require.Greater(t, len(lines), 1)
-	for _, line := range lines {
-		require.JSONEq(t, `{"users":[1,2]}`, line)
-	}
-	require.Equal(t, amplified, repeatLines(seed), "a trailing newline is not doubled")
 }

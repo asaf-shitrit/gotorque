@@ -2,6 +2,7 @@ package campaign
 
 import (
 	"context"
+	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"os"
 	"path/filepath"
 	"slices"
@@ -119,13 +120,13 @@ func TestResolveHotLocationsFindsMainInTheBuiltCommand(t *testing.T) {
 }
 
 func TestResolveHotLocationsStopsAtTheBudget(t *testing.T) {
-	names := make([]string, 0, 2*hotFunctionBudget)
-	for i := range 2 * hotFunctionBudget {
+	names := make([]string, 0, 2*discovery.HotFunctionBudget)
+	for i := range 2 * discovery.HotFunctionBudget {
 		names = append(names, "pkg.F"+string(rune('a'+i)))
 	}
 	e := gronEngine()
 	e.state.Repository = t.TempDir()
-	require.Len(t, e.resolveHotLocations(context.Background(), "", names), hotFunctionBudget)
+	require.Len(t, e.resolveHotLocations(context.Background(), "", names), discovery.HotFunctionBudget)
 }
 
 // recordedTranscript loads a sampler transcript recorded from a real run.

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"io"
 	"maps"
 	"os"
@@ -20,7 +21,6 @@ import (
 	"runtime"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -1085,7 +1085,7 @@ func (e *Engine) sampleTargetProfile(ctx context.Context) error {
 	results := append([]profile.SampleResult{result}, e.sampleExplored(ctx, seed)...)
 	names, weights := e.sampledHotNamesAndWeights(results...)
 	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", names)
-	e.state.DiscoveryHotFunctionWeights = mergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
+	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
 	e.state.DiscoveryUnbufferedWrites = e.unbufferedWrites(ctx, results)
 	e.state.DiscoveryProfileSummaryPath = result.RawReport
 	return nil
@@ -1177,74 +1177,26 @@ func (e *Engine) sampleFirstLiving(ctx context.Context) (manifest.SeedWorkload, 
 // sampleSeed samples one workload under the platform sampler, with its input
 // amplified so the target outlives the sampling window.
 func (e *Engine) sampleSeed(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
-	result, err := e.sampleAmplified(ctx, seed, amplificationTarget, reportName)
+	result, err := e.sampleAmplified(ctx, seed, discovery.AmplificationTarget, reportName)
 	// A fixed size cannot fit every CLI: 16 MiB of CSV kept held-out csvq
 	// busy for 0.48s, just short of the sampler's half-second. A target that
 	// exited that early, on inputs the manifest declares repeatable, gets one
 	// more try at eight times the size. Ending just after the liveness check
 	// fails differently: the sampler attaches and records an empty call graph
 	// (held-out csvq again, sampled 0.58s after launch), so that counts too.
-	if retriesLarger(err, seed) {
-		result, err = e.sampleAmplified(ctx, seed, retryAmplificationTarget, reportName)
+	if discovery.RetriesLarger(err, seed) {
+		result, err = e.sampleAmplified(ctx, seed, discovery.RetryAmplificationTarget, reportName)
 	}
 	return result, err
 }
 
-// retryAmplificationTarget is the input size of the one retry for a target
-// that finished before the sampler could attach.
-const retryAmplificationTarget = 8 * amplificationTarget
-
 func (e *Engine) sampleAmplified(ctx context.Context, seed manifest.SeedWorkload, target int, reportName string) (profile.SampleResult, error) {
-	amplified := amplifyRepeats(seed, target)
+	amplified := discovery.AmplifyRepeats(seed, target)
 	stdin := amplified.StdinBytes()
 	if seed.StdinRepeat == 0 {
-		stdin = amplifyStdin(stdin)
+		stdin = discovery.AmplifyStdin(stdin)
 	}
 	return e.sampleWith(ctx, amplified, stdin, reportName)
-}
-
-// retriesLarger reports whether a failed sample is worth one more try on a
-// larger input: the target ended too soon and its inputs can grow.
-func retriesLarger(err error, seed manifest.SeedWorkload) bool {
-	tooShort := errors.Is(err, profile.ErrTargetExitedEarly) || errors.Is(err, profile.ErrNoFrames)
-	return tooShort && hasRepeatableInput(seed)
-}
-
-func hasRepeatableInput(seed manifest.SeedWorkload) bool {
-	return seed.StdinRepeat > 0 || slices.ContainsFunc(seed.Files, func(f manifest.FixtureFile) bool { return f.Repeat > 0 })
-}
-
-// amplifyRepeats scales every input the manifest declares repeatable -- a
-// fixture file with repeat, stdin with stdin_repeat -- so that input expands
-// to about amplificationTarget bytes for the sampled run. The declaration is
-// what makes this safe: the manifest author wrote the content as a block that
-// may be written any number of times. Only stdin was amplified before, so a
-// CLI that reads files ran for milliseconds, the sampler could not attach, and
-// discovery fell back to benchmarks: every held-out target reads files.
-// Inputs without a declared repeat (a script, a single document) are left as
-// they are; a manifest keeps those sampleable with a long stress seed.
-func amplifyRepeats(seed manifest.SeedWorkload, target int) manifest.SeedWorkload {
-	if seed.StdinRepeat > 0 {
-		seed.StdinRepeat = scaledRepeat(len(seed.StdinHeader), len(seed.Stdin), seed.StdinRepeat, target)
-	}
-	files := make([]manifest.FixtureFile, len(seed.Files))
-	for i, f := range seed.Files {
-		if f.Repeat > 0 {
-			f.Repeat = scaledRepeat(len(f.Header), len(f.Content), f.Repeat, target)
-		}
-		files[i] = f
-	}
-	seed.Files = files
-	return seed
-}
-
-// scaledRepeat is the repeat count that brings header plus block to about
-// target bytes, never fewer than the manifest's own count.
-func scaledRepeat(header, block, repeat, target int) int {
-	if block <= 0 {
-		return repeat
-	}
-	return max(repeat, (target-header)/block)
 }
 
 // sampleWith samples one workload on the given input.
@@ -1289,10 +1241,10 @@ func (e *Engine) targetSampler() profile.Sampler {
 // each as a whole, so a mode only a variant reaches ranks by its share of that
 // variant's time rather than disappearing behind the seed.
 func (e *Engine) sampledHotNames(results ...profile.SampleResult) []string {
-	limit := 2 * hotFunctionBudget
-	names := hotFunctionNames(mergeAttributed(results, e.ownSymbol), limit)
+	limit := 2 * discovery.HotFunctionBudget
+	names := discovery.HotFunctionNames(discovery.MergeAttributed(results, e.ownSymbol), limit)
 	for _, result := range results {
-		for _, name := range hotFunctionNames(result.Functions, limit) {
+		for _, name := range discovery.HotFunctionNames(result.Functions, limit) {
 			if len(names) < limit && !slices.Contains(names, name) {
 				names = append(names, name)
 			}
@@ -1306,50 +1258,11 @@ func (e *Engine) sampledHotNames(results ...profile.SampleResult) []string {
 // throwaway_result target's caller ranking (callers.go) has real profile
 // hotness to rank by instead of call-site count alone.
 func (e *Engine) sampledHotNamesAndWeights(results ...profile.SampleResult) ([]string, map[string]float64) {
-	weights := hotFunctionWeights(mergeAttributed(results, e.ownSymbol))
+	weights := discovery.HotFunctionWeights(discovery.MergeAttributed(results, e.ownSymbol))
 	for _, result := range results {
-		weights = mergeWeights(weights, hotFunctionWeights(result.Functions))
+		weights = discovery.MergeWeights(weights, discovery.HotFunctionWeights(result.Functions))
 	}
 	return e.sampledHotNames(results...), weights
-}
-
-// mergeAttributed sums each sample's attributed weights as fractions of that
-// sample's total, so every sampled workload counts equally whatever its length.
-func mergeAttributed(results []profile.SampleResult, own func(string) bool) []profile.Function {
-	weights := map[string]float64{}
-	for _, result := range results {
-		attributed := profile.AttributeToOwn(result.Stacks, own)
-		total := 0.0
-		for _, fn := range attributed {
-			total += float64(atoiOrZero(fn.Flat))
-		}
-		if total == 0 {
-			continue
-		}
-		for _, fn := range attributed {
-			weights[fn.Name] += float64(atoiOrZero(fn.Flat)) / total
-		}
-	}
-	names := make([]string, 0, len(weights))
-	for name := range weights {
-		names = append(names, name)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		if weights[names[i]] != weights[names[j]] {
-			return weights[names[i]] > weights[names[j]]
-		}
-		return names[i] < names[j]
-	})
-	merged := make([]profile.Function, 0, len(names))
-	for _, name := range names {
-		merged = append(merged, profile.Function{Name: name, Flat: strconv.Itoa(int(weights[name] * 10000))})
-	}
-	return merged
-}
-
-func atoiOrZero(s string) int {
-	n, _ := strconv.Atoi(s)
-	return n
 }
 
 // ownSymbol reports whether a sampled frame belongs to the target: its package
@@ -1358,140 +1271,6 @@ func atoiOrZero(s string) int {
 func (e *Engine) ownSymbol(symbol string) bool {
 	pkg := profile.SymbolPackage(symbol)
 	return pkg == "main" || (pkg != "" && slices.Contains(e.state.Inventory.Packages, pkg))
-}
-
-// amplifyStdin grows a seed input so a short-lived target stays alive for the
-// sampler's window.
-//
-// Repeating the raw bytes only lengthens the run for a target that consumes
-// all of stdin. A single-shot JSON CLI reads one document and ignores the
-// rest: gron finished a 16 MiB concatenation of its 84 KiB seed in 21 ms,
-// exactly as fast as the unamplified seed, so the target was gone before the
-// sampler could attach and every campaign fell back to a benchmark profile.
-// Replicating the elements of the document's largest array keeps the document
-// valid and multiplies the work it describes, which turns that same seed into
-// a multi-second run.
-func amplifyStdin(stdin []byte) []byte {
-	if len(stdin) == 0 || len(stdin) >= maxAmplifiedStdin {
-		return stdin
-	}
-	if amplified, ok := amplifyJSONArray(stdin); ok {
-		return amplified
-	}
-	return repeatStdin(stdin)
-}
-
-// maxAmplifiedStdin bounds a sampling input's size.
-const maxAmplifiedStdin = 32 << 20
-
-// amplificationTarget is how much input the amplifiers aim to produce.
-const amplificationTarget = 16 << 20
-
-// amplifyJSONArray duplicates the body of the largest JSON array so the result
-// is still one valid document. It reports false when stdin is not JSON with a
-// non-empty array, leaving the caller to fall back to byte repetition.
-func amplifyJSONArray(stdin []byte) ([]byte, bool) {
-	start, end, ok := largestJSONArray(stdin)
-	if !ok {
-		return nil, false
-	}
-	body := stdin[start+1 : end]
-	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, false
-	}
-	// The prefix already ends with '[', so each repetition contributes a
-	// separating comma and one more element list.
-	amplified := make([]byte, 0, amplificationTarget)
-	amplified = append(amplified, stdin[:end]...)
-	for len(amplified) < amplificationTarget {
-		amplified = append(amplified, ',')
-		amplified = append(amplified, body...)
-	}
-	return append(amplified, stdin[end:]...), true
-}
-
-// jsonSpan is a half-open byte range of a JSON container.
-type jsonSpan struct{ start, end int }
-
-// largestJSONArray returns the offsets of the '[' and ']' of the largest JSON
-// array in data. The scan is string-aware so brackets inside string literals
-// cannot confuse it, and it finds nested arrays because every closing bracket
-// is compared against the opening one it matches.
-func largestJSONArray(data []byte) (start, end int, ok bool) {
-	var stack []int
-	best := jsonSpan{start: -1, end: -1}
-	var state jsonScanState
-	for i := 0; i < len(data); i++ {
-		if state.advance(data[i]) {
-			continue
-		}
-		switch data[i] {
-		case '[':
-			stack = append(stack, i)
-		case ']':
-			if len(stack) == 0 {
-				continue
-			}
-			open := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			best = widest(best, jsonSpan{start: open, end: i})
-		}
-	}
-	if best.start < 0 {
-		return 0, 0, false
-	}
-	return best.start, best.end, true
-}
-
-// jsonScanState tracks whether the scan is inside a string literal, so a
-// bracket in string content is never mistaken for structure.
-type jsonScanState struct {
-	inString bool
-	escaped  bool
-}
-
-// advance consumes one byte and reports whether it belonged to a string
-// literal, meaning the caller must not treat it as structure.
-func (s *jsonScanState) advance(c byte) bool {
-	if !s.inString {
-		if c == '"' {
-			s.inString = true
-			return true
-		}
-		return false
-	}
-	switch {
-	case s.escaped:
-		s.escaped = false
-	case c == '\\':
-		s.escaped = true
-	case c == '"':
-		s.inString = false
-	}
-	return true
-}
-
-func widest(a, b jsonSpan) jsonSpan {
-	if b.end-b.start > a.end-a.start {
-		return b
-	}
-	return a
-}
-
-// repeatStdin is the format-agnostic fallback: it lengthens the input for any
-// target that consumes all of stdin.
-// repeatLines repeats the input one copy per line, the shape a line-oriented
-// mode reads as many documents.
-func repeatLines(stdin []byte) []byte {
-	return repeatStdin(append(bytes.TrimRight(stdin, "\n"), '\n'))
-}
-
-func repeatStdin(stdin []byte) []byte {
-	amplified := make([]byte, 0, maxAmplifiedStdin)
-	for len(amplified) < amplificationTarget {
-		amplified = append(amplified, stdin...)
-	}
-	return amplified
 }
 
 // profileHotFunctions runs benchmarks under a CPU profile, then summarizes
@@ -1522,7 +1301,7 @@ func (e *Engine) benchmarkCPUProfile(ctx context.Context) (string, error) {
 	}
 	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
 	var benched bool
-	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory, e.state.Inventory.TargetImports) {
+	for _, pkg := range discovery.BenchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory, e.state.Inventory.TargetImports) {
 		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Cpuprofile: cpuProfile, Output: filepath.Join(dir, "bench.test"), Env: []string{"GOTOOLCHAIN=local"}})
 		if err != nil {
 			continue
@@ -1546,12 +1325,12 @@ func (e *Engine) summarizeBenchmarkProfile(ctx context.Context, cpuProfile strin
 	if err != nil {
 		return err
 	}
-	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprof(ctx, cpuProfile, hotFunctionScanDepth)
+	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprof(ctx, cpuProfile, discovery.HotFunctionScanDepth)
 	if err != nil {
 		return fmt.Errorf("summarize benchmark CPU profile: %w", err)
 	}
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, cpuProfile, hotFunctionNames(summary.Functions, hotFunctionBudget))
-	e.state.DiscoveryHotFunctionWeights = mergeWeights(e.state.DiscoveryHotFunctionWeights, hotFunctionWeights(summary.Functions))
+	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, cpuProfile, discovery.HotFunctionNames(summary.Functions, discovery.HotFunctionBudget))
+	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, discovery.HotFunctionWeights(summary.Functions))
 	e.state.DiscoveryProfileSummaryPath = summary.RawReport
 	return nil
 }
@@ -1583,8 +1362,8 @@ func (e *Engine) profileAllocations(ctx context.Context) string {
 		_ = e.saveEvent("discovery_alloc_profile_skipped", "summarize benchmark allocation profile: "+err.Error(), nil)
 		return ""
 	}
-	e.state.DiscoveryHotFunctions = mergeAllocFirst(e.state.DiscoveryHotFunctions, locations, hotFunctionBudget)
-	e.state.DiscoveryHotFunctionWeights = mergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
+	e.state.DiscoveryHotFunctions = discovery.MergeAllocFirst(e.state.DiscoveryHotFunctions, locations, discovery.HotFunctionBudget)
+	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
 	e.state.DiscoveryAllocProfileSummaryPath = summaryPath
 	_ = e.saveEvent("discovery_alloc_profile_completed", fmt.Sprintf("measured %d allocation-heavy functions from the benchmark alloc_space profile", len(locations)), locations)
 	return "a benchmark alloc_space profile"
@@ -1594,7 +1373,7 @@ func (e *Engine) profileAllocations(ctx context.Context) string {
 // -memprofile, target package first, stopping at the first one that actually
 // benchmarked something.
 func (e *Engine) benchAllocations(ctx context.Context, dir, memProfile string) bool {
-	for _, pkg := range benchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory, e.state.Inventory.TargetImports) {
+	for _, pkg := range discovery.BenchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory, e.state.Inventory.TargetImports) {
 		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Memprofile: memProfile, Output: filepath.Join(dir, "bench-mem.test"), Env: []string{"GOTOOLCHAIN=local"}})
 		if err != nil {
 			continue
@@ -1614,62 +1393,12 @@ func (e *Engine) summarizeAllocProfile(ctx context.Context, memProfile string) (
 	if err != nil {
 		return nil, nil, "", err
 	}
-	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprofAllocSpace(ctx, memProfile, hotFunctionScanDepth)
+	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprofAllocSpace(ctx, memProfile, discovery.HotFunctionScanDepth)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	locations := e.resolveHotLocations(ctx, memProfile, hotFunctionNames(summary.Functions, hotFunctionBudget))
-	return locations, hotFunctionWeights(summary.Functions), summary.RawReport, nil
-}
-
-// mergeAllocFirst puts every allocation-heavy location ahead of the
-// CPU-derived hot list, preserving each list's own order, deduplicated and
-// capped at budget: an allocator that never surfaced in the CPU profile still
-// belongs in discovery's evidence, and one that did should not occupy two
-// slots.
-func mergeAllocFirst(cpu, alloc []string, budget int) []string {
-	seen := make(map[string]bool, len(cpu)+len(alloc))
-	merged := make([]string, 0, min(budget, len(cpu)+len(alloc)))
-	for _, list := range [][]string{alloc, cpu} {
-		for _, loc := range list {
-			if seen[loc] || len(merged) == budget {
-				continue
-			}
-			seen[loc] = true
-			merged = append(merged, loc)
-		}
-	}
-	return merged
-}
-
-// benchmarkPackageOrder lists the packages worth profiling, target package
-// first so a target that benchmarks its own command keeps that evidence, then
-// the module's benchmark-bearing packages richest first. Each is a single
-// package because the go command rejects -cpuprofile for more than one.
-// benchmarkPackageOrder tries the target package first, then the rest of the
-// module. When the target builds from a nested module directory (ADR 0023),
-// targetPackage is resolved relative to that directory, not to repository,
-// and `go test <targetPackage>` from the repository root would name the
-// wrong package or fail outright; it is left out of the root module's
-// benchmark order in that case, and the nested module's own benchmarks, like
-// its own tests, are not run (documented in docs/target-manifest.md).
-//
-// imports, when known, limits the rest to packages the target imports: a
-// benchmark of code the CLI never runs profiles the wrong program. The
-// held-out s2c target builds from klauspost/compress, whose richest benchmark
-// package is flate, which s2c never imports; its campaign spent both attempts
-// rewriting flate's StatelessDeflate.
-func benchmarkPackageOrder(repository, targetPackage, directory string, imports []string) []string {
-	var order []string
-	if directory == "" {
-		order = append(order, targetPackage)
-	}
-	for _, pkg := range profile.BenchmarkPackages(repository) {
-		if pkg != targetPackage && (imports == nil || slices.Contains(imports, pkg)) {
-			order = append(order, pkg)
-		}
-	}
-	return order
+	locations := e.resolveHotLocations(ctx, memProfile, discovery.HotFunctionNames(summary.Functions, discovery.HotFunctionBudget))
+	return locations, discovery.HotFunctionWeights(summary.Functions), summary.RawReport, nil
 }
 
 // resolveHotLocations annotates hot function names with repository-relative
@@ -1678,9 +1407,9 @@ func benchmarkPackageOrder(repository, targetPackage, directory string, imports 
 // repository for the declaration. Unresolvable functions keep their bare
 // names so downstream consumers never lose entries.
 func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, names []string) []string {
-	locations := make([]string, 0, hotFunctionBudget)
+	locations := make([]string, 0, discovery.HotFunctionBudget)
 	for _, name := range names {
-		if len(locations) == hotFunctionBudget {
+		if len(locations) == discovery.HotFunctionBudget {
 			break
 		}
 		// A value method and the pointer wrapper Go generates for it are two
@@ -1722,7 +1451,7 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 	if !ok {
 		return "", false
 	}
-	path, ok = e.repoRelative(path)
+	path, ok = discovery.RepoRelative(e.state.Repository, path)
 	// A benchmark profile runs test helpers too (scc's filereader_test.go
 	// reached the hot list), and a patch may not edit a test file, so the
 	// location says nothing a candidate could act on.
@@ -1732,56 +1461,11 @@ func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile st
 	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
 }
 
-// repoRelative rewrites a profiler's absolute source path into the
-// repository-relative form the excerpt collector requires, and rejects paths
-// outside the repository.
-//
-// `go tool pprof -list` reports absolute paths. extractExcerpts refuses those
-// because an absolute location is indistinguishable from one escaping the
-// repository, so every profiled frame resolved to a location no source window
-// could ever be read from: a target checked out under a path the profiler
-// echoed back produced one usable excerpt out of eleven measured functions.
-// Frames in the standard library or module cache are dropped outright rather
-// than kept as bare paths, since no patch this campaign may write can reach
-// them and they otherwise occupy the excerpt budget.
-func (e *Engine) repoRelative(path string) (string, bool) {
-	if path == "" {
-		return "", false
-	}
-	if !filepath.IsAbs(path) {
-		return filepath.ToSlash(path), true
-	}
-	// Both sides are compared in raw and symlink-resolved form. macOS resolves
-	// a temporary root through /private while a source file the profiler named
-	// may not resolve at all, and comparing one resolved path against one raw
-	// path reports a file inside the repository as escaping it.
-	for _, root := range symlinkForms(e.state.Repository) {
-		for _, candidate := range symlinkForms(path) {
-			rel, err := filepath.Rel(root, candidate)
-			if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-				continue
-			}
-			return filepath.ToSlash(rel), true
-		}
-	}
-	return "", false
-}
-
-// symlinkForms returns the path as given and, when it differs, its
-// symlink-resolved form.
-func symlinkForms(path string) []string {
-	forms := []string{path}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
-		forms = append(forms, resolved)
-	}
-	return forms
-}
-
 func (e *Engine) hotLocationFromRepo(name string) (string, bool) {
 	if strings.Contains(name, ":") {
 		return "", false
 	}
-	sym := profile.ParseSymbol(enclosingFunction(name))
+	sym := profile.ParseSymbol(discovery.EnclosingFunction(name))
 	path, line, ok := e.findMainDeclaration(sym)
 	if !ok {
 		path, line, ok = profile.FindDeclaration(e.state.Repository, sym)
@@ -1802,157 +1486,6 @@ func (e *Engine) findMainDeclaration(sym profile.Symbol) (string, int, bool) {
 	}
 	dir := filepath.Join(e.state.Repository, build.Directory, build.Package)
 	return profile.FindDeclarationInDir(e.state.Repository, dir, sym)
-}
-
-// enclosingFunction strips closure suffixes until the declared function
-// remains. Profile frames name closures in forms no `func` declaration uses:
-// pkg.outer.func1 for a closure, pkg.outer.func1.2 when nested.
-func enclosingFunction(name string) string {
-	for {
-		trimmed, ok := trimClosureSuffix(name)
-		if !ok {
-			return name
-		}
-		name = trimmed
-	}
-}
-
-func isTestEntryPoint(segment string) bool {
-	for _, prefix := range []string{"Benchmark", "Test", "Fuzz", "Example"} {
-		if strings.HasPrefix(segment, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-var closureSuffix = regexp.MustCompile(`\.func\d+$`)
-
-func trimClosureSuffix(name string) (string, bool) {
-	if loc := closureSuffix.FindStringIndex(name); loc != nil {
-		return name[:loc[0]], true
-	}
-	// Nested closures append an ordinal: outer.func1.2.
-	if idx := strings.LastIndex(name, "."); idx > 0 {
-		if _, err := strconv.Atoi(name[idx+1:]); err == nil {
-			return name[:idx], true
-		}
-	}
-	return name, false
-}
-
-func lastSegment(name string) string {
-	if idx := strings.LastIndex(name, "."); idx >= 0 && idx < len(name)-1 {
-		return name[idx+1:]
-	}
-	return name
-}
-
-const (
-	// hotFunctionBudget caps how many actionable functions reach the agents.
-	hotFunctionBudget = 15
-	// hotFunctionScanDepth is how many profile nodes are summarized to fill
-	// that budget. A Go CPU profile's hottest nodes are overwhelmingly
-	// runtime scheduler and allocator frames, so scanning only as deep as the
-	// budget yields a handful of module functions and wastes the rest of the
-	// budget on frames no patch can touch.
-	hotFunctionScanDepth = 4 * hotFunctionBudget
-)
-
-// hotFunctionNames extracts deduplicated function names from a parsed pprof
-// top summary, skipping runtime frames that never belong to the target.
-func hotFunctionNames(functions []profile.Function, limit int) []string {
-	names := make([]string, 0, limit)
-	seen := map[string]bool{}
-	for _, fn := range functions {
-		name := strings.TrimSpace(fn.Name)
-		if name == "" || strings.HasPrefix(name, "runtime.") || seen[name] || !actionableSymbol(name) {
-			continue
-		}
-		seen[name] = true
-		names = append(names, name)
-		if len(names) == limit {
-			break
-		}
-	}
-	return names
-}
-
-// hotFunctionWeights maps every actionable function name in functions to a
-// comparable hotness score, uncapped by hotFunctionBudget: pprof's cumulative
-// percent, falling back to flat percent, falling back to the sample-based
-// path's raw attributed count (mergeAttributed sets Flat only, both percents
-// zero). It feeds a throwaway_result target's caller ranking (callers.go),
-// which needs real weight for more functions than the truncated hot list
-// keeps: dasel's own callers mostly tie at one call site each, so the profile
-// is the only thing that can tell them apart (ADR 0027's addendum).
-func hotFunctionWeights(functions []profile.Function) map[string]float64 {
-	out := map[string]float64{}
-	for _, fn := range functions {
-		name := strings.TrimSpace(fn.Name)
-		if name == "" || strings.HasPrefix(name, "runtime.") || !actionableSymbol(name) {
-			continue
-		}
-		w := fn.CumulativePercent
-		if w == 0 {
-			w = fn.FlatPercent
-		}
-		if w == 0 {
-			w = float64(atoiOrZero(fn.Flat))
-		}
-		if existing, ok := out[name]; !ok || w > existing {
-			out[name] = w
-		}
-	}
-	return out
-}
-
-// mergeWeights folds src into dst, keeping the higher weight on a name both
-// carry, and returns dst (built if nil). Several profiles can name the same
-// function (CPU and allocation passes, seed and explored workloads); keeping
-// the max is a conservative merge that never lets a smaller pass understate a
-// function's true hotness.
-func mergeWeights(dst, src map[string]float64) map[string]float64 {
-	if len(src) == 0 {
-		return dst
-	}
-	if dst == nil {
-		dst = make(map[string]float64, len(src))
-	}
-	for name, w := range src {
-		if existing, ok := dst[name]; !ok || w > existing {
-			dst[name] = w
-		}
-	}
-	return dst
-}
-
-// actionableSymbol rejects frames no source change can address.
-//
-// The OS sampler reports kernel and libc symbols (__psynch_cvwait, kevent,
-// nanosleep) that describe a process waiting, not computing. Go symbols always
-// carry a package qualifier, so the absence of a dot is a reliable
-// discriminator for those.
-//
-// Benchmark CPU profiles additionally carry the harness that drove them
-// (testing.(*B).runN and friends). Those frames are an artifact of how the
-// measurement was taken rather than of the program under test, and agents
-// otherwise rank them as top hot paths and reason about them as target code.
-func actionableSymbol(name string) bool {
-	if strings.HasPrefix(name, "_") {
-		return false
-	}
-	if strings.HasPrefix(name, "testing.") {
-		return false
-	}
-	// The module's own benchmark, test and fuzz entry points are sampled too
-	// when the profile comes from its test binary. They are measurement
-	// scaffolding, not the program, and a patch to one optimizes nothing the
-	// target ships.
-	if isTestEntryPoint(lastSegment(name)) {
-		return false
-	}
-	return strings.Contains(name, ".")
 }
 
 func (e *Engine) verifyClean(ctx context.Context) error {
