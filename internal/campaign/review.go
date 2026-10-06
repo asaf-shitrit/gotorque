@@ -3,6 +3,7 @@ package campaign
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -29,7 +30,7 @@ type reviewAnalyst struct {
 }
 
 func (a reviewAnalyst) ReviewPatch(ctx context.Context, req orchestrator.ReviewRequest) (agents.ReviewerResult, error) {
-	patch := req.Proposal.Patch
+	patch := reviewedPatch(req)
 	if strings.TrimSpace(patch) == "" {
 		return agents.ReviewerResult{BehaviorArgument: "no patch to review"}, nil
 	}
@@ -52,6 +53,22 @@ func (a reviewAnalyst) ReviewPatch(ctx context.Context, req orchestrator.ReviewR
 		_ = a.engine.saveEvent("patch_review", fmt.Sprintf("Jev raised %d behaviour hazard(s) on %s", len(flagged), fn.Name), scores)
 	}
 	return reviewerResult(flagged), nil
+}
+
+// reviewedPatch is the diff the review reads: the one evaluateCandidate built
+// and measured, read back from its patch file. On the function_source
+// transports the proposal carries no diff (code builds it during evaluation),
+// so Proposal.Patch alone left most candidates unreviewed. Even when both are
+// set the written diff is the one that was measured, so it is the one to
+// review. A candidate that failed before a diff was written falls back to the
+// proposal's own patch, as before.
+func reviewedPatch(req orchestrator.ReviewRequest) string {
+	if path := req.Candidate.Candidate.PatchPath; path != "" {
+		if built, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(built)) != "" {
+			return string(built)
+		}
+	}
+	return req.Proposal.Patch
 }
 
 func reviewerResult(flagged []jev.HazardScore) agents.ReviewerResult {
