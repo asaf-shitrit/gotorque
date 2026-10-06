@@ -9,13 +9,13 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/profile"
 )
 
-// RetryAmplificationTarget is the input size of the one retry for a target
+// retryAmplificationTarget is the input size of the one retry for a target
 // that finished before the sampler could attach.
-const RetryAmplificationTarget = 8 * AmplificationTarget
+const retryAmplificationTarget = 8 * amplificationTarget
 
-// RetriesLarger reports whether a failed sample is worth one more try on a
+// retriesLarger reports whether a failed sample is worth one more try on a
 // larger input: the target ended too soon and its inputs can grow.
-func RetriesLarger(err error, seed manifest.SeedWorkload) bool {
+func retriesLarger(err error, seed manifest.SeedWorkload) bool {
 	tooShort := errors.Is(err, profile.ErrTargetExitedEarly) || errors.Is(err, profile.ErrNoFrames)
 	return tooShort && hasRepeatableInput(seed)
 }
@@ -24,7 +24,7 @@ func hasRepeatableInput(seed manifest.SeedWorkload) bool {
 	return seed.StdinRepeat > 0 || slices.ContainsFunc(seed.Files, func(f manifest.FixtureFile) bool { return f.Repeat > 0 })
 }
 
-// AmplifyRepeats scales every input the manifest declares repeatable -- a
+// amplifyRepeats scales every input the manifest declares repeatable -- a
 // fixture file with repeat, stdin with stdin_repeat -- so that input expands
 // to about amplificationTarget bytes for the sampled run. The declaration is
 // what makes this safe: the manifest author wrote the content as a block that
@@ -33,7 +33,7 @@ func hasRepeatableInput(seed manifest.SeedWorkload) bool {
 // discovery fell back to benchmarks: every held-out target reads files.
 // Inputs without a declared repeat (a script, a single document) are left as
 // they are; a manifest keeps those sampleable with a long stress seed.
-func AmplifyRepeats(seed manifest.SeedWorkload, target int) manifest.SeedWorkload {
+func amplifyRepeats(seed manifest.SeedWorkload, target int) manifest.SeedWorkload {
 	if seed.StdinRepeat > 0 {
 		seed.StdinRepeat = scaledRepeat(len(seed.StdinHeader), len(seed.Stdin), seed.StdinRepeat, target)
 	}
@@ -57,7 +57,7 @@ func scaledRepeat(header, block, repeat, target int) int {
 	return max(repeat, (target-header)/block)
 }
 
-// AmplifyStdin grows a seed input so a short-lived target stays alive for the
+// amplifyStdin grows a seed input so a short-lived target stays alive for the
 // sampler's window.
 //
 // Repeating the raw bytes only lengthens the run for a target that consumes
@@ -68,7 +68,7 @@ func scaledRepeat(header, block, repeat, target int) int {
 // Replicating the elements of the document's largest array keeps the document
 // valid and multiplies the work it describes, which turns that same seed into
 // a multi-second run.
-func AmplifyStdin(stdin []byte) []byte {
+func amplifyStdin(stdin []byte) []byte {
 	if len(stdin) == 0 || len(stdin) >= maxAmplifiedStdin {
 		return stdin
 	}
@@ -81,8 +81,8 @@ func AmplifyStdin(stdin []byte) []byte {
 // maxAmplifiedStdin bounds a sampling input's size.
 const maxAmplifiedStdin = 32 << 20
 
-// AmplificationTarget is how much input the amplifiers aim to produce.
-const AmplificationTarget = 16 << 20
+// amplificationTarget is how much input the amplifiers aim to produce.
+const amplificationTarget = 16 << 20
 
 // amplifyJSONArray duplicates the body of the largest JSON array so the result
 // is still one valid document. It reports false when stdin is not JSON with a
@@ -98,9 +98,9 @@ func amplifyJSONArray(stdin []byte) ([]byte, bool) {
 	}
 	// The prefix already ends with '[', so each repetition contributes a
 	// separating comma and one more element list.
-	amplified := make([]byte, 0, AmplificationTarget)
+	amplified := make([]byte, 0, amplificationTarget)
 	amplified = append(amplified, stdin[:end]...)
-	for len(amplified) < AmplificationTarget {
+	for len(amplified) < amplificationTarget {
 		amplified = append(amplified, ',')
 		amplified = append(amplified, body...)
 	}
@@ -175,9 +175,9 @@ func widest(a, b jsonSpan) jsonSpan {
 	return a
 }
 
-// RepeatLines repeats the input one copy per line, the shape a line-oriented
+// repeatLines repeats the input one copy per line, the shape a line-oriented
 // mode reads as many documents.
-func RepeatLines(stdin []byte) []byte {
+func repeatLines(stdin []byte) []byte {
 	return repeatStdin(append(bytes.TrimRight(stdin, "\n"), '\n'))
 }
 
@@ -185,7 +185,7 @@ func RepeatLines(stdin []byte) []byte {
 // target that consumes all of stdin.
 func repeatStdin(stdin []byte) []byte {
 	amplified := make([]byte, 0, maxAmplifiedStdin)
-	for len(amplified) < AmplificationTarget {
+	for len(amplified) < amplificationTarget {
 		amplified = append(amplified, stdin...)
 	}
 	return amplified

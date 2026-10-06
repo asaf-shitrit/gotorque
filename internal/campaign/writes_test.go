@@ -1,7 +1,6 @@
 package campaign
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +9,6 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
-	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/stretchr/testify/require"
 )
 
@@ -70,29 +68,6 @@ func TestUnbufferedWriteTargetWithoutCallersIsOneFunction(t *testing.T) {
 	empty := agents.AnalystResult{Targets: []agents.Target{{Location: "a.go:1"}}}
 	addUnbufferedWriteTargets(t.TempDir(), []orchestrator.UnbufferedWrite{{Location: "a.go:1", Share: 1}}, &empty)
 	require.Len(t, empty.Targets, 1, "evidence at no readable declaration adds nothing")
-}
-
-// TestUnbufferedWritesKeepsHotListSites resolves the sample's write sites to
-// hot-list locations and callers, dropping a site discovery did not list.
-func TestUnbufferedWritesKeepsHotListSites(t *testing.T) {
-	repo := writerRepo(t)
-	e := &Engine{}
-	e.state.Repository = repo
-	e.state.Inventory.Packages = []string{"example.com/fz"}
-	e.state.DiscoveryHotFunctions = []string{"options.go:7", "filter.go:3"}
-	write := []string{"syscall.write", "fmt.Fprintln"}
-	results := []profile.SampleResult{
-		{Stacks: []profile.Stack{
-			{Frames: append(append([]string{}, write...), "main.defaultOptions.func1", "main.filter", "main.Run", "main.main"), Weight: 80},
-			{Frames: append(append([]string{}, write...), "main.main"), Weight: 50},
-		}},
-		{Stacks: []profile.Stack{
-			{Frames: append(append([]string{}, write...), "main.defaultOptions.func1", "main.filter"), Weight: 10},
-			{Frames: []string{"main.defaultOptions.func1"}, Weight: 10},
-		}},
-	}
-	got := e.unbufferedWrites(context.Background(), results)
-	require.Equal(t, []orchestrator.UnbufferedWrite{{Location: "options.go:7", Share: 1, Callers: []string{"filter.go:3"}}}, got)
 }
 
 func TestReportLabelsCodeDerivedTargets(t *testing.T) {

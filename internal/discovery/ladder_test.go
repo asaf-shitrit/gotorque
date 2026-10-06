@@ -83,7 +83,7 @@ func TestARepeatableSeedThatEndsTooSoonIsSampledOnALargerInput(t *testing.T) {
 	requests := replay.Requests()
 	require.Len(t, requests, 2)
 	first, second := len(requests[0].Fixtures["rows.csv"]), len(requests[1].Fixtures["rows.csv"])
-	require.Greater(t, first, AmplificationTarget/2)
+	require.Greater(t, first, amplificationTarget/2)
 	require.InDelta(t, 8, float64(second)/float64(first), 0.1, "the retry is eight times the first input")
 }
 
@@ -107,7 +107,7 @@ func TestVariantFallsBackToItsInputOneCopyPerLine(t *testing.T) {
 	requests := replay.Requests()
 	require.Len(t, requests, 2)
 	require.Equal(t, filepath.Join(ladder.in.Dir, "profile-sample", "sample-report-1.txt"), requests[1].OutputPath)
-	require.Equal(t, RepeatLines([]byte(variant.Stdin)), requests[1].Stdin)
+	require.Equal(t, repeatLines([]byte(variant.Stdin)), requests[1].Stdin)
 	require.GreaterOrEqual(t, bytes.Count(requests[1].Stdin, []byte("\n")), 2)
 	events := ladder.TakeEvents()
 	require.Len(t, events, 1)

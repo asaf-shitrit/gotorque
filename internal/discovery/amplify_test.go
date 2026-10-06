@@ -15,7 +15,7 @@ import (
 
 func TestAmplifyStdinKeepsJSONValid(t *testing.T) {
 	seed := []byte(`{"meta":{"ok":true},"users":[{"id":0},{"id":1},{"id":2}],"trailing":"x"}`)
-	amplified := AmplifyStdin(seed)
+	amplified := amplifyStdin(seed)
 	if len(amplified) <= len(seed) {
 		t.Fatalf("amplified %d bytes, want more than the %d byte seed", len(amplified), len(seed))
 	}
@@ -44,30 +44,30 @@ func TestAmplifyStdinKeepsJSONValid(t *testing.T) {
 
 func TestAmplifyStdinRepeatsNonJSONInput(t *testing.T) {
 	seed := []byte("plain text line\n")
-	amplified := AmplifyStdin(seed)
+	amplified := amplifyStdin(seed)
 	if len(amplified) <= len(seed) {
 		t.Fatalf("amplified %d bytes, want more than %d", len(amplified), len(seed))
 	}
 	if string(amplified[:len(seed)]) != string(seed) {
 		t.Fatalf("fallback must repeat the input verbatim, got %q", amplified[:len(seed)])
 	}
-	if len(amplified) < AmplificationTarget {
-		t.Fatalf("amplified only %d bytes, want at least %d", len(amplified), AmplificationTarget)
+	if len(amplified) < amplificationTarget {
+		t.Fatalf("amplified only %d bytes, want at least %d", len(amplified), amplificationTarget)
 	}
 }
 
 func TestAmplifyStdinLeavesUsableInputsAlone(t *testing.T) {
 	oversized := make([]byte, maxAmplifiedStdin)
-	if got := AmplifyStdin(oversized); len(got) != len(oversized) {
+	if got := amplifyStdin(oversized); len(got) != len(oversized) {
 		t.Fatalf("oversized input amplified to %d bytes, want %d", len(got), len(oversized))
 	}
-	if got := AmplifyStdin(nil); len(got) != 0 {
+	if got := amplifyStdin(nil); len(got) != 0 {
 		t.Fatalf("empty input amplified to %d bytes", len(got))
 	}
 	// An array with nothing in it gives the amplifier nothing to replicate, so
 	// byte repetition takes over rather than emitting invalid JSON.
 	for _, seed := range []string{`{"a":[]}`, `{"a":[  ]}`, "   "} {
-		if got := AmplifyStdin([]byte(seed)); len(got) <= len(seed) {
+		if got := amplifyStdin([]byte(seed)); len(got) <= len(seed) {
 			t.Fatalf("input %q was not amplified: %d bytes", seed, len(got))
 		}
 	}
@@ -102,17 +102,17 @@ func TestAmplifyRepeatsScalesOnlyDeclaredRepeatableInputs(t *testing.T) {
 			{Path: "huge.txt", Content: block, Repeat: 1 << 20},
 		},
 	}
-	got := AmplifyRepeats(seed, AmplificationTarget)
-	want := (AmplificationTarget - 3) / 100
+	got := amplifyRepeats(seed, amplificationTarget)
+	want := (amplificationTarget - 3) / 100
 	require.Equal(t, want, got.Files[0].Repeat)
 	require.Equal(t, 0, got.Files[1].Repeat, "a script has no repeat and is not repeated")
 	require.Equal(t, 1<<20, got.Files[2].Repeat, "a count already past the target is kept")
-	require.Equal(t, (AmplificationTarget-2)/100, got.StdinRepeat)
+	require.Equal(t, (amplificationTarget-2)/100, got.StdinRepeat)
 	require.Equal(t, 10, seed.Files[0].Repeat, "the manifest's seed is not modified")
 
-	plain := AmplifyRepeats(manifest.SeedWorkload{Stdin: "{}"}, AmplificationTarget)
+	plain := amplifyRepeats(manifest.SeedWorkload{Stdin: "{}"}, amplificationTarget)
 	require.Equal(t, 0, plain.StdinRepeat)
-	require.Equal(t, 5, scaledRepeat(0, 0, 5, AmplificationTarget), "an empty block cannot be scaled")
+	require.Equal(t, 5, scaledRepeat(0, 0, 5, amplificationTarget), "an empty block cannot be scaled")
 }
 
 // TestSamplingRetryAppliesOnlyToRepeatableInputs: the larger retry only makes
@@ -122,8 +122,8 @@ func TestSamplingRetryAppliesOnlyToRepeatableInputs(t *testing.T) {
 	require.True(t, hasRepeatableInput(manifest.SeedWorkload{Stdin: "x\n", StdinRepeat: 2}))
 	require.False(t, hasRepeatableInput(manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: "print(1)\n"}}}))
 
-	big := AmplifyRepeats(manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: strings.Repeat("x", 100), Repeat: 10}}}, RetryAmplificationTarget)
-	require.Equal(t, RetryAmplificationTarget/100, big.Files[0].Repeat)
+	big := amplifyRepeats(manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: strings.Repeat("x", 100), Repeat: 10}}}, retryAmplificationTarget)
+	require.Equal(t, retryAmplificationTarget/100, big.Files[0].Repeat)
 }
 
 // TestRetriesLargerOnATargetThatEndedTooSoon: a target dead before the
@@ -132,23 +132,23 @@ func TestSamplingRetryAppliesOnlyToRepeatableInputs(t *testing.T) {
 func TestRetriesLargerOnATargetThatEndedTooSoon(t *testing.T) {
 	repeatable := manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: "a,b\n", Repeat: 10}}}
 	script := manifest.SeedWorkload{Files: []manifest.FixtureFile{{Content: "print(1)\n"}}}
-	require.True(t, RetriesLarger(profile.ErrTargetExitedEarly, repeatable))
-	require.True(t, RetriesLarger(fmt.Errorf("sample: %w", profile.ErrNoFrames), repeatable))
-	require.False(t, RetriesLarger(profile.ErrNoFrames, script), "a script cannot grow")
-	require.False(t, RetriesLarger(errors.New("sample tool unavailable"), repeatable))
-	require.False(t, RetriesLarger(nil, repeatable))
+	require.True(t, retriesLarger(profile.ErrTargetExitedEarly, repeatable))
+	require.True(t, retriesLarger(fmt.Errorf("sample: %w", profile.ErrNoFrames), repeatable))
+	require.False(t, retriesLarger(profile.ErrNoFrames, script), "a script cannot grow")
+	require.False(t, retriesLarger(errors.New("sample tool unavailable"), repeatable))
+	require.False(t, retriesLarger(nil, repeatable))
 }
 
 // TestLineRepetitionFeedsALineOrientedMode: gron --stream reads one document per
 // line, so the fallback input is the seed, newline-terminated, many times over.
 func TestLineRepetitionFeedsALineOrientedMode(t *testing.T) {
 	seed := []byte(`{"users":[1,2]}` + "\n")
-	amplified := RepeatLines(seed[:len(seed)-1])
-	require.GreaterOrEqual(t, len(amplified), AmplificationTarget)
+	amplified := repeatLines(seed[:len(seed)-1])
+	require.GreaterOrEqual(t, len(amplified), amplificationTarget)
 	lines := strings.Split(strings.TrimSuffix(string(amplified), "\n"), "\n")
 	require.Greater(t, len(lines), 1)
 	for _, line := range lines {
 		require.JSONEq(t, `{"users":[1,2]}`, line)
 	}
-	require.Equal(t, amplified, RepeatLines(seed), "a trailing newline is not doubled")
+	require.Equal(t, amplified, repeatLines(seed), "a trailing newline is not doubled")
 }

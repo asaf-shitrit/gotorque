@@ -3,7 +3,6 @@ package campaign
 import (
 	"context"
 	"fmt"
-	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
-	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/asaf-shitrit/gotorque/internal/runner"
 	"github.com/asaf-shitrit/gotorque/internal/workload"
 )
@@ -131,19 +129,15 @@ func richestFlagPackage(repo string) []workload.Flag {
 	return best
 }
 
-// sampleExplored samples the explored variants after the seed through the
-// ladder, and records what the ladder reports about them.
-func (e *Engine) sampleExplored(ctx context.Context, ladder *discovery.Ladder, seed manifest.SeedWorkload) []profile.SampleResult {
+// exploreVariants is discovery's explorer: the seed workloads of the option
+// variants worth sampling next to seed.
+func (e *Engine) exploreVariants(ctx context.Context, seed manifest.SeedWorkload) []manifest.SeedWorkload {
 	explored := e.exploreWorkloads(ctx, seed)
 	variants := make([]manifest.SeedWorkload, len(explored))
 	for i, w := range explored {
 		variants[i] = w.Seed
 	}
-	results := ladder.Variants(ctx, variants)
-	for _, event := range ladder.TakeEvents() {
-		_ = e.saveEvent(event.Kind, event.Message, event.Data)
-	}
-	return results
+	return variants
 }
 
 // variantRequest runs a workload on the release binary under the isolation

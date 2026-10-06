@@ -25,13 +25,13 @@ func TestHotFunctionNamesDropsNonActionableFrames(t *testing.T) {
 		{Name: "github.com/tomnomnom/gron.BenchmarkBigJSON"},
 		{Name: "github.com/tomnomnom/gron.TestFill"},
 	}
-	got := HotFunctionNames(functions, 15)
+	got := hotFunctionNames(functions, 15)
 	want := []string{
 		"github.com/itchyny/gojq/cli.newJSONInputIter.func1",
 		"encoding/json/v2.Unmarshal",
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("HotFunctionNames() = %v, want %v", got, want)
+		t.Errorf("hotFunctionNames() = %v, want %v", got, want)
 	}
 }
 
@@ -43,10 +43,10 @@ func TestHotFunctionNamesSkipsRuntimeAndDeduplicates(t *testing.T) {
 		{Name: ""},
 		{Name: "main.parse"},
 	}
-	got := HotFunctionNames(functions, 15)
+	got := hotFunctionNames(functions, 15)
 	require.Equal(t, []string{"main.handle", "main.parse"}, got)
-	require.Empty(t, HotFunctionNames(nil, 15))
-	capped := HotFunctionNames([]profile.Function{{Name: "main.a"}, {Name: "main.b"}}, 1)
+	require.Empty(t, hotFunctionNames(nil, 15))
+	capped := hotFunctionNames([]profile.Function{{Name: "main.a"}, {Name: "main.b"}}, 1)
 	require.Equal(t, []string{"main.a"}, capped)
 }
 
@@ -55,7 +55,7 @@ func TestHotFunctionNamesSkipsRuntimeAndDeduplicates(t *testing.T) {
 func TestMergedSamplesWeighEachWorkloadEqually(t *testing.T) {
 	seedSample := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.sort"}, Weight: 900}, {Frames: []string{"main.print"}, Weight: 100}}}
 	variantSample := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.stream"}, Weight: 40}}}
-	merged := MergeAttributed([]profile.SampleResult{seedSample, variantSample}, func(s string) bool { return strings.HasPrefix(s, "main.") })
+	merged := mergeAttributed([]profile.SampleResult{seedSample, variantSample}, func(s string) bool { return strings.HasPrefix(s, "main.") })
 	names := make([]string, 0, len(merged))
 	for _, fn := range merged {
 		names = append(names, fn.Name)

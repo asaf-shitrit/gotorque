@@ -17,10 +17,10 @@ func symlinkForms(path string) []string {
 	return forms
 }
 
-// EnclosingFunction strips closure suffixes until the declared function
+// enclosingFunction strips closure suffixes until the declared function
 // remains. Profile frames name closures in forms no `func` declaration uses:
 // pkg.outer.func1 for a closure, pkg.outer.func1.2 when nested.
-func EnclosingFunction(name string) string {
+func enclosingFunction(name string) string {
 	for {
 		trimmed, ok := trimClosureSuffix(name)
 		if !ok {
@@ -45,7 +45,7 @@ func trimClosureSuffix(name string) (string, bool) {
 	return name, false
 }
 
-// RepoRelative rewrites a profiler's absolute source path into the
+// repoRelative rewrites a profiler's absolute source path into the
 // repository-relative form the excerpt collector requires, and rejects paths
 // outside the repository.
 //
@@ -57,7 +57,7 @@ func trimClosureSuffix(name string) (string, bool) {
 // Frames in the standard library or module cache are dropped outright rather
 // than kept as bare paths, since no patch this campaign may write can reach
 // them and they otherwise occupy the excerpt budget.
-func RepoRelative(repository, path string) (string, bool) {
+func repoRelative(repository, path string) (string, bool) {
 	if path == "" {
 		return "", false
 	}

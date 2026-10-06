@@ -8,9 +8,9 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/profile"
 )
 
-// MergeAttributed sums each sample's attributed weights as fractions of that
+// mergeAttributed sums each sample's attributed weights as fractions of that
 // sample's total, so every sampled workload counts equally whatever its length.
-func MergeAttributed(results []profile.SampleResult, own func(string) bool) []profile.Function {
+func mergeAttributed(results []profile.SampleResult, own func(string) bool) []profile.Function {
 	weights := map[string]float64{}
 	for _, result := range results {
 		attributed := profile.AttributeToOwn(result.Stacks, own)
@@ -65,18 +65,18 @@ func lastSegment(name string) string {
 
 const (
 	// hotFunctionBudget caps how many actionable functions reach the agents.
-	HotFunctionBudget = 15
+	hotFunctionBudget = 15
 	// hotFunctionScanDepth is how many profile nodes are summarized to fill
 	// that budget. A Go CPU profile's hottest nodes are overwhelmingly
 	// runtime scheduler and allocator frames, so scanning only as deep as the
 	// budget yields a handful of module functions and wastes the rest of the
 	// budget on frames no patch can touch.
-	HotFunctionScanDepth = 4 * HotFunctionBudget
+	hotFunctionScanDepth = 4 * hotFunctionBudget
 )
 
-// HotFunctionNames extracts deduplicated function names from a parsed pprof
+// hotFunctionNames extracts deduplicated function names from a parsed pprof
 // top summary, skipping runtime frames that never belong to the target.
-func HotFunctionNames(functions []profile.Function, limit int) []string {
+func hotFunctionNames(functions []profile.Function, limit int) []string {
 	names := make([]string, 0, limit)
 	seen := map[string]bool{}
 	for _, fn := range functions {

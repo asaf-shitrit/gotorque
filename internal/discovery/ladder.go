@@ -106,24 +106,24 @@ func (l *Ladder) Variants(ctx context.Context, variants []manifest.SeedWorkload)
 // seed samples one workload under the platform sampler, with its input
 // amplified so the target outlives the sampling window.
 func (l *Ladder) seed(ctx context.Context, seed manifest.SeedWorkload, reportName string) (profile.SampleResult, error) {
-	result, err := l.amplified(ctx, seed, AmplificationTarget, reportName)
+	result, err := l.amplified(ctx, seed, amplificationTarget, reportName)
 	// A fixed size cannot fit every CLI: 16 MiB of CSV kept held-out csvq
 	// busy for 0.48s, just short of the sampler's half-second. A target that
 	// exited that early, on inputs the manifest declares repeatable, gets one
 	// more try at eight times the size. Ending just after the liveness check
 	// fails differently: the sampler attaches and records an empty call graph
 	// (held-out csvq again, sampled 0.58s after launch), so that counts too.
-	if RetriesLarger(err, seed) {
-		result, err = l.amplified(ctx, seed, RetryAmplificationTarget, reportName)
+	if retriesLarger(err, seed) {
+		result, err = l.amplified(ctx, seed, retryAmplificationTarget, reportName)
 	}
 	return result, err
 }
 
 func (l *Ladder) amplified(ctx context.Context, seed manifest.SeedWorkload, target int, reportName string) (profile.SampleResult, error) {
-	amplified := AmplifyRepeats(seed, target)
+	amplified := amplifyRepeats(seed, target)
 	stdin := amplified.StdinBytes()
 	if seed.StdinRepeat == 0 {
-		stdin = AmplifyStdin(stdin)
+		stdin = amplifyStdin(stdin)
 	}
 	return l.sampleWith(ctx, amplified, stdin, reportName)
 }
@@ -141,7 +141,7 @@ func (l *Ladder) variant(ctx context.Context, seed manifest.SeedWorkload, report
 	if err == nil || seed.Stdin == "" {
 		return result, err
 	}
-	result, lineErr := l.sampleWith(ctx, seed, RepeatLines(seed.StdinBytes()), reportName)
+	result, lineErr := l.sampleWith(ctx, seed, repeatLines(seed.StdinBytes()), reportName)
 	if lineErr != nil {
 		return result, fmt.Errorf("%w; with one copy per line: %w", err, lineErr)
 	}

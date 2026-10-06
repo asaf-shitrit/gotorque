@@ -23,17 +23,17 @@ func TestBenchmarkOrderKeepsOnlyImportedPackages(t *testing.T) {
 		}
 		require.NoError(t, os.WriteFile(filepath.Join(repo, pkg, "x_test.go"), []byte(body.String()), 0o600))
 	}
-	require.Equal(t, []string{"./s2/cmd/s2c"}, BenchmarkPackageOrder(repo, "./s2/cmd/s2c", "", []string{"./s2/cmd/s2c"}), "no imported package has benchmarks")
-	require.Equal(t, []string{"./s2/cmd/s2c", "./s2"}, BenchmarkPackageOrder(repo, "./s2/cmd/s2c", "", []string{"./s2", "./s2/cmd/s2c"}))
-	require.Equal(t, []string{"./s2/cmd/s2c", "./flate", "./s2"}, BenchmarkPackageOrder(repo, "./s2/cmd/s2c", "", nil), "unknown imports keep the old order")
+	require.Equal(t, []string{"./s2/cmd/s2c"}, benchmarkPackageOrder(repo, "./s2/cmd/s2c", "", []string{"./s2/cmd/s2c"}), "no imported package has benchmarks")
+	require.Equal(t, []string{"./s2/cmd/s2c", "./s2"}, benchmarkPackageOrder(repo, "./s2/cmd/s2c", "", []string{"./s2", "./s2/cmd/s2c"}))
+	require.Equal(t, []string{"./s2/cmd/s2c", "./flate", "./s2"}, benchmarkPackageOrder(repo, "./s2/cmd/s2c", "", nil), "unknown imports keep the old order")
 }
 
 func TestMergeAllocFirstPrefersAllocatorsWithoutDroppingCPUEvidence(t *testing.T) {
 	cpu := []string{"a.go:1", "b.go:2", "c.go:3"}
 	alloc := []string{"c.go:3", "d.go:4"}
 
-	got := MergeAllocFirst(cpu, alloc, 4)
+	got := mergeAllocFirst(cpu, alloc, 4)
 	require.Equal(t, []string{"c.go:3", "d.go:4", "a.go:1", "b.go:2"}, got, "allocators lead, deduplicated, then the rest of the CPU list")
 
-	require.Equal(t, []string{"c.go:3", "d.go:4"}, MergeAllocFirst(cpu, alloc, 2), "budget still caps the merged list")
+	require.Equal(t, []string{"c.go:3", "d.go:4"}, mergeAllocFirst(cpu, alloc, 2), "budget still caps the merged list")
 }

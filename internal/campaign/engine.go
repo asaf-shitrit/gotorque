@@ -17,9 +17,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -809,10 +807,49 @@ func (e *Engine) runDiscoveryStep(ctx context.Context) error {
 	if e.state.CompletedSteps["discovery_profile"] {
 		return nil
 	}
-	source := e.collectDiscoveryProfile(ctx)
-	e.state.DiscoveryProfileSource = source
+	evidence, err := discovery.Run(ctx, e.discoveryInputs(), e.targetSampler(), e.toolchain)
+	if err != nil {
+		return err
+	}
+	e.applyDiscovery(evidence)
+	for _, event := range evidence.Events {
+		if err := e.saveEvent(event.Kind, event.Message, event.Data); err != nil {
+			return err
+		}
+	}
 	e.state.CompletedSteps["discovery_profile"] = true
-	return e.saveEvent("discovery_profile_completed", fmt.Sprintf("measured %d hot functions from %s", len(e.state.DiscoveryHotFunctions), source), nil)
+	return e.saveEvent("discovery_profile_completed", fmt.Sprintf("measured %d hot functions from %s", len(e.state.DiscoveryHotFunctions), evidence.Source), nil)
+}
+
+// applyDiscovery writes what discovery found into the persisted state fields,
+// which resume reads back. Nothing is written until discovery has finished, so
+// a campaign killed mid-discovery re-runs it from a clean state.
+func (e *Engine) applyDiscovery(evidence discovery.Evidence) {
+	e.state.DiscoveryHotFunctions = evidence.HotFunctions
+	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, evidence.Weights)
+	e.state.DiscoveryUnbufferedWrites = evidence.UnbufferedWrites
+	e.state.DiscoveryProfileSummaryPath = evidence.ProfileSummaryPath
+	e.state.DiscoveryAllocProfileSummaryPath = evidence.AllocProfileSummaryPath
+	e.state.PGOProfilePath = evidence.PGOProfilePath
+	e.state.DiscoveryProfileSource = evidence.Source
+	e.recordIsolationNotes(evidence.IsolationNotes)
+}
+
+// discoveryInputs is the plain data discovery runs from.
+func (e *Engine) discoveryInputs() discovery.Inputs {
+	return discovery.Inputs{
+		BinaryPath:      e.state.BinaryPath,
+		Command:         e.state.Manifest.Target.Command,
+		Seeds:           e.state.Manifest.Workloads.Seeds,
+		Explore:         e.exploreVariants,
+		Sandbox:         sandboxPolicy(e.state.Manifest.Sandbox),
+		Repository:      e.state.Repository,
+		Build:           e.state.Manifest.Target.Build,
+		Packages:        e.state.Inventory.Packages,
+		Imports:         e.state.Inventory.TargetImports,
+		MemoryObjective: e.state.Manifest.Performance.PrimaryMetric == objectivePeakMemory,
+		Dir:             e.dir,
+	}
 }
 
 func (e *Engine) finishCampaign(ctx context.Context) error {
@@ -1003,432 +1040,11 @@ func (e *Engine) runSeed(ctx context.Context, seed manifest.SeedWorkload) error 
 	return nil
 }
 
-const (
-	profileSourceTargetSample = "a target sample"
-	profileSourceBenchmark    = "target benchmarks"
-	profileSourceNone         = "no source"
-)
-
-// collectDiscoveryProfile chooses where discovery hot paths come from, and
-// returns that source's name for the completed event.
-//
-// The measured workloads come first, because they are what the campaign is
-// about. A benchmark CPU profile weights every benchmark in the module equally
-// regardless of how much it resembles the command, so microbenchmarks dominate
-// the hot list and point the optimizer at code that cannot move the measured
-// wall time: on gron three identifier microbenchmarks put validFirstRune at
-// 36% cumulative while the measured workload's own hot frames (write,
-// statements.Less, statement.String) never appeared, and the first two
-// candidates of every campaign attacked rune classification before reaching
-// the real cost. Sampling the release binary on a manifest seed workload
-// profiles the execution the primary metric is taken from.
-// Every path through this function records its own event, so it has no error
-// to return: discovery evidence is best-effort and a missing source must not
-// fail the campaign.
-func (e *Engine) collectDiscoveryProfile(ctx context.Context) string {
-	sampleErr := e.sampleTargetProfile(ctx)
-	var source string
-	switch sampleErr {
-	case nil:
-		// Still collect the benchmark profile when the module has benchmarks:
-		// the informational PGO lane is built from it, and dropping that lane
-		// because sampling won would be a silent feature regression.
-		_, _ = e.benchmarkCPUProfile(ctx)
-		source = profileSourceTargetSample
-	default:
-		// Recorded even when the benchmark fallback succeeds: held-out csvq
-		// fell back twice with no trace of why its sample had failed.
-		_ = e.saveEvent("discovery_sample_failed", "direct target sampling failed, falling back to benchmarks: "+sampleErr.Error(), nil)
-		if benchErr := e.profileHotFunctions(ctx); benchErr == nil {
-			source = profileSourceBenchmark
-		} else {
-			_ = e.saveEvent("discovery_profile_skipped", fmt.Sprintf("direct target sampling unavailable (%s); benchmark CPU profile unavailable (%s)", sampleErr.Error(), benchErr.Error()), nil)
-			return profileSourceNone
-		}
-	}
-	return source + e.collectAllocationEvidence(ctx)
-}
-
-// collectAllocationEvidence adds a benchmark alloc_space profile to
-// discovery's hot list when the campaign's objective is peak memory (ADR
-// 0024), and returns a suffix naming that source for the discovery event, or
-// "" when the objective is not memory or the module has no benchmarks.
-func (e *Engine) collectAllocationEvidence(ctx context.Context) string {
-	if e.state.Manifest.Performance.PrimaryMetric != objectivePeakMemory {
-		return ""
-	}
-	if allocSource := e.profileAllocations(ctx); allocSource != "" {
-		return " + " + allocSource
-	}
-	return ""
-}
-
-// sampleTargetProfile runs the first representative seed workload against the
-// release baseline binary under the platform sampler (macOS `sample`, Linux
-// `perf`) and records the hottest frames as discovery evidence. The raw
-// sampler report is preserved under profile-sample/ in the campaign dir.
-// Strictly best-effort: any failure is returned for a skipped event.
-func (e *Engine) sampleTargetProfile(ctx context.Context) error {
-	if e.state.BinaryPath == "" {
-		return errors.New("no baseline binary")
-	}
-	if info, statErr := os.Stat(e.state.BinaryPath); statErr != nil || info.IsDir() {
-		return errors.New("baseline binary missing on disk")
-	}
-	if len(e.state.Manifest.Workloads.Seeds) == 0 {
-		return errors.New("manifest defines no seed workloads to sample")
-	}
-	ladder := discovery.NewLadder(e.discoveryInputs(), e.targetSampler())
-	defer func() { e.recordIsolationNotes(ladder.Notes()) }()
-	seed, result, err := ladder.FirstLiving(ctx)
-	if err != nil {
-		return err
-	}
-	results := append([]profile.SampleResult{result}, e.sampleExplored(ctx, ladder, seed)...)
-	names, weights := e.sampledHotNamesAndWeights(results...)
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, "", names)
-	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
-	e.state.DiscoveryUnbufferedWrites = e.unbufferedWrites(ctx, results)
-	e.state.DiscoveryProfileSummaryPath = result.RawReport
-	return nil
-}
-
-// unbufferedWriteShare is the fraction of a function's sampled time that must
-// be unbuffered writes before code raises the target itself. Across every
-// campaign sample on record, the functions above it were exactly gron's
-// output loop, gojq's printValues and encoder flush, and fzf's Printer, each
-// at 0.95 or more; nothing else reached 0.3.
-const unbufferedWriteShare = 0.5
-
-// maxWriteCallers caps how many callers a write site's evidence keeps.
-const maxWriteCallers = 3
-
-// unbufferedWrites resolves the sample's unbuffered-write sites to hot-list
-// locations, keeping each function's largest share over the sampled
-// workloads. A site outside the hot list is dropped: the evidence ranks
-// targets and is not a reason to look at code discovery did not measure.
-func (e *Engine) unbufferedWrites(ctx context.Context, results []profile.SampleResult) []orchestrator.UnbufferedWrite {
-	best := map[string]profile.WriteSite{}
-	var order []string
-	for _, result := range results {
-		for _, site := range profile.UnbufferedWrites(result.Stacks, e.ownSymbol, unbufferedWriteShare) {
-			prior, seen := best[site.Function]
-			if !seen {
-				order = append(order, site.Function)
-			}
-			if !seen || site.Share > prior.Share {
-				best[site.Function] = site
-			}
-		}
-	}
-	var out []orchestrator.UnbufferedWrite
-	for _, name := range order {
-		if w, ok := e.writeEvidence(ctx, best[name]); ok {
-			out = append(out, w)
-		}
-	}
-	return out
-}
-
-func (e *Engine) writeEvidence(ctx context.Context, site profile.WriteSite) (orchestrator.UnbufferedWrite, bool) {
-	loc := e.hotLocation(ctx, "", site.Function)
-	if !slices.Contains(e.state.DiscoveryHotFunctions, loc) {
-		return orchestrator.UnbufferedWrite{}, false
-	}
-	w := orchestrator.UnbufferedWrite{Location: loc, Share: site.Share}
-	for _, caller := range site.Callers {
-		if len(w.Callers) == maxWriteCallers {
-			break
-		}
-		if c := e.hotLocation(ctx, "", caller); c != caller && c != loc && !slices.Contains(w.Callers, c) {
-			w.Callers = append(w.Callers, c)
-		}
-	}
-	return w, true
-}
-
-// discoveryInputs is the plain data discovery samples from.
-func (e *Engine) discoveryInputs() discovery.Inputs {
-	return discovery.Inputs{
-		BinaryPath: e.state.BinaryPath,
-		Command:    e.state.Manifest.Target.Command,
-		Seeds:      e.state.Manifest.Workloads.Seeds,
-		Sandbox:    sandboxPolicy(e.state.Manifest.Sandbox),
-		Dir:        e.dir,
-	}
-}
-
 func (e *Engine) targetSampler() profile.Sampler {
 	if e.sampler != nil {
 		return e.sampler
 	}
 	return profile.PlatformSampler()
-}
-
-// sampledHotNames ranks the target's own functions by the samples spent on
-// their behalf, then fills any budget left with the sampler's top-of-stack
-// frames, which is all discovery used to list.
-//
-// Top of stack alone says which frames were executing, not for whom. A Go CLI
-// that spends its time printing is executing fmt and write, so its hot list
-// was standard-library names no patch can touch, and the function doing the
-// printing had almost no self time: gron's per-statement Fprintln loop, whose
-// bufio fix was the only patch ever accepted on it, never appeared, so no
-// analyst was ever asked about it. Credited with the calls it makes, it ranks
-// first.
-//
-// It returns up to twice the budget, because resolveHotLocations folds symbols
-// that share a declaration and keeps resolving until the budget is filled.
-//
-// With explored workloads there are several samples; mergeAttributed weighs
-// each as a whole, so a mode only a variant reaches ranks by its share of that
-// variant's time rather than disappearing behind the seed.
-func (e *Engine) sampledHotNames(results ...profile.SampleResult) []string {
-	limit := 2 * discovery.HotFunctionBudget
-	names := discovery.HotFunctionNames(discovery.MergeAttributed(results, e.ownSymbol), limit)
-	for _, result := range results {
-		for _, name := range discovery.HotFunctionNames(result.Functions, limit) {
-			if len(names) < limit && !slices.Contains(names, name) {
-				names = append(names, name)
-			}
-		}
-	}
-	return names
-}
-
-// sampledHotNamesAndWeights is sampledHotNames plus the per-function weight
-// that ranking (the same names, unranked and untruncated) carried, so a
-// throwaway_result target's caller ranking (callers.go) has real profile
-// hotness to rank by instead of call-site count alone.
-func (e *Engine) sampledHotNamesAndWeights(results ...profile.SampleResult) ([]string, map[string]float64) {
-	weights := discovery.HotFunctionWeights(discovery.MergeAttributed(results, e.ownSymbol))
-	for _, result := range results {
-		weights = discovery.MergeWeights(weights, discovery.HotFunctionWeights(result.Functions))
-	}
-	return e.sampledHotNames(results...), weights
-}
-
-// ownSymbol reports whether a sampled frame belongs to the target: its package
-// is one of the module's, or main, which is how a command's own functions are
-// named in its binary whatever its import path.
-func (e *Engine) ownSymbol(symbol string) bool {
-	pkg := profile.SymbolPackage(symbol)
-	return pkg == "main" || (pkg != "" && slices.Contains(e.state.Inventory.Packages, pkg))
-}
-
-// profileHotFunctions runs benchmarks under a CPU profile, then summarizes
-// the top functions via go tool pprof.
-//
-// The target package is tried first, then the whole module. A CLI's command
-// package usually holds no benchmarks while the library packages it drives do
-// (gojq benchmarks its evaluator, not ./cmd/gojq), and a module-wide profile
-// still carries exact file and line data for every sampled frame. Without the
-// widened attempt those targets silently degrade to the OS sampler, whose
-// frames carry no source position at all.
-func (e *Engine) profileHotFunctions(ctx context.Context) error {
-	cpuProfile, err := e.benchmarkCPUProfile(ctx)
-	if err != nil {
-		return err
-	}
-	return e.summarizeBenchmarkProfile(ctx, cpuProfile)
-}
-
-// benchmarkCPUProfile runs the module's benchmarks under -cpuprofile and
-// records the profile as the PGO lane's input, returning its path. It is also
-// called when the sampler already supplied the hot functions, because the
-// informational PGO lane is built from this profile.
-func (e *Engine) benchmarkCPUProfile(ctx context.Context) (string, error) {
-	dir := filepath.Join(e.dir, "profiles")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	cpuProfile := filepath.Join(dir, "bench-cpu.pb.gz")
-	var benched bool
-	for _, pkg := range discovery.BenchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory, e.state.Inventory.TargetImports) {
-		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Cpuprofile: cpuProfile, Output: filepath.Join(dir, "bench.test"), Env: []string{"GOTOOLCHAIN=local"}})
-		if err != nil {
-			continue
-		}
-		if strings.Contains(string(result.Stdout), "Benchmark") {
-			benched = true
-			break
-		}
-	}
-	if !benched {
-		return "", errors.New("no package in the module produced a benchmark CPU profile")
-	}
-	e.state.PGOProfilePath = cpuProfile
-	return cpuProfile, nil
-}
-
-// summarizeBenchmarkProfile turns a benchmark CPU profile into hot functions
-// annotated with repository-relative source positions.
-func (e *Engine) summarizeBenchmarkProfile(ctx context.Context, cpuProfile string) error {
-	artifacts, err := runner.NewArtifactStore(filepath.Join(e.dir, "artifacts"))
-	if err != nil {
-		return err
-	}
-	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprof(ctx, cpuProfile, discovery.HotFunctionScanDepth)
-	if err != nil {
-		return fmt.Errorf("summarize benchmark CPU profile: %w", err)
-	}
-	e.state.DiscoveryHotFunctions = e.resolveHotLocations(ctx, cpuProfile, discovery.HotFunctionNames(summary.Functions, discovery.HotFunctionBudget))
-	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, discovery.HotFunctionWeights(summary.Functions))
-	e.state.DiscoveryProfileSummaryPath = summary.RawReport
-	return nil
-}
-
-// profileAllocations runs the module's benchmarks a second time under
-// -memprofile and folds the alloc_space profile's hottest allocators to the
-// front of discovery's hot list, ahead of any CPU-only function already
-// there. It returns the source name for the discovery_profile_completed
-// event, or "" when the module has no benchmarks — silent beyond the
-// discovery_alloc_profile_skipped event, since discovery still has its CPU
-// evidence to work from (ADR 0024).
-//
-// Only called under the peak_memory_bytes objective. The test binary this
-// writes must stay out of the canonical checkout, so Output is set exactly
-// as benchmarkCPUProfile sets it (see testArgs's -o handling in
-// internal/toolchain/toolchain.go).
-func (e *Engine) profileAllocations(ctx context.Context) string {
-	dir := filepath.Join(e.dir, "profiles")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return ""
-	}
-	memProfile := filepath.Join(dir, "bench-mem.pb.gz")
-	if !e.benchAllocations(ctx, dir, memProfile) {
-		_ = e.saveEvent("discovery_alloc_profile_skipped", "no package in the module produced a benchmark allocation profile; hot list built from CPU evidence only", nil)
-		return ""
-	}
-	locations, weights, summaryPath, err := e.summarizeAllocProfile(ctx, memProfile)
-	if err != nil {
-		_ = e.saveEvent("discovery_alloc_profile_skipped", "summarize benchmark allocation profile: "+err.Error(), nil)
-		return ""
-	}
-	e.state.DiscoveryHotFunctions = discovery.MergeAllocFirst(e.state.DiscoveryHotFunctions, locations, discovery.HotFunctionBudget)
-	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, weights)
-	e.state.DiscoveryAllocProfileSummaryPath = summaryPath
-	_ = e.saveEvent("discovery_alloc_profile_completed", fmt.Sprintf("measured %d allocation-heavy functions from the benchmark alloc_space profile", len(locations)), locations)
-	return "a benchmark alloc_space profile"
-}
-
-// benchAllocations runs every candidate package's benchmarks under
-// -memprofile, target package first, stopping at the first one that actually
-// benchmarked something.
-func (e *Engine) benchAllocations(ctx context.Context, dir, memProfile string) bool {
-	for _, pkg := range discovery.BenchmarkPackageOrder(e.state.Repository, e.state.Manifest.Target.Build.Package, e.state.Manifest.Target.Build.Directory, e.state.Inventory.TargetImports) {
-		result, err := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: e.state.Repository, Packages: []string{pkg}, Bench: ".", Memprofile: memProfile, Output: filepath.Join(dir, "bench-mem.test"), Env: []string{"GOTOOLCHAIN=local"}})
-		if err != nil {
-			continue
-		}
-		if strings.Contains(string(result.Stdout), "Benchmark") {
-			return true
-		}
-	}
-	return false
-}
-
-// summarizeAllocProfile turns a benchmark heap profile into hot functions,
-// ranked by the alloc_space sample index, with repository-relative source
-// positions.
-func (e *Engine) summarizeAllocProfile(ctx context.Context, memProfile string) ([]string, map[string]float64, string, error) {
-	artifacts, err := runner.NewArtifactStore(filepath.Join(e.dir, "artifacts"))
-	if err != nil {
-		return nil, nil, "", err
-	}
-	summary, err := profile.Collector{Toolchain: e.toolchain, Artifacts: artifacts}.SummarizePprofAllocSpace(ctx, memProfile, discovery.HotFunctionScanDepth)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	locations := e.resolveHotLocations(ctx, memProfile, discovery.HotFunctionNames(summary.Functions, discovery.HotFunctionBudget))
-	return locations, discovery.HotFunctionWeights(summary.Functions), summary.RawReport, nil
-}
-
-// resolveHotLocations annotates hot function names with repository-relative
-// source positions. Preferred source is `go tool pprof -list` over the
-// benchmark profile (exact file and sampled line); the fallback searches the
-// repository for the declaration. Unresolvable functions keep their bare
-// names so downstream consumers never lose entries.
-func (e *Engine) resolveHotLocations(ctx context.Context, cpuProfile string, names []string) []string {
-	locations := make([]string, 0, discovery.HotFunctionBudget)
-	for _, name := range names {
-		if len(locations) == discovery.HotFunctionBudget {
-			break
-		}
-		// A value method and the pointer wrapper Go generates for it are two
-		// symbols with one declaration: gron's hot list named statements.go:312
-		// twice, spending a slot of the budget on a repeat.
-		if loc := e.hotLocation(ctx, cpuProfile, name); !slices.Contains(locations, loc) {
-			locations = append(locations, loc)
-		}
-	}
-	return locations
-}
-
-func (e *Engine) hotLocation(ctx context.Context, cpuProfile, name string) string {
-	// pprof's top listing marks inlined frames "name (inline)", a display
-	// suffix no symbol or declaration carries: chroma's lexers.Get stayed a
-	// bare name on every campaign because of it.
-	name = strings.TrimSuffix(name, " (inline)")
-	if loc, ok := e.hotLocationFromProfile(ctx, name, cpuProfile); ok {
-		return loc
-	}
-	if loc, ok := e.hotLocationFromRepo(name); ok {
-		return loc
-	}
-	return name
-}
-
-func (e *Engine) hotLocationFromProfile(ctx context.Context, name, cpuProfile string) (string, bool) {
-	if cpuProfile == "" {
-		return "", false
-	}
-	// -list takes a regular expression. Unquoted, a method name such as
-	// pkg.(*Function).CallInternal fails to parse, and unanchored, any name
-	// matches every symbol containing it.
-	result, err := e.toolchain.PprofList(ctx, "^"+regexp.QuoteMeta(name)+"$", cpuProfile)
-	if err != nil {
-		return "", false
-	}
-	path, line, ok := profile.ParsePprofList(string(result.Stdout))
-	if !ok {
-		return "", false
-	}
-	path, ok = discovery.RepoRelative(e.state.Repository, path)
-	// A benchmark profile runs test helpers too (scc's filereader_test.go
-	// reached the hot list), and a patch may not edit a test file, so the
-	// location says nothing a candidate could act on.
-	if !ok || strings.HasSuffix(path, "_test.go") {
-		return "", false
-	}
-	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
-}
-
-func (e *Engine) hotLocationFromRepo(name string) (string, bool) {
-	if strings.Contains(name, ":") {
-		return "", false
-	}
-	sym := profile.ParseSymbol(discovery.EnclosingFunction(name))
-	path, line, ok := e.findMainDeclaration(sym)
-	if !ok {
-		path, line, ok = profile.FindDeclaration(e.state.Repository, sym)
-	}
-	if !ok {
-		return "", false
-	}
-	return profile.HotLocation{Function: name, Path: path, Line: line}.Location(), true
-}
-
-// findMainDeclaration resolves a main.* frame in the target's own main
-// package. A repository with several commands declares the same names in
-// each, and a repository-wide search refuses them as ambiguous.
-func (e *Engine) findMainDeclaration(sym profile.Symbol) (string, int, bool) {
-	build := e.state.Manifest.Target.Build
-	if sym.Package != "main" || !strings.HasPrefix(build.Package, ".") {
-		return "", 0, false
-	}
-	dir := filepath.Join(e.state.Repository, build.Directory, build.Package)
-	return profile.FindDeclarationInDir(e.state.Repository, dir, sym)
 }
 
 func (e *Engine) verifyClean(ctx context.Context) error {

@@ -14,8 +14,8 @@ func TestEnclosingFunctionUnwrapsClosures(t *testing.T) {
 		"main.main":                              "main.main",
 	}
 	for name, want := range tests {
-		if got := EnclosingFunction(name); got != want {
-			t.Errorf("EnclosingFunction(%q) = %q, want %q", name, got, want)
+		if got := enclosingFunction(name); got != want {
+			t.Errorf("enclosingFunction(%q) = %q, want %q", name, got, want)
 		}
 	}
 }
@@ -37,12 +37,12 @@ func TestRepoRelativeRewritesProfilerPaths(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := RepoRelative(root, tt.path)
+			got, ok := repoRelative(root, tt.path)
 			if ok != tt.wantOK {
-				t.Fatalf("RepoRelative(%q) ok = %v, want %v", tt.path, ok, tt.wantOK)
+				t.Fatalf("repoRelative(%q) ok = %v, want %v", tt.path, ok, tt.wantOK)
 			}
 			if got != tt.want {
-				t.Errorf("RepoRelative(%q) = %q, want %q", tt.path, got, tt.want)
+				t.Errorf("repoRelative(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
 	}
