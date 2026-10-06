@@ -365,6 +365,10 @@ type Engine struct {
 	// machine is the host measurements run on; nil means this one
 	// (evalMachine). Tests set a scripted one.
 	machine machine
+	// sampler runs the target under the platform's sampling tool. Nil means
+	// the host's own (profile.PlatformSampler); tests script it with
+	// profile.Replay, so discovery's fallbacks run on any OS.
+	sampler profile.Sampler
 }
 
 func Create(ctx context.Context, opts Options) (*Engine, error) {
@@ -1246,7 +1250,7 @@ func scaledRepeat(header, block, repeat, target int) int {
 // sampleWith samples one workload on the given input.
 func (e *Engine) sampleWith(ctx context.Context, seed manifest.SeedWorkload, stdin []byte, reportName string) (profile.SampleResult, error) {
 	fixtures := seed.Fixtures()
-	result, err := profile.SampleTargetProfile(ctx, profile.SampleTarget{
+	result, err := profile.Sample(ctx, e.targetSampler(), profile.SampleTarget{
 		BinaryPath: e.state.BinaryPath,
 		Args:       append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...),
 		Stdin:      stdin,
@@ -1257,6 +1261,13 @@ func (e *Engine) sampleWith(ctx context.Context, seed manifest.SeedWorkload, std
 	})
 	e.recordIsolationNotes(result.IsolationNotes)
 	return result, err
+}
+
+func (e *Engine) targetSampler() profile.Sampler {
+	if e.sampler != nil {
+		return e.sampler
+	}
+	return profile.PlatformSampler()
 }
 
 // sampledHotNames ranks the target's own functions by the samples spent on

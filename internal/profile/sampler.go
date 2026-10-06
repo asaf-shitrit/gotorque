@@ -166,24 +166,28 @@ func (LinuxPerfSampler) Sample(ctx context.Context, req SampleTarget) (Transcrip
 	return sampleLinuxPerf(ctx, req)
 }
 
-// PlatformSampler returns the adapter for the host operating system.
-func PlatformSampler() (Sampler, error) {
+// PlatformSampler returns the adapter for the host operating system. On a host
+// with no adapter its transcripts report the sampler unavailable, so discovery
+// falls back to benchmarks rather than failing.
+func PlatformSampler() Sampler {
 	switch runtime.GOOS {
 	case "darwin":
-		return MacOSSampler{}, nil
+		return MacOSSampler{}
 	case "linux":
-		return LinuxPerfSampler{}, nil
+		return LinuxPerfSampler{}
 	}
-	return nil, fmt.Errorf("direct target sampling is unsupported on %s", runtime.GOOS)
+	return unsupportedSampler{os: runtime.GOOS}
+}
+
+type unsupportedSampler struct{ os string }
+
+func (s unsupportedSampler) Sample(context.Context, SampleTarget) (Transcript, error) {
+	return Transcript{Unavailable: "direct target sampling is unsupported on " + s.os}, nil
 }
 
 // SampleTargetProfile samples the target with the host's own sampler.
 func SampleTargetProfile(ctx context.Context, req SampleTarget) (SampleResult, error) {
-	sampler, err := PlatformSampler()
-	if err != nil {
-		return SampleResult{}, err
-	}
-	return Sample(ctx, sampler, req)
+	return Sample(ctx, PlatformSampler(), req)
 }
 
 // Sample runs the sampler against the target and classifies the transcript,

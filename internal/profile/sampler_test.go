@@ -84,22 +84,13 @@ func TestClassifyRejectsTranscriptsThatAreNotASample(t *testing.T) {
 	}
 }
 
-// scriptedSampler returns each transcript in turn and counts the calls.
-func scriptedSampler(calls *int, transcripts ...Transcript) Sampler {
-	return SamplerFunc(func(context.Context, SampleTarget) (Transcript, error) {
-		defer func() { *calls++ }()
-		return transcripts[min(*calls, len(transcripts)-1)], nil
-	})
-}
-
 func TestSampleKeepsTheRawReportAndRetriesAnEmptyCallGraphOnce(t *testing.T) {
-	var calls int
 	busy := loadRecorded(t, "macos-busy")
-	sampler := scriptedSampler(&calls, Transcript{Sampler: SamplerMacOS, Report: "Call graph:\n"}, busy)
+	sampler := NewReplay(Transcript{Sampler: SamplerMacOS, Report: "Call graph:\n"}, busy)
 	out := filepath.Join(t.TempDir(), "nested", "report.txt")
 	result, err := Sample(context.Background(), sampler, SampleTarget{BinaryPath: "/bin/true", OutputPath: out})
 	require.NoError(t, err)
-	require.Equal(t, 2, calls)
+	require.Len(t, sampler.Requests(), 2)
 	require.Equal(t, out, result.RawReport)
 	saved, err := os.ReadFile(out)
 	require.NoError(t, err)
@@ -107,19 +98,17 @@ func TestSampleKeepsTheRawReportAndRetriesAnEmptyCallGraphOnce(t *testing.T) {
 }
 
 func TestSampleRetriesAnEmptyCallGraphOnlyOnce(t *testing.T) {
-	var calls int
-	sampler := scriptedSampler(&calls, Transcript{Sampler: SamplerMacOS, Report: "Call graph:\n"})
+	sampler := NewReplay(Transcript{Sampler: SamplerMacOS, Report: "Call graph:\n"})
 	_, err := Sample(context.Background(), sampler, SampleTarget{BinaryPath: "/bin/true", OutputPath: filepath.Join(t.TempDir(), "r.txt")})
 	require.ErrorIs(t, err, ErrNoFrames)
-	require.Equal(t, 2, calls)
+	require.Len(t, sampler.Requests(), 2)
 }
 
 func TestSampleDoesNotRetryOtherFailures(t *testing.T) {
-	var calls int
-	sampler := scriptedSampler(&calls, Transcript{Sampler: SamplerMacOS, ExitedBeforeAttach: true})
+	sampler := NewReplay(Transcript{Sampler: SamplerMacOS, ExitedBeforeAttach: true})
 	_, err := Sample(context.Background(), sampler, SampleTarget{BinaryPath: "/bin/true", OutputPath: filepath.Join(t.TempDir(), "r.txt")})
 	require.ErrorIs(t, err, ErrTargetExitedEarly)
-	require.Equal(t, 1, calls)
+	require.Len(t, sampler.Requests(), 1)
 }
 
 func TestSamplePassesAnAdapterErrorThrough(t *testing.T) {
@@ -130,8 +119,7 @@ func TestSamplePassesAnAdapterErrorThrough(t *testing.T) {
 }
 
 func TestSampleValidatesTheRequestBeforeSampling(t *testing.T) {
-	var calls int
-	sampler := scriptedSampler(&calls)
+	sampler := NewReplay()
 	for name, req := range map[string]SampleTarget{
 		"no binary":       {OutputPath: "/tmp/r.txt"},
 		"relative binary": {BinaryPath: "bin", OutputPath: "/tmp/r.txt"},
@@ -141,7 +129,7 @@ func TestSampleValidatesTheRequestBeforeSampling(t *testing.T) {
 		_, err := Sample(context.Background(), sampler, req)
 		require.Error(t, err, name)
 	}
-	require.Zero(t, calls)
+	require.Empty(t, sampler.Requests())
 }
 
 func TestLoadTranscriptReportsMissingFiles(t *testing.T) {
@@ -154,4 +142,17 @@ func TestLoadTranscriptReportsMissingFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad.json"), []byte(`{`), 0o600))
 	_, err = LoadTranscript(filepath.Join(dir, "bad.json"))
 	require.Error(t, err)
+}
+
+func TestReplayWithNoTranscriptsFailsTheCall(t *testing.T) {
+	_, err := NewReplay().Sample(context.Background(), SampleTarget{})
+	require.Error(t, err)
+}
+
+func TestPlatformSamplerReportsAnUnsupportedHostUnavailable(t *testing.T) {
+	transcript, err := unsupportedSampler{os: "plan9"}.Sample(context.Background(), SampleTarget{})
+	require.NoError(t, err)
+	_, err = Classify(transcript)
+	_ = requireFailure(t, err, FailUnavailable)
+	require.ErrorContains(t, err, "plan9")
 }
