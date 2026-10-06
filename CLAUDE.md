@@ -226,26 +226,15 @@ the schema without keeping them consistent fails the test suite by design.
 
 ## Model routing
 
-The optimizer is the only model role. Its model ID comes from
-`GOTORQUE_MODEL_OPTIMIZER`, defaulting to `deepseek/deepseek-v4.1-flash` via
-OpenRouter (`internal/agents/routing.go`). `OPENROUTER_BASE_URL` overrides the
-endpoint. Requests to openrouter.ai ask for providers sorted by throughput
-(`providerTransport`): one model id is served by providers from 8 to 193
-tokens/s, and a slow one makes a 10-20k-token optimizer answer overrun its
-six-minute attempt budget.
-Optional `GOTORQUE_REASONING_OPTIMIZER` (`low|medium|high`) sets
-`reasoning.effort`. Unset, it defaults to `low`, because code always chooses
-the target and the optimizer only writes one small diff; an invalid value
-fails the preflight. An attempt cut off at max_output_tokens
-having written nothing but reasoning is retried with reasoning disabled
-(`reasoningBudget`, `internal/agents/runaway.go`): the identical retry ran
-away again every time. The analyst, reviewer and explorer are always Jev
-questions, reached through OpenRouter's System One API and pinned to an exact
-build (`OPENROUTER_API_KEY`, the same credential the optimizer already uses;
-ADRs 0012, 0014, 0015, 0030, 0035). The campaign breaker counts only the
-optimizer: two consecutive failed cycles stop it as failed, and Jev failures
-degrade without tripping it.
-Credentials are never persisted into campaign state.
+The optimizer is the only model. Its environment variables (model, endpoint,
+reasoning effort) and why each defaults as it does are in
+`docs/architecture.md` ("Model routing"); the code is
+`internal/agents/routing.go` and `openai.go`. Two facts no single file states:
+
+- Jev and the optimizer share one OpenRouter account and `OPENROUTER_API_KEY`,
+  so an empty balance or a revoked key takes out every role at once; a code
+  path that treats a Jev failure as independent of the optimizer's is wrong.
+- Credentials are never persisted into campaign state.
 
 ## Commit messages
 
