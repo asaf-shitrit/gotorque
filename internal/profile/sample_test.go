@@ -90,7 +90,7 @@ func TestSampleMacOSHappyPath(t *testing.T) {
 		t.Skip("macOS-only sampler path")
 	}
 	outputPath := filepath.Join(t.TempDir(), "nested", "out.txt")
-	sampler := MacOSSampler{Binary: writeFakeSampler(t, 0, macSampleReport)}
+	sampler := MacOSSampler{Binary: writeFakeSampler(t, 0, busyReport(t))}
 	req := SampleTarget{
 		BinaryPath: "/bin/sleep",
 		Args:       []string{"2"},
@@ -121,7 +121,7 @@ func TestSampleMacOSReapsTargetWithoutLeakingGoroutines(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-only sampler path")
 	}
-	sampler := MacOSSampler{Binary: writeFakeSampler(t, 0, macSampleReport)}
+	sampler := MacOSSampler{Binary: writeFakeSampler(t, 0, busyReport(t))}
 	req := SampleTarget{
 		BinaryPath: "/bin/sleep",
 		Args:       []string{"30"},
@@ -375,6 +375,13 @@ Total number in stack: 100
 	}
 }
 
+// busyReport is a recorded /usr/bin/sample report of a CPU-bound Go program,
+// the shape of report the adapter tests' fake samplers hand back.
+func busyReport(t *testing.T) string {
+	t.Helper()
+	return loadRecorded(t, "macos-busy").Report
+}
+
 const perfScriptOutput = `gojq  48213/48213 [001] 12345.678901: cpu-clock:
         7ff6a100 main (+0x12ab) (/usr/local/bin/gojq)
         7ff6a200 runQuery (/usr/local/bin/gojq)
@@ -444,7 +451,7 @@ func TestSampleTargetProfileRetriesAnEmptyCallGraph(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-only sampler path")
 	}
-	sampler, runs := writeFlakySampler(t, macSampleReport)
+	sampler, runs := writeFlakySampler(t, busyReport(t))
 	result, err := Sample(context.Background(), MacOSSampler{Binary: sampler}, SampleTarget{
 		BinaryPath: "/bin/sleep", Args: []string{"3"},
 		OutputPath: filepath.Join(t.TempDir(), "out.txt"), Duration: time.Second,

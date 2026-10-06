@@ -14,10 +14,11 @@ import (
 const retryAmplificationTarget = 8 * amplificationTarget
 
 // retriesLarger reports whether a failed sample is worth one more try on a
-// larger input: the target ended too soon and its inputs can grow.
+// larger input: the target ended too soon, or the sampler caught it before it
+// was doing anything, and its inputs can grow.
 func retriesLarger(err error, seed manifest.SeedWorkload) bool {
-	tooShort := errors.Is(err, profile.ErrTargetExitedEarly) || errors.Is(err, profile.ErrNoFrames)
-	return tooShort && hasRepeatableInput(seed)
+	tooEarly := errors.Is(err, profile.ErrTargetExitedEarly) || errors.Is(err, profile.ErrNoFrames) || errors.Is(err, profile.ErrIdle)
+	return tooEarly && hasRepeatableInput(seed)
 }
 
 func hasRepeatableInput(seed manifest.SeedWorkload) bool {

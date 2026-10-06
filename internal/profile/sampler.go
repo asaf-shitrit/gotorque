@@ -70,6 +70,13 @@ var ErrNoFrames = errors.New("no recognizable frames in sampler output")
 // The caller can give it a larger input and try again.
 var ErrTargetExitedEarly = errors.New("target exited before sampling began")
 
+// ErrIdle marks a sample that caught the target waiting: frames exist, but
+// none is the program's own code or a dependency's, only runtime and kernel
+// wait frames. It is a property of when the sampler looked (the target was
+// still reading its input), not of the target, so discovery treats it as it
+// treats an empty call graph.
+var ErrIdle = errors.New("sample caught the target idle")
+
 // FailureKind classifies why a transcript is not a usable sample.
 type FailureKind string
 
@@ -78,6 +85,8 @@ const (
 	FailExitedEarly FailureKind = "exited_early"
 	// FailNoFrames: the sampler attached and recorded no frame at all.
 	FailNoFrames FailureKind = "no_frames"
+	// FailIdle: frames were recorded, but only idle runtime and wait frames.
+	FailIdle FailureKind = "idle"
 	// FailUnavailable: the sampling tool cannot run on this host.
 	FailUnavailable FailureKind = "unavailable"
 	// FailFailed: the sampler failed in a way no other kind explains.
@@ -100,6 +109,8 @@ func (f *SampleError) Is(target error) bool {
 		return target == ErrTargetExitedEarly
 	case FailNoFrames:
 		return target == ErrNoFrames
+	case FailIdle:
+		return target == ErrIdle
 	case FailUnavailable, FailFailed:
 		return false
 	}
@@ -125,6 +136,9 @@ func Classify(t Transcript) (SampleResult, error) {
 	functions, stacks := parseReport(t.Sampler, report)
 	if len(functions) == 0 {
 		return SampleResult{}, &SampleError{Kind: FailNoFrames, Detail: ErrNoFrames.Error()}
+	}
+	if !hasProgramFrame(stacks, functions) {
+		return SampleResult{}, &SampleError{Kind: FailIdle, Detail: ErrIdle.Error() + ": only runtime and wait frames, none from the program or its dependencies"}
 	}
 	return SampleResult{Sampler: t.Sampler, Functions: functions, Stacks: stacks, IsolationNotes: t.IsolationNotes}, nil
 }
@@ -226,7 +240,10 @@ func Sample(ctx context.Context, sampler Sampler, req SampleTarget) (SampleResul
 		req.Duration = 4 * time.Second
 	}
 	result, err := sampleOnce(ctx, sampler, req)
-	if errors.Is(err, ErrNoFrames) {
+	if errors.Is(err, ErrNoFrames) || errors.Is(err, ErrIdle) {
+		// An idle sample is the same kind of miss: pup's first campaign
+		// sampled only parked threads while the target still read its input.
+		//
 		// A sampler that attached to a live target and still recorded no
 		// frame failed transiently: on a dasel campaign /usr/bin/sample
 		// wrote an empty call graph for a target that ran 13 s, the
@@ -264,4 +281,34 @@ func saveReport(path, report string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(boundReport(report)), 0o600)
+}
+
+// hasProgramFrame reports whether any sampled frame is code of the program
+// under test: the stacks when the report yielded them, else the frames it
+// listed.
+func hasProgramFrame(stacks []Stack, functions []Function) bool {
+	for _, stack := range stacks {
+		if slices.ContainsFunc(stack.Frames, programFrame) {
+			return true
+		}
+	}
+	return slices.ContainsFunc(functions, func(fn Function) bool { return programFrame(fn.Name) })
+}
+
+// programFrame reports whether a symbol is the program's own code or a
+// dependency's: package main, or a package whose import path starts at a host
+// (github.com/..., golang.org/x/...). A standard library package has no dot in
+// its first path element, as do the runtime's own frames and the kernel's
+// (__psynch_cvwait, kevent). A sample of nothing but those is the program
+// waiting, however many of its samples a stray sync.(*Pool).Get accounts for.
+// A module whose path has no dot is read as standard library, so such a module
+// that never reaches package main would sample as idle; every campaign target
+// has a hosted path, and its command is package main.
+func programFrame(symbol string) bool {
+	pkg := SymbolPackage(symbol)
+	if pkg == "main" {
+		return true
+	}
+	host, _, _ := strings.Cut(pkg, "/")
+	return strings.Contains(host, ".")
 }

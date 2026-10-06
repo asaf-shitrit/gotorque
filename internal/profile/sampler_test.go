@@ -45,8 +45,20 @@ func TestClassifyCarriesIsolationNotes(t *testing.T) {
 	require.Equal(t, []string{"memory limit not enforced"}, result.IsolationNotes)
 }
 
+// goPerfScript is `perf script` output in the shape a Go binary gives it: the
+// program's own frames under package main.
+const goPerfScript = `rec  4242/4242 [001] 12345.678901: cpu-clock:
+        4a1b2c main.hot (/tmp/rec)
+        4a1d00 main.main (/tmp/rec)
+
+rec  4242/4242 [001] 12345.679901: cpu-clock:
+        4a1b40 sort.Slice (/tmp/rec)
+        4a1b2c main.hot (/tmp/rec)
+        4a1d00 main.main (/tmp/rec)
+`
+
 func TestClassifyLinuxPerfScript(t *testing.T) {
-	result, err := Classify(Transcript{Sampler: SamplerLinuxPerf, Report: perfScriptOutput})
+	result, err := Classify(Transcript{Sampler: SamplerLinuxPerf, Report: goPerfScript})
 	require.NoError(t, err)
 	require.Equal(t, SamplerLinuxPerf, result.Sampler)
 	require.NotEmpty(t, result.Functions)
