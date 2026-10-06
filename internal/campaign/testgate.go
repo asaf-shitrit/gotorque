@@ -454,3 +454,19 @@ func (e *Engine) baselineWorktree(ctx context.Context) (string, func(), error) {
 	cleanup := func() { _, _ = e.toolchain.RemoveWorktree(context.WithoutCancel(ctx), e.state.Repository, dir) }
 	return dir, cleanup, nil
 }
+
+// baselineGateState is the part of the campaign's state the test gate can
+// change while judging a candidate: the set of baseline passes it requires,
+// and how many re-runs of the unpatched suite it has spent shrinking that set.
+type baselineGateState struct {
+	passes   []string
+	rechecks int
+}
+
+func (e *Engine) baselineGate() baselineGateState {
+	return baselineGateState{passes: e.state.BaselineTestPasses, rechecks: e.state.BaselineRechecks}
+}
+
+func (e *Engine) restoreBaselineGate(g baselineGateState) {
+	e.state.BaselineTestPasses, e.state.BaselineRechecks = g.passes, g.rechecks
+}

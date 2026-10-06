@@ -69,12 +69,16 @@ func (e *Engine) Verify(ctx context.Context, attempt, pairs int) (Verification, 
 	if err := e.runBuildStep(ctx); err != nil {
 		return Verification{}, err
 	}
+	gate := e.baselineGate()
 	evidence, err := e.evaluateWith(ctx, orchestrator.CandidateRequest{
 		Campaign: e.campaignRequest(),
 		Attempt:  verifyAttemptOffset + attempt,
 		Proposal: agents.OptimizerResult{Patch: string(patch), Hypothesis: record.Hypothesis},
 		Target:   record.Target,
 	}, evalSettings{pairs: pairs})
+	// Restored before anything is persisted: the gate's pruning of unstable
+	// tests is a fact about this verification's run, not about the campaign.
+	e.restoreBaselineGate(gate)
 	if err != nil {
 		return Verification{}, err
 	}
