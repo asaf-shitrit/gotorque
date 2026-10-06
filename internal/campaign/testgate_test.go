@@ -96,12 +96,12 @@ func TestBehaviorGateSubtractsPreExistingFailuresInARealRepository(t *testing.T)
 	require.Equal(t, []string{"test.local/fixture::TestPreexisting"}, engine.State().BaselineTestFailures)
 
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, engine.candidateTestsPassed(context.Background(), engine.campaignSettings(), repo, &evidence), "evidence: %+v", evidence)
+	require.True(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
 	require.Empty(t, evidence.Summary, "an untriggered gate must not label the candidate")
 
 	broken := repositoryWithTestOutcome(t, "TestPreexisting", "TestIntroduced")
 	evidence = orchestrator.CandidateEvidence{}
-	require.False(t, engine.candidateTestsPassed(context.Background(), engine.campaignSettings(), broken, &evidence))
+	require.False(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), broken, &evidence))
 	require.Contains(t, evidence.Summary, "test.local/fixture::TestIntroduced")
 	require.Contains(t, evidence.Summary, "ignoring 1 failure(s) that predate the patch")
 	require.False(t, evidence.SafetyChecksPassed)
@@ -250,7 +250,7 @@ func TestBehaviorGateRejectsATestThatStopsPassing(t *testing.T) {
 	}, engine.State().BaselineTestPasses)
 
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, engine.candidateTestsPassed(context.Background(), engine.campaignSettings(), repo, &evidence), "evidence: %+v", evidence)
+	require.True(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
 
 	cases := map[string]struct {
 		tests string
@@ -273,7 +273,7 @@ func TestBehaviorGateRejectsATestThatStopsPassing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			candidate := repositoryWithTestFile(t, tc.tests)
 			evidence := orchestrator.CandidateEvidence{}
-			require.False(t, engine.candidateTestsPassed(context.Background(), engine.campaignSettings(), candidate, &evidence))
+			require.False(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), candidate, &evidence))
 			require.Contains(t, evidence.Summary, "upstream test suite failed: tests that passed on the unpatched revision did not pass")
 			require.Contains(t, evidence.FailureDetail, tc.want)
 			require.False(t, evidence.SafetyChecksPassed)
@@ -362,7 +362,7 @@ func TestBaselineStepKeepsASuiteWithOneUnbuildablePackage(t *testing.T) {
 	require.Contains(t, engine.State().BaselineTestPasses, "test.local/fixture::TestKept")
 
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, engine.candidateTestsPassed(context.Background(), engine.campaignSettings(), repo, &evidence), "evidence: %+v", evidence)
+	require.True(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
 
 	var b strings.Builder
 	writeBehaviorGate(&b, engine.State())
@@ -391,7 +391,7 @@ func TestBehaviorGateStopsRequiringSubtestsTheBaselineDoesNotRepeat(t *testing.T
 	require.Equal(t, []string{"test.local/fixture::TestRandom", "test.local/fixture::TestRandom/case0"}, engine.State().BaselineTestPasses)
 
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, engine.candidateTestsPassed(context.Background(), engine.campaignSettings(), repo, &evidence), "evidence: %+v", evidence)
+	require.True(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
 	require.Equal(t, []string{"test.local/fixture::TestRandom"}, engine.State().BaselineTestPasses)
 	require.Equal(t, 1, engine.State().BaselineRechecks)
 
@@ -400,7 +400,7 @@ func TestBehaviorGateStopsRequiringSubtestsTheBaselineDoesNotRepeat(t *testing.T
 	engine.state.BaselineRechecks = maxBaselineRechecks
 	engine.state.BaselineTestPasses = append(engine.state.BaselineTestPasses, "test.local/fixture::TestRandom/case9")
 	evidence = orchestrator.CandidateEvidence{}
-	require.False(t, engine.candidateTestsPassed(context.Background(), engine.campaignSettings(), repo, &evidence))
+	require.False(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence))
 	require.Contains(t, evidence.FailureDetail, "TestRandom/case9 (did not run)")
 }
 

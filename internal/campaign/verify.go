@@ -157,11 +157,11 @@ func (e *Engine) verifyOutputs(ctx context.Context, candidateBinary, candidateID
 		}
 		for name, variant := range inputVariants(seed) {
 			label := seed.ID + "/" + name
-			base := e.seedMeasurementRequest(variant, e.state.BuildID, e.state.BinaryPath)
-			if !e.outputIsDeterministic(ctx, base) {
+			base := seedMeasurementRequest(e.state.Manifest, e.state.ID, variant, e.state.BuildID, e.state.BinaryPath)
+			if !outputIsDeterministic(ctx, e.runner, base) {
 				continue
 			}
-			cand := e.seedMeasurementRequest(variant, candidateID, candidateBinary)
+			cand := seedMeasurementRequest(e.state.Manifest, e.state.ID, variant, candidateID, candidateBinary)
 			baseRun, baseErr := e.runner.Run(ctx, base)
 			candRun, candErr := e.runner.Run(ctx, cand)
 			checks = append(checks, label)

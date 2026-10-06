@@ -113,11 +113,11 @@ func (s benchstatSummary) supported() bool {
 // which is the manifest's seed id so the comparison, the benchstat sample files
 // and the verdict all speak in the same name the operator writes in the
 // target manifest. Pass an empty workload for the pooled reading.
-func (e *Engine) compareWallTimeMetric(ctx context.Context, workload string, baselineRuns, candidateRuns []domain.RunResult) ([]domain.MetricComparison, string) {
+func (ev *evaluator) compareWallTimeMetric(ctx context.Context, workload string, baselineRuns, candidateRuns []domain.RunResult) ([]domain.MetricComparison, string) {
 	comparisons := compareMetric(workload, "wall_time_ns", "ns", baselineRuns, candidateRuns, wallTime)
 	baseVals := collectMetric(baselineRuns, wallTime)
 	candVals := collectMetric(candidateRuns, wallTime)
-	output, summary, ok := e.runBenchstat(ctx, workload, baseVals, candVals)
+	output, summary, ok := ev.runBenchstat(ctx, workload, baseVals, candVals)
 	if !ok || len(comparisons) == 0 {
 		return comparisons, ""
 	}
@@ -138,15 +138,15 @@ func (e *Engine) compareWallTimeMetric(ctx context.Context, workload string, bas
 // runBenchstat writes the wall-time sample sets to per-workload files in the
 // campaign directory, runs benchstat over them, and parses its output. It is
 // best-effort: any failure returns ok=false so callers keep the t-test path.
-func (e *Engine) runBenchstat(ctx context.Context, workloadID string, baseVals, candVals []float64) (string, benchstatSummary, bool) {
-	if !e.benchstatReady(baseVals, candVals) {
+func (ev *evaluator) runBenchstat(ctx context.Context, workloadID string, baseVals, candVals []float64) (string, benchstatSummary, bool) {
+	if !ev.benchstatReady(baseVals, candVals) {
 		return "", benchstatSummary{}, false
 	}
-	basePath, candPath, ok := writeBenchstatSamples(filepath.Join(e.dir, "benchstat"), workloadID, baseVals, candVals)
+	basePath, candPath, ok := writeBenchstatSamples(filepath.Join(ev.dir, "benchstat"), workloadID, baseVals, candVals)
 	if !ok {
 		return "", benchstatSummary{}, false
 	}
-	result, err := e.toolchain.Benchstat(ctx, basePath, candPath)
+	result, err := ev.toolchain.Benchstat(ctx, basePath, candPath)
 	if err != nil || result.ExitCode != 0 {
 		return "", benchstatSummary{}, false
 	}
@@ -158,8 +158,8 @@ func (e *Engine) runBenchstat(ctx context.Context, workloadID string, baseVals, 
 	return output, summary, true
 }
 
-func (e *Engine) benchstatReady(baseVals, candVals []float64) bool {
-	return e.toolchain != nil && e.toolchain.HasBenchstat() && len(baseVals) > 0 && len(candVals) > 0
+func (ev *evaluator) benchstatReady(baseVals, candVals []float64) bool {
+	return ev.toolchain != nil && ev.toolchain.HasBenchstat() && len(baseVals) > 0 && len(candVals) > 0
 }
 
 func writeBenchstatSamples(dir, workloadID string, baseVals, candVals []float64) (basePath, candPath string, ok bool) {

@@ -39,7 +39,7 @@ func TestPgoLaneSkipsWithoutPprofProfile(t *testing.T) {
 	e := pgoLaneTestEngine(t)
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand1")
+	e.campaignEvaluator().runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand1")
 
 	if len(evidence.PgoComparisons) != 0 {
 		t.Fatalf("expected no comparisons, got %+v", evidence.PgoComparisons)
@@ -67,7 +67,7 @@ func TestPgoLaneSkipsWhenProfileFileMissingOnDisk(t *testing.T) {
 	e.state.PGOProfilePath = filepath.Join(e.dir, "profiles", "bench-cpu.pb.gz")
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand2")
+	e.campaignEvaluator().runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand2")
 
 	if len(evidence.PgoComparisons) != 0 {
 		t.Fatalf("expected no comparisons, got %+v", evidence.PgoComparisons)
@@ -87,7 +87,7 @@ func TestPgoLaneSkipsWhenProfileFileEmpty(t *testing.T) {
 	e.state.PGOProfilePath = path
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand3")
+	e.campaignEvaluator().runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand3")
 
 	if !strings.Contains(evidence.PgoNote, "missing or empty") {
 		t.Fatalf("note should mention the empty profile file, got %q", evidence.PgoNote)
@@ -109,7 +109,7 @@ func TestPgoLaneSkipsWhenTheCampaignCannotAffordIt(t *testing.T) {
 	e.state.ElapsedRunTime = 88 * time.Minute
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand-budget")
+	e.campaignEvaluator().runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand-budget")
 
 	if len(evidence.PgoComparisons) != 0 {
 		t.Fatalf("expected no comparisons, got %+v", evidence.PgoComparisons)
@@ -124,7 +124,7 @@ func TestPgoLaneStillRunsWithBudgetToSpare(t *testing.T) {
 	e.state.Manifest.Campaign.MaxDuration = manifest.Duration(90 * time.Minute)
 	e.state.ElapsedRunTime = 30 * time.Minute
 
-	if reason := e.pgoLaneUnaffordable(); reason != "" {
+	if reason := e.campaignEvaluator().pgoLaneUnaffordable(); reason != "" {
 		t.Fatalf("lane refused with 60m of budget left: %q", reason)
 	}
 }
@@ -145,7 +145,7 @@ func TestPgoLaneBoundsItsOwnBuild(t *testing.T) {
 	e.toolchain = toolchain.New(toolchain.Options{Executor: blockingExecutor{}})
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand-slow-build")
+	e.campaignEvaluator().runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand-slow-build")
 
 	if !strings.Contains(evidence.PgoNote, "exceeded the lane's") {
 		t.Fatalf("note should name the lane's own budget, got %q", evidence.PgoNote)

@@ -36,7 +36,7 @@ type parsedFunctionSource struct {
 // name exists elsewhere in the package but outside the set is a rejection:
 // letting it through would let the optimizer rewrite a function the set,
 // and so the shape check, never agreed to.
-func (e *Engine) buildMultiFunctionSourceDiff(ctx context.Context, target agents.Target, sources []string, imports []string) (string, error) {
+func (ev *evaluator) buildMultiFunctionSourceDiff(ctx context.Context, target agents.Target, sources []string, imports []string) (string, error) {
 	calleeRel := targetPath(target.Location)
 	if calleeRel == "" || target.Function == "" {
 		return "", errors.New("function_sources requires a target with a location and function name")
@@ -45,11 +45,11 @@ func (e *Engine) buildMultiFunctionSourceDiff(ctx context.Context, target agents
 	if err != nil {
 		return "", err
 	}
-	byFile, err := groupByFile(e.state.Repository, calleeRel, knownFunctions(target, calleeRel), decls)
+	byFile, err := groupByFile(ev.repository, calleeRel, knownFunctions(target, calleeRel), decls)
 	if err != nil {
 		return "", err
 	}
-	diff, changedAny, err := e.diffEveryFile(ctx, byFile, target.Function, calleeRel, imports)
+	diff, changedAny, err := ev.diffEveryFile(ctx, byFile, target.Function, calleeRel, imports)
 	if err != nil {
 		return "", err
 	}
@@ -86,7 +86,7 @@ func parseFunctionSources(sources []string) ([]parsedFunctionSource, error) {
 // diffEveryFile builds and concatenates the diff for each file byFile names,
 // in a deterministic (sorted) order, and reports whether any file actually
 // changed.
-func (e *Engine) diffEveryFile(ctx context.Context, byFile map[string][]parsedFunctionSource, calleeFunction, calleeRel string, imports []string) (string, bool, error) {
+func (ev *evaluator) diffEveryFile(ctx context.Context, byFile map[string][]parsedFunctionSource, calleeFunction, calleeRel string, imports []string) (string, bool, error) {
 	files := make([]string, 0, len(byFile))
 	for f := range byFile {
 		files = append(files, f)
@@ -95,7 +95,7 @@ func (e *Engine) diffEveryFile(ctx context.Context, byFile map[string][]parsedFu
 	var out strings.Builder
 	changedAny := false
 	for _, rel := range files {
-		diff, changed, err := e.buildOneFileDiff(ctx, rel, calleeFunction, calleeRel, byFile[rel], imports)
+		diff, changed, err := ev.buildOneFileDiff(ctx, rel, calleeFunction, calleeRel, byFile[rel], imports)
 		if err != nil {
 			return "", false, fmt.Errorf("%s: %w", rel, err)
 		}
@@ -184,8 +184,8 @@ func applyEdits(original []byte, edits []sourceEdit) []byte {
 // them), and dropOrphanedImports runs against every touched file. changed is
 // false, with no error, when rel's content after every edit is byte-identical
 // to its original -- a file diffAgainstBase would refuse rather than skip.
-func (e *Engine) buildOneFileDiff(ctx context.Context, rel, calleeFunction, calleeRel string, decls []parsedFunctionSource, imports []string) (diff string, changed bool, err error) {
-	fullPath := filepath.Join(e.state.Repository, filepath.FromSlash(rel))
+func (ev *evaluator) buildOneFileDiff(ctx context.Context, rel, calleeFunction, calleeRel string, decls []parsedFunctionSource, imports []string) (diff string, changed bool, err error) {
+	fullPath := filepath.Join(ev.repository, filepath.FromSlash(rel))
 	original, err := os.ReadFile(fullPath)
 	if err != nil {
 		return "", false, fmt.Errorf("read %s: %w", rel, err)
@@ -194,7 +194,7 @@ func (e *Engine) buildOneFileDiff(ctx context.Context, rel, calleeFunction, call
 	if err != nil || !changed {
 		return "", false, err
 	}
-	diffText, err := e.diffAgainstBase(ctx, rel, original, final)
+	diffText, err := ev.diffAgainstBase(ctx, rel, original, final)
 	if err != nil {
 		return "", false, err
 	}

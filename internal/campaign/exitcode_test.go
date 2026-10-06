@@ -13,8 +13,8 @@ import (
 // the runner.
 func TestMeasurementCarriesTheSeedsExpectedExitCode(t *testing.T) {
 	e := &Engine{}
-	req := e.seedMeasurementRequest(manifest.SeedWorkload{ID: "diff", ExitCode: 1}, "build", "/bin/true")
+	req := seedMeasurementRequest(e.state.Manifest, e.state.ID, manifest.SeedWorkload{ID: "diff", ExitCode: 1}, "build", "/bin/true")
 	require.Equal(t, 1, req.Workload.ExpectedExitCode)
-	req = e.seedMeasurementRequest(manifest.SeedWorkload{ID: "plain"}, "build", "/bin/true")
+	req = seedMeasurementRequest(e.state.Manifest, e.state.ID, manifest.SeedWorkload{ID: "plain"}, "build", "/bin/true")
 	require.Equal(t, 0, req.Workload.ExpectedExitCode)
 }

@@ -213,7 +213,7 @@ func TestBuildFunctionSourceDiffAppliesCleanly(t *testing.T) {
 	}
 	return nil
 }`
-	diff, err := engine.buildFunctionSourceDiff(context.Background(), target, newSrc, []string{"bufio"})
+	diff, err := engine.campaignEvaluator().buildFunctionSourceDiff(context.Background(), target, newSrc, []string{"bufio"})
 	require.NoError(t, err)
 	require.Contains(t, diff, "--- a/main.go")
 	require.Contains(t, diff, "+++ b/main.go")
@@ -233,7 +233,7 @@ func TestResolveCandidatePatchPrefersPatchOverFunctionSource(t *testing.T) {
 		Target:   target,
 		Proposal: agents.OptimizerResult{Patch: handDiff, FunctionSource: "func (c *cli) printValues(vs []string) error { return nil }"},
 	}
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, handDiff, patch)
 	require.Equal(t, PatchTransport, transport)
@@ -258,13 +258,13 @@ func TestResolveCandidatePatchSkipsAPatchFieldWithNoDiff(t *testing.T) {
 	src := "func (c *cli) printValues(vs []string) error { return nil }"
 	for _, blank := range []string{"\n", "  ", "see function_source", noOpHunk} {
 		req := orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: blank, FunctionSource: src}}
-		patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+		patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 		require.NoError(t, err)
 		require.Equal(t, FunctionSourceTransport, transport, "patch %q", blank)
 		require.Contains(t, patch, "@@")
 	}
 	req := orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: "see function_source"}}
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, "see function_source", patch)
 	require.Equal(t, PatchTransport, transport)
@@ -284,7 +284,7 @@ func TestResolveCandidatePatchLocatesAnUntargetedFunctionSource(t *testing.T) {
 	}
 	return nil
 }`, Imports: []string{"bufio"}}}
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, FunctionSourceTransport, transport)
 	require.Contains(t, applyDiff(t, repo, patch, "main.go"), "bufio.NewWriter")
@@ -293,20 +293,20 @@ func TestResolveCandidatePatchLocatesAnUntargetedFunctionSource(t *testing.T) {
 func TestResolveCandidatePatchRejectsAnUnknownUntargetedFunction(t *testing.T) {
 	engine := newFuncSourceTestEngine(methodRepo(t))
 	req := orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "func nowhere() {}"}}
-	_, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	_, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.ErrorContains(t, err, "no non-test file declares")
 	require.Equal(t, FunctionSourceTransport, transport)
 
-	_, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "not go"}})
+	_, _, err = engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "not go"}})
 	require.ErrorContains(t, err, "does not parse")
 }
 
 func TestResolveCandidatePatchNamesAnEmptyProposal(t *testing.T) {
 	engine := &Engine{}
-	_, _, err := engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{Hypothesis: "h"}})
+	_, _, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{Hypothesis: "h"}})
 	require.ErrorIs(t, err, errEmptyProposal)
 	target := &agents.Target{Location: "main.go:8", Function: "f"}
-	_, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Hypothesis: "h"}})
+	_, _, err = engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Hypothesis: "h"}})
 	require.ErrorIs(t, err, errEmptyProposal)
 }
 
@@ -356,7 +356,7 @@ func TestResolveCandidatePatchBuildsFromFunctionSourceWithTarget(t *testing.T) {
 	return nil
 }`, Imports: []string{"bufio"}},
 	}
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
 	require.NotEmpty(t, patch)
 	require.Equal(t, FunctionSourceTransport, transport)
@@ -439,7 +439,7 @@ func TestEvaluateCandidateRejectsAnUnbuildableFunctionSourceWithAnID(t *testing.
 func TestResolveCandidatePatchNamesAnOptimizerThatDidNotAnswer(t *testing.T) {
 	engine := &Engine{}
 	req := orchestrator.CandidateRequest{RoleFailure: "optimizer model call failed after 3 attempts: model call attempt exceeded its 6m0s budget"}
-	_, _, err := engine.resolveCandidatePatch(context.Background(), req)
+	_, _, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.ErrorContains(t, err, "the optimizer did not answer: optimizer model call failed after 3 attempts")
 	require.NotErrorIs(t, err, errEmptyProposal)
 }
@@ -447,7 +447,7 @@ func TestResolveCandidatePatchNamesAnOptimizerThatDidNotAnswer(t *testing.T) {
 func TestCandidatePatchKeepsTheOptimizerAnswerBesideIt(t *testing.T) {
 	engine := &Engine{dir: t.TempDir()}
 	req := orchestrator.CandidateRequest{Attempt: 3, Proposal: agents.OptimizerResult{Patch: "\n", FunctionSource: "func f() {}", Hypothesis: "h"}}
-	id, patchPath, err := engine.writeCandidatePatch(req, "\n")
+	id, patchPath, err := engine.campaignEvaluator().writeCandidatePatch(req, "\n")
 	require.NoError(t, err)
 	require.FileExists(t, patchPath)
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(patchPath), id+".proposal.json"))
@@ -462,12 +462,12 @@ func TestResolveCandidatePatchNamesTheTargetFileForAHeaderlessHunk(t *testing.T)
 	engine := newFuncSourceTestEngine(methodRepo(t))
 	target := &agents.Target{Location: "internal/core/adt/conjunct.go:39", Function: "(*nodeContext).scheduleConjunct"}
 	hunk := "@@ -77,1 +77,1 @@\n-a\n+b\n"
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: hunk}})
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: hunk}})
 	require.NoError(t, err)
 	require.Equal(t, PatchTransport, transport)
 	require.Equal(t, "--- a/internal/core/adt/conjunct.go\n+++ b/internal/core/adt/conjunct.go\n"+hunk, patch)
 
-	patch, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: handDiff}})
+	patch, _, err = engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: handDiff}})
 	require.NoError(t, err)
 	require.Equal(t, handDiff, patch)
 

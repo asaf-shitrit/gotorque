@@ -150,7 +150,7 @@ func TestCompareWallTimeMetricWithBenchstat(t *testing.T) {
 
 	base := wallRuns(1500, 1520, 1480, 1510, 1495, 1505, 1500)
 	cand := wallRuns(1200, 1210, 1195, 1205, 1200, 1198, 1207)
-	comparisons, output := e.compareWallTimeMetric(context.Background(), "wid", base, cand)
+	comparisons, output := e.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand)
 
 	if len(comparisons) != 1 {
 		t.Fatalf("comparisons = %d, want 1", len(comparisons))
@@ -258,7 +258,7 @@ func TestCompareWallTimeMetricInsignificantPWithdrawsSupport(t *testing.T) {
 
 	base := wallRuns(100, 140, 90, 110, 95, 105, 100)
 	cand := wallRuns(101, 141, 91, 111, 96, 106, 101)
-	comparisons, _ := e.compareWallTimeMetric(context.Background(), "wid", base, cand)
+	comparisons, _ := e.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand)
 	if comparisons[0].StatisticallyFit {
 		t.Fatalf("insignificant p-value must withdraw support: %+v", comparisons[0])
 	}
@@ -270,7 +270,7 @@ func TestCompareWallTimeMetricFallsBackWithoutBinary(t *testing.T) {
 
 	base := wallRuns(100, 102, 99, 101, 100, 98, 101)
 	cand := wallRuns(50, 51, 49, 50, 52, 48, 51)
-	comparisons, output := e.compareWallTimeMetric(context.Background(), "wid", base, cand)
+	comparisons, output := e.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand)
 
 	if fake.calls != 0 {
 		t.Fatalf("missing binary must skip invocation, calls = %d", fake.calls)
@@ -289,7 +289,7 @@ func TestCompareWallTimeMetricFallsBackOnUnparseableOutput(t *testing.T) {
 
 	base := wallRuns(100, 102, 99, 101, 100, 98, 101)
 	cand := wallRuns(50, 51, 49, 50, 52, 48, 51)
-	comparisons, output := e.compareWallTimeMetric(context.Background(), "wid", base, cand)
+	comparisons, output := e.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand)
 
 	if output != "" {
 		t.Fatalf("unparseable output must leave comparison untouched: %+v out=%q", comparisons[0], output)
@@ -302,7 +302,7 @@ func TestCompareWallTimeMetricFallsBackOnUnparseableOutput(t *testing.T) {
 func TestRunBenchstatSkipsEmptySamples(t *testing.T) {
 	fake := &cannedBenchstatExecutor{stdout: modernBenchstatOutput}
 	e := benchstatEnabledEngine(t, fake, installFakeBenchstat(t))
-	if _, _, ok := e.runBenchstat(context.Background(), "wid", nil, wallVals(1)); ok || fake.calls != 0 {
+	if _, _, ok := e.campaignEvaluator().runBenchstat(context.Background(), "wid", nil, wallVals(1)); ok || fake.calls != 0 {
 		t.Fatal("empty baseline samples must skip benchstat")
 	}
 }
@@ -372,11 +372,11 @@ func TestBenchstatPValueDecidesSignificance(t *testing.T) {
 	base := wallRuns(100, 101, 99, 100, 100, 101, 99)
 	cand := wallRuns(104, 105, 103, 104, 104, 105, 103)
 	insignificant := benchstatEnabledEngine(t, &cannedBenchstatExecutor{stdout: "Work-8  100ns ± 1%  104ns ± 1%  +4.00% (p=0.200 n=7)"}, installFakeBenchstat(t))
-	if c, _ := insignificant.compareWallTimeMetric(context.Background(), "wid", base, cand); c[0].Significant {
+	if c, _ := insignificant.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand); c[0].Significant {
 		t.Fatalf("p=0.200 is not significant: %+v", c[0])
 	}
 	significant := benchstatEnabledEngine(t, &cannedBenchstatExecutor{stdout: modernBenchstatOutput}, installFakeBenchstat(t))
-	if c, _ := significant.compareWallTimeMetric(context.Background(), "wid", base, cand); !c[0].Significant {
+	if c, _ := significant.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand); !c[0].Significant {
 		t.Fatalf("p=0.001 is significant: %+v", c[0])
 	}
 }

@@ -45,7 +45,7 @@ func TestEvaluationReportsThroughItsJournal(t *testing.T) {
 	require.NoError(t, err)
 	evidence.Comparisons = []domain.MetricComparison{{Metric: "wall_time_ns", Workload: "fixture", Baseline: 100, Candidate: 104}}
 
-	require.True(t, engine.confirmRegressions(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
+	require.True(t, engine.campaignEvaluator().confirmRegressions(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 
 	require.Len(t, journal.events, 1)
 	require.Equal(t, "measurement_confirmed", journal.events[0].kind)
@@ -136,7 +136,7 @@ func TestAContendedFirstPassIsDiscardedAndMeasuredOnce(t *testing.T) {
 	}
 	measure := func(evidence *orchestrator.CandidateEvidence) *measurement {
 		m := &measurement{}
-		require.True(t, engine.measureSeedsOnQuietMachine(context.Background(), s, evidence, "candidate", candidate, m), evidence.Summary)
+		require.True(t, engine.campaignEvaluator().measureSeedsOnQuietMachine(context.Background(), s, evidence, "candidate", candidate, m), evidence.Summary)
 		return m
 	}
 
@@ -185,7 +185,7 @@ func TestMeasurementFlagsContentionFromTheMachine(t *testing.T) {
 	engine.machine = &scriptedMachine{loads: [][]float64{{1}, {2}, {9}}, limit: 5}
 	evidence := &orchestrator.CandidateEvidence{}
 
-	require.True(t, engine.measureAndFinalize(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate))
+	require.True(t, engine.campaignEvaluator().measureAndFinalize(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate))
 
 	require.Equal(t, []float64{1, 9}, evidence.LoadAverages)
 	require.True(t, evidence.LoadContended)
@@ -213,3 +213,7 @@ func TestScratchBaselineNarrowsWithoutTouchingTheCampaigns(t *testing.T) {
 	require.Equal(t, []string{"p::A"}, state.BaselineTestPasses)
 	require.Equal(t, 1, state.BaselineRechecks)
 }
+
+// campaignEvaluator is the evaluator a campaign attempt would use, built from
+// the engine as it stands now, for tests that drive one stage directly.
+func (e *Engine) campaignEvaluator() *evaluator { return e.newEvaluator(e.campaignSettings()) }
