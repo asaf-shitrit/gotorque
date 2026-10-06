@@ -26,5 +26,5 @@ func TestRequireFreeSpace(t *testing.T) {
 		require.Positive(t, free)
 	}
 	diskFree = func(string) (uint64, bool) { return 5 << 30, true }
-	require.NoError(t, (&Engine{dir: t.TempDir()}).requireFreeSpace())
+	require.NoError(t, (&evaluator{dir: t.TempDir()}).requireFreeSpace())
 }

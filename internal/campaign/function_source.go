@@ -46,7 +46,7 @@ const (
 // diff exactly as before ADR 0027. With no target, a FunctionSource is
 // located by the function it declares (untargetedFunctionSourceDiff). A
 // proposal with none of these is errEmptyProposal.
-func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.CandidateRequest) (patch, transport string, err error) {
+func (ev *evaluator) resolveCandidatePatch(ctx context.Context, req orchestrator.CandidateRequest) (patch, transport string, err error) {
 	if patchWins(req.Proposal) {
 		return withTargetHeaders(req.Proposal.Patch, req.Target), PatchTransport, nil
 	}
@@ -54,21 +54,21 @@ func (e *Engine) resolveCandidatePatch(ctx context.Context, req orchestrator.Can
 		if req.Proposal.FunctionSource == "" {
 			return "", PatchTransport, emptyProposal(req.RoleFailure)
 		}
-		diff, err := e.untargetedFunctionSourceDiff(ctx, req.Proposal, hotLocations(req.Analysis.HotPaths))
+		diff, err := ev.untargetedFunctionSourceDiff(ctx, req.Proposal, hotLocations(req.Analysis.HotPaths))
 		if err != nil {
 			return "", FunctionSourceTransport, err
 		}
 		return diff, FunctionSourceTransport, nil
 	}
 	if sources := multiFunctionSources(*req.Target, req.Proposal); len(sources) > 0 {
-		diff, err := e.buildMultiFunctionSourceDiff(ctx, *req.Target, sources, req.Proposal.Imports)
+		diff, err := ev.buildMultiFunctionSourceDiff(ctx, *req.Target, sources, req.Proposal.Imports)
 		if err != nil {
 			return "", MultiFunctionSourceTransport, err
 		}
 		return diff, MultiFunctionSourceTransport, nil
 	}
 	if req.Proposal.FunctionSource != "" {
-		diff, err := e.buildFunctionSourceDiff(ctx, *req.Target, req.Proposal.FunctionSource, req.Proposal.Imports)
+		diff, err := ev.buildFunctionSourceDiff(ctx, *req.Target, req.Proposal.FunctionSource, req.Proposal.Imports)
 		if err != nil {
 			return "", FunctionSourceTransport, err
 		}
@@ -150,15 +150,19 @@ func multiFunctionSources(target agents.Target, proposal agents.OptimizerResult)
 // base revision, splices functionSource in over the function target.Function
 // names, adds any imports it needs that the file does not already have, and
 // turns the result into a unified diff via `git diff --no-index`
-// (toolchain.DiffFiles). The base revision is read from e.state.Repository,
-// the canonical checkout, which is clean at that revision for the duration of
-// a candidate's evaluation.
-func (e *Engine) buildFunctionSourceDiff(ctx context.Context, target agents.Target, functionSource string, imports []string) (string, error) {
+// (toolchain.DiffFiles). The base revision is read from the evaluator's base
+// tree, never from the canonical checkout, which anything may have dirtied
+// since the campaign began (ADR 0036).
+func (ev *evaluator) buildFunctionSourceDiff(ctx context.Context, target agents.Target, functionSource string, imports []string) (string, error) {
 	relPath := targetPath(target.Location)
 	if relPath == "" || target.Function == "" {
 		return "", errors.New("function_source requires a target with a location and function name")
 	}
-	fullPath := filepath.Join(e.state.Repository, filepath.FromSlash(relPath))
+	root, err := ev.baseRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	fullPath := filepath.Join(root, filepath.FromSlash(relPath))
 	original, err := os.ReadFile(fullPath)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", relPath, err)
@@ -167,12 +171,12 @@ func (e *Engine) buildFunctionSourceDiff(ctx context.Context, target agents.Targ
 	if err != nil {
 		return "", err
 	}
-	return e.diffAgainstBase(ctx, relPath, original, updated)
+	return ev.diffAgainstBase(ctx, relPath, original, updated)
 }
 
 // diffAgainstBase writes original and updated to a scratch directory and asks
 // the toolchain for their diff, named at relPath.
-func (e *Engine) diffAgainstBase(ctx context.Context, relPath string, original, updated []byte) (string, error) {
+func (ev *evaluator) diffAgainstBase(ctx context.Context, relPath string, original, updated []byte) (string, error) {
 	scratch, err := os.MkdirTemp("", "gotorque-function-source-*")
 	if err != nil {
 		return "", fmt.Errorf("create scratch directory: %w", err)
@@ -186,7 +190,7 @@ func (e *Engine) diffAgainstBase(ctx context.Context, relPath string, original, 
 	if err := os.WriteFile(newPath, updated, 0o600); err != nil {
 		return "", err
 	}
-	result, err := e.toolchain.DiffFiles(ctx, oldPath, newPath, relPath)
+	result, err := ev.toolchain.DiffFiles(ctx, oldPath, newPath, relPath)
 	if err != nil {
 		return "", fmt.Errorf("diff function_source against the base revision: %w", err)
 	}

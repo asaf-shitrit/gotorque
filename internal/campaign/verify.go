@@ -69,14 +69,12 @@ func (e *Engine) Verify(ctx context.Context, attempt, pairs int) (Verification, 
 	if err := e.runBuildStep(ctx); err != nil {
 		return Verification{}, err
 	}
-	e.verifying, e.repetitions = true, pairs
-	defer func() { e.verifying, e.repetitions = false, 0 }()
-	evidence, err := e.evaluateCandidate(ctx, orchestrator.CandidateRequest{
+	evidence, err := e.evaluateWith(ctx, orchestrator.CandidateRequest{
 		Campaign: e.campaignRequest(),
 		Attempt:  verifyAttemptOffset + attempt,
 		Proposal: agents.OptimizerResult{Patch: string(patch), Hypothesis: record.Hypothesis},
 		Target:   record.Target,
-	})
+	}, evalSettings{pairs: pairs, baseline: scratchBaselineFrom(e.evalBaseline(evalSettings{}))})
 	if err != nil {
 		return Verification{}, err
 	}
@@ -131,15 +129,6 @@ func (e *Engine) policyVerdict(evidence orchestrator.CandidateEvidence) policy.R
 	})
 }
 
-// pairs is the interleaved pair count per workload: the campaign's fixed
-// count, or a verification's.
-func (e *Engine) pairs() int {
-	if e.repetitions > 0 {
-		return e.repetitions
-	}
-	return measurementRepetitions
-}
-
 var ErrNothingAccepted = errors.New("the campaign accepted no candidate; pass --attempt to verify another")
 
 // candidateBinaryOf is the candidate binary evaluateCandidate built, or ""
@@ -168,11 +157,11 @@ func (e *Engine) verifyOutputs(ctx context.Context, candidateBinary, candidateID
 		}
 		for name, variant := range inputVariants(seed) {
 			label := seed.ID + "/" + name
-			base := e.seedMeasurementRequest(variant, e.state.BuildID, e.state.BinaryPath)
-			if !e.outputIsDeterministic(ctx, base) {
+			base := seedMeasurementRequest(e.state.Manifest, e.state.ID, variant, e.state.BuildID, e.state.BinaryPath)
+			if !outputIsDeterministic(ctx, e.runner, base) {
 				continue
 			}
-			cand := e.seedMeasurementRequest(variant, candidateID, candidateBinary)
+			cand := seedMeasurementRequest(e.state.Manifest, e.state.ID, variant, candidateID, candidateBinary)
 			baseRun, baseErr := e.runner.Run(ctx, base)
 			candRun, candErr := e.runner.Run(ctx, cand)
 			checks = append(checks, label)

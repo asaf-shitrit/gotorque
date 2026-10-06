@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -21,13 +22,33 @@ import (
 // verification is persisted and reported. The duplicate refusal, which would
 // otherwise stop a patch this campaign already measured, is off.
 func TestVerifyReevaluatesARecordedCandidate(t *testing.T) {
-	repo := makeRepository(t)
+	engine := engineWithRecordedAccept(t)
+
+	v, err := engine.Verify(context.Background(), 1, 2)
+	require.NoError(t, err)
+	require.Equal(t, 1, v.Attempt)
+	require.Equal(t, 2, v.Pairs)
+	require.Equal(t, domain.DecisionAccepted, v.Original)
+	require.NotEmpty(t, v.Decision)
+	require.NotContains(t, v.Summary, "identical patch was already measured")
+	require.Len(t, engine.State().Verifications, 1)
+
+	var b strings.Builder
+	writeVerifications(&b, engine.State())
+	require.Contains(t, b.String(), "## Verification")
+	require.Contains(t, b.String(), "| 1 | 2 | accepted |")
+}
+
+// engineWithRecordedAccept is a created engine holding one evaluated
+// candidate recorded as accepted (attempt 1), ready for Verify.
+func engineWithRecordedAccept(t *testing.T) *Engine {
+	t.Helper()
 	engine, err := Create(context.Background(), Options{
-		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		Repository: makeRepository(t), ManifestPath: writeManifest(t, t.TempDir()),
 		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
 	})
 	require.NoError(t, err)
-	defer func() { require.NoError(t, engine.Close()) }()
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
 
 	target := &agents.Target{Location: "main.go:3", Function: "main", Cause: "unbuffered_io"}
 	evidence, err := engine.evaluateCandidate(context.Background(), orchestrator.CandidateRequest{
@@ -42,21 +63,26 @@ func TestVerifyReevaluatesARecordedCandidate(t *testing.T) {
 		Decision: domain.DecisionAccepted, Accepted: true, Comparisons: evidence.Comparisons,
 	})
 	require.Equal(t, []int{1}, engine.AcceptedAttempts())
+	return engine
+}
 
-	v, err := engine.Verify(context.Background(), 1, 2)
+// TestVerifyDoesNotRunThePgoLane: the lane is informational and costs two
+// profile-guided builds plus a series per workload, and a verification has
+// nothing to attribute: its record has no PGO columns. It ran anyway, at the
+// verification's 60 pairs, on every verify of an accepted candidate.
+func TestVerifyDoesNotRunThePgoLane(t *testing.T) {
+	engine := engineWithRecordedAccept(t)
+	before, err := engine.store.Events()
 	require.NoError(t, err)
-	require.Equal(t, 1, v.Attempt)
-	require.Equal(t, 2, v.Pairs)
-	require.Equal(t, domain.DecisionAccepted, v.Original)
-	require.NotEmpty(t, v.Decision)
-	require.NotContains(t, v.Summary, "identical patch was already measured")
-	require.Len(t, engine.State().Verifications, 1)
-	require.Zero(t, engine.pairs()-measurementRepetitions, "the override ends with the verification")
 
-	var b strings.Builder
-	writeVerifications(&b, engine.State())
-	require.Contains(t, b.String(), "## Verification")
-	require.Contains(t, b.String(), "| 1 | 2 | accepted |")
+	_, err = engine.Verify(context.Background(), 1, 2)
+	require.NoError(t, err)
+
+	events, err := engine.store.Events()
+	require.NoError(t, err)
+	for _, event := range events[len(before):] {
+		require.NotContains(t, event.Type, "pgo_lane", "verification ran the PGO lane")
+	}
 }
 
 func TestVerifyRefusesAnUnknownOrPatchlessAttempt(t *testing.T) {
@@ -130,4 +156,36 @@ func TestVerificationReportNamesOutputMismatches(t *testing.T) {
 	var b strings.Builder
 	writeVerifications(&b, State{Verifications: []Verification{{Attempt: 1, Pairs: 60, Original: domain.DecisionAccepted, Decision: domain.DecisionAccepted, OutputChecks: []string{"s/empty", "s/half"}, OutputMismatches: []string{"s/empty"}}}})
 	require.Contains(t, b.String(), "| 2 checked, differ: s/empty | no |")
+}
+
+// TestVerifyLeavesTheCampaignsRequiredTestsAlone: the test gate can stop
+// requiring baseline tests that did not pass on a second run of the unpatched
+// revision (pruneUnstablePasses), and it records that in the campaign's state.
+// A verification runs the same gate, so a verify of one candidate permanently
+// shrank the set every later candidate of the campaign is judged against.
+func TestVerifyLeavesTheCampaignsRequiredTestsAlone(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "runs")
+	tests := "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestRandom(t *testing.T) {\n\tdata, _ := os.ReadFile(" + strconv.Quote(counter) + ")\n\t_ = os.WriteFile(" + strconv.Quote(counter) + ", append(data, 'x'), 0o600)\n\tt.Run(fmt.Sprint(\"case\", len(data)), func(t *testing.T) {})\n}\n"
+	repo := repositoryWithTestFile(t, tests)
+	engine, err := Create(context.Background(), Options{
+		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
+	require.NoError(t, engine.runBaselineTestStep(context.Background()))
+	required := append([]string(nil), engine.State().BaselineTestPasses...)
+	require.Contains(t, required, "test.local/fixture::TestRandom/case0")
+
+	patch, err := nullPatch(repo, "main.go", 1)
+	require.NoError(t, err)
+	patchPath := filepath.Join(t.TempDir(), "null.diff")
+	require.NoError(t, os.WriteFile(patchPath, []byte(patch), 0o600))
+	engine.state.CandidateRecords = append(engine.state.CandidateRecords, CandidateRecord{Attempt: 1, CandidateID: "recorded", PatchPath: patchPath, Decision: domain.DecisionAccepted, Accepted: true})
+
+	_, err = engine.Verify(context.Background(), 1, 2)
+	require.NoError(t, err)
+
+	require.Equal(t, required, engine.State().BaselineTestPasses, "verification changed the campaign's required tests")
+	require.Zero(t, engine.State().BaselineRechecks, "verification spent the campaign's baseline re-run budget")
 }

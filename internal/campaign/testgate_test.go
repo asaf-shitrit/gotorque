@@ -58,13 +58,13 @@ func TestClassifyTestOutcomeOnlyChargesNewFailures(t *testing.T) {
 	// carries one: passing a nil error would test a path the campaign never takes.
 	fixtureErr := errors.New("go test -mod=readonly -json ./...: exit status 1")
 	engine := &Engine{state: State{BaselineTestFailures: []string{"pkg::TestOld"}}}
-	reason, passed := engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(candidate), ExitCode: 1}, fixtureErr)
+	reason, passed := classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(candidate), ExitCode: 1}, fixtureErr)
 	require.True(t, passed, "reason = %q", reason)
 	require.Empty(t, reason)
 
 	withNewFailure := candidate + `{"Action":"fail","Package":"pkg","Test":"TestNew"}
 `
-	reason, passed = engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(withNewFailure), ExitCode: 1}, fixtureErr)
+	reason, passed = classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(withNewFailure), ExitCode: 1}, fixtureErr)
 	require.False(t, passed)
 	require.Contains(t, reason, "pkg::TestNew")
 	require.Contains(t, reason, "ignoring 1 failure(s) that predate the patch")
@@ -74,7 +74,7 @@ func TestClassifyTestOutcomeNeverSubtractsBuildFailure(t *testing.T) {
 	engine := &Engine{state: State{BaselineTestFailures: []string{"pkg::TestOld"}}}
 	output := `{"Action":"fail","Package":"pkg","FailedBuild":"pkg"}
 `
-	reason, passed := engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(output), ExitCode: 1}, nil)
+	reason, passed := classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(output), ExitCode: 1}, nil)
 	require.False(t, passed)
 	require.Contains(t, reason, "test build or setup failed in: pkg")
 }
@@ -96,12 +96,12 @@ func TestBehaviorGateSubtractsPreExistingFailuresInARealRepository(t *testing.T)
 	require.Equal(t, []string{"test.local/fixture::TestPreexisting"}, engine.State().BaselineTestFailures)
 
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, engine.candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
+	require.True(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
 	require.Empty(t, evidence.Summary, "an untriggered gate must not label the candidate")
 
 	broken := repositoryWithTestOutcome(t, "TestPreexisting", "TestIntroduced")
 	evidence = orchestrator.CandidateEvidence{}
-	require.False(t, engine.candidateTestsPassed(context.Background(), broken, &evidence))
+	require.False(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), broken, &evidence))
 	require.Contains(t, evidence.Summary, "test.local/fixture::TestIntroduced")
 	require.Contains(t, evidence.Summary, "ignoring 1 failure(s) that predate the patch")
 	require.False(t, evidence.SafetyChecksPassed)
@@ -195,7 +195,7 @@ func TestClassifyTestOutcomeRejectsLostBaselinePasses(t *testing.T) {
 {"Action":"pass","Package":"pkg","Test":"TestC"}
 {"Action":"pass","Package":"pkg"}
 `
-	reason, passed := engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(clean)}, nil)
+	reason, passed := classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(clean)}, nil)
 	require.True(t, passed, "reason = %q", reason)
 
 	lossy := `{"Action":"pass","Package":"pkg","Test":"TestA"}
@@ -203,12 +203,12 @@ func TestClassifyTestOutcomeRejectsLostBaselinePasses(t *testing.T) {
 {"Action":"pass","Package":"pkg","Test":"TestC"}
 {"Action":"pass","Package":"pkg"}
 `
-	reason, passed = engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(lossy)}, nil)
+	reason, passed = classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(lossy)}, nil)
 	require.False(t, passed)
 	require.Equal(t, "tests that passed on the unpatched revision did not pass: pkg::TestB (skipped), pkg::TestC/sub (did not run)", reason)
 
 	// A clean exit that printed nothing readable shows none of the passes.
-	reason, passed = engine.classifyTestOutcome(toolchain.Result{Stdout: []byte("PASS\n")}, nil)
+	reason, passed = classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte("PASS\n")}, nil)
 	require.False(t, passed)
 	require.Contains(t, reason, "pkg::TestA (did not run)")
 
@@ -217,14 +217,14 @@ func TestClassifyTestOutcomeRejectsLostBaselinePasses(t *testing.T) {
 {"Action":"fail","Package":"pkg","Test":"TestB"}
 {"Action":"fail","Package":"pkg"}
 `
-	reason, passed = engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(failing), ExitCode: 1}, errors.New("exit status 1"))
+	reason, passed = classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(failing), ExitCode: 1}, errors.New("exit status 1"))
 	require.False(t, passed)
 	require.Equal(t, "new failing tests: pkg::TestB", reason)
 
 	// With no recorded passes there is nothing to lose, and an unreadable clean
 	// run is not held against the candidate.
 	empty := &Engine{}
-	reason, passed = empty.classifyTestOutcome(toolchain.Result{Stdout: []byte("PASS\n")}, nil)
+	reason, passed = classifyTestOutcome(campaignBaseline{&empty.state}, toolchain.Result{Stdout: []byte("PASS\n")}, nil)
 	require.True(t, passed, "reason = %q", reason)
 }
 
@@ -250,7 +250,7 @@ func TestBehaviorGateRejectsATestThatStopsPassing(t *testing.T) {
 	}, engine.State().BaselineTestPasses)
 
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, engine.candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
+	require.True(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
 
 	cases := map[string]struct {
 		tests string
@@ -273,7 +273,7 @@ func TestBehaviorGateRejectsATestThatStopsPassing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			candidate := repositoryWithTestFile(t, tc.tests)
 			evidence := orchestrator.CandidateEvidence{}
-			require.False(t, engine.candidateTestsPassed(context.Background(), candidate, &evidence))
+			require.False(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), candidate, &evidence))
 			require.Contains(t, evidence.Summary, "upstream test suite failed: tests that passed on the unpatched revision did not pass")
 			require.Contains(t, evidence.FailureDetail, tc.want)
 			require.False(t, evidence.SafetyChecksPassed)
@@ -329,12 +329,12 @@ func TestClassifyTestOutcomeSubtractsBaselineUnbuildablePackages(t *testing.T) {
 	output := `{"Action":"fail","Package":"example.com/m/scripts/perf","FailedBuild":"example.com/m/scripts/perf"}
 {"Action":"pass","Package":"example.com/m","Test":"TestKept"}
 `
-	reason, passed := engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(output), ExitCode: 1}, nil)
+	reason, passed := classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(output), ExitCode: 1}, nil)
 	require.True(t, passed, reason)
 
 	newlyBroken := `{"Action":"fail","Package":"example.com/m/lib","FailedBuild":"example.com/m/lib"}
 `
-	reason, passed = engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(newlyBroken), ExitCode: 1}, nil)
+	reason, passed = classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(newlyBroken), ExitCode: 1}, nil)
 	require.False(t, passed)
 	require.Contains(t, reason, "test build or setup failed in: example.com/m/lib")
 }
@@ -362,7 +362,7 @@ func TestBaselineStepKeepsASuiteWithOneUnbuildablePackage(t *testing.T) {
 	require.Contains(t, engine.State().BaselineTestPasses, "test.local/fixture::TestKept")
 
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, engine.candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
+	require.True(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
 
 	var b strings.Builder
 	writeBehaviorGate(&b, engine.State())
@@ -391,7 +391,7 @@ func TestBehaviorGateStopsRequiringSubtestsTheBaselineDoesNotRepeat(t *testing.T
 	require.Equal(t, []string{"test.local/fixture::TestRandom", "test.local/fixture::TestRandom/case0"}, engine.State().BaselineTestPasses)
 
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, engine.candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
+	require.True(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence), "evidence: %+v", evidence)
 	require.Equal(t, []string{"test.local/fixture::TestRandom"}, engine.State().BaselineTestPasses)
 	require.Equal(t, 1, engine.State().BaselineRechecks)
 
@@ -400,7 +400,7 @@ func TestBehaviorGateStopsRequiringSubtestsTheBaselineDoesNotRepeat(t *testing.T
 	engine.state.BaselineRechecks = maxBaselineRechecks
 	engine.state.BaselineTestPasses = append(engine.state.BaselineTestPasses, "test.local/fixture::TestRandom/case9")
 	evidence = orchestrator.CandidateEvidence{}
-	require.False(t, engine.candidateTestsPassed(context.Background(), repo, &evidence))
+	require.False(t, engine.campaignEvaluator().candidateTestsPassed(context.Background(), repo, &evidence))
 	require.Contains(t, evidence.FailureDetail, "TestRandom/case9 (did not run)")
 }
 
@@ -435,11 +435,11 @@ func TestGateIgnoresPointerAddressesInTestNames(t *testing.T) {
 	require.Equal(t, []string{"p::TestVariables/&x.Expr{LHS:(*x.T)(0x…)}"}, baseline.Passed)
 
 	engine := &Engine{state: State{BaselineTestPasses: baseline.Passed}}
-	reason, passed := engine.classifyTestOutcome(toolchain.Result{Stdout: []byte(candidateRun)}, nil)
+	reason, passed := classifyTestOutcome(campaignBaseline{&engine.state}, toolchain.Result{Stdout: []byte(candidateRun)}, nil)
 	require.True(t, passed, reason)
 
 	persisted := &Engine{state: State{BaselineTestPasses: []string{"p::TestVariables/&x.Expr{LHS:(*x.T)(0x7856190ebbc0)}"}}}
-	reason, passed = persisted.classifyTestOutcome(toolchain.Result{Stdout: []byte(candidateRun)}, nil)
+	reason, passed = classifyTestOutcome(campaignBaseline{&persisted.state}, toolchain.Result{Stdout: []byte(candidateRun)}, nil)
 	require.True(t, passed, "a baseline persisted with raw addresses still matches: %s", reason)
 
 	require.Empty(t, newTestFailures([]string{"p::T/(0xdeadbeef01)"}, []string{"p::T/(0x…)"}))

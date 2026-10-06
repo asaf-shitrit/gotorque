@@ -59,7 +59,7 @@ func (s *Store) Double() int {
 // and, once applied, builds.
 func TestBuildMultiFunctionSourceDiffAppliesAndBuilds(t *testing.T) {
 	repo := throwawayFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := agents.Target{
 		Location: "a.go:9",
@@ -82,7 +82,7 @@ func TestBuildMultiFunctionSourceDiffAppliesAndBuilds(t *testing.T) {
 		"func (s *Store) Double() int {\n\treturn s.getValue() * 2\n}",
 	}
 
-	diff, err := engine.buildMultiFunctionSourceDiff(context.Background(), target, sources, nil)
+	diff, err := engine.campaignEvaluator().buildMultiFunctionSourceDiff(context.Background(), target, sources, nil)
 	require.NoError(t, err)
 	require.Contains(t, diff, "--- a/a.go")
 	require.Contains(t, diff, "+++ b/a.go")
@@ -117,7 +117,7 @@ func TestBuildMultiFunctionSourceDiffAppliesAndBuilds(t *testing.T) {
 // a silent rewrite of a function the shape check never agreed to.
 func TestBuildMultiFunctionSourceDiffRejectsANameOutsideTheSet(t *testing.T) {
 	repo := throwawayFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := agents.Target{
 		Location: "a.go:9",
@@ -133,7 +133,7 @@ func TestBuildMultiFunctionSourceDiffRejectsANameOutsideTheSet(t *testing.T) {
 		// Double exists in the package but is outside the set.
 		"func (s *Store) Double() int {\n\treturn 0\n}",
 	}
-	_, err := engine.buildMultiFunctionSourceDiff(context.Background(), target, sources, nil)
+	_, err := engine.campaignEvaluator().buildMultiFunctionSourceDiff(context.Background(), target, sources, nil)
 	require.ErrorContains(t, err, "Double")
 	require.ErrorContains(t, err, "outside the throwaway_result set")
 }
@@ -198,9 +198,9 @@ func throwawayImportSources() []string {
 // must add the import to b.go, not a.go, and the result must build.
 func TestMultiFunctionSourceAddsImportToTheFileThatNeedsIt(t *testing.T) {
 	repo := throwawayImportFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
-	diff, err := engine.buildMultiFunctionSourceDiff(context.Background(), throwawayImportTarget(), throwawayImportSources(), []string{"strconv"})
+	diff, err := engine.campaignEvaluator().buildMultiFunctionSourceDiff(context.Background(), throwawayImportTarget(), throwawayImportSources(), []string{"strconv"})
 	require.NoError(t, err)
 
 	patchPath := filepath.Join(t.TempDir(), "candidate.diff")
@@ -230,9 +230,9 @@ func TestMultiFunctionSourceAddsImportToTheFileThatNeedsIt(t *testing.T) {
 // b.go so the candidate builds.
 func TestMultiFunctionSourceInfersStdlibImportWithNoImportsListed(t *testing.T) {
 	repo := throwawayImportFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
-	diff, err := engine.buildMultiFunctionSourceDiff(context.Background(), throwawayImportTarget(), throwawayImportSources(), nil)
+	diff, err := engine.campaignEvaluator().buildMultiFunctionSourceDiff(context.Background(), throwawayImportTarget(), throwawayImportSources(), nil)
 	require.NoError(t, err)
 
 	patchPath := filepath.Join(t.TempDir(), "candidate.diff")
@@ -252,7 +252,7 @@ func TestMultiFunctionSourceInfersStdlibImportWithNoImportsListed(t *testing.T) 
 // referenced by no touched file's new code is added nowhere.
 func TestMultiFunctionSourceNeverAddsAnUnusedImport(t *testing.T) {
 	repo := throwawayFixtureRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := agents.Target{
 		Location: "a.go:9",
@@ -270,7 +270,7 @@ func TestMultiFunctionSourceNeverAddsAnUnusedImport(t *testing.T) {
 		"func (s *Store) Double() int {\n\treturn s.Get().v * 2\n}",
 	}
 
-	diff, err := engine.buildMultiFunctionSourceDiff(context.Background(), target, sources, []string{"strconv"})
+	diff, err := engine.campaignEvaluator().buildMultiFunctionSourceDiff(context.Background(), target, sources, []string{"strconv"})
 	require.NoError(t, err)
 	require.NotContains(t, diff, "strconv")
 }

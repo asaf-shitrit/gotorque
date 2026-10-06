@@ -15,12 +15,19 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/toolchain"
 )
 
-// newFuncSourceTestEngine builds a bare *Engine pointed at repo with a real
-// toolchain, for tests exercising buildFunctionSourceDiff /
-// resolveCandidatePatch directly without a full Create campaign.
-func newFuncSourceTestEngine(repo string) *Engine {
-	e := &Engine{toolchain: toolchain.New(toolchain.Options{})}
+// newFuncSourceTestEngine builds a bare *Engine pointed at repo, a Git
+// repository with a commit, with a real toolchain and a campaign directory,
+// for tests exercising buildFunctionSourceDiff / resolveCandidatePatch
+// directly without a full Create campaign. Its base revision is repo's HEAD.
+func newFuncSourceTestEngine(t *testing.T, repo string) *Engine {
+	t.Helper()
+	e := &Engine{toolchain: toolchain.New(toolchain.Options{}), dir: t.TempDir()}
 	e.state.Repository = repo
+	head := exec.CommandContext(t.Context(), "git", "rev-parse", "HEAD")
+	head.Dir = repo
+	out, err := head.Output()
+	require.NoError(t, err)
+	e.state.Environment.Revision = strings.TrimSpace(string(out))
 	return e
 }
 
@@ -201,7 +208,7 @@ func TestReplaceFunctionSourceRejectsDeclsWithoutTheTarget(t *testing.T) {
 // yields exactly the expected file content.
 func TestBuildFunctionSourceDiffAppliesCleanly(t *testing.T) {
 	repo := methodRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := agents.Target{Location: "main.go:8", Function: "(*cli).printValues"}
 	newSrc := `func (c *cli) printValues(vs []string) error {
@@ -213,7 +220,7 @@ func TestBuildFunctionSourceDiffAppliesCleanly(t *testing.T) {
 	}
 	return nil
 }`
-	diff, err := engine.buildFunctionSourceDiff(context.Background(), target, newSrc, []string{"bufio"})
+	diff, err := engine.campaignEvaluator().buildFunctionSourceDiff(context.Background(), target, newSrc, []string{"bufio"})
 	require.NoError(t, err)
 	require.Contains(t, diff, "--- a/main.go")
 	require.Contains(t, diff, "+++ b/main.go")
@@ -226,14 +233,14 @@ func TestBuildFunctionSourceDiffAppliesCleanly(t *testing.T) {
 
 func TestResolveCandidatePatchPrefersPatchOverFunctionSource(t *testing.T) {
 	repo := methodRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := &agents.Target{Location: "main.go:8", Function: "(*cli).printValues"}
 	req := orchestrator.CandidateRequest{
 		Target:   target,
 		Proposal: agents.OptimizerResult{Patch: handDiff, FunctionSource: "func (c *cli) printValues(vs []string) error { return nil }"},
 	}
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, handDiff, patch)
 	require.Equal(t, PatchTransport, transport)
@@ -253,18 +260,18 @@ const handDiff = "--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-x\n+y\n"
 // still used, and judged, when no function_source came with it.
 func TestResolveCandidatePatchSkipsAPatchFieldWithNoDiff(t *testing.T) {
 	repo := methodRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 	target := &agents.Target{Location: "main.go:8", Function: "(*cli).printValues"}
 	src := "func (c *cli) printValues(vs []string) error { return nil }"
 	for _, blank := range []string{"\n", "  ", "see function_source", noOpHunk} {
 		req := orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: blank, FunctionSource: src}}
-		patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+		patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 		require.NoError(t, err)
 		require.Equal(t, FunctionSourceTransport, transport, "patch %q", blank)
 		require.Contains(t, patch, "@@")
 	}
 	req := orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: "see function_source"}}
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, "see function_source", patch)
 	require.Equal(t, PatchTransport, transport)
@@ -275,7 +282,7 @@ func TestResolveCandidatePatchSkipsAPatchFieldWithNoDiff(t *testing.T) {
 // declares and built into a diff, instead of being dropped as an empty patch.
 func TestResolveCandidatePatchLocatesAnUntargetedFunctionSource(t *testing.T) {
 	repo := methodRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 	req := orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: `func (c *cli) printValues(vs []string) error {
 	w := bufio.NewWriter(c.out)
 	defer w.Flush()
@@ -284,29 +291,29 @@ func TestResolveCandidatePatchLocatesAnUntargetedFunctionSource(t *testing.T) {
 	}
 	return nil
 }`, Imports: []string{"bufio"}}}
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, FunctionSourceTransport, transport)
 	require.Contains(t, applyDiff(t, repo, patch, "main.go"), "bufio.NewWriter")
 }
 
 func TestResolveCandidatePatchRejectsAnUnknownUntargetedFunction(t *testing.T) {
-	engine := newFuncSourceTestEngine(methodRepo(t))
+	engine := newFuncSourceTestEngine(t, methodRepo(t))
 	req := orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "func nowhere() {}"}}
-	_, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	_, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.ErrorContains(t, err, "no non-test file declares")
 	require.Equal(t, FunctionSourceTransport, transport)
 
-	_, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "not go"}})
+	_, _, err = engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{FunctionSource: "not go"}})
 	require.ErrorContains(t, err, "does not parse")
 }
 
 func TestResolveCandidatePatchNamesAnEmptyProposal(t *testing.T) {
 	engine := &Engine{}
-	_, _, err := engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{Hypothesis: "h"}})
+	_, _, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Proposal: agents.OptimizerResult{Hypothesis: "h"}})
 	require.ErrorIs(t, err, errEmptyProposal)
 	target := &agents.Target{Location: "main.go:8", Function: "f"}
-	_, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Hypothesis: "h"}})
+	_, _, err = engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Hypothesis: "h"}})
 	require.ErrorIs(t, err, errEmptyProposal)
 }
 
@@ -342,7 +349,7 @@ func TestLocateFunctionSkipsTestsVendorAndTestdataAndRefusesAmbiguity(t *testing
 
 func TestResolveCandidatePatchBuildsFromFunctionSourceWithTarget(t *testing.T) {
 	repo := methodRepo(t)
-	engine := newFuncSourceTestEngine(repo)
+	engine := newFuncSourceTestEngine(t, repo)
 
 	target := &agents.Target{Location: "main.go:8", Function: "(*cli).printValues"}
 	req := orchestrator.CandidateRequest{
@@ -356,7 +363,7 @@ func TestResolveCandidatePatchBuildsFromFunctionSourceWithTarget(t *testing.T) {
 	return nil
 }`, Imports: []string{"bufio"}},
 	}
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), req)
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.NoError(t, err)
 	require.NotEmpty(t, patch)
 	require.Equal(t, FunctionSourceTransport, transport)
@@ -439,7 +446,7 @@ func TestEvaluateCandidateRejectsAnUnbuildableFunctionSourceWithAnID(t *testing.
 func TestResolveCandidatePatchNamesAnOptimizerThatDidNotAnswer(t *testing.T) {
 	engine := &Engine{}
 	req := orchestrator.CandidateRequest{RoleFailure: "optimizer model call failed after 3 attempts: model call attempt exceeded its 6m0s budget"}
-	_, _, err := engine.resolveCandidatePatch(context.Background(), req)
+	_, _, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), req)
 	require.ErrorContains(t, err, "the optimizer did not answer: optimizer model call failed after 3 attempts")
 	require.NotErrorIs(t, err, errEmptyProposal)
 }
@@ -447,7 +454,7 @@ func TestResolveCandidatePatchNamesAnOptimizerThatDidNotAnswer(t *testing.T) {
 func TestCandidatePatchKeepsTheOptimizerAnswerBesideIt(t *testing.T) {
 	engine := &Engine{dir: t.TempDir()}
 	req := orchestrator.CandidateRequest{Attempt: 3, Proposal: agents.OptimizerResult{Patch: "\n", FunctionSource: "func f() {}", Hypothesis: "h"}}
-	id, patchPath, err := engine.writeCandidatePatch(req, "\n")
+	id, patchPath, err := engine.campaignEvaluator().writeCandidatePatch(req, "\n")
 	require.NoError(t, err)
 	require.FileExists(t, patchPath)
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(patchPath), id+".proposal.json"))
@@ -459,15 +466,15 @@ func TestCandidatePatchKeepsTheOptimizerAnswerBesideIt(t *testing.T) {
 // answer sent a correct hunk with no file headers. With a target the file is
 // known; without one, or when the patch names its file, nothing changes.
 func TestResolveCandidatePatchNamesTheTargetFileForAHeaderlessHunk(t *testing.T) {
-	engine := newFuncSourceTestEngine(methodRepo(t))
+	engine := newFuncSourceTestEngine(t, methodRepo(t))
 	target := &agents.Target{Location: "internal/core/adt/conjunct.go:39", Function: "(*nodeContext).scheduleConjunct"}
 	hunk := "@@ -77,1 +77,1 @@\n-a\n+b\n"
-	patch, transport, err := engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: hunk}})
+	patch, transport, err := engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: hunk}})
 	require.NoError(t, err)
 	require.Equal(t, PatchTransport, transport)
 	require.Equal(t, "--- a/internal/core/adt/conjunct.go\n+++ b/internal/core/adt/conjunct.go\n"+hunk, patch)
 
-	patch, _, err = engine.resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: handDiff}})
+	patch, _, err = engine.campaignEvaluator().resolveCandidatePatch(context.Background(), orchestrator.CandidateRequest{Target: target, Proposal: agents.OptimizerResult{Patch: handDiff}})
 	require.NoError(t, err)
 	require.Equal(t, handDiff, patch)
 
@@ -516,7 +523,7 @@ func TestReplaceFunctionSourceAddsNewPackageLevelNames(t *testing.T) {
 // a function_source rejection before any diff existed, and nothing recorded
 // what the optimizer had sent.
 func TestAProposalThatNeverBecameAPatchIsKept(t *testing.T) {
-	engine := newFuncSourceTestEngine(methodRepo(t))
+	engine := newFuncSourceTestEngine(t, methodRepo(t))
 	engine.dir = t.TempDir()
 	req := orchestrator.CandidateRequest{
 		Attempt: 3,

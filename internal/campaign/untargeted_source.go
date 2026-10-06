@@ -26,17 +26,21 @@ import (
 // diff the same way the targeted path does. The optimizer still chose the
 // site; code only finds where it is. A proposal with neither field is now
 // rejected as errEmptyProposal, which says so.
-func (e *Engine) untargetedFunctionSourceDiff(ctx context.Context, proposal agents.OptimizerResult, hotPaths []string) (string, error) {
+func (ev *evaluator) untargetedFunctionSourceDiff(ctx context.Context, proposal agents.OptimizerResult, hotPaths []string) (string, error) {
 	decl, _, err := formatFunctionDecl(proposal.FunctionSource)
 	if err != nil {
 		return "", err
 	}
 	name := funcName(decl)
-	location, err := locateFunction(e.state.Repository, name, hotPaths)
+	root, err := ev.baseRoot(ctx)
 	if err != nil {
 		return "", err
 	}
-	return e.buildFunctionSourceDiff(ctx, agents.Target{Function: name, Location: location}, proposal.FunctionSource, proposal.Imports)
+	location, err := locateFunction(root, name, hotPaths)
+	if err != nil {
+		return "", err
+	}
+	return ev.buildFunctionSourceDiff(ctx, agents.Target{Function: name, Location: location}, proposal.FunctionSource, proposal.Imports)
 }
 
 // locateFunction finds the one non-test declaration of function (in funcName's

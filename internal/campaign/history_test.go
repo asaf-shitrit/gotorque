@@ -146,18 +146,18 @@ func TestRejectMeasuredDuplicate(t *testing.T) {
 	}}
 
 	var fromHistory orchestrator.CandidateEvidence
-	require.True(t, e.rejectMeasuredDuplicate("c-past", &fromHistory))
+	require.True(t, rejectMeasuredDuplicate(e.knownCandidates(), "c-past", &fromHistory))
 	require.True(t, fromHistory.Unmeasured)
 	require.Contains(t, fromHistory.Summary, "identical patch was already measured")
 	require.Contains(t, fromHistory.Summary, "campaign p attempt 3")
 
 	var fromThisCampaign orchestrator.CandidateEvidence
-	require.True(t, e.rejectMeasuredDuplicate("c-own", &fromThisCampaign))
+	require.True(t, rejectMeasuredDuplicate(e.knownCandidates(), "c-own", &fromThisCampaign))
 	require.Contains(t, fromThisCampaign.FailureDetail, "attempt 1 of this campaign: inconclusive")
 
 	var fresh orchestrator.CandidateEvidence
-	require.False(t, e.rejectMeasuredDuplicate("c-new", &fresh))
-	require.False(t, e.rejectMeasuredDuplicate("c-rejected", &fresh), "a candidate rejected before measurement proves nothing about its patch")
+	require.False(t, rejectMeasuredDuplicate(e.knownCandidates(), "c-new", &fresh))
+	require.False(t, rejectMeasuredDuplicate(e.knownCandidates(), "c-rejected", &fresh), "a candidate rejected before measurement proves nothing about its patch")
 	require.Empty(t, fresh.Summary)
 }
 
@@ -207,18 +207,18 @@ func TestRejectKnownAcceptedFix(t *testing.T) {
 
 	e := &Engine{state: State{HistoryAccepted: []AcceptedFix{fix}}}
 	var evidence orchestrator.CandidateEvidence
-	require.True(t, e.rejectKnownAcceptedFix(worktree, diff, &evidence))
+	require.True(t, rejectKnownAcceptedFix(e.knownCandidates(), worktree, diff, &evidence))
 	require.True(t, evidence.Unmeasured)
 	require.Contains(t, evidence.Summary, "(*cli).printValues already has an accepted fix (campaign p attempt 1)")
 
 	own := &Engine{state: State{CandidateRecords: []CandidateRecord{{Attempt: 2, Accepted: true, Target: &agents.Target{Function: fix.Function, Location: fix.Location}}}}}
 	var ownEvidence orchestrator.CandidateEvidence
-	require.True(t, own.rejectKnownAcceptedFix(worktree, diff, &ownEvidence))
+	require.True(t, rejectKnownAcceptedFix(own.knownCandidates(), worktree, diff, &ownEvidence))
 	require.Contains(t, ownEvidence.FailureDetail, "attempt 2 of this campaign")
 
 	elsewhere := &Engine{state: State{HistoryAccepted: []AcceptedFix{{Function: "other", Location: "main.go:30", Where: "x"}}}}
 	var clean orchestrator.CandidateEvidence
-	require.False(t, elsewhere.rejectKnownAcceptedFix(worktree, diff, &clean))
+	require.False(t, rejectKnownAcceptedFix(elsewhere.knownCandidates(), worktree, diff, &clean))
 	require.Empty(t, clean.Summary)
 }
 

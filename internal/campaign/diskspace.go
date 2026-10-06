@@ -31,4 +31,4 @@ func requireFreeSpace(dirs ...string) error {
 	return nil
 }
 
-func (e *Engine) requireFreeSpace() error { return requireFreeSpace(e.dir, os.TempDir()) }
+func (ev *evaluator) requireFreeSpace() error { return requireFreeSpace(ev.dir, os.TempDir()) }

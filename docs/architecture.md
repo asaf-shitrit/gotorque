@@ -92,6 +92,26 @@ including the reviewer's recommendation, never decides acceptance by itself.
 candidate cycle. The model never self-approves: every terminal judgment is
 produced here or in policy.
 
+Evaluation is its own module (ADR 0036, superseding 0009): an unexported
+`evaluator` (`evaluator.go`) that holds no `*Engine`. `Engine.newEvaluator`
+copies in what an evaluation needs from the campaign's current state, once per
+call, and `evaluate(ctx, req, settings)` returns the
+`orchestrator.CandidateEvidence` the graph consumes; `Engine.evaluateCandidate`
+is the campaign's thin wrapper. What differs between the three callers is an
+argument, `evalSettings`: a campaign attempt (25 pairs, the repeat and
+accepted-fix refusals from `knownCandidates`, the PGO lane, the campaign's own
+test baseline), a verification (its pair count, no refusals, no PGO lane, a
+scratch copy of the test baseline) and a null candidate (the campaign's).
+Confirmation notes name the pair count that ran. Three ports (`eval_ports.go`)
+are the places evaluation reaches outside itself, each with a second adapter:
+`journal` (events and sandbox isolation notes; the campaign's adapter saves
+synchronously), `machine` (load, the contended threshold and the quiet wait;
+tests script a load burst) and `testBaseline` (what the test gate holds a
+candidate to and may narrow; the campaign's adapter writes the persisted
+state, verification's is a copy). Toolchain and runner stay concrete. Verdicts
+are recorded by one function, `recordVerdict`, for the graph's decision node
+and the null loop alike.
+
 0. **Transport resolution (ADR 0022).** With a code-chosen target, the
    optimizer may return `function_source` (the target function's complete new
    declaration) and `imports` instead of a hand-written `patch`.
@@ -270,11 +290,12 @@ produced here or in policy.
    after the fact: it evaluates each accepted candidate again from its
    recorded patch through the same evaluation and policy, with 60 pairs per
    workload by default instead of 25 and with the duplicate and accepted-fix
-   refusals off, and records whether the acceptance held. It automates the
+   refusals and the PGO lane off, and records whether the acceptance held. Its
+   test gate narrows a scratch copy of the baseline, never the campaign's. It automates the
    re-measurement that exposed overnight-miller-1's false acceptance. `--null-candidates N` measures the other
    side: instead of running agents, the campaign evaluates N code-generated
    candidates that each add one comment line after a build-package file's
-   package clause (`runNullCandidates`). The code is identical and only line
+   package clause (`runNullCandidates`, which builds each patch against the base tree). The code is identical and only line
    numbers move, so a sound harness accepts none of them and rejects almost
    none; the run's verdicts are its false-acceptance and false-rejection
    rates. An A/A check on csvtk (the same binary on both

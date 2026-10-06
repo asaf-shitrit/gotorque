@@ -15,7 +15,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0006](0006-model-calls-stream-bounded-by-silence.md) | Model calls stream, and silence — not total duration — is the bound | accepted |
 | [0007](0007-pgo-lane-is-budget-bounded.md) | The informational PGO lane cannot spend a verdict's budget | accepted |
 | [0008](0008-budget-spent-campaigns-report-themselves.md) | A campaign that spends its budget reports it, and an absorbed role failure is recorded | accepted |
-| [0009](0009-deferred-evaluation-module-seam.md) | Deferred: give candidate evaluation its own module seam | deferred |
+| [0009](0009-deferred-evaluation-module-seam.md) | Deferred: give candidate evaluation its own module seam | superseded by 0036 |
 | [0010](0010-verify-model-availability-before-routing.md) | Verify a model is available before a campaign spends on it | accepted |
 | [0011](0011-no-upstream-proposals.md) | No upstream proposals from this effort | deferred |
 | [0012](0012-jev-cause-analyst.md) | Jev cause classification may replace the analyst model | accepted, amended by 0035 |
@@ -42,6 +42,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0033](0033-guardrails-reject-on-significance.md) | Guardrails reject on significance, like workload regressions | accepted |
 | [0034](0034-borderline-accepts-are-measured-again.md) | Borderline accepts are measured again before the verdict | accepted |
 | [0035](0035-the-optimizer-is-the-only-model-role.md) | The optimizer is the only model role | accepted |
+| [0036](0036-candidate-evaluation-is-its-own-module.md) | Candidate evaluation is its own module, with no Engine and three ports | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay

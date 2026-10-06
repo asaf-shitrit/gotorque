@@ -408,18 +408,28 @@ func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput)
 	// carry the verdict, and a reading without a workload is the pooled one.
 	// This used to be re-derived here from the comparison's name, a convention
 	// the engine, this function and the policy all had to agree on.
-	result := s.engine.policyVerdict(input.Evidence)
-	// Persist the full verdict so reports can explain every decision.
-	record := candidateRecord(len(s.engine.state.CandidateRecords)+1, input.Evidence, input.Target, input.Review, result)
-	s.engine.state.CandidateRecords = append(s.engine.state.CandidateRecords, record)
-	// Persist immediately: an ADK failure later in the run must not lose
-	// already-evaluated verdicts from bbolt.
-	_ = s.engine.saveEvent("candidate_evaluated", candidateEventSummary(record, s.engine.state.Manifest.Performance.PrimaryMetric), record)
-	// A live campaign holds the database's exclusive lock, so report.json is
-	// the only artifact an operator can read while the run is in flight.
-	// Snapshot it per verdict rather than only at completion.
-	s.engine.snapshotReports()
+	// A failure to persist the verdict must not fail the evaluation: the graph
+	// would stop on it, and the verdict is still returned to the caller.
+	result, _ := s.engine.recordVerdict(len(s.engine.state.CandidateRecords)+1, input.Evidence, input.Target, input.Review)
 	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: result.Comparisons, Reasons: result.Reasons}, nil
+}
+
+// recordVerdict judges one candidate's evidence with the campaign's policy and
+// persists the verdict: the record joins the campaign's state, the event is
+// saved immediately (an ADK failure later in the run must not lose
+// already-evaluated verdicts from bbolt), and the report is snapshotted,
+// because a live campaign holds the database's exclusive lock and report.json
+// is the only artifact an operator can read while the run is in flight. The
+// verdict is returned even when persisting it failed. Every caller that
+// records a candidate goes through here: the graph's decision node and the
+// null-candidate loop.
+func (e *Engine) recordVerdict(attempt int, evidence orchestrator.CandidateEvidence, target *agents.Target, review agents.ReviewerResult) (policy.Result, error) {
+	result := e.policyVerdict(evidence)
+	record := candidateRecord(attempt, evidence, target, review, result)
+	e.state.CandidateRecords = append(e.state.CandidateRecords, record)
+	err := e.saveEvent("candidate_evaluated", candidateEventSummary(record, e.state.Manifest.Performance.PrimaryMetric), record)
+	e.snapshotReports()
+	return result, err
 }
 
 // candidateRecord is the persisted verdict for one candidate.

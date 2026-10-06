@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
@@ -229,4 +230,30 @@ func TestPromoteCandidateRefreshesTheLiveSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snapshot.CandidateRecords, 1)
 	require.True(t, snapshot.CandidateRecords[0].Accepted, "live snapshot must show the accepted marker")
+}
+
+// TestRecordVerdictIsTheOnePlaceAVerdictIsPersisted: the graph's decision node
+// and the null-candidate loop both record through recordVerdict, so one
+// candidate_evaluated event, one record carrying the policy's decision, and a
+// report snapshot follow from a single call, whichever caller made it.
+func TestRecordVerdictIsTheOnePlaceAVerdictIsPersisted(t *testing.T) {
+	e := pgoLaneTestEngine(t)
+	evidence := orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "cand-v", PatchPath: "p.diff"}, Summary: "build failed", Unmeasured: true}
+
+	result, err := e.recordVerdict(4, evidence, nil, agents.ReviewerResult{})
+	require.NoError(t, err)
+	require.Equal(t, domain.DecisionRejected, result.Decision)
+	require.Len(t, e.state.CandidateRecords, 1)
+	require.Equal(t, 4, e.state.CandidateRecords[0].Attempt)
+	require.Equal(t, result.Decision, e.state.CandidateRecords[0].Decision)
+	events, err := e.store.Events()
+	require.NoError(t, err)
+	require.Equal(t, "candidate_evaluated", events[len(events)-1].Type)
+	require.FileExists(t, filepath.Join(e.dir, ReportJSONName))
+
+	viaGraph, err := adkServices{engine: e}.Evaluate(context.Background(), orchestrator.PolicyInput{Evidence: evidence})
+	require.NoError(t, err)
+	require.Equal(t, result.Decision, viaGraph.Decision)
+	require.Len(t, e.state.CandidateRecords, 2)
+	require.Equal(t, 2, e.state.CandidateRecords[1].Attempt)
 }

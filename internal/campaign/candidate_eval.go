@@ -48,44 +48,51 @@ const (
 	pgoLaneBuildTimeout = 5 * time.Minute
 )
 
-// evaluateCandidate runs the deterministic half of the candidate loop:
-// validate the proposed diff, apply it in an isolated worktree, build,
-// gate on the upstream test suite, then measure baseline and candidate
-// binaries interleaved on representative seed workloads. Every terminal
-// judgment stays here or in policy; the model never self-approves.
-// evaluateCandidate is invoked through the orchestrator CandidateService adapter.
-func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
-	if err := e.requireFreeSpace(); err != nil {
+// evalSettings is what differs between the callers of one evaluation: a
+// campaign's attempt, a verification, and a null candidate.
+type evalSettings struct {
+	// pairs is the interleaved pair count per workload and series.
+	pairs int
+	// refuseRepeats turns on the pre-build refusals of a patch already measured
+	// or a function already fixed. Verification re-measures a known patch on
+	// purpose.
+	refuseRepeats bool
+	// pgoLane runs the informational profile-guided lane after an ordinary
+	// verdict.
+	pgoLane bool
+	// baseline is the set of tests the test gate holds a candidate to. Nil
+	// means the campaign's own, which the gate may narrow and persist; a
+	// verification passes a copy it can narrow without touching the
+	// campaign's.
+	baseline testBaseline
+	// known is what the campaign has already measured and accepted, for the
+	// refusals refuseRepeats turns on.
+	known knownCandidates
+}
+
+// evaluate runs the deterministic half of the candidate loop: validate the
+// proposed diff, apply it in an isolated worktree, build, gate on the upstream
+// test suite, then measure baseline and candidate binaries interleaved on
+// representative seed workloads. Every terminal judgment stays here or in
+// policy; the model never self-approves.
+func (ev *evaluator) evaluate(ctx context.Context, req orchestrator.CandidateRequest, s evalSettings) (orchestrator.CandidateEvidence, error) {
+	if err := ev.requireFreeSpace(); err != nil {
 		return orchestrator.CandidateEvidence{}, err
 	}
-	patchText, transport, err := e.resolveCandidatePatch(ctx, req)
+	defer ev.releaseBase(ctx)
+	patchText, transport, err := ev.resolveCandidatePatch(ctx, req)
 	if err != nil {
-		// Building the diff from function_source failed before there was
-		// anything to write or apply: a pre-build rejection like a patch that
-		// does not parse, marked unmeasured so the target is offered once
-		// more (ADR 0017). It still needs an ID: the orchestrator stops the
-		// whole campaign on evidence without one.
-		id := stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), transport, err.Error())
-		// Kept like any other answer: held-out dyff lost two attempts here to
-		// "function_source must be a function declaration", and with nothing
-		// written there was no way to see what the optimizer had sent.
-		e.keepProposal(id, req.Proposal)
-		return orchestrator.CandidateEvidence{
-			Candidate:     domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, Transport: transport},
-			Summary:       fmt.Sprintf("candidate rejected before build: %v", err),
-			FailureDetail: tail(err.Error(), 400),
-			Unmeasured:    true,
-		}, nil
+		return ev.rejectUnresolvedPatch(req, transport, err), nil
 	}
-	id, patchPath, err := e.writeCandidatePatch(req, patchText)
+	id, patchPath, err := ev.writeCandidatePatch(req, patchText)
 	if err != nil {
 		return orchestrator.CandidateEvidence{}, err
 	}
 	evidence := orchestrator.CandidateEvidence{
-		Candidate:    domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, PatchPath: patchPath, Transport: transport},
+		Candidate:    domain.Candidate{ID: id, BaseRevision: ev.baseRevision, Hypothesis: req.Proposal.Hypothesis, PatchPath: patchPath, Transport: transport},
 		ArtifactURIs: []string{patchPath},
 	}
-	prepared, ok := e.prepareCandidate(ctx, req, patchPath, &evidence)
+	prepared, ok := ev.prepareCandidate(ctx, req, patchPath, &evidence)
 	if !ok {
 		return evidence, nil
 	}
@@ -95,37 +102,67 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	// Worktree teardown runs even when the caller's context is already
 	// canceled (duration budget or Ctrl-C), but keeps its values.
 	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
-	if !e.verifying && e.rejectMeasuredDuplicate(evidence.Candidate.ID, &evidence) {
-		return evidence, nil
-	}
-	if !e.patchHasShape(ctx, prepared.Worktree, req.Target, &evidence) {
-		return evidence, nil
-	}
-	candidateBinary, ok := e.buildAndTestCandidate(ctx, prepared.Worktree, id, &evidence)
-	if !ok {
-		return evidence, nil
-	}
-	if !e.measureAndFinalize(ctx, &evidence, id, candidateBinary) {
-		return evidence, nil
-	}
-	// Informational PGO lane: only candidates that passed the test suite and
-	// produced a full ordinary verdict reach it, so the extra builds and A/B
-	// series are never spent on rejected work.
-	e.runPgoLane(ctx, &evidence, prepared.Worktree, id)
+	ev.judgePrepared(ctx, req, s, prepared.Worktree, &evidence)
 	return evidence, nil
 }
 
-func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest, patchText string) (id, patchPath string, err error) {
-	patchDir := filepath.Join(e.dir, "patches")
+// rejectUnresolvedPatch is the evidence for a candidate whose diff could not be
+// built from function_source: a pre-build rejection like a patch that does not
+// parse, marked unmeasured so the target is offered once more (ADR 0017). It
+// still needs an ID: the orchestrator stops the whole campaign on evidence
+// without one.
+func (ev *evaluator) rejectUnresolvedPatch(req orchestrator.CandidateRequest, transport string, err error) orchestrator.CandidateEvidence {
+	id := stableID("candidate", ev.campaignID, strconv.Itoa(req.Attempt), transport, err.Error())
+	// Kept like any other answer: held-out dyff lost two attempts here to
+	// "function_source must be a function declaration", and with nothing
+	// written there was no way to see what the optimizer had sent.
+	ev.keepProposal(id, req.Proposal)
+	return orchestrator.CandidateEvidence{
+		Candidate:     domain.Candidate{ID: id, BaseRevision: ev.baseRevision, Hypothesis: req.Proposal.Hypothesis, Transport: transport},
+		Summary:       fmt.Sprintf("candidate rejected before build: %v", err),
+		FailureDetail: tail(err.Error(), 400),
+		Unmeasured:    true,
+	}
+}
+
+// judgePrepared runs everything after the patch applied: the repeat and shape
+// refusals, the build, the test gate, the measurement and the PGO lane. It
+// stops at the first stage that ends the candidate and leaves why in evidence.
+func (ev *evaluator) judgePrepared(ctx context.Context, req orchestrator.CandidateRequest, s evalSettings, worktree string, evidence *orchestrator.CandidateEvidence) {
+	id := evidence.Candidate.ID
+	if s.refuseRepeats && rejectMeasuredDuplicate(s.known, id, evidence) {
+		return
+	}
+	if !ev.patchHasShape(ctx, s, worktree, req.Target, evidence) {
+		return
+	}
+	candidateBinary, ok := ev.buildAndTestCandidate(ctx, worktree, id, evidence)
+	if !ok {
+		return
+	}
+	if !ev.measureAndFinalize(ctx, s, evidence, id, candidateBinary) {
+		return
+	}
+	// Informational PGO lane: only candidates that passed the test suite and
+	// produced a full ordinary verdict reach it, so the extra builds and A/B
+	// series are never spent on rejected work. A verification turns it off: its
+	// record has no PGO columns to fill.
+	if s.pgoLane {
+		ev.runPgoLane(ctx, s, evidence, worktree, id)
+	}
+}
+
+func (ev *evaluator) writeCandidatePatch(req orchestrator.CandidateRequest, patchText string) (id, patchPath string, err error) {
+	patchDir := filepath.Join(ev.dir, "patches")
 	if err := os.MkdirAll(patchDir, 0o700); err != nil {
 		return "", "", err
 	}
-	id = stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), patchText)
+	id = stableID("candidate", ev.campaignID, strconv.Itoa(req.Attempt), patchText)
 	patchPath = filepath.Join(patchDir, id+".diff")
 	if err := os.WriteFile(patchPath, []byte(patchText), 0o600); err != nil {
 		return "", "", err
 	}
-	e.keepProposal(id, req.Proposal)
+	ev.keepProposal(id, req.Proposal)
 	return id, patchPath, nil
 }
 
@@ -133,8 +170,8 @@ func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest, patchTex
 // patches/<id>.proposal.json, best effort. Two cue candidates were rejected as
 // malformed diffs, and without the answer nothing said whether a
 // function_source had come with them.
-func (e *Engine) keepProposal(id string, proposal agents.OptimizerResult) {
-	dir := filepath.Join(e.dir, "patches")
+func (ev *evaluator) keepProposal(id string, proposal agents.OptimizerResult) {
+	dir := filepath.Join(ev.dir, "patches")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
@@ -143,10 +180,10 @@ func (e *Engine) keepProposal(id string, proposal agents.OptimizerResult) {
 	}
 }
 
-func (e *Engine) prepareCandidate(ctx context.Context, req orchestrator.CandidateRequest, patchPath string, evidence *orchestrator.CandidateEvidence) (*candidate.Prepared, bool) {
-	prohibited := prohibitedTechniquesFor(e.state.Manifest.OptimizationPolicy)
-	manager := &candidate.WorktreeManager{Toolchain: e.toolchain, Repository: e.state.Repository, Root: filepath.Join(e.dir, "worktrees")}
-	prepared, err := manager.Prepare(ctx, req.Campaign.BaseRevision, patchPath, req.Proposal.Hypothesis, candidate.Policy{ProhibitedTechniques: prohibited})
+func (ev *evaluator) prepareCandidate(ctx context.Context, req orchestrator.CandidateRequest, patchPath string, evidence *orchestrator.CandidateEvidence) (*candidate.Prepared, bool) {
+	prohibited := prohibitedTechniquesFor(ev.manifest.OptimizationPolicy)
+	manager := &candidate.WorktreeManager{Toolchain: ev.toolchain, Repository: ev.repository, Root: filepath.Join(ev.dir, "worktrees")}
+	prepared, err := manager.Prepare(ctx, ev.baseRevision, patchPath, req.Proposal.Hypothesis, candidate.Policy{ProhibitedTechniques: prohibited})
 	if err != nil {
 		evidence.Summary = fmt.Sprintf("candidate rejected before build: %v", err)
 		evidence.FailureDetail = tail(err.Error(), 400)
@@ -159,7 +196,6 @@ func (e *Engine) prepareCandidate(ctx context.Context, req orchestrator.Candidat
 
 // patchHasShape runs checkShape on the applied worktree. A diff Git cannot
 // produce leaves the judgment to the build, which would fail on the same
-// tree; the check only ever adds a reason, never a pass.
 // rejectMeasuredDuplicate rejects, before it is built, a candidate whose
 // patch this revision has already measured, in this campaign or in one
 // --history named (ADR 0031). The worktree manager's candidate ID is a digest
@@ -168,8 +204,8 @@ func (e *Engine) prepareCandidate(ctx context.Context, req orchestrator.Candidat
 // byte-identical under a second cause's target and spent a whole measurement
 // to repeat an inconclusive verdict. It is marked unmeasured, so the target is
 // offered once more with the reason in prior_candidates.
-func (e *Engine) rejectMeasuredDuplicate(id string, evidence *orchestrator.CandidateEvidence) bool {
-	where, ok := e.measuredCandidate(id)
+func rejectMeasuredDuplicate(known knownCandidates, id string, evidence *orchestrator.CandidateEvidence) bool {
+	where, ok := known.measuredAt(id)
 	if !ok {
 		return false
 	}
@@ -177,19 +213,6 @@ func (e *Engine) rejectMeasuredDuplicate(id string, evidence *orchestrator.Candi
 	evidence.FailureDetail = where
 	evidence.Unmeasured = true
 	return true
-}
-
-// measuredCandidate reports where candidate id was already measured.
-func (e *Engine) measuredCandidate(id string) (string, bool) {
-	if where, ok := e.state.HistoryCandidates[id]; ok {
-		return where, true
-	}
-	for _, r := range e.state.CandidateRecords {
-		if r.CandidateID == id && isMeasured(r) {
-			return fmt.Sprintf("attempt %d of this campaign: %s", r.Attempt, r.Decision), true
-		}
-	}
-	return "", false
 }
 
 // rejectKnownAcceptedFix rejects, before it is built, a patch that edits a
@@ -206,9 +229,9 @@ func (e *Engine) measuredCandidate(id string) (string, bool) {
 // not stacked, measuring it alone is still a fair question. It is marked
 // unmeasured, like every pre-build rejection, and names where the fix was
 // accepted.
-func (e *Engine) rejectKnownAcceptedFix(worktree string, diff []byte, evidence *orchestrator.CandidateEvidence) bool {
+func rejectKnownAcceptedFix(known knownCandidates, worktree string, diff []byte, evidence *orchestrator.CandidateEvidence) bool {
 	changes := parseChanges(diff)
-	for _, fix := range e.acceptedFixes() {
+	for _, fix := range known.fixes {
 		if callerTouched(worktree, changes, agents.FunctionRef{Name: fix.Function, Location: fix.Location}) {
 			evidence.Summary = fmt.Sprintf("candidate rejected before build: %s already has an accepted fix (%s); propose a change to a different function", fix.Function, fix.Where)
 			evidence.FailureDetail = fix.Where
@@ -219,23 +242,15 @@ func (e *Engine) rejectKnownAcceptedFix(worktree string, diff []byte, evidence *
 	return false
 }
 
-// acceptedFixes are history's accepted fixes plus this campaign's.
-func (e *Engine) acceptedFixes() []AcceptedFix {
-	out := append([]AcceptedFix(nil), e.state.HistoryAccepted...)
-	for _, r := range e.state.CandidateRecords {
-		if r.Accepted && r.Target != nil {
-			out = append(out, AcceptedFix{Function: r.Target.Function, Location: r.Target.Location, Where: fmt.Sprintf("attempt %d of this campaign", r.Attempt)})
-		}
-	}
-	return out
-}
-
-func (e *Engine) patchHasShape(ctx context.Context, worktree string, target *agents.Target, evidence *orchestrator.CandidateEvidence) bool {
-	diff, err := e.toolchain.ChangedLines(ctx, worktree)
+// patchHasShape runs checkShape on the applied worktree. A diff Git cannot
+// produce leaves the judgment to the build, which would fail on the same
+// tree; the check only ever adds a reason, never a pass.
+func (ev *evaluator) patchHasShape(ctx context.Context, s evalSettings, worktree string, target *agents.Target, evidence *orchestrator.CandidateEvidence) bool {
+	diff, err := ev.toolchain.ChangedLines(ctx, worktree)
 	if err != nil {
 		return true
 	}
-	if target == nil && !e.verifying && e.rejectKnownAcceptedFix(worktree, diff, evidence) {
+	if target == nil && s.refuseRepeats && rejectKnownAcceptedFix(s.known, worktree, diff, evidence) {
 		return false
 	}
 	if err := checkShape(worktree, diff, target); err != nil {
@@ -247,21 +262,21 @@ func (e *Engine) patchHasShape(ctx context.Context, worktree string, target *age
 	return true
 }
 
-func (e *Engine) buildAndTestCandidate(ctx context.Context, worktree, id string, evidence *orchestrator.CandidateEvidence) (string, bool) {
-	binDir := filepath.Join(e.dir, "builds")
-	candidateBinary := filepath.Join(binDir, id+"-"+filepath.Base(e.state.Manifest.Target.Build.Binary))
-	if !e.buildCandidateBinary(ctx, worktree, candidateBinary, evidence) {
+func (ev *evaluator) buildAndTestCandidate(ctx context.Context, worktree, id string, evidence *orchestrator.CandidateEvidence) (string, bool) {
+	binDir := filepath.Join(ev.dir, "builds")
+	candidateBinary := filepath.Join(binDir, id+"-"+filepath.Base(ev.manifest.Target.Build.Binary))
+	if !ev.buildCandidateBinary(ctx, worktree, candidateBinary, evidence) {
 		return "", false
 	}
 	evidence.ArtifactURIs = append(evidence.ArtifactURIs, candidateBinary)
-	if !e.candidateTestsPassed(ctx, worktree, evidence) {
+	if !ev.candidateTestsPassed(ctx, worktree, evidence) {
 		return "", false
 	}
 	return candidateBinary, true
 }
 
-func (e *Engine) buildCandidateBinary(ctx context.Context, worktree, candidateBinary string, evidence *orchestrator.CandidateEvidence) bool {
-	buildResult, buildErr := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: worktree, Directory: e.state.Manifest.Target.Build.Directory, Target: e.state.Manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}})
+func (ev *evaluator) buildCandidateBinary(ctx context.Context, worktree, candidateBinary string, evidence *orchestrator.CandidateEvidence) bool {
+	buildResult, buildErr := ev.toolchain.Build(ctx, toolchain.BuildRequest{Repository: worktree, Directory: ev.manifest.Target.Build.Directory, Target: ev.manifest.Target.Build.Package, Output: candidateBinary, Env: []string{"GOTOOLCHAIN=local"}})
 	if buildErr != nil {
 		evidence.Summary = fmt.Sprintf("candidate build failed: %v", buildErr)
 		evidence.Unmeasured = true
@@ -274,15 +289,16 @@ func (e *Engine) buildCandidateBinary(ctx context.Context, worktree, candidateBi
 	return true
 }
 
-func (e *Engine) candidateTestsPassed(ctx context.Context, worktree string, evidence *orchestrator.CandidateEvidence) bool {
+func (ev *evaluator) candidateTestsPassed(ctx context.Context, worktree string, evidence *orchestrator.CandidateEvidence) bool {
 	// Behavior gate: the upstream test suite must not regress against the
 	// unpatched revision. Failures that predate the patch are subtracted
 	// rather than charged to it. A clean exit is classified too: it is what a
 	// suite reports after a test the baseline passed was skipped or dropped.
-	testResult, testErr := e.toolchain.Test(ctx, toolchain.TestRequest{Repository: worktree, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
-	reason, passed := e.classifyTestOutcome(testResult, testErr)
-	if !passed && e.pruneUnstablePasses(ctx, testResult) {
-		reason, passed = e.classifyTestOutcome(testResult, testErr)
+	testResult, testErr := ev.toolchain.Test(ctx, toolchain.TestRequest{Repository: worktree, JSON: true, Env: []string{"GOTOOLCHAIN=local"}})
+	baseline := ev.baseline
+	reason, passed := classifyTestOutcome(baseline, testResult, testErr)
+	if !passed && ev.pruneUnstablePasses(ctx, baseline, testResult) {
+		reason, passed = classifyTestOutcome(baseline, testResult, testErr)
 	}
 	if passed {
 		return true
@@ -327,18 +343,19 @@ type seedRuns struct {
 	ab            runner.ABResult
 }
 
-func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
+func (ev *evaluator) measureAndFinalize(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
 	m := measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
-	if e.state.LocalIsolation {
-		evidence.QuietWait, evidence.QuietWaitExpired = defaultQuietWaiter().wait(ctx)
+	host := ev.machine
+	if ev.localIsolation {
+		evidence.QuietWait, evidence.QuietWaitExpired = host.waitQuiet(ctx)
 	}
-	evidence.LoadAverages = sampleLoad()
+	evidence.LoadAverages = host.load()
 	defer func() {
-		evidence.LoadAverages = append(evidence.LoadAverages, sampleLoad()...)
-		evidence.LoadContended = contended(evidence.LoadAverages, machineCPUs())
+		evidence.LoadAverages = append(evidence.LoadAverages, host.load()...)
+		evidence.LoadContended = host.contended(evidence.LoadAverages)
 	}()
-	m.baselineSize, m.candSize, m.sizeErr = binarySizes(e.state.BinaryPath, candidateBinary)
-	if !e.measureSeedsOnQuietMachine(ctx, evidence, id, candidateBinary, &m) {
+	m.baselineSize, m.candSize, m.sizeErr = binarySizes(ev.binaryPath, candidateBinary)
+	if !ev.measureSeedsOnQuietMachine(ctx, s, evidence, id, candidateBinary, &m) {
 		return false
 	}
 	if len(m.seeds) == 0 {
@@ -346,12 +363,12 @@ func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.
 		evidence.Comparisons = m.comparisons
 		return false
 	}
-	e.finalizeCandidateEvidence(ctx, evidence, &m)
+	ev.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	if !e.confirmRegressions(ctx, evidence, id, candidateBinary, &m) {
+	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, &m) {
 		return false
 	}
-	return e.confirmImprovements(ctx, evidence, id, candidateBinary, &m)
+	return ev.confirmImprovements(ctx, s, evidence, id, candidateBinary, &m)
 }
 
 // measureSeedsOnQuietMachine measures every representative seed, and
@@ -364,49 +381,50 @@ func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.
 // second pass reaches the verdict; its load is what the record reports, with
 // the discarded pass's load kept beside it. A second contended pass is kept
 // as it is, flagged.
-func (e *Engine) measureSeedsOnQuietMachine(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+func (ev *evaluator) measureSeedsOnQuietMachine(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	before, fresh := *evidence, *m
-	if !e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, m) {
+	if !ev.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m) {
 		return false
 	}
-	mid := sampleLoad()
-	if !e.state.LocalIsolation || !contended(mid, machineCPUs()) {
+	host := ev.machine
+	mid := host.load()
+	if !ev.localIsolation || !host.contended(mid) {
 		return true
 	}
-	waited, expired := defaultQuietWaiter().wait(ctx)
+	waited, expired := host.waitQuiet(ctx)
 	*evidence, *m = before, fresh
 	evidence.QuietWait += waited
 	evidence.QuietWaitExpired = expired
 	evidence.DiscardedLoad = slices.Concat(before.LoadAverages, mid)
-	evidence.LoadAverages = sampleLoad()
-	return e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, m)
+	evidence.LoadAverages = host.load()
+	return ev.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m)
 }
 
-func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
-	for _, seed := range e.state.Manifest.Workloads.Seeds {
+func (ev *evaluator) measureSeedWorkloads(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	for _, seed := range ev.manifest.Workloads.Seeds {
 		if seed.Tier != domain.TierRepresentative {
 			continue
 		}
-		if !e.measureOneSeed(ctx, seed, id, candidateBinary, evidence, m) {
+		if !ev.measureOneSeed(ctx, s, seed, id, candidateBinary, evidence, m) {
 			return false
 		}
 	}
 	return true
 }
 
-func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, m *measurement) bool {
-	baseReq, candReq := e.abRequests(seed, id, candidateBinary)
+func (ev *evaluator) measureOneSeed(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, m *measurement) bool {
+	baseReq, candReq := ev.abRequests(seed, id, candidateBinary)
 	// First-execution warm-up: a freshly built binary pays a one-time OS
 	// cost on its first exec (Gatekeeper scan, page-in) that otherwise
 	// poisons repetition 0 of the candidate leg — observed as ~470ms vs
 	// ~9ms steady state. Discarded, errors ignored.
-	_, _ = e.runner.Run(ctx, candReq)
-	runs := seedRuns{seed: seed, deterministic: e.outputIsDeterministic(ctx, baseReq)}
-	if !e.runSeries(ctx, &runs, id, candidateBinary, evidence, m.comparisons) {
+	_, _ = ev.runner.Run(ctx, candReq)
+	runs := seedRuns{seed: seed, deterministic: outputIsDeterministic(ctx, ev.runner, baseReq)}
+	if !ev.runSeries(ctx, s, &runs, id, candidateBinary, evidence, m.comparisons) {
 		return false
 	}
 	m.seeds = append(m.seeds, runs)
-	e.recordSeedMetrics(ctx, seed.ID, runs.ab, evidence, m)
+	ev.recordSeedMetrics(ctx, seed.ID, runs.ab, evidence, m)
 	return true
 }
 
@@ -425,8 +443,8 @@ func abIsolationNotes(ab runner.ABResult) []string {
 	return notes
 }
 
-func (e *Engine) abRequests(seed manifest.SeedWorkload, id, candidateBinary string) (runner.RunRequest, runner.RunRequest) {
-	baseReq := e.seedMeasurementRequest(seed, e.state.BuildID, e.state.BinaryPath)
+func (ev *evaluator) abRequests(seed manifest.SeedWorkload, id, candidateBinary string) (runner.RunRequest, runner.RunRequest) {
+	baseReq := seedMeasurementRequest(ev.manifest, ev.campaignID, seed, ev.buildID, ev.binaryPath)
 	candReq := baseReq
 	candReq.Build = runner.Build{ID: id, BinaryPath: candidateBinary}
 	candReq.Workload.Command.Path = candidateBinary
@@ -438,10 +456,10 @@ func (e *Engine) abRequests(seed manifest.SeedWorkload, id, candidateBinary stri
 // series that fails leaves the behaviour unverified even when an earlier one
 // passed, so a confirmation series that fails rejects the candidate as a first
 // series would.
-func (e *Engine) runSeries(ctx context.Context, runs *seedRuns, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
-	baseReq, candReq := e.abRequests(runs.seed, id, candidateBinary)
-	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: e.pairs()})
-	e.recordIsolationNotes(abIsolationNotes(ab))
+func (ev *evaluator) runSeries(ctx context.Context, s evalSettings, runs *seedRuns, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
+	baseReq, candReq := ev.abRequests(runs.seed, id, candidateBinary)
+	ab, err := ev.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: s.pairs})
+	ev.journal.isolationNotes(abIsolationNotes(ab))
 	if err != nil {
 		evidence.BehaviorMatches = false
 		evidence.Summary = fmt.Sprintf("measurement failed on workload %q: %v", runs.seed.ID, err)
@@ -470,8 +488,8 @@ func (e *Engine) runSeries(ctx context.Context, runs *seedRuns, id, candidateBin
 // The second series is part of measurement, so it has no budget of its own:
 // it costs what the first did, seconds for a short CLI, and the campaign's
 // deadline bounds it as it bounds the first.
-func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
-	config := policyConfigFromManifest(e.state.Manifest)
+func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	config := policyConfigFromManifest(ev.manifest)
 	unconfirmed := policy.UnconfirmedRegressions(config, eligibleReadings(config, evidence.Comparisons))
 	// A guardrail past its limit without significance gets the same second
 	// series: the policy no longer rejects on its point estimate, so more
@@ -481,15 +499,15 @@ func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.
 		return true
 	}
 	for i := range m.seeds {
-		if !e.runSeries(ctx, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
+		if !ev.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
-	e.rederive(ctx, evidence, m)
-	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric)
+	ev.rederive(ctx, evidence, m)
+	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
-	_ = e.saveEvent("measurement_confirmed", note, nil)
+	_ = ev.journal.event("measurement_confirmed", note, nil)
 	return true
 }
 
@@ -507,38 +525,38 @@ func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.
 // At most one extra series runs per candidate in total: if the regression
 // confirmation already extended every seed, this reuses that series rather
 // than running a third one.
-func (e *Engine) confirmImprovements(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+func (ev *evaluator) confirmImprovements(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	if slices.Contains(evidence.ValidationJobs, "interleaved-ab-confirmation") {
 		return true
 	}
-	config := policyConfigFromManifest(e.state.Manifest)
-	unconfirmed, note := improvementsToConfirm(config, evidence)
+	config := policyConfigFromManifest(ev.manifest)
+	unconfirmed, note := improvementsToConfirm(config, s.pairs, evidence)
 	if len(unconfirmed) == 0 {
 		return true
 	}
 	for i := range m.seeds {
-		if !e.runSeries(ctx, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
+		if !ev.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
-	e.rederive(ctx, evidence, m)
+	ev.rederive(ctx, evidence, m)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
-	_ = e.saveEvent("improvement_confirmed", note, nil)
+	_ = ev.journal.event("improvement_confirmed", note, nil)
 	return true
 }
 
 // rederive computes every comparison again from the runs measured so far.
-func (e *Engine) rederive(ctx context.Context, evidence *orchestrator.CandidateEvidence, m *measurement) {
+func (ev *evaluator) rederive(ctx context.Context, evidence *orchestrator.CandidateEvidence, m *measurement) {
 	evidence.RepSamples, evidence.BenchstatOutput = nil, ""
 	m.comparisons, m.pooled = nil, pooledSamples{}
 	for _, runs := range m.seeds {
-		e.recordSeedMetrics(ctx, runs.seed.ID, runs.ab, evidence, m)
+		ev.recordSeedMetrics(ctx, runs.seed.ID, runs.ab, evidence, m)
 	}
-	e.finalizeCandidateEvidence(ctx, evidence, m)
+	ev.finalizeCandidateEvidence(ctx, evidence, m)
 }
 
-func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, primary string) string {
+func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, primary string, pairs int) string {
 	readings := make([]string, 0, len(unconfirmed))
 	for _, c := range unconfirmed {
 		name := "pooled"
@@ -550,14 +568,14 @@ func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, prim
 		}
 		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
 	}
-	return fmt.Sprintf("%s over the %.2f%% limit without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), limit, measurementRepetitions, measurementRepetitions)
+	return fmt.Sprintf("%s over the %.2f%% limit without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), limit, pairs, pairs)
 }
 
 // improvementsToConfirm returns the readings a second series should settle,
 // with the note that explains it: an unsupported improvement past the
 // minimum on a candidate that would end inconclusive (ADR 0021), or the
 // borderline improvement an accept would rest on (ADR 0034).
-func improvementsToConfirm(config policy.Config, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, string) {
+func improvementsToConfirm(config policy.Config, pairs int, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, string) {
 	eligible := eligibleReadings(config, evidence.Comparisons)
 	preview := policy.Evaluate(config, policy.Evidence{
 		BehaviorMatches:        evidence.BehaviorMatches,
@@ -570,17 +588,17 @@ func improvementsToConfirm(config policy.Config, evidence *orchestrator.Candidat
 	switch preview.Decision {
 	case domain.DecisionInconclusive:
 		unconfirmed := policy.UnconfirmedImprovements(config, eligible)
-		return unconfirmed, improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent)
+		return unconfirmed, improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent, pairs)
 	case domain.DecisionAccepted:
 		borderline := policy.BorderlineImprovements(config, eligible)
-		return borderline, borderlineConfirmationNote(borderline, config.MinimumImprovementPercent)
+		return borderline, borderlineConfirmationNote(borderline, config.MinimumImprovementPercent, pairs)
 	case domain.DecisionRejected:
 		return nil, ""
 	}
 	return nil, ""
 }
 
-func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum float64) string {
+func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum float64, pairs int) string {
 	if len(borderline) == 0 {
 		return ""
 	}
@@ -589,10 +607,10 @@ func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum fl
 	if c.Workload != "" {
 		name = c.Workload
 	}
-	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -c.DeltaPercent, minimum, measurementRepetitions)
+	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -c.DeltaPercent, minimum, pairs)
 }
 
-func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum float64) string {
+func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum float64, pairs int) string {
 	readings := make([]string, 0, len(unconfirmed))
 	for _, c := range unconfirmed {
 		name := "pooled"
@@ -601,18 +619,18 @@ func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum 
 		}
 		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
 	}
-	return fmt.Sprintf("%s improved past the %.2f%% minimum without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), minimum, measurementRepetitions, measurementRepetitions)
+	return fmt.Sprintf("%s improved past the %.2f%% minimum without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), minimum, pairs, pairs)
 }
 
-func (e *Engine) outputIsDeterministic(ctx context.Context, baseReq runner.RunRequest) bool {
+func outputIsDeterministic(ctx context.Context, r *runner.Runner, baseReq runner.RunRequest) bool {
 	// Self-consistency probe: CLIs with nondeterministic tie ordering
 	// (map iteration plus unstable sort) produce byte-different output
 	// for identical inputs. Only when the baseline itself proves
 	// deterministic do we hold the candidate to byte-exact equality;
 	// otherwise the order-insensitive digest decides, so cosmetic row
 	// order cannot reject a behavior-preserving patch.
-	if probeA, err := e.runner.Run(ctx, baseReq); err == nil {
-		if probeB, err := e.runner.Run(ctx, baseReq); err == nil && probeA.StdoutDigest != probeB.StdoutDigest {
+	if probeA, err := r.Run(ctx, baseReq); err == nil {
+		if probeB, err := r.Run(ctx, baseReq); err == nil && probeA.StdoutDigest != probeB.StdoutDigest {
 			return false
 		}
 	}
@@ -660,8 +678,8 @@ func sameStdout(runs []domain.RunResult) bool {
 	return true
 }
 
-func (e *Engine) recordSeedMetrics(ctx context.Context, seedID string, ab runner.ABResult, evidence *orchestrator.CandidateEvidence, m *measurement) {
-	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, seedID, ab.Baseline, ab.Candidate)
+func (ev *evaluator) recordSeedMetrics(ctx context.Context, seedID string, ab runner.ABResult, evidence *orchestrator.CandidateEvidence, m *measurement) {
+	wallComparisons, wallBenchstat := ev.compareWallTimeMetric(ctx, seedID, ab.Baseline, ab.Candidate)
 	m.comparisons = append(m.comparisons, wallComparisons...)
 	baseSamples := metricValues(ab.Baseline, wallTime)
 	candSamples := metricValues(ab.Candidate, wallTime)
@@ -691,7 +709,7 @@ func metricValues(runs []domain.RunResult, sel metricSelector) []float64 {
 	return values
 }
 
-func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orchestrator.CandidateEvidence, m *measurement) {
+func (ev *evaluator) finalizeCandidateEvidence(ctx context.Context, evidence *orchestrator.CandidateEvidence, m *measurement) {
 	comparisons, pooled := append([]domain.MetricComparison{}, m.comparisons...), m.pooled
 	// Policy looks up canonical metric names ("wall_time_ns" primary plus
 	// required guardrails), so the representative workloads are folded into
@@ -699,7 +717,7 @@ func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orches
 	// concatenating raw samples: see pooledSamples for why the concatenated
 	// form turned a measured 20.8% win into an inconclusive verdict. Raw
 	// per-workload data remains in RepSamples for diagnosis.
-	wallComparisons, wallBenchstat := e.compareWallTimeMetric(ctx, "", pooledAsRuns(meanPerRepetition(pooled.wallBase), "wall_time_ns"), pooledAsRuns(meanPerRepetition(pooled.wallCand), "wall_time_ns"))
+	wallComparisons, wallBenchstat := ev.compareWallTimeMetric(ctx, "", pooledAsRuns(meanPerRepetition(pooled.wallBase), "wall_time_ns"), pooledAsRuns(meanPerRepetition(pooled.wallCand), "wall_time_ns"))
 	comparisons = append(comparisons, wallComparisons...)
 	if wallBenchstat != "" {
 		evidence.BenchstatOutput += "pooled representative workloads:\n" + wallBenchstat
@@ -725,14 +743,14 @@ func (e *Engine) finalizeCandidateEvidence(ctx context.Context, evidence *orches
 // workload id it embeds is the derived run identifier the artifacts are keyed
 // by; comparisons and reports name the workload by the seed id instead, so
 // callers no longer need it back.
-func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, binaryPath string) runner.RunRequest {
+func seedMeasurementRequest(m manifest.Manifest, campaignID string, seed manifest.SeedWorkload, buildID, binaryPath string) runner.RunRequest {
 	fixtures := seed.Fixtures()
-	args := append(append([]string{}, e.state.Manifest.Target.Command...), seed.Args...)
+	args := append(append([]string{}, m.Target.Command...), seed.Args...)
 	timeout := seed.Timeout.Duration()
 	if timeout == 0 {
-		timeout = e.state.Manifest.Campaign.MinimumCommandTimeout.Duration()
+		timeout = m.Campaign.MinimumCommandTimeout.Duration()
 	}
-	wid := stableID("workload", e.state.ID, seed.ID)
+	wid := stableID("workload", campaignID, seed.ID)
 	req := runner.RunRequest{
 		Build:         runner.Build{ID: buildID, BinaryPath: binaryPath},
 		Workload:      domain.Workload{ID: wid, Name: seed.Name, Seed: seed.ID, Tier: seed.Tier, Command: domain.Command{Path: binaryPath, Args: args}, Timeout: timeout, ExpectedExitCode: seed.ExitCode},
@@ -762,40 +780,40 @@ func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, bin
 // recorded reason. The same discovery profile is reused; nothing is
 // re-collected, keeping total runtime bounded at one extra build pair plus
 // one 7-repetition interleaved series per representative workload.
-func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.CandidateEvidence, candidateWorktree, candidateID string) {
-	if ok, reason := e.pgoProfileReady(); !ok {
-		e.skipPgoLane(evidence, reason)
+func (ev *evaluator) runPgoLane(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, candidateWorktree, candidateID string) {
+	if ok, reason := ev.pgoProfileReady(); !ok {
+		ev.skipPgoLane(evidence, reason)
 		return
 	}
-	if reason := e.pgoLaneUnaffordable(); reason != "" {
-		e.skipPgoLane(evidence, reason)
+	if reason := ev.pgoLaneUnaffordable(); reason != "" {
+		ev.skipPgoLane(evidence, reason)
 		return
 	}
-	buildCtx, cancelBuild := context.WithTimeout(ctx, e.pgoBuildBudget())
+	buildCtx, cancelBuild := context.WithTimeout(ctx, ev.pgoBuildBudget())
 	defer cancelBuild()
-	started := e.now()
-	baselinePgo, candidatePgo, ok := e.buildPgoBinaries(buildCtx, candidateWorktree, candidateID, evidence)
+	started := ev.now()
+	baselinePgo, candidatePgo, ok := ev.buildPgoBinaries(buildCtx, candidateWorktree, candidateID, evidence)
 	if !ok {
 		return
 	}
-	comparisons, measured, ok := e.measurePgoWorkloads(ctx, evidence, candidateID, baselinePgo, candidatePgo)
+	comparisons, measured, ok := ev.measurePgoWorkloads(ctx, s, evidence, candidateID, baselinePgo, candidatePgo)
 	if !ok {
 		return
 	}
 	if measured == 0 {
-		e.skipPgoLane(evidence, "no representative seed workloads available for measurement")
+		ev.skipPgoLane(evidence, "no representative seed workloads available for measurement")
 		return
 	}
 	evidence.PgoComparisons = comparisons
-	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each, lane cost %s; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, e.pairs(), e.now().Sub(started).Round(time.Second), filepath.Base(e.state.PGOProfilePath))
-	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
+	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each, lane cost %s; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, s.pairs, ev.now().Sub(started).Round(time.Second), filepath.Base(ev.pgoProfilePath))
+	_ = ev.journal.event("pgo_lane_completed", evidence.PgoNote, nil)
 }
 
 // pgoBuildBudget is the wall-clock bound on one profile-guided build in the
 // informational lane.
-func (e *Engine) pgoBuildBudget() time.Duration {
-	if e.pgoBuildTimeout > 0 {
-		return e.pgoBuildTimeout
+func (ev *evaluator) pgoBuildBudget() time.Duration {
+	if ev.pgoBuildTimeout > 0 {
+		return ev.pgoBuildTimeout
 	}
 	return pgoLaneBuildTimeout
 }
@@ -803,90 +821,90 @@ func (e *Engine) pgoBuildBudget() time.Duration {
 // pgoLaneUnaffordable reports why the informational lane should not start, or
 // an empty string when the campaign can afford it. A campaign with no duration
 // bound has nothing to protect.
-func (e *Engine) pgoLaneUnaffordable() string {
-	budget := e.state.Manifest.Campaign.MaxDuration.Duration()
+func (ev *evaluator) pgoLaneUnaffordable() string {
+	budget := ev.manifest.Campaign.MaxDuration.Duration()
 	if budget <= 0 {
 		return ""
 	}
-	floor := 3 * e.pgoBuildBudget()
-	remaining := budget - e.elapsedRunTime(e.now())
+	floor := 3 * ev.pgoBuildBudget()
+	remaining := budget - ev.elapsed()
 	if remaining >= floor {
 		return ""
 	}
 	return fmt.Sprintf("campaign has %s of its %s budget left and the lane may spend up to %s", remaining.Round(time.Second), budget, floor)
 }
 
-func (e *Engine) skipPgoLane(evidence *orchestrator.CandidateEvidence, reason string) {
+func (ev *evaluator) skipPgoLane(evidence *orchestrator.CandidateEvidence, reason string) {
 	evidence.PgoNote = "PGO lane skipped: " + reason
-	_ = e.saveEvent("pgo_lane_skipped", evidence.PgoNote, nil)
+	_ = ev.journal.event("pgo_lane_skipped", evidence.PgoNote, nil)
 }
 
-func (e *Engine) pgoProfileReady() (bool, string) {
-	if e.state.PGOProfilePath == "" {
+func (ev *evaluator) pgoProfileReady() (bool, string) {
+	if ev.pgoProfilePath == "" {
 		return false, "no pprof-format CPU profile was collected during discovery (sampler reports are not pprof and cannot seed -pgo)"
 	}
-	if info, err := os.Stat(e.state.PGOProfilePath); err != nil || info.IsDir() || info.Size() == 0 {
-		return false, fmt.Sprintf("discovery CPU profile %q missing or empty on disk", e.state.PGOProfilePath)
+	if info, err := os.Stat(ev.pgoProfilePath); err != nil || info.IsDir() || info.Size() == 0 {
+		return false, fmt.Sprintf("discovery CPU profile %q missing or empty on disk", ev.pgoProfilePath)
 	}
 	return true, ""
 }
 
-func (e *Engine) buildPgoBinaries(ctx context.Context, candidateWorktree, candidateID string, evidence *orchestrator.CandidateEvidence) (baselinePgo, candidatePgo string, ok bool) {
-	binDir := filepath.Join(e.dir, "builds")
-	binarySuffix := filepath.Base(e.state.Manifest.Target.Build.Binary)
+func (ev *evaluator) buildPgoBinaries(ctx context.Context, candidateWorktree, candidateID string, evidence *orchestrator.CandidateEvidence) (baselinePgo, candidatePgo string, ok bool) {
+	binDir := filepath.Join(ev.dir, "builds")
+	binarySuffix := filepath.Base(ev.manifest.Target.Build.Binary)
 	baselinePgo = filepath.Join(binDir, candidateID+"-baseline-pgo-"+binarySuffix)
 	candidatePgo = filepath.Join(binDir, candidateID+"-candidate-pgo-"+binarySuffix)
 	for _, target := range []struct {
 		label, repository, output string
 	}{
-		{"baseline-pgo", e.state.Repository, baselinePgo},
+		{"baseline-pgo", ev.repository, baselinePgo},
 		{"candidate-pgo", candidateWorktree, candidatePgo},
 	} {
-		if !e.buildPgoBinary(ctx, target.label, target.repository, target.output, evidence) {
+		if !ev.buildPgoBinary(ctx, target.label, target.repository, target.output, evidence) {
 			return "", "", false
 		}
 	}
 	return baselinePgo, candidatePgo, true
 }
 
-func (e *Engine) buildPgoBinary(ctx context.Context, label, repository, output string, evidence *orchestrator.CandidateEvidence) bool {
-	result, err := e.toolchain.Build(ctx, toolchain.BuildRequest{Repository: repository, Directory: e.state.Manifest.Target.Build.Directory, Target: e.state.Manifest.Target.Build.Package, Output: output, PGOProfile: e.state.PGOProfilePath, Env: []string{"GOTOOLCHAIN=local"}})
+func (ev *evaluator) buildPgoBinary(ctx context.Context, label, repository, output string, evidence *orchestrator.CandidateEvidence) bool {
+	result, err := ev.toolchain.Build(ctx, toolchain.BuildRequest{Repository: repository, Directory: ev.manifest.Target.Build.Directory, Target: ev.manifest.Target.Build.Package, Output: output, PGOProfile: ev.pgoProfilePath, Env: []string{"GOTOOLCHAIN=local"}})
 	if err != nil {
 		// A build the lane's own budget cut short is a statement about the
 		// lane, not about the target's compiler output.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			e.skipPgoLane(evidence, fmt.Sprintf("%s build exceeded the lane's %s budget", label, e.pgoBuildBudget()))
+			ev.skipPgoLane(evidence, fmt.Sprintf("%s build exceeded the lane's %s budget", label, ev.pgoBuildBudget()))
 			return false
 		}
 		detail := tail(string(result.Stderr), 200)
 		if detail == "" {
 			detail = err.Error()
 		}
-		e.skipPgoLane(evidence, fmt.Sprintf("%s build failed: %s", label, detail))
+		ev.skipPgoLane(evidence, fmt.Sprintf("%s build failed: %s", label, detail))
 		return false
 	}
 	evidence.ArtifactURIs = append(evidence.ArtifactURIs, output)
 	return true
 }
 
-func (e *Engine) measurePgoWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, candidateID, baselinePgo, candidatePgo string) ([]domain.MetricComparison, int, bool) {
+func (ev *evaluator) measurePgoWorkloads(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, candidateID, baselinePgo, candidatePgo string) ([]domain.MetricComparison, int, bool) {
 	comparisons := make([]domain.MetricComparison, 0, 3)
 	measured := 0
-	for _, seed := range e.state.Manifest.Workloads.Seeds {
+	for _, seed := range ev.manifest.Workloads.Seeds {
 		if seed.Tier != domain.TierRepresentative {
 			continue
 		}
-		baseReq := e.seedMeasurementRequest(seed, candidateID+"-baseline-pgo", baselinePgo)
+		baseReq := seedMeasurementRequest(ev.manifest, ev.campaignID, seed, candidateID+"-baseline-pgo", baselinePgo)
 		candReq := baseReq
 		candReq.Build = runner.Build{ID: candidateID + "-candidate-pgo", BinaryPath: candidatePgo}
 		candReq.Workload.Command.Path = candidatePgo
-		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: e.pairs()})
+		ab, err := ev.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: s.pairs})
 		if err != nil {
-			e.skipPgoLane(evidence, fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err))
+			ev.skipPgoLane(evidence, fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err))
 			return nil, 0, false
 		}
 		if ok, rep := pgoBehaviorOK(ab); !ok {
-			e.skipPgoLane(evidence, fmt.Sprintf("PGO-built binaries diverged on workload %q at repetition %d", seed.ID, rep))
+			ev.skipPgoLane(evidence, fmt.Sprintf("PGO-built binaries diverged on workload %q at repetition %d", seed.ID, rep))
 			return nil, 0, false
 		}
 		comparisons = append(comparisons, compareMetric(seed.ID, "wall_time_ns", "ns", ab.Baseline, ab.Candidate, wallTime)...)
@@ -1054,7 +1072,7 @@ func mean(values []float64) (float64, bool) {
 // samples strong evidence about the candidate's effect?" A comparison is
 // supported when the Welch test detects a significant difference OR when
 // the 95% confidence interval of the relative delta lies entirely below
-// the 2% guardrail limit, i.e. the data confidently rules out a material
+// the 2% guardrail limit, i.ev. the data confidently rules out a material
 // regression even though no significant change was detected. The latter
 // case matters for jittery metrics like peak memory, where a genuinely
 // flat candidate otherwise reads as unsupported.
