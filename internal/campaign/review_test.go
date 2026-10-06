@@ -83,6 +83,25 @@ func TestReviewOfAnEmptyPatchAsksNothing(t *testing.T) {
 	require.Nil(t, evaluator.state)
 }
 
+// TestReviewReadsTheDiffCodeBuiltFromFunctionSource: on the function_source
+// transport the proposal carries no patch; the diff exists only at the
+// candidate's patch path, and that is what Jev must be asked about.
+func TestReviewReadsTheDiffCodeBuiltFromFunctionSource(t *testing.T) {
+	repo := writeCauseFixture(t)
+	built := filepath.Join(t.TempDir(), "candidate.diff")
+	require.NoError(t, os.WriteFile(built, []byte(writePatch), 0o600))
+	evaluator := &hazardEvaluator{}
+	result, err := reviewAnalyst{evaluator: evaluator, usage: agents.NewUsageCollector()}.ReviewPatch(context.Background(), orchestrator.ReviewRequest{
+		Campaign:  orchestrator.CampaignRequest{Repository: repo},
+		Proposal:  agents.OptimizerResult{Hypothesis: "buffer the writes", FunctionSource: "func write() {}"},
+		Candidate: orchestrator.CandidateEvidence{Candidate: domain.Candidate{PatchPath: built, Transport: FunctionSourceTransport}},
+	})
+	require.NoError(t, err)
+	require.True(t, result.Proceed)
+	require.Equal(t, writePatch, evaluator.state["patch"])
+	require.Equal(t, "write", evaluator.state["function"])
+}
+
 func TestReviewPassesOnGatewayAndRankingFailures(t *testing.T) {
 	_, err := reviewAnalyst{evaluator: &hazardEvaluator{err: errors.New("HTTP 429")}}.ReviewPatch(context.Background(), orchestrator.ReviewRequest{Proposal: agents.OptimizerResult{Patch: writePatch}})
 	require.ErrorContains(t, err, "HTTP 429")
