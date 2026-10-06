@@ -34,7 +34,7 @@ when:
 The reason goes to the candidate's failure detail, which the next optimizer call reads in
 `prior_candidates`. A candidate rejected before measurement (the patch was invalid, did not apply,
 failed this check, or did not build) is marked `unmeasured`, and its target is offered once more;
-a second unmeasured attempt closes it. Targets carried across a resume stay closed.
+a second unmeasured attempt closes it. A resume keeps that count (see the amendment below).
 
 The check only adds rejections. When Git cannot produce the diff, the build decides as before, and
 no candidate reaches measurement on the check's say-so.
@@ -54,3 +54,17 @@ A target the optimizer fails to patch can now cost two candidates instead of one
 a missing import of any other package is still caught by the build, one step later. The remedy
 rules are substring checks on added lines: they can be satisfied by a patch that mentions the
 mechanism without using it, which the build, tests and measurement then judge as before.
+
+## Amendment (2026-10-07)
+
+This ADR first said targets carried across a resume stay closed. The reason was mechanical: the
+candidate records did not persist whether a candidate was measured, so a resumed campaign could
+not tell an unmeasured target from a judged one. That made a resume change which targets a
+campaign tries, and an interrupted campaign could lose a retry an uninterrupted one would have
+spent.
+
+`CandidateRecord.Unmeasured` is now persisted, and a resumed campaign derives its tallies and its
+tried targets from its records (`internal/orchestrator/ledger.go`). So a target with one unmeasured
+attempt keeps its one more attempt across a resume. Records written before the field existed
+read as measured and keep their targets closed, as before. Targets carried in by `--history`
+(ADR 0031) stay closed whatever became of them.

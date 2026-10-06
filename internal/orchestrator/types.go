@@ -17,29 +17,18 @@ type CampaignRequest struct {
 	BuildTarget      string                    `json:"build_target"`
 	CommandArgs      []string                  `json:"command_args,omitempty"`
 	OptimizationMode domain.OptimizationPolicy `json:"optimization_mode"`
-	// PriorConsecutiveFailures carries the campaign-wide run of rejected or
-	// inconclusive candidates that a caller already recorded for this
-	// campaign. The graph builds a fresh CampaignState on every entry, so a
-	// campaign resumed after an interruption would otherwise restart the
-	// MaxConsecutiveFailures tally at zero and the bound would hold only
-	// within a single process rather than over the whole campaign.
-	PriorConsecutiveFailures int `json:"prior_consecutive_failures,omitempty"`
 	// PriorTargets are targets closed before this campaign began: those
 	// earlier campaigns measured (--history, ADR 0031). This campaign's own
 	// tried targets come back through RecordedCandidates.
 	PriorTargets []agents.Target `json:"prior_targets,omitempty"`
 	// RecordedCandidates are this campaign's own candidates a caller already
 	// recorded, in attempt order. The graph builds a fresh CampaignState on
-	// every entry, so a resumed campaign seeds from them its candidate count,
-	// its attempt numbers, the targets it tried and the history the optimizer
-	// reads. Without them the max_candidate_patches budget and the attempt
+	// every entry, so a resumed campaign derives from them its tallies (see
+	// ledger.go), its attempt numbers, the targets it tried and the history
+	// the optimizer reads. Without them the max_candidate_patches budget and the attempt
 	// numbers restarted at zero after every resume, and attempt-derived patch
 	// IDs could collide with recorded ones (#91).
 	RecordedCandidates []PriorCandidate `json:"recorded_candidates,omitempty"`
-	// PriorConsecutiveInconclusive carries the campaign-wide run of
-	// inconclusive verdicts, for the same reason: a campaign that configures
-	// its own inconclusive bound must have that streak survive a resume too.
-	PriorConsecutiveInconclusive int `json:"prior_consecutive_inconclusive,omitempty"`
 	// Objective is the manifest's performance primary metric after the
 	// campaign's trade-off was applied (see ADR 0020), such as
 	// "peak_memory_bytes" under --tradeoff lean. The cause analyst reads it to

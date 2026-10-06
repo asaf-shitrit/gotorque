@@ -338,3 +338,38 @@ func TestRoleFailureFindsTheLatestForTheRole(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// TestAResumeKeepsAnUnmeasuredTargetsRetry: a campaign interrupted after one
+// unmeasured attempt on the loop must spend its next candidate on the loop
+// again, exactly as TestTheGraphRetriesATargetItNeverMeasured's uninterrupted
+// run does (ADR 0017, amended). A record written before Unmeasured was
+// persisted reads as measured and closes its target, as it always did.
+func TestAResumeKeepsAnUnmeasuredTargetsRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		unmeasured bool
+		want       agents.Target
+	}{
+		{name: "unmeasured record retries its target", unmeasured: true, want: targetLoop},
+		{name: "measured or older record closes it", unmeasured: false, want: targetAlloc},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var inputs []string
+			policy := &targetPolicy{}
+			analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
+			orch := mustNew(t, Dependencies{Runner: &unmeasuredRunner{}, Policy: policy, Jobs: &fakeJobService{}, Agents: agents.Set{Optimizer: inputRecorder(t, &inputs)}, Causes: analyst},
+				Config{MaxCandidates: 2, MaxConsecutiveFailures: 3, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
+			req := causeCampaign
+			loop := targetLoop
+			req.RecordedCandidates = []PriorCandidate{{Attempt: 1, Decision: string(domain.DecisionRejected), Target: &loop, Unmeasured: tc.unmeasured, FailureDetail: "did not build"}}
+			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-resume-retry", req, "finalize_campaign")
+
+			if result.CandidatesTried != 2 || !allTargets(policy.targets, tc.want, 1) {
+				t.Fatalf("tried %d, targets per verdict = %v; want one new candidate on %s", result.CandidatesTried, policy.targets, tc.want.Function)
+			}
+			if len(inputs) != 1 || !strings.Contains(inputs[0], "did not build") {
+				t.Errorf("the resumed brief should carry the recorded attempt's failure; got %d inputs", len(inputs))
+			}
+		})
+	}
+}

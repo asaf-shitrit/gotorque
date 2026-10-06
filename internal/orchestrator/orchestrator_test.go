@@ -589,8 +589,8 @@ func rejectingRoleSet(t *testing.T, calls *int) agents.Set {
 // TestConsecutiveFailureBoundCountsCarriedInFailures pins the bound to the
 // campaign rather than to one process. A campaign interrupted by the OS and
 // resumed re-enters the graph with a fresh CampaignState, so the tally has to
-// arrive on the request; without it every resume bought a full new run of
-// MaxConsecutiveFailures rejections.
+// be derived from the recorded candidates on the request; without it every
+// resume bought a full new run of MaxConsecutiveFailures rejections.
 func TestConsecutiveFailureBoundCountsCarriedInFailures(t *testing.T) {
 	tests := []struct {
 		name                   string
@@ -622,17 +622,17 @@ func TestConsecutiveFailureBoundCountsCarriedInFailures(t *testing.T) {
 				MaxConcurrency:         1,
 			})
 			req := CampaignRequest{
-				CampaignID:               "campaign-resume",
-				Repository:               "/repo",
-				BaseRevision:             "abc123",
-				BuildTarget:              "./cmd/tool",
-				OptimizationMode:         domain.PolicyIdiomatic,
-				PriorConsecutiveFailures: tc.priorFailures,
+				CampaignID:         "campaign-resume",
+				Repository:         "/repo",
+				BaseRevision:       "abc123",
+				BuildTarget:        "./cmd/tool",
+				OptimizationMode:   domain.PolicyIdiomatic,
+				RecordedCandidates: rejectedLedger(tc.priorFailures),
 			}
 			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", tc.name, req, "finalize_campaign")
 
-			if result.CandidatesTried != tc.wantCandidates {
-				t.Errorf("candidates tried = %d, want %d", result.CandidatesTried, tc.wantCandidates)
+			if result.CandidatesTried != tc.priorFailures+tc.wantCandidates {
+				t.Errorf("candidates tried = %d, want %d recorded + %d new", result.CandidatesTried, tc.priorFailures, tc.wantCandidates)
 			}
 			if runnerService.evaluateCalls != tc.wantCandidates {
 				t.Errorf("candidate evaluations = %d, want %d", runnerService.evaluateCalls, tc.wantCandidates)
@@ -644,7 +644,16 @@ func TestConsecutiveFailureBoundCountsCarriedInFailures(t *testing.T) {
 	}
 }
 
-func TestInitializeRejectsNegativePriorConsecutiveFailures(t *testing.T) {
+// rejectedLedger is n recorded rejections, attempts 1..n.
+func rejectedLedger(n int) []PriorCandidate {
+	out := make([]PriorCandidate, n)
+	for i := range out {
+		out[i] = PriorCandidate{Attempt: i + 1, Decision: string(domain.DecisionRejected)}
+	}
+	return out
+}
+
+func TestInitializeRejectsAnInvalidRecordedDecision(t *testing.T) {
 	var calls int
 	orch := mustNew(t, Dependencies{
 		Runner: &fakeRunnerService{},
@@ -653,14 +662,14 @@ func TestInitializeRejectsNegativePriorConsecutiveFailures(t *testing.T) {
 		Agents: rejectingRoleSet(t, &calls),
 	}, DefaultConfig())
 	err := runExpectingError(t, orch, "session-negative", CampaignRequest{
-		CampaignID:               "campaign-negative",
-		Repository:               "/repo",
-		BaseRevision:             "abc123",
-		BuildTarget:              "./cmd/tool",
-		PriorConsecutiveFailures: -1,
+		CampaignID:         "campaign-invalid",
+		Repository:         "/repo",
+		BaseRevision:       "abc123",
+		BuildTarget:        "./cmd/tool",
+		RecordedCandidates: []PriorCandidate{{Attempt: 1, Decision: "maybe"}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "prior consecutive failures cannot be negative") {
-		t.Fatalf("run error = %v, want negative prior failure rejection", err)
+	if err == nil || !strings.Contains(err.Error(), `recorded candidate 1 has invalid decision "maybe"`) {
+		t.Fatalf("run error = %v, want the invalid recorded decision rejected", err)
 	}
 }
 
