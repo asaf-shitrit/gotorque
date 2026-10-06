@@ -125,7 +125,10 @@ Package map:
 
 - `internal/campaign`: the engine. `engine.go` owns campaign lifecycle, bounds,
   and discovery profiling; `candidate_eval.go` is the deterministic evaluation
-  loop (normalize -> worktree -> build -> test gate -> A/B measure -> stats);
+  loop (normalize -> worktree -> build -> test gate -> A/B measure -> stats),
+  run by the `evaluator` (`evaluator.go`, ADR 0036), which takes no `*Engine`:
+  per-caller `evalSettings` (campaign, verify, null) and the `journal`,
+  `machine` and `testBaseline` ports (`eval_ports.go`);
   `adk.go` bridges engine state into the ADK graph; `store.go` is bbolt state;
   `excerpts.go` feeds real source windows to the optimizer.
 - `internal/orchestrator`: graph construction, node wiring, service interfaces.
@@ -191,10 +194,14 @@ Package map:
   add the profile to Jev's state: it drags every answer toward what the
   profile is dominated by.
 - Function-source transport (`internal/campaign/function_source.go`, ADR
-  0022): `resolveCandidatePatch` reads the target's file from
-  `e.state.Repository` at the campaign's base revision, so a code path that
-  reaches it before that checkout exists, or after something has dirtied it,
-  builds a diff against the wrong source. `patch` on `OptimizerResult` always
+  0022, ADR 0036): `resolveCandidatePatch` reads the target's file from the
+  evaluator's base tree (`base_tree.go`), a pristine worktree of the base
+  revision that is created on first use, created again if it is not exactly
+  that revision with no change, and removed when the evaluation ends. It never
+  reads the canonical `Repository` checkout, which a target's own tests can
+  dirty (miller's rewrote tracked fixtures there), so a source read added from
+  there would build a diff against the wrong tree: keep new source reads on
+  the base tree. `patch` on `OptimizerResult` always
   wins over `function_source` when both are set and it holds a hunk that
   changes a line (a blank, prose or no-op `patch` yields, `patchWins`); do not flip that precedence,
   it is the fallback that keeps a model ignoring the instruction from losing

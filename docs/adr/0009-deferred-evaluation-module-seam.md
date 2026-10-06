@@ -1,6 +1,6 @@
 # 0009. Deferred: give candidate evaluation its own module seam
 
-- Status: deferred
+- Status: superseded by [0036](0036-candidate-evaluation-is-its-own-module.md)
 - Date: 2026-09-20
 
 ## Context
