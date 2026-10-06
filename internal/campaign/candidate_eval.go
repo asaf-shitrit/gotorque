@@ -83,22 +83,7 @@ func (e *Engine) evaluateWith(ctx context.Context, req orchestrator.CandidateReq
 	}
 	patchText, transport, err := e.resolveCandidatePatch(ctx, req)
 	if err != nil {
-		// Building the diff from function_source failed before there was
-		// anything to write or apply: a pre-build rejection like a patch that
-		// does not parse, marked unmeasured so the target is offered once
-		// more (ADR 0017). It still needs an ID: the orchestrator stops the
-		// whole campaign on evidence without one.
-		id := stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), transport, err.Error())
-		// Kept like any other answer: held-out dyff lost two attempts here to
-		// "function_source must be a function declaration", and with nothing
-		// written there was no way to see what the optimizer had sent.
-		e.keepProposal(id, req.Proposal)
-		return orchestrator.CandidateEvidence{
-			Candidate:     domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, Transport: transport},
-			Summary:       fmt.Sprintf("candidate rejected before build: %v", err),
-			FailureDetail: tail(err.Error(), 400),
-			Unmeasured:    true,
-		}, nil
+		return e.rejectUnresolvedPatch(req, transport, err), nil
 	}
 	id, patchPath, err := e.writeCandidatePatch(req, patchText)
 	if err != nil {
@@ -118,24 +103,54 @@ func (e *Engine) evaluateWith(ctx context.Context, req orchestrator.CandidateReq
 	// Worktree teardown runs even when the caller's context is already
 	// canceled (duration budget or Ctrl-C), but keeps its values.
 	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
-	if s.refuseRepeats && e.rejectMeasuredDuplicate(evidence.Candidate.ID, &evidence) {
-		return evidence, nil
+	e.judgePrepared(ctx, req, s, prepared.Worktree, &evidence)
+	return evidence, nil
+}
+
+// rejectUnresolvedPatch is the evidence for a candidate whose diff could not be
+// built from function_source: a pre-build rejection like a patch that does not
+// parse, marked unmeasured so the target is offered once more (ADR 0017). It
+// still needs an ID: the orchestrator stops the whole campaign on evidence
+// without one.
+func (e *Engine) rejectUnresolvedPatch(req orchestrator.CandidateRequest, transport string, err error) orchestrator.CandidateEvidence {
+	id := stableID("candidate", e.state.ID, strconv.Itoa(req.Attempt), transport, err.Error())
+	// Kept like any other answer: held-out dyff lost two attempts here to
+	// "function_source must be a function declaration", and with nothing
+	// written there was no way to see what the optimizer had sent.
+	e.keepProposal(id, req.Proposal)
+	return orchestrator.CandidateEvidence{
+		Candidate:     domain.Candidate{ID: id, BaseRevision: req.Campaign.BaseRevision, Hypothesis: req.Proposal.Hypothesis, Transport: transport},
+		Summary:       fmt.Sprintf("candidate rejected before build: %v", err),
+		FailureDetail: tail(err.Error(), 400),
+		Unmeasured:    true,
 	}
-	if !e.patchHasShape(ctx, s, prepared.Worktree, req.Target, &evidence) {
-		return evidence, nil
+}
+
+// judgePrepared runs everything after the patch applied: the repeat and shape
+// refusals, the build, the test gate, the measurement and the PGO lane. It
+// stops at the first stage that ends the candidate and leaves why in evidence.
+func (e *Engine) judgePrepared(ctx context.Context, req orchestrator.CandidateRequest, s evalSettings, worktree string, evidence *orchestrator.CandidateEvidence) {
+	id := evidence.Candidate.ID
+	if s.refuseRepeats && e.rejectMeasuredDuplicate(id, evidence) {
+		return
 	}
-	candidateBinary, ok := e.buildAndTestCandidate(ctx, prepared.Worktree, id, &evidence)
+	if !e.patchHasShape(ctx, s, worktree, req.Target, evidence) {
+		return
+	}
+	candidateBinary, ok := e.buildAndTestCandidate(ctx, worktree, id, evidence)
 	if !ok {
-		return evidence, nil
+		return
 	}
-	if !e.measureAndFinalize(ctx, s, &evidence, id, candidateBinary) {
-		return evidence, nil
+	if !e.measureAndFinalize(ctx, s, evidence, id, candidateBinary) {
+		return
 	}
 	// Informational PGO lane: only candidates that passed the test suite and
 	// produced a full ordinary verdict reach it, so the extra builds and A/B
-	// series are never spent on rejected work.
-	e.runPgoLane(ctx, s, &evidence, prepared.Worktree, id)
-	return evidence, nil
+	// series are never spent on rejected work. A verification turns it off: its
+	// record has no PGO columns to fill.
+	if s.pgoLane {
+		e.runPgoLane(ctx, s, evidence, worktree, id)
+	}
 }
 
 func (e *Engine) writeCandidatePatch(req orchestrator.CandidateRequest, patchText string) (id, patchPath string, err error) {

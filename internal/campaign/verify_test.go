@@ -21,27 +21,7 @@ import (
 // verification is persisted and reported. The duplicate refusal, which would
 // otherwise stop a patch this campaign already measured, is off.
 func TestVerifyReevaluatesARecordedCandidate(t *testing.T) {
-	repo := makeRepository(t)
-	engine, err := Create(context.Background(), Options{
-		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
-		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
-	})
-	require.NoError(t, err)
-	defer func() { require.NoError(t, engine.Close()) }()
-
-	target := &agents.Target{Location: "main.go:3", Function: "main", Cause: "unbuffered_io"}
-	evidence, err := engine.evaluateCandidate(context.Background(), orchestrator.CandidateRequest{
-		Campaign: orchestrator.CampaignRequest{BaseRevision: engine.State().Environment.Revision},
-		Attempt:  1,
-		Target:   target,
-		Proposal: agents.OptimizerResult{Hypothesis: "buffer stdout", FunctionSource: "func main() {\n\tb, _ := os.ReadFile(\"fixture.txt\")\n\tw := bufio.NewWriter(os.Stdout)\n\tdefer w.Flush()\n\tfmt.Fprintf(w, \"%s\", b)\n}", Imports: []string{"bufio"}},
-	})
-	require.NoError(t, err)
-	engine.state.CandidateRecords = append(engine.state.CandidateRecords, CandidateRecord{
-		Attempt: 1, CandidateID: evidence.Candidate.ID, Target: target, PatchPath: evidence.Candidate.PatchPath,
-		Decision: domain.DecisionAccepted, Accepted: true, Comparisons: evidence.Comparisons,
-	})
-	require.Equal(t, []int{1}, engine.AcceptedAttempts())
+	engine := engineWithRecordedAccept(t)
 
 	v, err := engine.Verify(context.Background(), 1, 2)
 	require.NoError(t, err)
@@ -56,6 +36,52 @@ func TestVerifyReevaluatesARecordedCandidate(t *testing.T) {
 	writeVerifications(&b, engine.State())
 	require.Contains(t, b.String(), "## Verification")
 	require.Contains(t, b.String(), "| 1 | 2 | accepted |")
+}
+
+// engineWithRecordedAccept is a created engine holding one evaluated
+// candidate recorded as accepted (attempt 1), ready for Verify.
+func engineWithRecordedAccept(t *testing.T) *Engine {
+	t.Helper()
+	engine, err := Create(context.Background(), Options{
+		Repository: makeRepository(t), ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
+
+	target := &agents.Target{Location: "main.go:3", Function: "main", Cause: "unbuffered_io"}
+	evidence, err := engine.evaluateCandidate(context.Background(), orchestrator.CandidateRequest{
+		Campaign: orchestrator.CampaignRequest{BaseRevision: engine.State().Environment.Revision},
+		Attempt:  1,
+		Target:   target,
+		Proposal: agents.OptimizerResult{Hypothesis: "buffer stdout", FunctionSource: "func main() {\n\tb, _ := os.ReadFile(\"fixture.txt\")\n\tw := bufio.NewWriter(os.Stdout)\n\tdefer w.Flush()\n\tfmt.Fprintf(w, \"%s\", b)\n}", Imports: []string{"bufio"}},
+	})
+	require.NoError(t, err)
+	engine.state.CandidateRecords = append(engine.state.CandidateRecords, CandidateRecord{
+		Attempt: 1, CandidateID: evidence.Candidate.ID, Target: target, PatchPath: evidence.Candidate.PatchPath,
+		Decision: domain.DecisionAccepted, Accepted: true, Comparisons: evidence.Comparisons,
+	})
+	require.Equal(t, []int{1}, engine.AcceptedAttempts())
+	return engine
+}
+
+// TestVerifyDoesNotRunThePgoLane: the lane is informational and costs two
+// profile-guided builds plus a series per workload, and a verification has
+// nothing to attribute: its record has no PGO columns. It ran anyway, at the
+// verification's 60 pairs, on every verify of an accepted candidate.
+func TestVerifyDoesNotRunThePgoLane(t *testing.T) {
+	engine := engineWithRecordedAccept(t)
+	before, err := engine.store.Events()
+	require.NoError(t, err)
+
+	_, err = engine.Verify(context.Background(), 1, 2)
+	require.NoError(t, err)
+
+	events, err := engine.store.Events()
+	require.NoError(t, err)
+	for _, event := range events[len(before):] {
+		require.NotContains(t, event.Type, "pgo_lane", "verification ran the PGO lane")
+	}
 }
 
 func TestVerifyRefusesAnUnknownOrPatchlessAttempt(t *testing.T) {

@@ -74,7 +74,7 @@ func (e *Engine) Verify(ctx context.Context, attempt, pairs int) (Verification, 
 		Attempt:  verifyAttemptOffset + attempt,
 		Proposal: agents.OptimizerResult{Patch: string(patch), Hypothesis: record.Hypothesis},
 		Target:   record.Target,
-	}, evalSettings{pairs: pairs, pgoLane: true})
+	}, evalSettings{pairs: pairs})
 	if err != nil {
 		return Verification{}, err
 	}
