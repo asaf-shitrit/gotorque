@@ -21,29 +21,13 @@ const (
 	stateKey      = "optimizer:campaign_state"
 	routeContinue = "continue"
 	routeFinish   = "finish"
-
-	stopReasonMaxCandidates = "maximum candidate count reached"
-	// stopReasonRankingExhausted ends a campaign whose analysis has no untried
-	// target left (Config.StopWhenRankingExhausted).
-	stopReasonRankingExhausted = "every target the analysis flagged has been tried"
-	// stopReasonNothingFlagged ends a campaign whose analysis flagged no
-	// target at all. live1-tengo reported the exhausted reason above for a
-	// ranking that had nothing in it, which read as if targets had been tried.
-	stopReasonNothingFlagged      = "the analysis flagged no target"
-	stopReasonConsecutiveFailures = "consecutive rejection/inconclusive limit reached"
-	// stopReasonConsecutiveInconclusive is reported only when the campaign
-	// configures stop_after_inconclusive, which bounds unresolved verdicts
-	// separately from failures.
-	stopReasonConsecutiveInconclusive = "consecutive inconclusive limit reached"
-	// stopReasonProviderFailure is followed by the last failure of the cycle
-	// that tripped it.
-	stopReasonProviderFailure = "model provider unavailable: the optimizer failed in two consecutive cycles; last failure: "
 )
 
-// ErrProviderUnavailable marks a campaign the graph stopped because the
-// optimizer, its one model role, failed in consecutive cycles. A caller that
-// sees CampaignResult.ProviderFailure wraps it, so the campaign ends as a
-// failure rather than as completed.
+// ErrProviderUnavailable marks a campaign the graph stopped because a role it
+// depends on could not answer: the optimizer in consecutive cycles, or the
+// analyst for every hot function (see ended). A caller that sees
+// CampaignResult.ProviderFailure wraps it, so the campaign ends as a failure
+// rather than as completed.
 var ErrProviderUnavailable = errors.New("model provider unavailable")
 
 // Dependencies are intentionally narrow so deterministic execution, policy,
@@ -281,8 +265,8 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	// the carried-in tally already says. Finishing from here keeps the bound
 	// exact instead of off by the resumed process's first candidate.
 	next := routeContinue
-	if reason, hit := g.consecutiveBound(state); hit {
-		state.StopReason = reason
+	if end, done := g.ended(state, atStart); done {
+		state.StopReason = end.reason
 		next = routeFinish
 	}
 	ev := stateEvent(ctx, state)
@@ -355,11 +339,8 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	attachExcerpts(ctx, g.deps.Runner, &state, result)
 	planTarget(&state)
 	next := routeContinue
-	if g.cfg.StopWhenRankingExhausted && state.Target == nil {
-		state.StopReason = stopReasonRankingExhausted
-		if len(state.Analysis.Targets) == 0 {
-			state.StopReason = stopReasonNothingFlagged
-		}
+	if end, done := g.ended(state, afterAnalysis); done {
+		state.StopReason, state.ProviderFailure = end.reason, end.failure
 		next = routeFinish
 	}
 	ev := stateEvent(ctx, state)
@@ -630,20 +611,6 @@ func bindEvaluation(state CampaignState, evaluation domain.Evaluation) (domain.E
 	return evaluation, nil
 }
 
-// consecutiveBound reports which consecutive-verdict bound a campaign has
-// reached, if any. A campaign that configured stop_after_inconclusive tracks
-// unresolved verdicts on their own; otherwise they extend the failure streak,
-// which is the historical behavior.
-func (g *campaignGraph) consecutiveBound(state CampaignState) (string, bool) {
-	if g.cfg.MaxConsecutiveInconclusive > 0 && state.ConsecutiveInconclusive >= g.cfg.MaxConsecutiveInconclusive {
-		return stopReasonConsecutiveInconclusive, true
-	}
-	if state.ConsecutiveFailures >= g.cfg.MaxConsecutiveFailures {
-		return stopReasonConsecutiveFailures, true
-	}
-	return "", false
-}
-
 func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignState, evaluation domain.Evaluation, separateInconclusiveBound bool) error {
 	state.Evaluation = evaluation
 	state.CandidatesTried++
@@ -693,17 +660,13 @@ func countDecision(state *CampaignState, decision domain.Decision, separateIncon
 // rejection streak would blame the patches for the provider.
 func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
 	next := routeFinish
-	failure, down := providerFailure(state)
-	if down {
+	if _, down := providerFailure(state); down {
 		state.OutageCycles++
 	} else {
 		state.OutageCycles = 0
 	}
-	if down && state.OutageCycles >= outageCycles {
-		state.ProviderFailure = failure
-		state.StopReason = stopReasonProviderFailure + failure
-	} else if reason := g.stopReason(state); reason != "" {
-		state.StopReason = reason
+	if end, done := g.ended(state, afterCycle); done {
+		state.StopReason, state.ProviderFailure = end.reason, end.failure
 	} else {
 		// Each cycle is judged on its own failures, so a role that failed
 		// once and recovered cannot add up to an outage across cycles.
@@ -713,42 +676,6 @@ func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*sessi
 	ev := stateEvent(ctx, state)
 	ev.Routes = []string{next}
 	return ev, nil
-}
-
-// outageCycles is how many consecutive cycles the optimizer, the one model
-// role, must fail before the breaker stops the campaign. One cycle is the
-// single call the degrading wrapper already absorbs: once Jev and code served
-// every other role, one slow cycle, its three attempts each cut while still
-// producing, ended a gojq campaign two candidates early. A revoked key or an
-// empty balance still stops the campaign quickly, since those HTTP statuses
-// are not retried.
-const outageCycles = 2
-
-// providerFailure reports the cycle's last optimizer failure when the
-// optimizer failed in it. A failing Jev role is the transient case the
-// degrading wrapper exists for; Jev is served on a different endpoint and
-// cannot fail the way the model provider does.
-func providerFailure(state CampaignState) (string, bool) {
-	for i := len(state.CycleFailures) - 1; i >= 0; i-- {
-		if f := state.CycleFailures[i]; f.Role == string(agents.RoleOptimizer) {
-			return f.Role + ": " + f.Cause, true
-		}
-	}
-	return "", false
-}
-
-// stopReason reports why the campaign should finish instead of trying another
-// candidate, or an empty string to continue. The candidate budget is checked
-// first so a campaign that used its last patch reports that rather than a
-// streak bound it also happens to meet.
-func (g *campaignGraph) stopReason(state CampaignState) string {
-	if state.CandidatesTried >= g.cfg.MaxCandidates {
-		return stopReasonMaxCandidates
-	}
-	if reason, hit := g.consecutiveBound(state); hit {
-		return reason
-	}
-	return ""
 }
 
 func (g *campaignGraph) finalize(ctx adkagent.Context, state CampaignState) (CampaignResult, error) {

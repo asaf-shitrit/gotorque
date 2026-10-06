@@ -256,9 +256,8 @@ type CampaignState struct {
 	// It never outlives a cycle: a resumed campaign starts a fresh one, so it
 	// needs no persistence of its own.
 	CycleFailures []RoleFailure `json:"cycle_failures,omitempty"`
-	// ProviderFailure is set when the route stopped the campaign because the
-	// optimizer failed in outageCycles consecutive cycles. It holds the last
-	// failure, as "role: cause".
+	// ProviderFailure is set when ended stopped the campaign because a role
+	// could not answer. It holds that failure, as "role: cause".
 	ProviderFailure string `json:"provider_failure,omitempty"`
 	// OutageCycles counts consecutive cycles, the current one included, in
 	// which the optimizer failed. See outageCycles. Like CycleFailures it
@@ -295,9 +294,10 @@ type CampaignResult struct {
 	AcceptedCandidates []string          `json:"accepted_candidates,omitempty"`
 	FinalEvaluation    domain.Evaluation `json:"final_evaluation"`
 	StopReason         string            `json:"stop_reason"`
-	// ProviderFailure is non-empty when the campaign stopped because the
-	// optimizer failed in consecutive cycles; it holds the last failure. The caller
-	// reports such a campaign as failed rather than completed: no bound was
-	// reached, and the patches it rejected were empty for want of a provider.
+	// ProviderFailure is non-empty when the campaign stopped because a role
+	// could not answer (ended decides): the optimizer in consecutive cycles, or
+	// the analyst for every hot function. It holds the role and its failure. The
+	// caller reports such a campaign as failed rather than completed: no bound
+	// was reached.
 	ProviderFailure string `json:"provider_failure,omitempty"`
 }
