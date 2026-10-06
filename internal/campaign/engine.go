@@ -352,6 +352,9 @@ type Engine struct {
 	// journal receives what candidate evaluation reports; nil means the
 	// campaign's own (evalJournal). Tests set a recording one.
 	journal journal
+	// machine is the host measurements run on; nil means this one
+	// (evalMachine). Tests set a scripted one.
+	machine machine
 }
 
 func Create(ctx context.Context, opts Options) (*Engine, error) {

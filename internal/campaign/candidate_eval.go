@@ -367,13 +367,14 @@ type seedRuns struct {
 
 func (e *Engine) measureAndFinalize(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
 	m := measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
+	host := e.evalMachine()
 	if e.state.LocalIsolation {
-		evidence.QuietWait, evidence.QuietWaitExpired = defaultQuietWaiter().wait(ctx)
+		evidence.QuietWait, evidence.QuietWaitExpired = host.waitQuiet(ctx)
 	}
-	evidence.LoadAverages = sampleLoad()
+	evidence.LoadAverages = host.load()
 	defer func() {
-		evidence.LoadAverages = append(evidence.LoadAverages, sampleLoad()...)
-		evidence.LoadContended = contended(evidence.LoadAverages, machineCPUs())
+		evidence.LoadAverages = append(evidence.LoadAverages, host.load()...)
+		evidence.LoadContended = host.contended(evidence.LoadAverages)
 	}()
 	m.baselineSize, m.candSize, m.sizeErr = binarySizes(e.state.BinaryPath, candidateBinary)
 	if !e.measureSeedsOnQuietMachine(ctx, s, evidence, id, candidateBinary, &m) {
@@ -407,16 +408,17 @@ func (e *Engine) measureSeedsOnQuietMachine(ctx context.Context, s evalSettings,
 	if !e.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m) {
 		return false
 	}
-	mid := sampleLoad()
-	if !e.state.LocalIsolation || !contended(mid, machineCPUs()) {
+	host := e.evalMachine()
+	mid := host.load()
+	if !e.state.LocalIsolation || !host.contended(mid) {
 		return true
 	}
-	waited, expired := defaultQuietWaiter().wait(ctx)
+	waited, expired := host.waitQuiet(ctx)
 	*evidence, *m = before, fresh
 	evidence.QuietWait += waited
 	evidence.QuietWaitExpired = expired
 	evidence.DiscardedLoad = slices.Concat(before.LoadAverages, mid)
-	evidence.LoadAverages = sampleLoad()
+	evidence.LoadAverages = host.load()
 	return e.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m)
 }
 
