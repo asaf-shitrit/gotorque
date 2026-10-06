@@ -1,0 +1,6 @@
+{
+  "sampler": "macos-sample",
+  "label": "sample pid 85264",
+  "exit_status": 255,
+  "output": "sample[85304]: sample cannot examine process 85264 (with name like '85264') because it no longer appears to be running.\n"
+}

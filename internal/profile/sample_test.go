@@ -40,13 +40,13 @@ func TestSampleMacOSSamplerUnavailable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-only sampler path")
 	}
+	sampler := MacOSSampler{Binary: filepath.Join(t.TempDir(), "does-not-exist")}
 	req := SampleTarget{
-		BinaryPath:   "/usr/bin/true",
-		OutputPath:   filepath.Join(t.TempDir(), "out.txt"),
-		Duration:     time.Second,
-		SampleBinary: filepath.Join(t.TempDir(), "does-not-exist"),
+		BinaryPath: "/usr/bin/true",
+		OutputPath: filepath.Join(t.TempDir(), "out.txt"),
+		Duration:   time.Second,
 	}
-	_, err := SampleTargetProfile(context.Background(), req)
+	_, err := Sample(context.Background(), sampler, req)
 	if err == nil {
 		t.Fatal("expected error when sample tool is unavailable")
 	}
@@ -56,13 +56,13 @@ func TestSampleMacOSTargetExitsBeforeSamplingBegins(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-only sampler path")
 	}
+	sampler := MacOSSampler{Binary: writeFakeSampler(t, 0, "unused")}
 	req := SampleTarget{
-		BinaryPath:   "/usr/bin/true",
-		OutputPath:   filepath.Join(t.TempDir(), "out.txt"),
-		Duration:     time.Second,
-		SampleBinary: writeFakeSampler(t, 0, "unused"),
+		BinaryPath: "/usr/bin/true",
+		OutputPath: filepath.Join(t.TempDir(), "out.txt"),
+		Duration:   time.Second,
 	}
-	_, err := SampleTargetProfile(context.Background(), req)
+	_, err := Sample(context.Background(), sampler, req)
 	if err == nil {
 		t.Fatal("expected error for target that exits immediately")
 	}
@@ -72,14 +72,14 @@ func TestSampleMacOSSamplerFailure(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-only sampler path")
 	}
+	sampler := MacOSSampler{Binary: writeFakeSampler(t, 1, "boom")}
 	req := SampleTarget{
-		BinaryPath:   "/bin/sleep",
-		Args:         []string{"2"},
-		OutputPath:   filepath.Join(t.TempDir(), "out.txt"),
-		Duration:     time.Second,
-		SampleBinary: writeFakeSampler(t, 1, "boom"),
+		BinaryPath: "/bin/sleep",
+		Args:       []string{"2"},
+		OutputPath: filepath.Join(t.TempDir(), "out.txt"),
+		Duration:   time.Second,
 	}
-	_, err := SampleTargetProfile(context.Background(), req)
+	_, err := Sample(context.Background(), sampler, req)
 	if err == nil {
 		t.Fatal("expected error when sampler command exits nonzero")
 	}
@@ -90,14 +90,14 @@ func TestSampleMacOSHappyPath(t *testing.T) {
 		t.Skip("macOS-only sampler path")
 	}
 	outputPath := filepath.Join(t.TempDir(), "nested", "out.txt")
+	sampler := MacOSSampler{Binary: writeFakeSampler(t, 0, macSampleReport)}
 	req := SampleTarget{
-		BinaryPath:   "/bin/sleep",
-		Args:         []string{"2"},
-		OutputPath:   outputPath,
-		Duration:     time.Second,
-		SampleBinary: writeFakeSampler(t, 0, macSampleReport),
+		BinaryPath: "/bin/sleep",
+		Args:       []string{"2"},
+		OutputPath: outputPath,
+		Duration:   time.Second,
 	}
-	result, err := SampleTargetProfile(context.Background(), req)
+	result, err := Sample(context.Background(), sampler, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,21 +121,21 @@ func TestSampleMacOSReapsTargetWithoutLeakingGoroutines(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-only sampler path")
 	}
+	sampler := MacOSSampler{Binary: writeFakeSampler(t, 0, macSampleReport)}
 	req := SampleTarget{
-		BinaryPath:   "/bin/sleep",
-		Args:         []string{"30"},
-		OutputPath:   filepath.Join(t.TempDir(), "out.txt"),
-		Duration:     time.Second,
-		SampleBinary: writeFakeSampler(t, 0, macSampleReport),
+		BinaryPath: "/bin/sleep",
+		Args:       []string{"30"},
+		OutputPath: filepath.Join(t.TempDir(), "out.txt"),
+		Duration:   time.Second,
 	}
 	// Warm up once so runtime goroutines started on first use are not counted.
-	if _, err := SampleTargetProfile(context.Background(), req); err != nil {
+	if _, err := Sample(context.Background(), sampler, req); err != nil {
 		t.Fatalf("warm-up sample: %v", err)
 	}
 	before := runtime.NumGoroutine()
 	for i := range 3 {
 		req.OutputPath = filepath.Join(t.TempDir(), "out.txt")
-		if _, err := SampleTargetProfile(context.Background(), req); err != nil {
+		if _, err := Sample(context.Background(), sampler, req); err != nil {
 			t.Fatalf("sample %d: %v", i, err)
 		}
 	}
@@ -252,35 +252,6 @@ func TestTerminateStopsRunningProcess(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("terminate took too long: %v", elapsed)
-	}
-}
-
-func TestFinishSampleResultRejectsEmptyOutput(t *testing.T) {
-	if _, err := finishSampleResult("macos-sample", filepath.Join(t.TempDir(), "out.txt"), "   ", nil); err == nil {
-		t.Fatal("expected error for empty sampler output")
-	}
-}
-
-func TestFinishSampleResultRejectsNoRecognizableFrames(t *testing.T) {
-	if _, err := finishSampleResult("linux-perf", filepath.Join(t.TempDir(), "out.txt"), "no frames here\n", nil); err == nil {
-		t.Fatal("expected error when no frames are recognizable")
-	}
-}
-
-func TestFinishSampleResultLinuxPerfHappyPath(t *testing.T) {
-	outputPath := filepath.Join(t.TempDir(), "nested", "out.txt")
-	result, err := finishSampleResult("linux-perf", outputPath, perfScriptOutput, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Sampler != "linux-perf" {
-		t.Fatalf("Sampler = %q, want linux-perf", result.Sampler)
-	}
-	if len(result.Functions) == 0 {
-		t.Fatal("expected parsed functions")
-	}
-	if _, err := os.Stat(outputPath); err != nil {
-		t.Fatalf("expected raw report written: %v", err)
 	}
 }
 
@@ -474,9 +445,9 @@ func TestSampleTargetProfileRetriesAnEmptyCallGraph(t *testing.T) {
 		t.Skip("macOS-only sampler path")
 	}
 	sampler, runs := writeFlakySampler(t, macSampleReport)
-	result, err := SampleTargetProfile(context.Background(), SampleTarget{
+	result, err := Sample(context.Background(), MacOSSampler{Binary: sampler}, SampleTarget{
 		BinaryPath: "/bin/sleep", Args: []string{"3"},
-		OutputPath: filepath.Join(t.TempDir(), "out.txt"), Duration: time.Second, SampleBinary: sampler,
+		OutputPath: filepath.Join(t.TempDir(), "out.txt"), Duration: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("a retried sample should succeed: %v", err)

@@ -1,0 +1,6 @@
+{
+  "sampler": "macos-sample",
+  "label": "sample pid 34214",
+  "exit_status": 255,
+  "output": "sample[34215]: sample cannot examine process 34214 (b2a50becf96b9ab0) for unknown reasons, even though it appears to exist; try running with `sudo`.\n"
+}

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,9 +44,6 @@ type SampleTarget struct {
 	// it defaults to os.TempDir().
 	TempRoot string
 
-	// SampleBinary overrides /usr/bin/sample (tests only).
-	SampleBinary string
-
 	// Sandbox is the campaign's sandbox policy (the target manifest's
 	// sandbox block). Direct sampling cannot apply network or filesystem
 	// isolation -- it needs a live PID to attach a sampler to, which the
@@ -71,45 +67,6 @@ type SampleResult struct {
 	// the same style as runner.RunResult.IsolationNotes.
 	IsolationNotes []string
 }
-
-func SampleTargetProfile(ctx context.Context, req SampleTarget) (SampleResult, error) {
-	if req.BinaryPath == "" {
-		return SampleResult{}, errors.New("binary path is required")
-	}
-	if !filepath.IsAbs(req.BinaryPath) {
-		return SampleResult{}, errors.New("binary path must be absolute")
-	}
-	if req.OutputPath == "" || !filepath.IsAbs(req.OutputPath) {
-		return SampleResult{}, errors.New("output path must be absolute")
-	}
-	if req.Duration <= 0 {
-		req.Duration = 4 * time.Second
-	}
-	sample := sampleMacOS
-	switch runtime.GOOS {
-	case "darwin":
-	case "linux":
-		sample = sampleLinuxPerf
-	default:
-		return SampleResult{}, fmt.Errorf("direct target sampling is unsupported on %s", runtime.GOOS)
-	}
-	result, err := sample(ctx, req)
-	if errors.Is(err, ErrNoFrames) {
-		// A sampler that attached to a live target and still recorded no
-		// frame failed transiently: on a dasel campaign /usr/bin/sample
-		// wrote an empty call graph for a target that ran 13 s, the
-		// campaign had no hot function and no benchmark to fall back on,
-		// and every candidate was written blind. The same binary and input
-		// sampled 102 functions when run again.
-		result, err = sample(ctx, req)
-	}
-	return result, err
-}
-
-// ErrNoFrames marks sampler output with no recognizable frame: a sampler that
-// attached and recorded nothing, transiently or because the target finished
-// as sampling began.
-var ErrNoFrames = errors.New("no recognizable frames in sampler output")
 
 // ParseMacOSSample extracts hot functions from `/usr/bin/sample` text output.
 // It prefers the "Sort by top of stack" section (self weights per frame) and
@@ -287,35 +244,53 @@ func rankWeights(weights map[string]int) []Function {
 
 const maxSamplerOutputBytes = 8 << 20
 
-// ErrTargetExitedEarly reports a target that finished before the macOS sampler
-// could attach: it has to be alive half a second after it starts. The caller
-// can give it a larger input and try again.
-var ErrTargetExitedEarly = errors.New("target exited before sampling began")
-
-func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
-	sampler := req.SampleBinary
+// sampleMacOS is the macOS adapter's process plumbing: it starts the target,
+// attaches /usr/bin/sample, and returns what happened. Judging the transcript
+// is Classify's job. These helpers all carry the sampleMacOS prefix because the
+// Makefile excludes that name from the CRAP gate: only macOS can run them.
+func sampleMacOS(ctx context.Context, req SampleTarget, sampler string) (Transcript, error) {
+	transcript := Transcript{Sampler: SamplerMacOS}
 	if sampler == "" {
 		sampler = "/usr/bin/sample"
 	}
 	if _, err := os.Stat(sampler); err != nil {
-		return SampleResult{}, fmt.Errorf("macOS sample tool unavailable: %w", err)
+		transcript.Unavailable = fmt.Sprintf("macOS sample tool unavailable: %v", err)
+		return transcript, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, req.Duration+15*time.Second)
 	defer cancel()
 
 	workDir, cleanup, err := prepareWorkDir(req)
 	if err != nil {
-		return SampleResult{}, err
+		return Transcript{}, err
 	}
 	defer cleanup()
 
+	target, notes, err := sampleMacOSStart(ctx, req, workDir)
+	if err != nil {
+		return Transcript{}, err
+	}
+	transcript.IsolationNotes = notes
+	if target == nil {
+		transcript.ExitedBeforeAttach = true
+		return transcript, nil
+	}
+	if err := sampleMacOSAttach(ctx, sampler, req, target, &transcript); err != nil {
+		return Transcript{}, err
+	}
+	return transcript, nil
+}
+
+// sampleMacOSStart starts the target and gives it half a second, the
+// sampler's minimum. It returns a nil process when the target is already gone.
+func sampleMacOSStart(ctx context.Context, req SampleTarget, workDir string) (*os.Process, []string, error) {
 	// Started with exec.Command rather than exec.CommandContext deliberately:
 	// this target outlives the sampler call and is reaped by terminate() through
 	// os.Process.Wait, never Cmd.Wait. CommandContext starts a watcher goroutine
 	// that only finishes once Wait drains its unbuffered result channel, so every
 	// sample would leak that goroutine and retain the Cmd until the process
 	// exits. Cancellation still reaches the target: the sampler runs under ctx,
-	// and every path out of this function reaps the target.
+	// and every path out of sampleMacOS reaps the target.
 	//
 	binaryPath, args, limitNotes := runner.WrapWithResourceLimits(ctx, req.Sandbox.Limits, req.BinaryPath, req.Args)
 	//nolint:noctx // reaped by terminate(), not Cmd.Wait; CommandContext would leak a watcher goroutine
@@ -327,37 +302,61 @@ func sampleMacOS(ctx context.Context, req SampleTarget) (SampleResult, error) {
 	target.Env = sampleEnv(req, workDir)
 	target.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := target.Start(); err != nil {
-		return SampleResult{}, fmt.Errorf("start target binary: %w", err)
+		return nil, nil, fmt.Errorf("start target binary: %w", err)
 	}
 	time.Sleep(500 * time.Millisecond)
-	if err := target.Process.Signal(syscall.Signal(0)); err != nil {
-		_, _ = target.Process.Wait()
-		return SampleResult{}, ErrTargetExitedEarly
+	if target.Process.Signal(syscall.Signal(0)) == nil {
+		return target.Process, limitNotes, nil
 	}
+	_, _ = target.Process.Wait()
+	return nil, limitNotes, nil
+}
 
+// sampleMacOSAttach runs /usr/bin/sample against the live target, reaps the
+// target, and records the sampler's report or its exit status on the
+// transcript.
+func sampleMacOSAttach(ctx context.Context, sampler string, req SampleTarget, target *os.Process, transcript *Transcript) error {
 	temp, err := os.CreateTemp("", "gotorque-sample-*.txt")
 	if err != nil {
-		_ = terminate(target.Process)
-		return SampleResult{}, err
+		_ = terminate(target)
+		return err
 	}
 	_ = temp.Close()
 	defer func() { _ = os.Remove(temp.Name()) }()
 
 	durationSeconds := strconv.Itoa(int(req.Duration.Seconds() + 1))
-	sampleCmd := exec.CommandContext(ctx, sampler, strconv.Itoa(target.Process.Pid), durationSeconds, "-file", temp.Name())
+	sampleCmd := exec.CommandContext(ctx, sampler, strconv.Itoa(target.Pid), durationSeconds, "-file", temp.Name())
 	output, sampleErr := runBounded(sampleCmd)
-	waitErr := terminate(target.Process)
+	waitErr := terminate(target)
+	transcript.Label = fmt.Sprintf("sample pid %d", target.Pid)
+	transcript.Output = string(output)
+	if status, ok := exitStatus(sampleErr); ok {
+		transcript.ExitStatus = status
+		return nil
+	}
 	if sampleErr != nil {
-		return SampleResult{}, fmt.Errorf("sample pid %d: %w: %s", target.Process.Pid, sampleErr, truncateForError(output))
+		return fmt.Errorf("%s: %w: %s", transcript.Label, sampleErr, truncateForError(output))
 	}
 	if waitErr != nil {
-		return SampleResult{}, fmt.Errorf("reap sampled target: %w", waitErr)
+		return fmt.Errorf("reap sampled target: %w", waitErr)
 	}
 	raw, err := os.ReadFile(temp.Name())
 	if err != nil {
-		return SampleResult{}, fmt.Errorf("read sample report: %w", err)
+		return fmt.Errorf("read sample report: %w", err)
 	}
-	return finishSampleResult("macos-sample", req.OutputPath, string(raw), limitNotes)
+	transcript.Report = string(raw)
+	return nil
+}
+
+// exitStatus extracts a process's own non-zero exit status from the error its
+// Run returned. A signal, a failed start or an output overflow carries none:
+// those are plumbing failures, not something the sampler said.
+func exitStatus(err error) (int, bool) {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
 }
 
 // sampleEnv builds the target's environment from the sandbox policy's
@@ -371,17 +370,22 @@ func sampleEnv(req SampleTarget, workDir string) []string {
 	return runner.BuildEnv(req.Sandbox.Environment, base, nil)
 }
 
-func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error) {
+// sampleLinuxPerf is the Linux adapter's process plumbing: `perf record`
+// around the target, then `perf script` over the data. Excluded from the CRAP
+// gate (Makefile) because only Linux can run it.
+func sampleLinuxPerf(ctx context.Context, req SampleTarget) (Transcript, error) {
+	transcript := Transcript{Sampler: SamplerLinuxPerf}
 	perf, err := exec.LookPath("perf")
 	if err != nil {
-		return SampleResult{}, errors.New("perf is not installed")
+		transcript.Unavailable = "perf is not installed"
+		return transcript, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, req.Duration+15*time.Second)
 	defer cancel()
 
 	workDir, cleanup, err := prepareWorkDir(req)
 	if err != nil {
-		return SampleResult{}, err
+		return Transcript{}, err
 	}
 	defer cleanup()
 
@@ -392,7 +396,7 @@ func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error
 	// the target directly, and the sandbox's max_memory_bytes is left
 	// unenforced for the duration of a sampled run -- recorded below --
 	// rather than bounding perf's own address space alongside the target's.
-	limitNotes := runner.ProfilingResourceLimitNotes(req.Sandbox.Limits)
+	transcript.IsolationNotes = runner.ProfilingResourceLimitNotes(req.Sandbox.Limits)
 	recordArgs := append([]string{"record", "-q", "-F", "999", "-e", "cpu-clock",
 		"-o", dataFile, "--", req.BinaryPath}, req.Args...)
 	record := exec.CommandContext(ctx, perf, recordArgs...)
@@ -400,15 +404,30 @@ func sampleLinuxPerf(ctx context.Context, req SampleTarget) (SampleResult, error
 	record.Stdin = bytes.NewReader(req.Stdin)
 	record.Env = sampleEnv(req, workDir)
 	output, recordErr := runBounded(record)
-	if recordErr != nil {
-		return SampleResult{}, fmt.Errorf("perf record: %w: %s", recordErr, truncateForError(output))
+	if failed, err := perfStep(&transcript, "perf record", output, recordErr); failed || err != nil {
+		return transcript, err
 	}
 	script := exec.CommandContext(ctx, perf, "script", "-i", dataFile)
 	scriptOutput, scriptErr := runBounded(script)
-	if scriptErr != nil {
-		return SampleResult{}, fmt.Errorf("perf script: %w: %s", scriptErr, truncateForError(scriptOutput))
+	if failed, err := perfStep(&transcript, "perf script", scriptOutput, scriptErr); failed || err != nil {
+		return transcript, err
 	}
-	return finishSampleResult("linux-perf", req.OutputPath, string(scriptOutput), limitNotes)
+	transcript.Report = string(scriptOutput)
+	return transcript, nil
+}
+
+// perfStep records a failed perf step on the transcript. It reports whether
+// the step failed with an exit status the transcript now carries, or returns
+// the plumbing error when it failed without one.
+func perfStep(transcript *Transcript, label string, output []byte, err error) (bool, error) {
+	if err == nil {
+		return false, nil
+	}
+	if status, ok := exitStatus(err); ok {
+		transcript.Label, transcript.ExitStatus, transcript.Output = label, status, string(output)
+		return true, nil
+	}
+	return false, fmt.Errorf("%s: %w: %s", label, err, truncateForError(output))
 }
 
 // prepareWorkDir materializes seed fixtures into a scratch directory the
@@ -481,33 +500,6 @@ func terminate(process *os.Process) error {
 		_ = process.Kill()
 		return <-done
 	}
-}
-
-func finishSampleResult(sampler, outputPath, raw string, isolationNotes []string) (SampleResult, error) {
-	if strings.TrimSpace(raw) == "" {
-		return SampleResult{}, errors.New("sampler produced no output")
-	}
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o700); err != nil {
-		return SampleResult{}, err
-	}
-	limit := raw
-	if len(limit) > maxSamplerOutputBytes {
-		limit = limit[:maxSamplerOutputBytes]
-	}
-	if err := os.WriteFile(outputPath, []byte(limit), 0o600); err != nil {
-		return SampleResult{}, err
-	}
-	var functions []Function
-	var stacks []Stack
-	if sampler == "macos-sample" {
-		functions, stacks = ParseMacOSSample(limit), MacOSSampleStacks(limit)
-	} else {
-		functions, stacks = ParsePerfScript(limit), PerfScriptStacks(limit)
-	}
-	if len(functions) == 0 {
-		return SampleResult{}, ErrNoFrames
-	}
-	return SampleResult{Sampler: sampler, Functions: functions, Stacks: stacks, RawReport: outputPath, IsolationNotes: isolationNotes}, nil
 }
 
 func truncateForError(output []byte) string {
