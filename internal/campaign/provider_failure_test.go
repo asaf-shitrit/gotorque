@@ -70,6 +70,8 @@ func TestProviderOutageFailsTheCampaignAndResumes(t *testing.T) {
 	snapshot, err := loadReportSnapshot(filepath.Join(campaignDir, ReportJSONName))
 	require.NoError(t, err)
 	require.Equal(t, StatusFailed, snapshot.Status, "the report on disk must carry the terminal status")
+	require.True(t, strings.HasPrefix(snapshot.ProviderFailure, "optimizer: "), "the report must name the failed role apart from the prose: %q", snapshot.ProviderFailure)
+	require.Contains(t, RenderMarkdown(snapshot), "- Failed role: optimizer: ")
 	require.NoError(t, engine.Close())
 
 	resumed, err := Resume(campaignDir, nil)
@@ -79,6 +81,7 @@ func TestProviderOutageFailsTheCampaignAndResumes(t *testing.T) {
 	resumed.SetADK(&working, &cfg)
 	require.NoError(t, resumed.Run(context.Background()))
 	require.Equal(t, StatusCompleted, resumed.State().Status)
+	require.Empty(t, resumed.State().ProviderFailure, "a resume that completes clears the failure")
 	// The two failed cycles count against the budget of four, so the resumed
 	// process spends the remaining two (#91).
 	require.Equal(t, "maximum candidate count reached", resumed.State().StopReason)

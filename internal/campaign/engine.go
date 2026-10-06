@@ -256,13 +256,18 @@ type State struct {
 	// benchmark-based discovery (profiles/bench-cpu.pb.gz), or is empty when
 	// only a non-pprof sampler report exists. Only this file may seed the
 	// informational PGO lane, because -pgo requires pprof input.
-	PGOProfilePath    string             `json:"pgo_profile_path,omitempty"`
-	Runs              []domain.RunResult `json:"runs,omitempty"`
-	CompletedSteps    map[string]bool    `json:"completed_steps"`
-	StopReason        string             `json:"stop_reason,omitempty"`
-	Error             string             `json:"error,omitempty"`
-	LocalIsolation    bool               `json:"local_isolation"`
-	DependencyDigests map[string]string  `json:"dependency_digests,omitempty"`
+	PGOProfilePath string             `json:"pgo_profile_path,omitempty"`
+	Runs           []domain.RunResult `json:"runs,omitempty"`
+	CompletedSteps map[string]bool    `json:"completed_steps"`
+	StopReason     string             `json:"stop_reason,omitempty"`
+	// ProviderFailure is the role and failure that stopped the campaign when a
+	// role could not answer (orchestrator.CampaignResult.ProviderFailure),
+	// kept apart from the stop reason's prose so a reader need not parse it.
+	// A resume that completes clears it.
+	ProviderFailure   string            `json:"provider_failure,omitempty"`
+	Error             string            `json:"error,omitempty"`
+	LocalIsolation    bool              `json:"local_isolation"`
+	DependencyDigests map[string]string `json:"dependency_digests,omitempty"`
 	// SandboxIsolationNotes records, deduplicated, anything the manifest's
 	// sandbox policy asked for that some run in this campaign could not
 	// fully enforce on this host -- a probe-based local-isolation
@@ -819,6 +824,7 @@ func (e *Engine) finishCampaign(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		e.state.ProviderFailure = result.ProviderFailure
 		if result.ProviderFailure != "" {
 			// A role could not answer (the optimizer in consecutive cycles, or the
 			// analyst for every hot function): no bound was reached, so

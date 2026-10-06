@@ -159,7 +159,11 @@ func RenderMarkdown(state State) string {
 func writeReportHeader(b *strings.Builder, state State) {
 	fmt.Fprintf(b, "# Go optimization campaign `%s`\n\n", state.ID)
 	fmt.Fprintf(b, "**%s evidence** (%s/%s)\n\n", strings.ToUpper(state.Environment.Authority), state.Environment.OS, state.Environment.Architecture)
-	fmt.Fprintf(b, "- Status: `%s`\n- Stop reason: %s\n- Repository: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n", state.Status, state.StopReason, state.Repository, state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
+	fmt.Fprintf(b, "- Status: `%s`\n- Stop reason: %s\n", state.Status, state.StopReason)
+	if state.ProviderFailure != "" {
+		fmt.Fprintf(b, "- Failed role: %s\n", state.ProviderFailure)
+	}
+	fmt.Fprintf(b, "- Repository: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n", state.Repository, state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
 	if state.Analyst == AnalystJev {
 		fmt.Fprintf(b, "- Analyst: Jev cause classification (`%s`), not a model role\n", jev.Model)
 	}
