@@ -224,7 +224,7 @@ func (r *generateRun) yieldExhausted(yield func(*model.LLMResponse, error) bool,
 		return
 	}
 	if r.lastErr != nil {
-		yield(nil, fmt.Errorf("%s model call failed after %d attempts: %w", role, attempts, r.lastErr))
+		yield(nil, fmt.Errorf("%s model call failed after %d attempts: %w", role, attempts, summarizeAPIError(r.lastErr)))
 		return
 	}
 	yield(nil, fmt.Errorf("%s model call produced no answer in %d attempts: every response was reasoning-only or empty", role, attempts))
@@ -252,7 +252,8 @@ var nonRetryableStatus = map[int]bool{
 // permanentStatusError reports whether err carries an openai-go API error
 // (openai.Error, populated from the HTTP response by the SDK's transport
 // layer) with a status the ladder cannot fix by retrying, and if so returns
-// it wrapped with the role and a note that it was not retried. ADK's
+// it wrapped with the role and a note that it was not retried, summarized to
+// the status and the provider's message (summarizeAPIError). ADK's
 // non-streaming path wraps this in "openai: call failed: %w" and its
 // streaming path yields stream.Err() raw, so errors.As is used rather than
 // assuming either shape.
@@ -261,7 +262,7 @@ func permanentStatusError(role string, err error) (bool, error) {
 	if !errors.As(err, &apiErr) || !nonRetryableStatus[apiErr.StatusCode] {
 		return false, nil
 	}
-	return true, fmt.Errorf("%s model call failed with HTTP %d, not retried: %w", role, apiErr.StatusCode, err)
+	return true, fmt.Errorf("%s model call failed, not retried: %w", role, summarizeAPIError(err))
 }
 
 func waitBackoff(ctx context.Context, backoff time.Duration) error {
