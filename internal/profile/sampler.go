@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -115,7 +116,7 @@ func Classify(t Transcript) (SampleResult, error) {
 		return SampleResult{}, &SampleError{Kind: FailExitedEarly, Detail: ErrTargetExitedEarly.Error()}
 	}
 	if t.ExitStatus != 0 {
-		return SampleResult{}, &SampleError{Kind: FailFailed, Detail: fmt.Sprintf("%s: exit status %d: %s", labelOr(t.Label, "sampler"), t.ExitStatus, truncateForError([]byte(t.Output)))}
+		return SampleResult{}, samplerExit(t)
 	}
 	if strings.TrimSpace(t.Report) == "" {
 		return SampleResult{}, &SampleError{Kind: FailFailed, Detail: "sampler produced no output"}
@@ -126,6 +127,25 @@ func Classify(t Transcript) (SampleResult, error) {
 		return SampleResult{}, &SampleError{Kind: FailNoFrames, Detail: ErrNoFrames.Error()}
 	}
 	return SampleResult{Sampler: t.Sampler, Functions: functions, Stacks: stacks, IsolationNotes: t.IsolationNotes}, nil
+}
+
+// lostTarget are the ways /usr/bin/sample says the target ended while it was
+// attaching: it exits 255 with "cannot examine process" and one of these. The
+// same message also reports a refused permission, which is a real failure and
+// is not on this list.
+var lostTarget = []string{
+	"no longer appears to be running",
+	"for unknown reasons, even though it appears to exist",
+}
+
+// samplerExit classifies a sampler process that exited non-zero: the target
+// ending under it is the race a larger input answers, anything else a failure.
+func samplerExit(t Transcript) *SampleError {
+	detail := fmt.Sprintf("%s: exit status %d: %s", labelOr(t.Label, "sampler"), t.ExitStatus, truncateForError([]byte(t.Output)))
+	if slices.ContainsFunc(lostTarget, func(reason string) bool { return strings.Contains(t.Output, reason) }) {
+		return &SampleError{Kind: FailExitedEarly, Detail: ErrTargetExitedEarly.Error() + ": " + detail}
+	}
+	return &SampleError{Kind: FailFailed, Detail: detail}
 }
 
 func labelOr(label, fallback string) string {

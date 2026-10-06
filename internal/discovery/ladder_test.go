@@ -17,9 +17,7 @@ import (
 // recordedBusy loads the transcript of a real sample of a CPU-bound program.
 func recordedBusy(t *testing.T) profile.Transcript {
 	t.Helper()
-	transcript, err := profile.LoadTranscript(filepath.Join("..", "profile", "testdata", "transcripts", "macos-busy.json"))
-	require.NoError(t, err)
-	return transcript
+	return recorded(t, "macos-busy")
 }
 
 var gone = profile.Transcript{Sampler: profile.SamplerMacOS, ExitedBeforeAttach: true}
