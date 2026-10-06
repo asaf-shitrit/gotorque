@@ -1,0 +1,103 @@
+Analysis of sampling rec (pid 84709) every 1 millisecond
+Process:         rec [84709]
+Path:            /private/tmp/*/rec
+Load Address:    0x104420000
+Identifier:      rec
+Version:         ???
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  bash [84707]
+Target Type:     live task
+
+Date/Time:       2026-10-07 00:29:52.068 +0300
+Launch Time:     2026-10-07 00:29:51.025 +0300
+OS Version:      macOS 15.4.1 (24E263)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         2721K
+Physical footprint (peak):  2721K
+Idle exit:                  untracked
+----
+
+Call graph:
+    1782 Thread_23253559   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 1782 runtime.kevent_trampoline.abi0  (in rec) + 40  [0x104494ea8]
+    +   1782 kevent  (in libsystem_kernel.dylib) + 8  [0x190c39d04]
+    1782 Thread_23253561
+    + 1782 runtime.asmcgocall.abi0  (in rec) + 212  [0x104494134]
+    +   1782 runtime.pthread_cond_timedwait_relative_np_trampoline.abi0  (in rec) + 28  [0x10449519c]
+    +     1782 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1028  [0x190c7610c]
+    +       1782 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x190c373cc]
+    1782 Thread_23253562
+    + 1782 ???  (in <unknown binary>)  [0xd65f03c0]
+    +   1782 runtime.asmcgocall.abi0  (in rec) + 212  [0x104494134]
+    +     1782 runtime.pthread_cond_wait_trampoline.abi0  (in rec) + 24  [0x104495168]
+    +       1782 _pthread_cond_wait  (in libsystem_pthread.dylib) + 984  [0x190c760e0]
+    +         1782 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x190c373cc]
+    1782 Thread_23253563
+    + 1782 ???  (in <unknown binary>)  [0xd65f03c0]
+    +   1782 runtime.asmcgocall.abi0  (in rec) + 212  [0x104494134]
+    +     1782 runtime.pthread_cond_wait_trampoline.abi0  (in rec) + 24  [0x104495168]
+    +       1782 _pthread_cond_wait  (in libsystem_pthread.dylib) + 984  [0x190c760e0]
+    +         1782 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x190c373cc]
+    1782 Thread_23253564
+      1782 ???  (in <unknown binary>)  [0xd65f03c0]
+        1782 runtime.asmcgocall.abi0  (in rec) + 212  [0x104494134]
+          1782 runtime.pthread_cond_wait_trampoline.abi0  (in rec) + 24  [0x104495168]
+            1782 _pthread_cond_wait  (in libsystem_pthread.dylib) + 984  [0x190c760e0]
+              1782 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x190c373cc]
+
+Total number in stack (recursive counted multiple, when >=5):
+
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        7128
+        kevent  (in libsystem_kernel.dylib)        1782
+
+Binary Images:
+       0x104420000 -        0x10454060b +rec (???) <0D96DC51-ADBC-3852-857D-9FC3558C38A5> /tmp/*/rec
+       0x19087c000 -        0x1908cf833  libobjc.A.dylib (940.4) <3262CD12-9CC3-3417-895F-E859872C3848> /usr/lib/libobjc.A.dylib
+       0x1908d0000 -        0x19096aa83  dyld (1.0.0 - 1284.15) <ACA43A8D-6369-3A2C-AF92-3D4C458523D6> /usr/lib/dyld
+       0x19096b000 -        0x19096e168  libsystem_blocks.dylib (96) <AC7AF500-F60C-3198-8A67-AAD1F450E7ED> /usr/lib/system/libsystem_blocks.dylib
+       0x19096f000 -        0x1909b98ff  libxpc.dylib (2894.101.1) <C211DDEA-E3C5-351D-8619-900C01BEDFC9> /usr/lib/system/libxpc.dylib
+       0x1909ba000 -        0x1909d57ff  libsystem_trace.dylib (1643.100.44) <9BD46DFC-8183-306F-9521-25F7808711AC> /usr/lib/system/libsystem_trace.dylib
+       0x1909d6000 -        0x190a7422f  libcorecrypto.dylib (1736.100.95) <77E5205F-75D8-3B92-A647-A22C0BC6B696> /usr/lib/system/libcorecrypto.dylib
+       0x190a75000 -        0x190abbf2f  libsystem_malloc.dylib (715.100.22) <9E4556E4-8822-3111-A801-02066E2FDEBC> /usr/lib/system/libsystem_malloc.dylib
+       0x190abc000 -        0x190b0271f  libdispatch.dylib (1521.100.8) <3329EB0A-E722-3DB0-A627-E27297282A0F> /usr/lib/system/libdispatch.dylib
+       0x190b03000 -        0x190b05d1b  libsystem_featureflags.dylib (97) <60AEC674-B6FA-304A-89E4-7A8FB5AB799F> /usr/lib/system/libsystem_featureflags.dylib
+       0x190b06000 -        0x190b8746f  libsystem_c.dylib (1698.100.8) <20EBE22E-66E2-3556-B70B-54A04E8363A8> /usr/lib/system/libsystem_c.dylib
+       0x190b88000 -        0x190c14ff7  libc++.1.dylib (1900.178) <53484980-83FC-35E9-8786-E6CF5EBA9471> /usr/lib/libc++.1.dylib
+       0x190c15000 -        0x190c32fff  libc++abi.dylib (1900.178) <C9232B93-4200-3977-BC04-B8BBA9FAE866> /usr/lib/libc++abi.dylib
+       0x190c33000 -        0x190c6e30b  libsystem_kernel.dylib (11417.101.15) <225CB279-20A9-381D-A163-D2BE263F5327> /usr/lib/system/libsystem_kernel.dylib
+       0x190c6f000 -        0x190c7ba47  libsystem_pthread.dylib (536) <8D27EC9A-D919-31A4-8DF8-31A2FD2E593C> /usr/lib/system/libsystem_pthread.dylib
+       0x190c7c000 -        0x190cabb33  libdyld.dylib (1284.15) <E41473D4-D8B6-30F4-8646-E82B51E1B43E> /usr/lib/system/libdyld.dylib
+       0x190cac000 -        0x190cb3b4f  libsystem_platform.dylib (349) <27ED40C8-6B18-3266-93A7-387FB33CA186> /usr/lib/system/libsystem_platform.dylib
+       0x190cb4000 -        0x190ce36e7  libsystem_info.dylib (595) <79BFD1B3-6A0E-36C4-A6D7-B339AD4DDCBF> /usr/lib/system/libsystem_info.dylib
+       0x1944a9000 -        0x1944b3387  libsystem_darwin.dylib (1698.100.8) <126D0342-CF6C-344C-977A-0A55B8E10B75> /usr/lib/system/libsystem_darwin.dylib
+       0x19490a000 -        0x19491bfeb  libsystem_notify.dylib (342) <C7297836-0E3D-38A9-9239-36243674C409> /usr/lib/system/libsystem_notify.dylib
+       0x19690c000 -        0x196926e8f  libsystem_networkextension.dylib (2063.101.3) <66000862-B9D9-3940-8AB3-0FDB8F568572> /usr/lib/system/libsystem_networkextension.dylib
+       0x1969a3000 -        0x1969bafdb  libsystem_asl.dylib (402) <9BAEFFB7-48AF-322A-9115-182C60AEBADD> /usr/lib/system/libsystem_asl.dylib
+       0x1984fc000 -        0x1985043a7  libsystem_symptoms.dylib (2022.100.26) <8BED9E04-42CD-32F0-A90C-ED59E8FD2888> /usr/lib/system/libsystem_symptoms.dylib
+       0x19bd33000 -        0x19bd6338f  libsystem_containermanager.dylib (689.100.6) <C9C367BC-7754-3445-BB2C-797F4E7BE132> /usr/lib/system/libsystem_containermanager.dylib
+       0x19cf96000 -        0x19cf9a5df  libsystem_configuration.dylib (1351.101.1) <E80F1CAF-2648-3FF3-BDBB-CCCEBAED2199> /usr/lib/system/libsystem_configuration.dylib
+       0x19cf9b000 -        0x19cfa147f  libsystem_sandbox.dylib (2401.101.1) <C719032B-72A5-386F-A970-7D706F39E633> /usr/lib/system/libsystem_sandbox.dylib
+       0x19df9c000 -        0x19df9efe3  libquarantine.dylib (181.100.13) <BDFA4A83-BBE1-31F1-A27D-C433CF12BE54> /usr/lib/system/libquarantine.dylib
+       0x19e6ab000 -        0x19e6b17a3  libsystem_coreservices.dylib (178) <5E6A695D-8EE0-34C4-97F4-8B5777CD8EE7> /usr/lib/system/libsystem_coreservices.dylib
+       0x19eb28000 -        0x19eb652b7  libsystem_m.dylib (3291.100.4) <24F92DD3-0CD3-3006-AA86-D14E43F01E6F> /usr/lib/system/libsystem_m.dylib
+       0x19eb67000 -        0x19eb6a4e7  libmacho.dylib (1024.3) <80134BCC-A6DB-3DF6-BF11-03932442C73F> /usr/lib/system/libmacho.dylib
+       0x19eb84000 -        0x19eb915ef  libcommonCrypto.dylib (600035) <D4377148-EA51-3F63-839B-D1B5DDA0173E> /usr/lib/system/libcommonCrypto.dylib
+       0x19eb92000 -        0x19eb9bad7  libunwind.dylib (1900.125) <44BBA430-6949-3963-9603-BEF7A7A24D1C> /usr/lib/system/libunwind.dylib
+       0x19eba4000 -        0x19ebae5bf  libcopyfile.dylib (217) <B09264BA-81A5-3D75-8346-4011FB91504A> /usr/lib/system/libcopyfile.dylib
+       0x19ebaf000 -        0x19ebb298f  libcompiler_rt.dylib (103.3) <C793D908-AEE0-3EB7-A227-0AAAD07C653F> /usr/lib/system/libcompiler_rt.dylib
+       0x19ebb3000 -        0x19ebb7a1b  libsystem_collections.dylib (1698.100.8) <0B00D666-9586-32FD-9BFD-D00859C99922> /usr/lib/system/libsystem_collections.dylib
+       0x19ebb8000 -        0x19ebbb2c7  libsystem_secinit.dylib (153.100.10) <05D6D44D-34A5-3D11-9437-F0C116E55DCD> /usr/lib/system/libsystem_secinit.dylib
+       0x19ebbc000 -        0x19ebbeb6f  libremovefile.dylib (81) <B0D1E2D8-62D3-38A3-AFA9-E44B4BAFF856> /usr/lib/system/libremovefile.dylib
+       0x19ebbf000 -        0x19ebbff27  libkeymgr.dylib (31) <1832D257-6413-3FFF-8AE6-298D839B1589> /usr/lib/system/libkeymgr.dylib
+       0x19ebc0000 -        0x19ebc8d4f  libsystem_dnssd.dylib (2600.100.147) <33FC01EB-30C6-3138-BE9B-8F48E678C90D> /usr/lib/system/libsystem_dnssd.dylib
+       0x19ebc9000 -        0x19ebce0b3  libcache.dylib (95) <A9B6908F-C7A7-3FF7-BF5F-04E4958767B6> /usr/lib/system/libcache.dylib
+       0x19ebcf000 -        0x19ebd0ca3  libSystem.B.dylib (1351) <DD8E35E8-1C94-3CB6-846E-0D1F2F5BC602> /usr/lib/libSystem.B.dylib
+       0x1a29f1000 -        0x1a2a0d003  libresolv.9.dylib (91) <D14DA8B3-828A-3F72-9FFD-CA86C95A37C6> /usr/lib/libresolv.9.dylib
+       0x278920000 -        0x278927109  libRosetta.dylib (349) <E23AF5F8-32B3-3D19-AF23-028DD1AD90ED> /usr/lib/libRosetta.dylib
+       0x279d41000 -        0x279d44deb  libsystem_darwindirectory.dylib (122) <9987E5C5-ADAF-38B3-A6DB-C773331AA54D> /usr/lib/system/libsystem_darwindirectory.dylib
+       0x279d45000 -        0x279d4c44b  libsystem_eligibility.dylib (181.101.2) <6BA33F46-F163-3F14-9352-BE162CA59201> /usr/lib/system/libsystem_eligibility.dylib
+       0x279d4d000 -        0x279d52551  libsystem_sanitizers.dylib (18.2) <31CB279E-0D9D-31AB-8866-35F4BF5BA545> /usr/lib/system/libsystem_sanitizers.dylib
