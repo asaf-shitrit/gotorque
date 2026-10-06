@@ -58,12 +58,9 @@ func (e *Engine) runNullCandidates(ctx context.Context) (string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		record := candidateRecord(attempt, evidence, nil, agents.ReviewerResult{}, e.policyVerdict(evidence))
-		e.state.CandidateRecords = append(e.state.CandidateRecords, record)
-		if err := e.saveEvent("candidate_evaluated", candidateEventSummary(record, e.state.Manifest.Performance.PrimaryMetric), record); err != nil {
+		if _, err := e.recordVerdict(attempt, evidence, nil, agents.ReviewerResult{}); err != nil {
 			return "", err
 		}
-		e.snapshotReports()
 	}
 	return fmt.Sprintf("%d null candidates evaluated", e.state.NullCandidates), nil
 }
