@@ -69,14 +69,12 @@ func (e *Engine) Verify(ctx context.Context, attempt, pairs int) (Verification, 
 	if err := e.runBuildStep(ctx); err != nil {
 		return Verification{}, err
 	}
-	e.verifying, e.repetitions = true, pairs
-	defer func() { e.verifying, e.repetitions = false, 0 }()
-	evidence, err := e.evaluateCandidate(ctx, orchestrator.CandidateRequest{
+	evidence, err := e.evaluateWith(ctx, orchestrator.CandidateRequest{
 		Campaign: e.campaignRequest(),
 		Attempt:  verifyAttemptOffset + attempt,
 		Proposal: agents.OptimizerResult{Patch: string(patch), Hypothesis: record.Hypothesis},
 		Target:   record.Target,
-	})
+	}, evalSettings{pairs: pairs, pgoLane: true})
 	if err != nil {
 		return Verification{}, err
 	}
@@ -129,15 +127,6 @@ func (e *Engine) policyVerdict(evidence orchestrator.CandidateEvidence) policy.R
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligibleReadings(config, evidence.Comparisons),
 	})
-}
-
-// pairs is the interleaved pair count per workload: the campaign's fixed
-// count, or a verification's.
-func (e *Engine) pairs() int {
-	if e.repetitions > 0 {
-		return e.repetitions
-	}
-	return measurementRepetitions
 }
 
 var ErrNothingAccepted = errors.New("the campaign accepted no candidate; pass --attempt to verify another")

@@ -39,7 +39,7 @@ func TestPgoLaneSkipsWithoutPprofProfile(t *testing.T) {
 	e := pgoLaneTestEngine(t)
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), &evidence, t.TempDir(), "cand1")
+	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand1")
 
 	if len(evidence.PgoComparisons) != 0 {
 		t.Fatalf("expected no comparisons, got %+v", evidence.PgoComparisons)
@@ -67,7 +67,7 @@ func TestPgoLaneSkipsWhenProfileFileMissingOnDisk(t *testing.T) {
 	e.state.PGOProfilePath = filepath.Join(e.dir, "profiles", "bench-cpu.pb.gz")
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), &evidence, t.TempDir(), "cand2")
+	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand2")
 
 	if len(evidence.PgoComparisons) != 0 {
 		t.Fatalf("expected no comparisons, got %+v", evidence.PgoComparisons)
@@ -87,7 +87,7 @@ func TestPgoLaneSkipsWhenProfileFileEmpty(t *testing.T) {
 	e.state.PGOProfilePath = path
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), &evidence, t.TempDir(), "cand3")
+	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand3")
 
 	if !strings.Contains(evidence.PgoNote, "missing or empty") {
 		t.Fatalf("note should mention the empty profile file, got %q", evidence.PgoNote)
@@ -109,7 +109,7 @@ func TestPgoLaneSkipsWhenTheCampaignCannotAffordIt(t *testing.T) {
 	e.state.ElapsedRunTime = 88 * time.Minute
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), &evidence, t.TempDir(), "cand-budget")
+	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand-budget")
 
 	if len(evidence.PgoComparisons) != 0 {
 		t.Fatalf("expected no comparisons, got %+v", evidence.PgoComparisons)
@@ -145,7 +145,7 @@ func TestPgoLaneBoundsItsOwnBuild(t *testing.T) {
 	e.toolchain = toolchain.New(toolchain.Options{Executor: blockingExecutor{}})
 	evidence := orchestrator.CandidateEvidence{}
 
-	e.runPgoLane(context.Background(), &evidence, t.TempDir(), "cand-slow-build")
+	e.runPgoLane(context.Background(), e.campaignSettings(), &evidence, t.TempDir(), "cand-slow-build")
 
 	if !strings.Contains(evidence.PgoNote, "exceeded the lane's") {
 		t.Fatalf("note should name the lane's own budget, got %q", evidence.PgoNote)

@@ -28,7 +28,7 @@ func measuredEngine(t *testing.T) (*Engine, *orchestrator.CandidateEvidence, *me
 	require.NoError(t, os.WriteFile(candidate, binary, 0o700)) //nolint:gosec // the candidate binary must be owner-executable; 0700 is the tightest mode that allows exec
 	evidence := &orchestrator.CandidateEvidence{}
 	m := &measurement{}
-	require.True(t, engine.measureSeedWorkloads(context.Background(), evidence, "candidate", candidate, m), evidence.Summary)
+	require.True(t, engine.measureSeedWorkloads(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m), evidence.Summary)
 	engine.finalizeCandidateEvidence(context.Background(), evidence, m)
 	require.Len(t, evidence.RepSamples[0].BaselineNs, measurementRepetitions)
 	return engine, evidence, m, candidate
@@ -41,7 +41,7 @@ func TestAnUnresolvedRegressionIsMeasuredAgain(t *testing.T) {
 	engine, evidence, m, candidate := measuredEngine(t)
 	evidence.Comparisons = []domain.MetricComparison{{Metric: "wall_time_ns", Workload: "fixture", Baseline: 100, Candidate: 104}}
 
-	require.True(t, engine.confirmRegressions(context.Background(), evidence, "candidate", candidate, m))
+	require.True(t, engine.confirmRegressions(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 	require.Len(t, evidence.RepSamples, 1)
 	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions)
 	require.Len(t, evidence.RepSamples[0].CandidateNs, 2*measurementRepetitions)
@@ -64,7 +64,7 @@ func TestASettledVerdictIsNotMeasuredAgain(t *testing.T) {
 		{{Metric: "cpu_time_ns", Workload: "fixture", Baseline: 100, Candidate: 104}}, // a per-workload guardrail reading, not the pooled one
 	} {
 		evidence.Comparisons = planted
-		require.True(t, engine.confirmRegressions(context.Background(), evidence, "candidate", candidate, m))
+		require.True(t, engine.confirmRegressions(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 		require.Len(t, evidence.RepSamples[0].BaselineNs, measurementRepetitions)
 	}
 	require.NotContains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
@@ -79,7 +79,7 @@ func TestAConfirmationSeriesIsHeldToBehaviour(t *testing.T) {
 	require.NoError(t, os.WriteFile(candidate, []byte("#!/bin/sh\necho changed\n"), 0o700)) //nolint:gosec // stands in for the candidate binary, so it must be executable
 	evidence.Comparisons = []domain.MetricComparison{{Metric: "wall_time_ns", Baseline: 100, Candidate: 104}}
 
-	require.False(t, engine.confirmRegressions(context.Background(), evidence, "candidate", candidate, m))
+	require.False(t, engine.confirmRegressions(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 	require.False(t, evidence.BehaviorMatches)
 	require.Contains(t, evidence.Summary, `behavior mismatch (byte-exact comparison) on workload "fixture"`)
 	result := policy.Evaluate(policyConfigFromManifest(engine.state.Manifest), policy.Evidence{BehaviorMatches: evidence.BehaviorMatches, FailureSummary: evidence.Summary, SafetyChecksPassed: evidence.SafetyChecksPassed, RepresentativeEvidence: evidence.RepresentativeEvidence, Comparisons: evidence.Comparisons})
@@ -103,7 +103,7 @@ func TestAnUnresolvedGuardrailIsMeasuredAgain(t *testing.T) {
 	engine, evidence, m, candidate := measuredEngine(t)
 	evidence.Comparisons = []domain.MetricComparison{{Metric: "cpu_time_ns", Baseline: 100, Candidate: 103.06}}
 
-	require.True(t, engine.confirmRegressions(context.Background(), evidence, "candidate", candidate, m))
+	require.True(t, engine.confirmRegressions(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions)
 	require.Contains(t, evidence.Summary, "cpu_time_ns +3.06% over the 2.00% limit without significance after 25 pairs")
 	require.Contains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
@@ -130,7 +130,7 @@ func TestAnUnsupportedPromisingImprovementIsMeasuredAgain(t *testing.T) {
 		{Metric: "wall_time_ns", Baseline: 100, Candidate: 91}, // 9% improvement, unsupported
 	}, guardrailsUnaffected()...)
 
-	require.True(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+	require.True(t, engine.confirmImprovements(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 	require.Len(t, evidence.RepSamples, 1)
 	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions)
 	require.Len(t, evidence.RepSamples[0].CandidateNs, 2*measurementRepetitions)
@@ -153,7 +153,7 @@ func TestASettledImprovementVerdictIsNotMeasuredAgain(t *testing.T) {
 		{{Metric: "wall_time_ns", Baseline: 100, Candidate: 99}},                         // below the minimum
 	} {
 		evidence.Comparisons = append(append([]domain.MetricComparison{}, planted...), guardrailsUnaffected()...)
-		require.True(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+		require.True(t, engine.confirmImprovements(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 		require.Len(t, evidence.RepSamples[0].BaselineNs, measurementRepetitions)
 	}
 	require.NotContains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
@@ -171,7 +171,7 @@ func TestImprovementConfirmationIsHeldToBehaviour(t *testing.T) {
 		{Metric: "wall_time_ns", Baseline: 100, Candidate: 91},
 	}, guardrailsUnaffected()...)
 
-	require.False(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+	require.False(t, engine.confirmImprovements(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 	require.False(t, evidence.BehaviorMatches)
 	require.Contains(t, evidence.Summary, `behavior mismatch (byte-exact comparison) on workload "fixture"`)
 }
@@ -186,7 +186,7 @@ func TestAtMostOneExtraSeriesPerCandidate(t *testing.T) {
 		{Metric: "wall_time_ns", Baseline: 100, Candidate: 91}, // would otherwise trigger a second series
 	}, guardrailsUnaffected()...)
 
-	require.True(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+	require.True(t, engine.confirmImprovements(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 	require.Len(t, evidence.RepSamples[0].BaselineNs, measurementRepetitions, "no additional series was measured")
 }
 
@@ -226,7 +226,7 @@ func TestABorderlineAcceptIsMeasuredAgain(t *testing.T) {
 		{Metric: "wall_time_ns", Baseline: 100, Candidate: 96.84, StatisticallyFit: true, Significant: true},
 	}, guardrailsUnaffected()...)
 
-	require.True(t, engine.confirmImprovements(context.Background(), evidence, "candidate", candidate, m))
+	require.True(t, engine.confirmImprovements(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m))
 	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions)
 	require.Contains(t, evidence.Summary, "pooled improved by 3.16%, less than twice the 3.00% minimum, so every workload was measured over 25 more before the verdict")
 	require.Contains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")

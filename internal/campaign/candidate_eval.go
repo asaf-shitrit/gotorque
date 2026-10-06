@@ -55,6 +55,29 @@ const (
 // judgment stays here or in policy; the model never self-approves.
 // evaluateCandidate is invoked through the orchestrator CandidateService adapter.
 func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
+	return e.evaluateWith(ctx, req, e.campaignSettings())
+}
+
+// evalSettings is what differs between the callers of one evaluation: a
+// campaign's attempt, a verification, and a null candidate.
+type evalSettings struct {
+	// pairs is the interleaved pair count per workload and series.
+	pairs int
+	// refuseRepeats turns on the pre-build refusals of a patch already measured
+	// or a function already fixed. Verification re-measures a known patch on
+	// purpose.
+	refuseRepeats bool
+	// pgoLane runs the informational profile-guided lane after an ordinary
+	// verdict.
+	pgoLane bool
+}
+
+// campaignSettings are the settings of a campaign's own attempts.
+func (e *Engine) campaignSettings() evalSettings {
+	return evalSettings{pairs: measurementRepetitions, refuseRepeats: true, pgoLane: true}
+}
+
+func (e *Engine) evaluateWith(ctx context.Context, req orchestrator.CandidateRequest, s evalSettings) (orchestrator.CandidateEvidence, error) {
 	if err := e.requireFreeSpace(); err != nil {
 		return orchestrator.CandidateEvidence{}, err
 	}
@@ -95,23 +118,23 @@ func (e *Engine) evaluateCandidate(ctx context.Context, req orchestrator.Candida
 	// Worktree teardown runs even when the caller's context is already
 	// canceled (duration budget or Ctrl-C), but keeps its values.
 	defer func() { _ = prepared.Close(context.WithoutCancel(ctx)) }()
-	if !e.verifying && e.rejectMeasuredDuplicate(evidence.Candidate.ID, &evidence) {
+	if s.refuseRepeats && e.rejectMeasuredDuplicate(evidence.Candidate.ID, &evidence) {
 		return evidence, nil
 	}
-	if !e.patchHasShape(ctx, prepared.Worktree, req.Target, &evidence) {
+	if !e.patchHasShape(ctx, s, prepared.Worktree, req.Target, &evidence) {
 		return evidence, nil
 	}
 	candidateBinary, ok := e.buildAndTestCandidate(ctx, prepared.Worktree, id, &evidence)
 	if !ok {
 		return evidence, nil
 	}
-	if !e.measureAndFinalize(ctx, &evidence, id, candidateBinary) {
+	if !e.measureAndFinalize(ctx, s, &evidence, id, candidateBinary) {
 		return evidence, nil
 	}
 	// Informational PGO lane: only candidates that passed the test suite and
 	// produced a full ordinary verdict reach it, so the extra builds and A/B
 	// series are never spent on rejected work.
-	e.runPgoLane(ctx, &evidence, prepared.Worktree, id)
+	e.runPgoLane(ctx, s, &evidence, prepared.Worktree, id)
 	return evidence, nil
 }
 
@@ -230,12 +253,12 @@ func (e *Engine) acceptedFixes() []AcceptedFix {
 	return out
 }
 
-func (e *Engine) patchHasShape(ctx context.Context, worktree string, target *agents.Target, evidence *orchestrator.CandidateEvidence) bool {
+func (e *Engine) patchHasShape(ctx context.Context, s evalSettings, worktree string, target *agents.Target, evidence *orchestrator.CandidateEvidence) bool {
 	diff, err := e.toolchain.ChangedLines(ctx, worktree)
 	if err != nil {
 		return true
 	}
-	if target == nil && !e.verifying && e.rejectKnownAcceptedFix(worktree, diff, evidence) {
+	if target == nil && s.refuseRepeats && e.rejectKnownAcceptedFix(worktree, diff, evidence) {
 		return false
 	}
 	if err := checkShape(worktree, diff, target); err != nil {
@@ -327,7 +350,7 @@ type seedRuns struct {
 	ab            runner.ABResult
 }
 
-func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
+func (e *Engine) measureAndFinalize(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
 	m := measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
 	if e.state.LocalIsolation {
 		evidence.QuietWait, evidence.QuietWaitExpired = defaultQuietWaiter().wait(ctx)
@@ -338,7 +361,7 @@ func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.
 		evidence.LoadContended = contended(evidence.LoadAverages, machineCPUs())
 	}()
 	m.baselineSize, m.candSize, m.sizeErr = binarySizes(e.state.BinaryPath, candidateBinary)
-	if !e.measureSeedsOnQuietMachine(ctx, evidence, id, candidateBinary, &m) {
+	if !e.measureSeedsOnQuietMachine(ctx, s, evidence, id, candidateBinary, &m) {
 		return false
 	}
 	if len(m.seeds) == 0 {
@@ -348,10 +371,10 @@ func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.
 	}
 	e.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	if !e.confirmRegressions(ctx, evidence, id, candidateBinary, &m) {
+	if !e.confirmRegressions(ctx, s, evidence, id, candidateBinary, &m) {
 		return false
 	}
-	return e.confirmImprovements(ctx, evidence, id, candidateBinary, &m)
+	return e.confirmImprovements(ctx, s, evidence, id, candidateBinary, &m)
 }
 
 // measureSeedsOnQuietMachine measures every representative seed, and
@@ -364,9 +387,9 @@ func (e *Engine) measureAndFinalize(ctx context.Context, evidence *orchestrator.
 // second pass reaches the verdict; its load is what the record reports, with
 // the discarded pass's load kept beside it. A second contended pass is kept
 // as it is, flagged.
-func (e *Engine) measureSeedsOnQuietMachine(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+func (e *Engine) measureSeedsOnQuietMachine(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	before, fresh := *evidence, *m
-	if !e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, m) {
+	if !e.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m) {
 		return false
 	}
 	mid := sampleLoad()
@@ -379,22 +402,22 @@ func (e *Engine) measureSeedsOnQuietMachine(ctx context.Context, evidence *orche
 	evidence.QuietWaitExpired = expired
 	evidence.DiscardedLoad = slices.Concat(before.LoadAverages, mid)
 	evidence.LoadAverages = sampleLoad()
-	return e.measureSeedWorkloads(ctx, evidence, id, candidateBinary, m)
+	return e.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m)
 }
 
-func (e *Engine) measureSeedWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+func (e *Engine) measureSeedWorkloads(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
 		if seed.Tier != domain.TierRepresentative {
 			continue
 		}
-		if !e.measureOneSeed(ctx, seed, id, candidateBinary, evidence, m) {
+		if !e.measureOneSeed(ctx, s, seed, id, candidateBinary, evidence, m) {
 			return false
 		}
 	}
 	return true
 }
 
-func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, m *measurement) bool {
+func (e *Engine) measureOneSeed(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, m *measurement) bool {
 	baseReq, candReq := e.abRequests(seed, id, candidateBinary)
 	// First-execution warm-up: a freshly built binary pays a one-time OS
 	// cost on its first exec (Gatekeeper scan, page-in) that otherwise
@@ -402,7 +425,7 @@ func (e *Engine) measureOneSeed(ctx context.Context, seed manifest.SeedWorkload,
 	// ~9ms steady state. Discarded, errors ignored.
 	_, _ = e.runner.Run(ctx, candReq)
 	runs := seedRuns{seed: seed, deterministic: e.outputIsDeterministic(ctx, baseReq)}
-	if !e.runSeries(ctx, &runs, id, candidateBinary, evidence, m.comparisons) {
+	if !e.runSeries(ctx, s, &runs, id, candidateBinary, evidence, m.comparisons) {
 		return false
 	}
 	m.seeds = append(m.seeds, runs)
@@ -438,9 +461,9 @@ func (e *Engine) abRequests(seed manifest.SeedWorkload, id, candidateBinary stri
 // series that fails leaves the behaviour unverified even when an earlier one
 // passed, so a confirmation series that fails rejects the candidate as a first
 // series would.
-func (e *Engine) runSeries(ctx context.Context, runs *seedRuns, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
+func (e *Engine) runSeries(ctx context.Context, s evalSettings, runs *seedRuns, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
 	baseReq, candReq := e.abRequests(runs.seed, id, candidateBinary)
-	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: e.pairs()})
+	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: s.pairs})
 	e.recordIsolationNotes(abIsolationNotes(ab))
 	if err != nil {
 		evidence.BehaviorMatches = false
@@ -470,7 +493,7 @@ func (e *Engine) runSeries(ctx context.Context, runs *seedRuns, id, candidateBin
 // The second series is part of measurement, so it has no budget of its own:
 // it costs what the first did, seconds for a short CLI, and the campaign's
 // deadline bounds it as it bounds the first.
-func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+func (e *Engine) confirmRegressions(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	config := policyConfigFromManifest(e.state.Manifest)
 	unconfirmed := policy.UnconfirmedRegressions(config, eligibleReadings(config, evidence.Comparisons))
 	// A guardrail past its limit without significance gets the same second
@@ -481,7 +504,7 @@ func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.
 		return true
 	}
 	for i := range m.seeds {
-		if !e.runSeries(ctx, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
+		if !e.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
@@ -507,7 +530,7 @@ func (e *Engine) confirmRegressions(ctx context.Context, evidence *orchestrator.
 // At most one extra series runs per candidate in total: if the regression
 // confirmation already extended every seed, this reuses that series rather
 // than running a third one.
-func (e *Engine) confirmImprovements(ctx context.Context, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+func (e *Engine) confirmImprovements(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	if slices.Contains(evidence.ValidationJobs, "interleaved-ab-confirmation") {
 		return true
 	}
@@ -517,7 +540,7 @@ func (e *Engine) confirmImprovements(ctx context.Context, evidence *orchestrator
 		return true
 	}
 	for i := range m.seeds {
-		if !e.runSeries(ctx, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
+		if !e.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
@@ -762,7 +785,7 @@ func (e *Engine) seedMeasurementRequest(seed manifest.SeedWorkload, buildID, bin
 // recorded reason. The same discovery profile is reused; nothing is
 // re-collected, keeping total runtime bounded at one extra build pair plus
 // one 7-repetition interleaved series per representative workload.
-func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.CandidateEvidence, candidateWorktree, candidateID string) {
+func (e *Engine) runPgoLane(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, candidateWorktree, candidateID string) {
 	if ok, reason := e.pgoProfileReady(); !ok {
 		e.skipPgoLane(evidence, reason)
 		return
@@ -778,7 +801,7 @@ func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.Candidat
 	if !ok {
 		return
 	}
-	comparisons, measured, ok := e.measurePgoWorkloads(ctx, evidence, candidateID, baselinePgo, candidatePgo)
+	comparisons, measured, ok := e.measurePgoWorkloads(ctx, s, evidence, candidateID, baselinePgo, candidatePgo)
 	if !ok {
 		return
 	}
@@ -787,7 +810,7 @@ func (e *Engine) runPgoLane(ctx context.Context, evidence *orchestrator.Candidat
 		return
 	}
 	evidence.PgoComparisons = comparisons
-	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each, lane cost %s; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, e.pairs(), e.now().Sub(started).Round(time.Second), filepath.Base(e.state.PGOProfilePath))
+	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each, lane cost %s; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, s.pairs, e.now().Sub(started).Round(time.Second), filepath.Base(e.state.PGOProfilePath))
 	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
 }
 
@@ -869,7 +892,7 @@ func (e *Engine) buildPgoBinary(ctx context.Context, label, repository, output s
 	return true
 }
 
-func (e *Engine) measurePgoWorkloads(ctx context.Context, evidence *orchestrator.CandidateEvidence, candidateID, baselinePgo, candidatePgo string) ([]domain.MetricComparison, int, bool) {
+func (e *Engine) measurePgoWorkloads(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, candidateID, baselinePgo, candidatePgo string) ([]domain.MetricComparison, int, bool) {
 	comparisons := make([]domain.MetricComparison, 0, 3)
 	measured := 0
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
@@ -880,7 +903,7 @@ func (e *Engine) measurePgoWorkloads(ctx context.Context, evidence *orchestrator
 		candReq := baseReq
 		candReq.Build = runner.Build{ID: candidateID + "-candidate-pgo", BinaryPath: candidatePgo}
 		candReq.Workload.Command.Path = candidatePgo
-		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: e.pairs()})
+		ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: s.pairs})
 		if err != nil {
 			e.skipPgoLane(evidence, fmt.Sprintf("measurement failed on workload %q: %v", seed.ID, err))
 			return nil, 0, false

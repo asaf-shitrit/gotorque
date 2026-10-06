@@ -51,7 +51,6 @@ func TestVerifyReevaluatesARecordedCandidate(t *testing.T) {
 	require.NotEmpty(t, v.Decision)
 	require.NotContains(t, v.Summary, "identical patch was already measured")
 	require.Len(t, engine.State().Verifications, 1)
-	require.Zero(t, engine.pairs()-measurementRepetitions, "the override ends with the verification")
 
 	var b strings.Builder
 	writeVerifications(&b, engine.State())

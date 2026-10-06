@@ -349,11 +349,6 @@ type Engine struct {
 	// a constant so tests can drive the lane's bound without waiting minutes
 	// for it, the same reason fence.go keeps its retry ladder in fields.
 	pgoBuildTimeout time.Duration
-	// verifying and repetitions are set only while Verify re-evaluates a
-	// recorded candidate: the duplicate and accepted-fix refusals are off, and
-	// repetitions overrides the pair count.
-	verifying   bool
-	repetitions int
 }
 
 func Create(ctx context.Context, opts Options) (*Engine, error) {
