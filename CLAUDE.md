@@ -78,10 +78,12 @@ measured cross-package (`-coverpkg=./...` in `COVERPKG`): a function exercised
 by another package's tests is tested, and a per-package profile reports it as
 0%. CI runs `make crap-check` blocking; the backlog is at zero, so a new
 function above the threshold fails the build. Platform-exclusive code is
-excluded (`CRAP_EXCLUDE` in the Makefile): the sampler dispatch picks
-`sampleMacOS` on darwin and `sampleLinuxPerf` on Linux, and neither can be
+excluded (`CRAP_EXCLUDE` in the Makefile): the sampler adapters' process
+plumbing, `sampleMacOS*` on darwin and `sampleLinuxPerf*` on Linux, cannot be
 covered on the other OS, so counting them made the gate pass locally and fail
-on the identical commit in Linux CI.
+on the identical commit in Linux CI. The exclusion matches by name, so a helper
+only an adapter calls takes that prefix; what the adapters return is judged in
+`profile.Classify`, which is covered everywhere.
 
 Raising coverage on a flagged function is the preferred fix; splitting it is
 the fallback, and excluding it (`--exclude` in the Makefile target) needs a
@@ -124,7 +126,7 @@ inspect_repository -> run_discovery -> analyst
 Package map:
 
 - `internal/campaign`: the engine. `engine.go` owns campaign lifecycle, bounds,
-  and discovery profiling; `candidate_eval.go` is the deterministic evaluation
+  and applies discovery's evidence to state; `candidate_eval.go` is the deterministic evaluation
   loop (normalize -> worktree -> build -> test gate -> A/B measure -> stats),
   run by the `evaluator` (`evaluator.go`, ADR 0036), which takes no `*Engine`:
   per-caller `evalSettings` (campaign, verify, null) and the `journal`,
@@ -150,8 +152,15 @@ Package map:
   `benchstat`. It deliberately exposes no general shell API; add a typed method
   rather than a generic `Run(string)`.
 - `internal/runner`: sandboxed workload execution (bubblewrap / `sandbox-exec`).
+- `internal/discovery`: hot-path discovery, with no `*Engine` (ADR 0037):
+  `Run(ctx, Inputs, profile.Sampler, toolchain)` samples the baseline binary
+  through the fallback ladder, falls back to benchmark profiles, and returns an
+  `Evidence` (hot list, weights, unbuffered writes, PGO profile, events) that
+  `runDiscoveryStep` applies to state. The explorer stays in `campaign` and is
+  passed in as a function.
 - `internal/profile`: benchmark/CPU profiling, symbol filtering, source
-  position annotation.
+  position annotation, and the sampler seam: `Sampler` adapters return a
+  `Transcript`, `Classify` judges it, `Replay` scripts it for tests.
 - `internal/manifest`: target manifest types, defaults, embedded JSON schema.
 
 ### Things that are easy to break
@@ -183,6 +192,16 @@ Package map:
   `modelClient`.
 - The per-node `DeterministicTimeout` covers all of `evaluate_candidate`; it
   is not `minimum_command_timeout` (a per-command floor).
+- Sampler seam (`internal/profile/sampler.go`, ADR 0037): an adapter only runs
+  processes and returns a `Transcript`; whether that is a sample, a lost
+  target, an empty call graph or an idle one is decided in `Classify`, and the
+  ladder in `internal/discovery` keys off those errors. Add a new way a sample
+  can fail as a recorded transcript in `profile/testdata/transcripts` and a
+  `Classify` case, not as an `if` in an adapter. `Idle` means no frame of
+  `main` or of a hosted-path package (a module path without a dot reads as
+  standard library). Discovery's state fields (`Discovery*`, `PGOProfilePath`)
+  are unchanged so a saved campaign resumes; `Run` returns the context's error
+  rather than evidence when stopped, and the engine must not mark the step done.
 - Profiled source positions must be rewritten repository-relative; the excerpt
   collector rejects absolute paths.
 - Patch-shape check (`internal/campaign/shape.go`, ADR 0017): it may only add

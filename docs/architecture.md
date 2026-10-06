@@ -787,8 +787,9 @@ never reads them.
 The explorer is always Jev (ADR 0015). Without it discovery would only sample
 the manifest's first seed, and a CLI's other modes would be invisible to it:
 gron's `--stream` runs `gronStream`, which the seed never reaches. The variants
-are chosen before discovery samples anything (`internal/campaign/explore.go`),
-and the graph has no explorer node. `run_discovery` validates no proposals, and `internal/workload` only reads the
+are chosen before discovery samples anything (`internal/campaign/explore.go`,
+passed to discovery as `Inputs.Explore`, since asking Jev stays in the
+campaign), and the graph has no explorer node. `run_discovery` validates no proposals, and `internal/workload` only reads the
 target's boolean options (`flags.go`):
 
 1. Code lists the boolean options the target declares
@@ -822,7 +823,7 @@ target's boolean options (`flags.go`):
    while its default mode would finish the line-repeated input in 10 ms, so
    neither shape serves both. A variant that cannot be sampled either way is
    recorded (`workload_sample_skipped`) and left out.
-6. The samples are merged by share (`mergeAttributed`): each sample's
+6. The samples are merged by share (`discovery.mergeAttributed`): each sample's
    attributed weights become fractions of that sample before they are summed,
    so a mode only one variant reaches ranks by its share of that variant's time
    instead of disappearing behind the seed's.
@@ -874,7 +875,7 @@ mirroring the "Model usage" table's shape.
 ## Discovery benchmark profiling
 
 Before the model phase, the engine runs one best-effort profiling pass
-(`collectDiscoveryProfile`), which samples the built binary on a manifest seed
+(`discovery.Run`, in `internal/discovery`), which samples the built binary on a manifest seed
 workload first and falls back to Go benchmark CPU profiles, so every target
 gets hot-path evidence. Sampling comes first because the measured workloads
 are what the campaign is about: a benchmark CPU profile weights every
@@ -888,7 +889,7 @@ classification before reaching the real cost. The completed event names the
 source it used (`measured N hot functions from a target sample`, `… from
 target benchmarks`, or `… from no source`).
 
-`sampleTargetProfile` runs the first representative seed workload against the
+Sampling (`run.sampleTarget`) runs the first representative seed workload against the
 release baseline binary under the platform sampler (macOS `sample`, Linux
 `perf`), records the hottest frames as discovery evidence, and preserves the
 raw report under `profile-sample/` in the campaign directory. It needs a
@@ -910,6 +911,63 @@ is left alone, so its manifest needs a stress seed that runs past the
 sampler's half-second liveness check. Sampler frames are
 annotated with source positions through the same repository search the
 benchmark path uses, because sampler frames name a symbol but no position.
+
+### The discovery module and its sampler seam
+
+Discovery lives in `internal/discovery` (ADR 0037) and takes no `*Engine`.
+`discovery.Run(ctx, Inputs, profile.Sampler, *toolchain.Toolchain)` gets plain
+data: the baseline binary, the command, the seeds, a function that returns the
+explorer's variants, the sandbox policy, the repository, the build package,
+the module's package paths and `TargetImports`, whether the objective is
+memory, and the campaign directory. It returns an `Evidence`: the hot list,
+its weights, the unbuffered writes, the summary, allocation-summary and PGO
+profile paths, the profile source, the isolation notes, and the events to
+save. `Engine.runDiscoveryStep` applies that to the unchanged persisted State
+fields (so a campaign saved before this seam resumes) and saves the events;
+nothing is written to state until discovery has finished. The unbuffered-write
+evidence takes the hot list as an argument, because it is only kept for sites
+in that list. `Run` returns the context's error rather than evidence when the
+campaign is stopped inside it, so the step is not marked complete.
+
+The platform sampler is a port, `profile.Sampler`. An adapter only runs
+processes and returns a `profile.Transcript`: the report text, the sampler's
+exit status and output, whether the target had already exited when the sampler
+was about to attach, and the isolation notes. `profile.Classify(Transcript)` is
+the pure judgment that follows: it returns a sample or a `*profile.SampleError`
+of one kind. Each kind that discovery retries matches a sentinel with
+`errors.Is`:
+
+- **exited early** (`ErrTargetExitedEarly`): the target was gone before the
+  sampler attached, or `/usr/bin/sample` exited 255 with `cannot examine
+  process` and "no longer appears to be running" or "for unknown reasons, even
+  though it appears to exist" (it has attached to a target that ended under it;
+  a refused permission, which says the same words, stays a failure);
+- **no frames** (`ErrNoFrames`): the sampler attached and wrote an empty call
+  graph;
+- **idle** (`ErrIdle`): there are frames, but none belongs to the program or
+  its dependencies (package `main`, or a package under a hosted path such as
+  `github.com/...`). Only runtime, kernel wait and standard library frames mean
+  the sampler looked while the target still waited for input, which the first
+  pup campaign did: 35 samples, all parked, was recorded as a successful
+  profile with zero hot functions and the campaign finished with no target;
+- **unavailable** (the tool is missing or the host has no adapter) and
+  **failed** (anything else the sampler said).
+
+The adapters are `profile.MacOSSampler` and `profile.LinuxPerfSampler`; their
+process plumbing is `sampleMacOS*` and `sampleLinuxPerf*`, which the Makefile
+excludes from the CRAP gate because only their own OS can run them, and
+everything with a decision in it is in covered code. `profile.Replay` is the
+scripted adapter, returning transcripts recorded from real sampler runs
+(`internal/profile/testdata/transcripts`), which is how the whole ladder below
+runs in tests on any OS.
+
+The fallback ladder (`discovery.Ladder`) turns a seed into a sample, each rung
+answering a way a sample was seen to fail: the same input once more
+(`profile.Sample`, for no frames or idle); the seed on eight times the input
+when its inputs are declared repeatable; the next stress-tier seed; for an
+explored variant, the seed's input repeated one copy per line. Past the last
+rung the engine falls back to the module's benchmarks, and the
+`discovery_sample_failed` event carries the reason of each rung.
 
 The sampled hot list ranks the target's own functions by the samples spent on
 their behalf, not by self time. The sampler's top-of-stack section says which
@@ -943,7 +1001,7 @@ the campaign has less than three such budgets left to spend. On gron one
 `-pgo` build ran for thirty-six minutes inside a forty-minute campaign, the
 deadline fired mid-lane, and a candidate whose measurement had already
 completed was never recorded — the campaign ended with no verdict at all.
-`profileHotFunctions` executes `go test -bench . -cpuprofile` against a
+`run.profileHotFunctions` executes `go test -bench . -cpuprofile` against a
 single package at a time, because the go command rejects `-cpuprofile` for
 more than one package and `./...` is therefore never a usable profiling
 target. `benchmarkPackageOrder` tries the manifest's target package first and
@@ -966,7 +1024,7 @@ times the hot-function budget (`hotFunctionScanDepth`) to fill it, because a
 Go CPU profile's hottest nodes are overwhelmingly runtime scheduler and
 allocator frames; scanning only as deep as the budget yields a handful of
 module functions and spends the rest on frames no patch can touch.
-`hotFunctionNames` then deduplicates and drops `runtime.` frames, and
+`hotFunctionNames` (`internal/discovery/hotlist.go`) then deduplicates and drops `runtime.` frames, and
 `actionableSymbol` drops the rest of what no source change can address:
 unqualified and `_`-prefixed symbols, which is how the OS sampler's kernel and
 libc names (`__psynch_cvwait`, `kevent`, `nanosleep`) present and which
@@ -1013,7 +1071,7 @@ fail does the engine record a `discovery_profile_skipped` event and leave
 discovery evidence empty, rather than failing the campaign.
 
 When the campaign's resolved objective is `peak_memory_bytes` and one of the
-two sources above succeeded, `Engine.profileAllocations` (ADR 0024) runs the
+two sources above succeeded, `run.profileAllocations` (ADR 0024) runs the
 same benchmark packages a second time, this time under `-memprofile`
 (`toolchain.TestRequest.Memprofile`, plumbed through `testArgs` exactly like
 `Cpuprofile`, including the `-o` fix that keeps the compiled test binary out
@@ -1023,7 +1081,7 @@ live at profile time — through a dedicated `Toolchain.PprofTopAllocSpace` /
 `Collector.SummarizePprofAllocSpace` pair, since `go tool pprof -top` defaults
 to `inuse_space`. The resulting functions are annotated with source positions
 the same way as the CPU profile's, then merged to the front of
-`discovery_hot_functions` (`mergeAllocFirst`): every allocation-heavy
+`discovery_hot_functions` (`discovery.mergeAllocFirst`): every allocation-heavy
 location first, in its own rank order, then whatever CPU-derived locations
 are not already present, deduplicated and capped at the same
 `hotFunctionBudget`. A module with no benchmarks is skipped silently beyond a
