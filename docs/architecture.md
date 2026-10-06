@@ -1146,6 +1146,14 @@ it; at `low` every call answered in two to three minutes. An explicit
 `GOTORQUE_REASONING_OPTIMIZER` still wins. Campaign state does not record the
 routed model ID or effort.
 
+Two more transports shape the request. `providerTransport` asks openrouter.ai
+for providers sorted by throughput, because one model id is served from 8 to
+193 tokens/s and a slow provider makes a 10-20k-token answer overrun the
+six-minute attempt budget. An attempt cut off at max_output_tokens having
+written nothing but reasoning is retried with reasoning disabled
+(`reasoningBudget`, `internal/agents/runaway.go`), because the identical retry
+ran away again every time. The reasons and evidence are in each type's comment.
+
 Model calls and that preflight resolve their base URL through the same
 `endpoint()` accessor, so they cannot disagree. Passing an empty `BaseURL` to
 the OpenAI SDK silently targets `api.openai.com`, which sends the OpenRouter
