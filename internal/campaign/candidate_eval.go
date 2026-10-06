@@ -479,7 +479,7 @@ func (e *Engine) abRequests(seed manifest.SeedWorkload, id, candidateBinary stri
 func (e *Engine) runSeries(ctx context.Context, s evalSettings, runs *seedRuns, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, comparisons []domain.MetricComparison) bool {
 	baseReq, candReq := e.abRequests(runs.seed, id, candidateBinary)
 	ab, err := e.runner.RunInterleaved(ctx, runner.ABRequest{Baseline: baseReq, Candidate: candReq, Repetitions: s.pairs})
-	e.recordIsolationNotes(abIsolationNotes(ab))
+	e.evalJournal().isolationNotes(abIsolationNotes(ab))
 	if err != nil {
 		evidence.BehaviorMatches = false
 		evidence.Summary = fmt.Sprintf("measurement failed on workload %q: %v", runs.seed.ID, err)
@@ -527,7 +527,7 @@ func (e *Engine) confirmRegressions(ctx context.Context, s evalSettings, evidenc
 	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
-	_ = e.saveEvent("measurement_confirmed", note, nil)
+	_ = e.evalJournal().event("measurement_confirmed", note, nil)
 	return true
 }
 
@@ -562,7 +562,7 @@ func (e *Engine) confirmImprovements(ctx context.Context, s evalSettings, eviden
 	e.rederive(ctx, evidence, m)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
-	_ = e.saveEvent("improvement_confirmed", note, nil)
+	_ = e.evalJournal().event("improvement_confirmed", note, nil)
 	return true
 }
 
@@ -826,7 +826,7 @@ func (e *Engine) runPgoLane(ctx context.Context, s evalSettings, evidence *orche
 	}
 	evidence.PgoComparisons = comparisons
 	evidence.PgoNote = fmt.Sprintf("informational PGO comparison over %d representative workload(s), %d A/B pairs each, lane cost %s; both sides built with -pgo=%s from the discovery CPU profile; this lane never changes accept/reject decisions", measured, s.pairs, e.now().Sub(started).Round(time.Second), filepath.Base(e.state.PGOProfilePath))
-	_ = e.saveEvent("pgo_lane_completed", evidence.PgoNote, nil)
+	_ = e.evalJournal().event("pgo_lane_completed", evidence.PgoNote, nil)
 }
 
 // pgoBuildBudget is the wall-clock bound on one profile-guided build in the
@@ -856,7 +856,7 @@ func (e *Engine) pgoLaneUnaffordable() string {
 
 func (e *Engine) skipPgoLane(evidence *orchestrator.CandidateEvidence, reason string) {
 	evidence.PgoNote = "PGO lane skipped: " + reason
-	_ = e.saveEvent("pgo_lane_skipped", evidence.PgoNote, nil)
+	_ = e.evalJournal().event("pgo_lane_skipped", evidence.PgoNote, nil)
 }
 
 func (e *Engine) pgoProfileReady() (bool, string) {

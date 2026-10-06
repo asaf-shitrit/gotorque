@@ -309,16 +309,16 @@ func (e *Engine) pruneUnstablePasses(ctx context.Context, result toolchain.Resul
 	e.state.BaselineRechecks++
 	fresh, err := e.runBaselineSuite(ctx, 1)
 	if err != nil {
-		_ = e.saveEvent("baseline_tests_rechecked", "re-running the unpatched suite failed, so every baseline pass stays required: "+err.Error(), nil)
+		_ = e.evalJournal().event("baseline_tests_rechecked", "re-running the unpatched suite failed, so every baseline pass stays required: "+err.Error(), nil)
 		return false
 	}
 	stable, unstable := splitStable(e.state.BaselineTestPasses, fresh.Passed)
 	if len(unstable) == 0 {
-		_ = e.saveEvent("baseline_tests_rechecked", "every baseline pass passed again on the unpatched revision, so the candidate's missing tests are its own", nil)
+		_ = e.evalJournal().event("baseline_tests_rechecked", "every baseline pass passed again on the unpatched revision, so the candidate's missing tests are its own", nil)
 		return false
 	}
 	e.state.BaselineTestPasses = stable
-	_ = e.saveEvent("baseline_tests_rechecked", fmt.Sprintf("%d baseline-passing test(s) did not pass on a second run of the unpatched revision and are no longer required: %s", len(unstable), describeTestFailures(unstable)), map[string]any{"unstable": unstable})
+	_ = e.evalJournal().event("baseline_tests_rechecked", fmt.Sprintf("%d baseline-passing test(s) did not pass on a second run of the unpatched revision and are no longer required: %s", len(unstable), describeTestFailures(unstable)), map[string]any{"unstable": unstable})
 	return true
 }
 

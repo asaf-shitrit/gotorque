@@ -349,6 +349,9 @@ type Engine struct {
 	// a constant so tests can drive the lane's bound without waiting minutes
 	// for it, the same reason fence.go keeps its retry ladder in fields.
 	pgoBuildTimeout time.Duration
+	// journal receives what candidate evaluation reports; nil means the
+	// campaign's own (evalJournal). Tests set a recording one.
+	journal journal
 }
 
 func Create(ctx context.Context, opts Options) (*Engine, error) {
