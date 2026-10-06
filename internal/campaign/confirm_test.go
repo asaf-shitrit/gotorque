@@ -18,6 +18,13 @@ import (
 // measured.
 func measuredEngine(t *testing.T) (*Engine, *orchestrator.CandidateEvidence, *measurement, string) {
 	t.Helper()
+	return measuredEngineWith(t, evalSettings{pairs: measurementRepetitions, refuseRepeats: true, pgoLane: true})
+}
+
+// measuredEngineWith is measuredEngine with the settings a caller other than a
+// campaign would pass, such as verification's pair count.
+func measuredEngineWith(t *testing.T, s evalSettings) (*Engine, *orchestrator.CandidateEvidence, *measurement, string) {
+	t.Helper()
 	engine, err := Create(context.Background(), Options{Repository: makeRepository(t), ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = engine.Close() })
@@ -28,9 +35,9 @@ func measuredEngine(t *testing.T) (*Engine, *orchestrator.CandidateEvidence, *me
 	require.NoError(t, os.WriteFile(candidate, binary, 0o700)) //nolint:gosec // the candidate binary must be owner-executable; 0700 is the tightest mode that allows exec
 	evidence := &orchestrator.CandidateEvidence{}
 	m := &measurement{}
-	require.True(t, engine.measureSeedWorkloads(context.Background(), engine.campaignSettings(), evidence, "candidate", candidate, m), evidence.Summary)
+	require.True(t, engine.measureSeedWorkloads(context.Background(), s, evidence, "candidate", candidate, m), evidence.Summary)
 	engine.finalizeCandidateEvidence(context.Background(), evidence, m)
-	require.Len(t, evidence.RepSamples[0].BaselineNs, measurementRepetitions)
+	require.Len(t, evidence.RepSamples[0].BaselineNs, s.pairs)
 	return engine, evidence, m, candidate
 }
 
@@ -91,7 +98,7 @@ func TestConfirmationNoteNamesEveryReading(t *testing.T) {
 		{Metric: "wall_time_ns", Workload: "small-doc", DeltaPercent: 4.01},
 		{Metric: "wall_time_ns", DeltaPercent: 3.05},
 		{Metric: "cpu_time_ns", DeltaPercent: 2.16},
-	}, 2, "wall_time_ns")
+	}, 2, "wall_time_ns", measurementRepetitions)
 	require.True(t, strings.HasPrefix(note, "small-doc +4.01%, pooled +3.05%, cpu_time_ns +2.16% over the 2.00% limit"), note)
 }
 
@@ -191,7 +198,7 @@ func TestAtMostOneExtraSeriesPerCandidate(t *testing.T) {
 }
 
 func TestImprovementConfirmationNoteNamesEveryReading(t *testing.T) {
-	note := improvementConfirmationNote([]domain.MetricComparison{{Workload: "small-doc", DeltaPercent: -11.55}, {DeltaPercent: -3.05}}, 3)
+	note := improvementConfirmationNote([]domain.MetricComparison{{Workload: "small-doc", DeltaPercent: -11.55}, {DeltaPercent: -3.05}}, 3, measurementRepetitions)
 	require.True(t, strings.HasPrefix(note, "small-doc -11.55%, pooled -3.05% improved past the 3.00% minimum"), note)
 }
 
@@ -230,4 +237,47 @@ func TestABorderlineAcceptIsMeasuredAgain(t *testing.T) {
 	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions)
 	require.Contains(t, evidence.Summary, "pooled improved by 3.16%, less than twice the 3.00% minimum, so every workload was measured over 25 more before the verdict")
 	require.Contains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
+}
+
+// TestConfirmationNotesNameTheSeriesLengthThatRan: a verification measures 60
+// pairs, not a campaign's 25. The notes hard-coded the campaign's count, so a
+// 60-pair verification reported "after 25 pairs ... 25 more" over a record that
+// held 120 samples.
+func TestConfirmationNotesNameTheSeriesLengthThatRan(t *testing.T) {
+	s := evalSettings{pairs: 3}
+	regression := func(e *Engine, s evalSettings, ev *orchestrator.CandidateEvidence, c string, m *measurement) bool {
+		return e.confirmRegressions(context.Background(), s, ev, "candidate", c, m)
+	}
+	improvement := func(e *Engine, s evalSettings, ev *orchestrator.CandidateEvidence, c string, m *measurement) bool {
+		return e.confirmImprovements(context.Background(), s, ev, "candidate", c, m)
+	}
+	for name, tc := range map[string]struct {
+		planted []domain.MetricComparison
+		confirm func(*Engine, evalSettings, *orchestrator.CandidateEvidence, string, *measurement) bool
+		want    string
+	}{
+		"regression": {
+			planted: []domain.MetricComparison{{Metric: "wall_time_ns", Workload: "fixture", Baseline: 100, Candidate: 104}},
+			confirm: regression,
+			want:    "without significance after 3 pairs, so every workload was measured over 3 more",
+		},
+		"improvement": {
+			planted: append([]domain.MetricComparison{{Metric: "wall_time_ns", Baseline: 100, Candidate: 91}}, guardrailsUnaffected()...),
+			confirm: improvement,
+			want:    "without significance after 3 pairs, so every workload was measured over 3 more",
+		},
+		"borderline accept": {
+			planted: append([]domain.MetricComparison{{Metric: "wall_time_ns", Baseline: 100, Candidate: 96.84, StatisticallyFit: true, Significant: true}}, guardrailsUnaffected()...),
+			confirm: improvement,
+			want:    "so every workload was measured over 3 more before the verdict",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			engine, evidence, m, candidate := measuredEngineWith(t, s)
+			evidence.Comparisons = tc.planted
+			require.True(t, tc.confirm(engine, s, evidence, candidate, m))
+			require.Len(t, evidence.RepSamples[0].BaselineNs, 2*s.pairs)
+			require.Contains(t, evidence.Summary, tc.want)
+		})
+	}
 }

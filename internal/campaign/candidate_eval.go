@@ -509,7 +509,7 @@ func (e *Engine) confirmRegressions(ctx context.Context, s evalSettings, evidenc
 		}
 	}
 	e.rederive(ctx, evidence, m)
-	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric)
+	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
 	_ = e.saveEvent("measurement_confirmed", note, nil)
@@ -535,7 +535,7 @@ func (e *Engine) confirmImprovements(ctx context.Context, s evalSettings, eviden
 		return true
 	}
 	config := policyConfigFromManifest(e.state.Manifest)
-	unconfirmed, note := improvementsToConfirm(config, evidence)
+	unconfirmed, note := improvementsToConfirm(config, s.pairs, evidence)
 	if len(unconfirmed) == 0 {
 		return true
 	}
@@ -561,7 +561,7 @@ func (e *Engine) rederive(ctx context.Context, evidence *orchestrator.CandidateE
 	e.finalizeCandidateEvidence(ctx, evidence, m)
 }
 
-func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, primary string) string {
+func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, primary string, pairs int) string {
 	readings := make([]string, 0, len(unconfirmed))
 	for _, c := range unconfirmed {
 		name := "pooled"
@@ -573,14 +573,14 @@ func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, prim
 		}
 		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
 	}
-	return fmt.Sprintf("%s over the %.2f%% limit without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), limit, measurementRepetitions, measurementRepetitions)
+	return fmt.Sprintf("%s over the %.2f%% limit without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), limit, pairs, pairs)
 }
 
 // improvementsToConfirm returns the readings a second series should settle,
 // with the note that explains it: an unsupported improvement past the
 // minimum on a candidate that would end inconclusive (ADR 0021), or the
 // borderline improvement an accept would rest on (ADR 0034).
-func improvementsToConfirm(config policy.Config, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, string) {
+func improvementsToConfirm(config policy.Config, pairs int, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, string) {
 	eligible := eligibleReadings(config, evidence.Comparisons)
 	preview := policy.Evaluate(config, policy.Evidence{
 		BehaviorMatches:        evidence.BehaviorMatches,
@@ -593,17 +593,17 @@ func improvementsToConfirm(config policy.Config, evidence *orchestrator.Candidat
 	switch preview.Decision {
 	case domain.DecisionInconclusive:
 		unconfirmed := policy.UnconfirmedImprovements(config, eligible)
-		return unconfirmed, improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent)
+		return unconfirmed, improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent, pairs)
 	case domain.DecisionAccepted:
 		borderline := policy.BorderlineImprovements(config, eligible)
-		return borderline, borderlineConfirmationNote(borderline, config.MinimumImprovementPercent)
+		return borderline, borderlineConfirmationNote(borderline, config.MinimumImprovementPercent, pairs)
 	case domain.DecisionRejected:
 		return nil, ""
 	}
 	return nil, ""
 }
 
-func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum float64) string {
+func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum float64, pairs int) string {
 	if len(borderline) == 0 {
 		return ""
 	}
@@ -612,10 +612,10 @@ func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum fl
 	if c.Workload != "" {
 		name = c.Workload
 	}
-	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -c.DeltaPercent, minimum, measurementRepetitions)
+	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -c.DeltaPercent, minimum, pairs)
 }
 
-func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum float64) string {
+func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum float64, pairs int) string {
 	readings := make([]string, 0, len(unconfirmed))
 	for _, c := range unconfirmed {
 		name := "pooled"
@@ -624,7 +624,7 @@ func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum 
 		}
 		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
 	}
-	return fmt.Sprintf("%s improved past the %.2f%% minimum without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), minimum, measurementRepetitions, measurementRepetitions)
+	return fmt.Sprintf("%s improved past the %.2f%% minimum without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), minimum, pairs, pairs)
 }
 
 func (e *Engine) outputIsDeterministic(ctx context.Context, baseReq runner.RunRequest) bool {
