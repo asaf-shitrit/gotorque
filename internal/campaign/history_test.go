@@ -85,9 +85,18 @@ func TestLoadHistoryRejectsAnUnreadableDirectory(t *testing.T) {
 	require.ErrorContains(t, err, "read --history")
 }
 
-func TestPriorTargetsIncludeHistory(t *testing.T) {
-	e := &Engine{state: State{HistoryTargets: []agents.Target{targetExec}, CandidateRecords: []CandidateRecord{measured(targetNewPtr)}}}
-	require.Equal(t, []agents.Target{targetExec, targetNewPtr}, e.priorTargets())
+// TestCampaignRequestSeparatesHistoryFromRecords: --history targets close
+// through PriorTargets, and the campaign's own records come back as recorded
+// candidates, so a resume continues their count and attempt numbers (#91).
+func TestCampaignRequestSeparatesHistoryFromRecords(t *testing.T) {
+	record := measured(targetNewPtr)
+	record.Attempt = 3
+	e := &Engine{state: State{HistoryTargets: []agents.Target{targetExec}, CandidateRecords: []CandidateRecord{record}}}
+	req := e.campaignRequest()
+	require.Equal(t, []agents.Target{targetExec}, req.PriorTargets)
+	require.Len(t, req.RecordedCandidates, 1)
+	require.Equal(t, 3, req.RecordedCandidates[0].Attempt)
+	require.Equal(t, &targetNewPtr, req.RecordedCandidates[0].Target)
 }
 
 func TestReportListsHistory(t *testing.T) {

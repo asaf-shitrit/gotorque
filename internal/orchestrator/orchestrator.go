@@ -257,9 +257,14 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	if job.ID == "" {
 		return nil, errors.New("start campaign job: empty job ID")
 	}
-	// Seeding the tally rather than starting at zero is what makes
-	// MaxConsecutiveFailures a campaign bound instead of a per-process one.
-	state := CampaignState{Request: req, Job: job, StartedAt: time.Now(), ConsecutiveFailures: req.PriorConsecutiveFailures, ConsecutiveInconclusive: req.PriorConsecutiveInconclusive}
+	// Seeding the tallies and the candidate history rather than starting at
+	// zero is what makes MaxCandidates and MaxConsecutiveFailures campaign
+	// bounds instead of per-process ones, and keeps attempt numbers unique.
+	state := CampaignState{
+		Request: req, Job: job, StartedAt: time.Now(),
+		ConsecutiveFailures: req.PriorConsecutiveFailures, ConsecutiveInconclusive: req.PriorConsecutiveInconclusive,
+		CandidatesTried: lastAttempt(req.RecordedCandidates), PriorCandidates: slices.Clone(req.RecordedCandidates),
+	}
 	// The route node only runs after a decision, so a campaign that resumes
 	// already at its failure bound would spend one more candidate proving what
 	// the carried-in tally already says. Finishing from here keeps the bound
@@ -826,6 +831,16 @@ func validDecision(decision domain.Decision) bool {
 	default:
 		return false
 	}
+}
+
+// lastAttempt is the highest attempt number among recorded candidates, so a
+// resumed campaign numbers its next candidate after them.
+func lastAttempt(recorded []PriorCandidate) int {
+	last := 0
+	for _, c := range recorded {
+		last = max(last, c.Attempt)
+	}
+	return last
 }
 
 // roleFailure returns the cause of role's last absorbed failure this cycle,

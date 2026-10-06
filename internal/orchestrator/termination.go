@@ -37,7 +37,8 @@ type checkpoint int
 
 const (
 	// atStart runs before the first cycle of a process, so a resumed campaign
-	// already at a bound stops without spending a candidate.
+	// already at a bound (its candidate budget or a streak) stops without
+	// spending a candidate.
 	atStart checkpoint = iota
 	// afterAnalysis runs once the analysis is merged and code has planned the
 	// cycle's target.
@@ -70,7 +71,7 @@ type ending struct {
 func (g *campaignGraph) ended(state CampaignState, at checkpoint) (ending, bool) {
 	switch at {
 	case atStart:
-		if reason, hit := g.consecutiveBound(state); hit {
+		if reason := g.stopReason(state); reason != "" {
 			return ending{reason: reason}, true
 		}
 	case afterAnalysis:

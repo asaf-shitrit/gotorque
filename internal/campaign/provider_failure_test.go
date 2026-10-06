@@ -79,7 +79,10 @@ func TestProviderOutageFailsTheCampaignAndResumes(t *testing.T) {
 	resumed.SetADK(&working, &cfg)
 	require.NoError(t, resumed.Run(context.Background()))
 	require.Equal(t, StatusCompleted, resumed.State().Status)
-	require.Equal(t, "consecutive rejection/inconclusive limit reached", resumed.State().StopReason)
+	// The two failed cycles count against the budget of four, so the resumed
+	// process spends the remaining two (#91).
+	require.Equal(t, "maximum candidate count reached", resumed.State().StopReason)
+	require.Len(t, resumed.State().CandidateRecords, 4)
 }
 
 func TestCompleteCampaignFailsTheJobOnlyForAProviderFailure(t *testing.T) {
