@@ -635,7 +635,7 @@ nearly twice the rate of code-chosen targets. `--free-choice` keeps the old
 behavior, where the optimizer then chooses freely. `--history DIR` (repeatable, ADR 0031) extends "tried"
 across campaigns: every target an earlier campaign of the same revision
 measured is loaded when the campaign is created, persisted as
-`HistoryTargets`, and counted as tried by `priorTargets`, so a new campaign
+`HistoryTargets`, and passed to the graph as `PriorTargets`, so a new campaign
 spends its attempts on targets nothing has measured yet. A campaign at another
 revision is listed in the report as skipped rather than trusted, because its
 locations may point at different code. The measured candidates' IDs (a digest of
@@ -1287,7 +1287,13 @@ The stop bounds are campaign-wide, not per-process. The ADK graph builds a
 fresh `CampaignState` every time it is entered, so a tally living only there
 restarts at zero on every resume and the bound holds only within one process.
 `ConsecutiveFailures` is therefore persisted at every policy decision and fed
-back as `PriorConsecutiveFailures` when the graph is re-entered.
+back as `PriorConsecutiveFailures` when the graph is re-entered. The candidate
+budget and attempt numbers come back the same way, from the persisted records
+themselves: `RecordedCandidates` seeds `CandidatesTried` (the highest recorded
+attempt), the optimizer's prior candidates and the tried targets, and `ended`
+checks the budget before the first cycle. Before #91 a resumed campaign
+started at zero candidates, so it could spend its `max_candidate_patches`
+again and number its candidates from 1, colliding with recorded attempts.
 
 Token usage is campaign-wide too. Provider usage collectors are created per
 process, and `TokenUsage` used to be overwritten with the current process's

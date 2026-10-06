@@ -170,9 +170,46 @@ func TestConsecutiveFailureBoundSurvivesResume(t *testing.T) {
 	// can stop it. Before the fix this ran the full four rejections again.
 	second, err := resumed.RunADK(context.Background(), roles, bounded(12))
 	require.NoError(t, err)
-	require.Equal(t, 2, second.CandidatesTried, "resume must spend only the campaign's remaining allowance")
+	require.Equal(t, 4, second.CandidatesTried, "the count is campaign-wide: two before the resume, two after")
+	require.Len(t, resumed.State().CandidateRecords, 4, "resume must spend only the campaign's remaining allowance")
 	require.Equal(t, "consecutive rejection/inconclusive limit reached", second.StopReason)
 	require.Equal(t, 4, resumed.State().ConsecutiveFailures)
+}
+
+// TestCandidateBudgetSurvivesResume pins #91: a resumed campaign started over
+// at zero candidates, so a campaign interrupted after spending its
+// max_candidate_patches could spend it again. Resumed at its budget, it must
+// stop before evaluating anything, and attempt numbers must not repeat.
+func TestCandidateBudgetSurvivesResume(t *testing.T) {
+	repo := makeRepository(t)
+	campaignDir := filepath.Join(t.TempDir(), "campaign")
+	engine, err := Create(context.Background(), Options{Repository: repo, ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: campaignDir, TestingUnsafeDisableIsolation: true, FreeChoice: true})
+	require.NoError(t, err)
+	require.NoError(t, engine.Run(context.Background()))
+	roles := rejectingRoles(t)
+	engine.SetADK(&roles, nil)
+	bounded := orchestrator.Config{MaxCandidates: 2, MaxConsecutiveFailures: 12, DeterministicTimeout: time.Minute, AgentTimeout: time.Minute}
+	_, err = engine.RunADK(context.Background(), roles, bounded)
+	require.NoError(t, err)
+	require.NoError(t, engine.Close())
+
+	resumed, err := Resume(campaignDir, nil)
+	require.NoError(t, err)
+	defer func() { _ = resumed.Close() }()
+	resumed.SetADK(&roles, nil)
+	second, err := resumed.RunADK(context.Background(), roles, bounded)
+	require.NoError(t, err)
+	require.Equal(t, "maximum candidate count reached", second.StopReason)
+	records := resumed.State().CandidateRecords
+	require.Len(t, records, 2, "a campaign resumed at its budget must evaluate nothing")
+	require.Equal(t, []int{1, 2}, []int{records[0].Attempt, records[1].Attempt})
+
+	// With room for one more, the next candidate is attempt 3, not 1.
+	bounded.MaxCandidates = 3
+	_, err = resumed.RunADK(context.Background(), roles, bounded)
+	require.NoError(t, err)
+	require.Len(t, resumed.State().CandidateRecords, 3)
+	require.Equal(t, 3, resumed.State().CandidateRecords[2].Attempt)
 }
 
 func TestCampaignDeadlineSpendsOnlyTheRemainingBudget(t *testing.T) {

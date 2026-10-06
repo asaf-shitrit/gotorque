@@ -30,6 +30,9 @@ func TestVerdictsRecordTheirTargetAndResumeReadsThemBack(t *testing.T) {
 
 	require.Equal(t, &bufioTarget, engine.state.CandidateRecords[0].Target)
 	require.Nil(t, engine.state.CandidateRecords[1].Target)
-	require.Equal(t, []agents.Target{bufioTarget}, engine.priorTargets())
+	recorded := engine.campaignRequest().RecordedCandidates
+	require.Len(t, recorded, 2)
+	require.Equal(t, &bufioTarget, recorded[0].Target)
+	require.Nil(t, recorded[1].Target)
 	require.Contains(t, RenderMarkdown(engine.state), "- Target: `gron` at `main.go:206`, unbuffered_io (+3.3 sd)")
 }

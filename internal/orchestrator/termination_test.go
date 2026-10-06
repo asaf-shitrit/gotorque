@@ -34,6 +34,7 @@ func TestEnded(t *testing.T) {
 	}{
 		{name: "fresh campaign starts", at: atStart},
 		{name: "resumed at the failure bound", at: atStart, state: CampaignState{ConsecutiveFailures: 3}, wantDone: true, wantReason: stopReasonConsecutiveFailures},
+		{name: "resumed with the budget spent (#91)", at: atStart, state: CampaignState{CandidatesTried: 4}, wantDone: true, wantReason: stopReasonMaxCandidates},
 		{name: "planned target continues", stopRanking: true, at: afterAnalysis, state: planned},
 		{name: "free choice continues without a target", at: afterAnalysis, state: analystDown},
 		{name: "every flagged target tried", stopRanking: true, at: afterAnalysis, state: ranked, wantDone: true, wantReason: stopReasonRankingExhausted},

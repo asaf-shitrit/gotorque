@@ -145,20 +145,25 @@ func (e *Engine) campaignRequest() orchestrator.CampaignRequest {
 		CampaignID: e.state.ID, Repository: e.state.Repository, BaseRevision: e.state.Environment.Revision,
 		BuildTarget: e.state.Manifest.Target.Build.Package, CommandArgs: append([]string(nil), e.state.Manifest.Target.Command...),
 		OptimizationMode: e.state.Manifest.OptimizationPolicy, PriorConsecutiveFailures: e.state.ConsecutiveFailures,
-		PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive, PriorTargets: e.priorTargets(),
-		Objective: e.state.Manifest.Performance.PrimaryMetric, EarlierCandidates: e.state.HistoryPriors, GoVersion: goDirective(e.state.Repository, e.state.Manifest.Target.Build.Directory),
+		PriorConsecutiveInconclusive: e.state.ConsecutiveInconclusive, PriorTargets: append([]agents.Target(nil), e.state.HistoryTargets...),
+		RecordedCandidates: recordedCandidates(e.state.CandidateRecords),
+		Objective:          e.state.Manifest.Performance.PrimaryMetric, EarlierCandidates: e.state.HistoryPriors, GoVersion: goDirective(e.state.Repository, e.state.Manifest.Target.Build.Directory),
 	}
 }
 
-// priorTargets are the targets earlier candidates tried, read back from the
-// persisted records, so a resumed campaign moves on instead of retrying them,
-// plus the targets --history carried from earlier campaigns (loadHistory).
-func (e *Engine) priorTargets() []agents.Target {
-	out := append([]agents.Target(nil), e.state.HistoryTargets...)
-	for _, record := range e.state.CandidateRecords {
-		if record.Target != nil {
-			out = append(out, *record.Target)
-		}
+// recordedCandidates hands the graph this campaign's persisted verdicts, so a
+// resumed campaign continues its candidate count, attempt numbers and tried
+// targets, and the optimizer reads the same history it would have read
+// without the interruption. Records do not persist whether a candidate was
+// measured, so a resumed campaign treats every recorded target as tried
+// (ADR 0017: targets carried across a resume stay closed).
+func recordedCandidates(records []CandidateRecord) []orchestrator.PriorCandidate {
+	out := make([]orchestrator.PriorCandidate, 0, len(records))
+	for _, r := range records {
+		out = append(out, orchestrator.PriorCandidate{
+			Attempt: r.Attempt, Hypothesis: r.Hypothesis, Decision: string(r.Decision), Reasons: r.Reasons,
+			FailureDetail: r.FailureDetail, Target: r.Target, ReviewConcerns: r.ReviewConcerns,
+		})
 	}
 	return out
 }

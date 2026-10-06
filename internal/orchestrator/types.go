@@ -24,10 +24,18 @@ type CampaignRequest struct {
 	// MaxConsecutiveFailures tally at zero and the bound would hold only
 	// within a single process rather than over the whole campaign.
 	PriorConsecutiveFailures int `json:"prior_consecutive_failures,omitempty"`
-	// PriorTargets are the targets earlier candidates of this campaign tried,
-	// carried in for the same reason: a resumed campaign must not attack them
-	// again.
+	// PriorTargets are targets closed before this campaign began: those
+	// earlier campaigns measured (--history, ADR 0031). This campaign's own
+	// tried targets come back through RecordedCandidates.
 	PriorTargets []agents.Target `json:"prior_targets,omitempty"`
+	// RecordedCandidates are this campaign's own candidates a caller already
+	// recorded, in attempt order. The graph builds a fresh CampaignState on
+	// every entry, so a resumed campaign seeds from them its candidate count,
+	// its attempt numbers, the targets it tried and the history the optimizer
+	// reads. Without them the max_candidate_patches budget and the attempt
+	// numbers restarted at zero after every resume, and attempt-derived patch
+	// IDs could collide with recorded ones (#91).
+	RecordedCandidates []PriorCandidate `json:"recorded_candidates,omitempty"`
 	// PriorConsecutiveInconclusive carries the campaign-wide run of
 	// inconclusive verdicts, for the same reason: a campaign that configures
 	// its own inconclusive bound must have that streak survive a resume too.
