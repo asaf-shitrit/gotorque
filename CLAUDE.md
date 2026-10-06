@@ -105,7 +105,7 @@ in its `TestMain`. A new package that shells out to git needs the same
 
 ## Architecture
 
-Read `docs/architecture.md` before non-trivial engine work; it is detailed and
+Domain terms are defined in `GLOSSARY.md`. Read `docs/architecture.md` before non-trivial engine work; it is detailed and
 deliberately kept current. Keep it that way: a doc-sync commit (`8e92b07`)
 exists because sixteen engine commits landed without touching it.
 

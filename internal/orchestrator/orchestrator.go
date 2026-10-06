@@ -257,13 +257,14 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	if job.ID == "" {
 		return nil, errors.New("start campaign job: empty job ID")
 	}
-	// Seeding the tallies and the candidate history rather than starting at
-	// zero is what makes MaxCandidates and MaxConsecutiveFailures campaign
+	// Deriving the tallies from the recorded candidates rather than starting
+	// at zero is what makes MaxCandidates and the streak bounds campaign
 	// bounds instead of per-process ones, and keeps attempt numbers unique.
+	t := talliesOf(req.RecordedCandidates, g.cfg.MaxConsecutiveInconclusive > 0)
 	state := CampaignState{
 		Request: req, Job: job, StartedAt: time.Now(),
-		ConsecutiveFailures: req.PriorConsecutiveFailures, ConsecutiveInconclusive: req.PriorConsecutiveInconclusive,
-		CandidatesTried: lastAttempt(req.RecordedCandidates), PriorCandidates: slices.Clone(req.RecordedCandidates),
+		CandidatesTried: t.tried, ConsecutiveFailures: t.consecutiveFailures, ConsecutiveInconclusive: t.consecutiveInconclusive,
+		PriorCandidates: slices.Clone(req.RecordedCandidates),
 	}
 	// The route node only runs after a decision, so a campaign that resumes
 	// already at its failure bound would spend one more candidate proving what
@@ -409,8 +410,10 @@ func planTarget(state *CampaignState) {
 // measurement (its patch did not apply, failed the shape check, or did not
 // build) said nothing about its target, so that target gets one more attempt,
 // with the reason in prior_candidates; a second unmeasured attempt closes it,
-// so a target the optimizer cannot patch does not hold the campaign. Targets
-// carried across a resume count as tried, whatever became of them.
+// so a target the optimizer cannot patch does not hold the campaign. A resumed
+// campaign's recorded candidates carry whether they were measured, so the
+// retry survives a resume (ADR 0017, amended); --history targets count as
+// tried, whatever became of them.
 func triedTargets(state CampaignState) map[string]bool {
 	tried := map[string]bool{}
 	for _, t := range state.Request.PriorTargets {
@@ -640,23 +643,11 @@ func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignSt
 	return nil
 }
 
-// countDecision keeps the two streaks. An accepted candidate clears both. A
-// rejection counts as a failure and breaks any run of unresolved verdicts. An
-// inconclusive verdict counts on its own streak when the campaign configured
-// one, and otherwise counts as a failure, which is the default behavior.
+// countDecision counts one more verdict on the state's streaks (see
+// tallies.after).
 func countDecision(state *CampaignState, decision domain.Decision, separateInconclusiveBound bool) {
-	switch decision {
-	case domain.DecisionAccepted:
-		state.ConsecutiveFailures, state.ConsecutiveInconclusive = 0, 0
-	case domain.DecisionRejected:
-		state.ConsecutiveFailures++
-		state.ConsecutiveInconclusive = 0
-	case domain.DecisionInconclusive:
-		state.ConsecutiveInconclusive++
-		if !separateInconclusiveBound {
-			state.ConsecutiveFailures++
-		}
-	}
+	t := tallies{consecutiveFailures: state.ConsecutiveFailures, consecutiveInconclusive: state.ConsecutiveInconclusive}.after(decision, separateInconclusiveBound)
+	state.ConsecutiveFailures, state.ConsecutiveInconclusive = t.consecutiveFailures, t.consecutiveInconclusive
 }
 
 // route finishes the campaign or starts the next cycle. A cycle in which the
@@ -733,14 +724,14 @@ func normalizeRequest(req CampaignRequest) (CampaignRequest, error) {
 	if req.BuildTarget == "" {
 		return CampaignRequest{}, errors.New("build target is required")
 	}
-	// A negative carried-in tally would buy the resumed process extra
-	// failures before MaxConsecutiveFailures binds, so it is rejected rather
-	// than clamped: the bound is not negotiable by request content.
-	if req.PriorConsecutiveFailures < 0 {
-		return CampaignRequest{}, errors.New("prior consecutive failures cannot be negative")
-	}
-	if req.PriorConsecutiveInconclusive < 0 {
-		return CampaignRequest{}, errors.New("prior consecutive inconclusive cannot be negative")
+	// A recorded verdict the tallies cannot count would quietly break a
+	// streak and buy the resumed process extra candidates before a bound
+	// binds, so it is rejected: the bounds are not negotiable by request
+	// content.
+	for _, c := range req.RecordedCandidates {
+		if !validDecision(domain.Decision(c.Decision)) {
+			return CampaignRequest{}, fmt.Errorf("recorded candidate %d has invalid decision %q", c.Attempt, c.Decision)
+		}
 	}
 	if req.OptimizationMode == "" {
 		req.OptimizationMode = domain.PolicyIdiomatic
@@ -831,16 +822,6 @@ func validDecision(decision domain.Decision) bool {
 	default:
 		return false
 	}
-}
-
-// lastAttempt is the highest attempt number among recorded candidates, so a
-// resumed campaign numbers its next candidate after them.
-func lastAttempt(recorded []PriorCandidate) int {
-	last := 0
-	for _, c := range recorded {
-		last = max(last, c.Attempt)
-	}
-	return last
 }
 
 // roleFailure returns the cause of role's last absorbed failure this cycle,

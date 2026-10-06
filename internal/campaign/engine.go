@@ -101,6 +101,11 @@ type CandidateRecord struct {
 	Reasons        []string                  `json:"reasons,omitempty"`
 	Comparisons    []domain.MetricComparison `json:"comparisons,omitempty"`
 	Accepted       bool                      `json:"accepted,omitempty"`
+	// Unmeasured marks a candidate rejected before it was measured, so a
+	// resumed campaign still gives its target the one more attempt an
+	// uninterrupted one would (ADR 0017). Records written before this field
+	// read false, which keeps their targets closed, as they were.
+	Unmeasured bool `json:"unmeasured,omitempty"`
 	// BenchstatOutput holds trimmed raw benchstat output for workloads where
 	// benchstat refined the wall-time comparison; empty when unavailable.
 	BenchstatOutput string                   `json:"benchstat_output,omitempty"`

@@ -23,7 +23,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0014](0014-jev-reviewer.md) | Jev behaviour-hazard checks may replace the reviewer model, and reviews are kept | accepted, amended by 0035 |
 | [0015](0015-jev-explorer.md) | Code-generated option variants, judged by Jev, may replace the explorer model | accepted, amended by 0035 |
 | [0016](0016-regressions-reject-on-significance.md) | A regression rejects only when it is significant, after a second series if needed | accepted |
-| [0017](0017-patch-shape-check.md) | A patch is held to its shape before it is built, and an unmeasured target is retried once | accepted |
+| [0017](0017-patch-shape-check.md) | A patch is held to its shape before it is built, and an unmeasured target is retried once | accepted, amended 2026-10-07 |
 | [0018](0018-targets-weigh-evidence-against-hotness.md) | Targets are ordered by evidence discounted by hotness | accepted |
 | [0019](0019-fix-kinds-and-in-memory-writers.md) | Jev picks the fix within a cause, and code overrules unbuffered-I/O flags on in-memory writers | accepted (opt-in) |
 | [0020](0020-tradeoffs-per-campaign.md) | A campaign may pick its own trade-offs | accepted |

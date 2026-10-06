@@ -1307,12 +1307,15 @@ or `--campaign-dir`.
 The stop bounds are campaign-wide, not per-process. The ADK graph builds a
 fresh `CampaignState` every time it is entered, so a tally living only there
 restarts at zero on every resume and the bound holds only within one process.
-`ConsecutiveFailures` is therefore persisted at every policy decision and fed
-back as `PriorConsecutiveFailures` when the graph is re-entered. The candidate
-budget and attempt numbers come back the same way, from the persisted records
-themselves: `RecordedCandidates` seeds `CandidatesTried` (the highest recorded
-attempt), the optimizer's prior candidates and the tried targets, and `ended`
-checks the budget before the first cycle. Before #91 a resumed campaign
+The persisted candidate records are the one source: the engine hands them to
+the graph as `RecordedCandidates`, and `initialize` folds them into the
+counters (`talliesOf`, `internal/orchestrator/ledger.go`): `CandidatesTried`
+is the highest recorded attempt, and both streaks are counted exactly as the
+live cycles count them. The same records seed the optimizer's prior
+candidates and the tried targets, including whether each was measured, so an
+unmeasured target keeps its retry across a resume (ADR 0017, amended). `ended`
+checks the budget before the first cycle. `State.ConsecutiveFailures` is still
+written at every decision, for the report, but a resume no longer reads it. Before #91 a resumed campaign
 started at zero candidates, so it could spend its `max_candidate_patches`
 again and number its candidates from 1, colliding with recorded attempts.
 
