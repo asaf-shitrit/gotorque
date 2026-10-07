@@ -7,10 +7,9 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
-// RunnerService owns reproducible repository inspection, workload execution,
+// RunnerService owns reproducible workload execution,
 // isolated candidates, measurement, and temporary baseline promotion.
 type RunnerService interface {
-	Inspect(ctx context.Context, req CampaignRequest) (Inspection, error)
 	Discover(ctx context.Context, req DiscoveryRequest) (DiscoveryEvidence, error)
 	EvaluateCandidate(ctx context.Context, req CandidateRequest) (CandidateEvidence, error)
 	PromoteCandidate(ctx context.Context, candidate domain.Candidate) error

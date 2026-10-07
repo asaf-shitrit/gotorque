@@ -309,9 +309,6 @@ func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result 
 	_ = s.engine.saveEvent("adk_finalized", result.StopReason, result)
 	return job, nil
 }
-func (s adkServices) Inspect(_ context.Context, _ orchestrator.CampaignRequest) (orchestrator.Inspection, error) {
-	return orchestrator.Inspection{Packages: append([]string(nil), s.engine.state.Inventory.Packages...), Commands: append([]string(nil), s.engine.state.Inventory.Commands...), Metadata: map[string]string{"authority": s.engine.state.Environment.Authority}}, nil
-}
 func (s adkServices) Discover(_ context.Context, _ orchestrator.DiscoveryRequest) (orchestrator.DiscoveryEvidence, error) {
 	runs := make([]string, 0, len(s.engine.state.Runs))
 	for _, run := range s.engine.state.Runs {

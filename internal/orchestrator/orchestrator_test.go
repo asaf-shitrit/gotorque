@@ -30,10 +30,6 @@ type fakeRunnerService struct {
 	failureDetail string
 }
 
-func (f *fakeRunnerService) Inspect(context.Context, CampaignRequest) (Inspection, error) {
-	return Inspection{Packages: []string{"example.com/cli"}, Commands: []string{"scan"}}, nil
-}
-
 func (f *fakeRunnerService) Discover(context.Context, DiscoveryRequest) (DiscoveryEvidence, error) {
 	f.discoverCalls++
 	return DiscoveryEvidence{

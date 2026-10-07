@@ -49,15 +49,6 @@ type CampaignRequest struct {
 	GoVersion string `json:"go_version,omitempty"`
 }
 
-// Inspection is deterministic repository and target inventory.
-type Inspection struct {
-	Packages   []string          `json:"packages,omitempty"`
-	Commands   []string          `json:"commands,omitempty"`
-	Tests      []string          `json:"tests,omitempty"`
-	Benchmarks []string          `json:"benchmarks,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-}
-
 // DiscoveryRequest is the campaign context the deterministic runner discovers
 // against.
 type DiscoveryRequest struct {
@@ -223,11 +214,10 @@ type RoleFailure struct {
 // nodes, and the degrading wrapper, which records a failed role call in
 // CycleFailures without ever reading the model output it failed to get.
 type CampaignState struct {
-	Request    CampaignRequest      `json:"request"`
-	Job        domain.Job           `json:"job"`
-	Inspection Inspection           `json:"inspection"`
-	Discovery  DiscoveryEvidence    `json:"discovery"`
-	Analysis   agents.AnalystResult `json:"analysis"`
+	Request   CampaignRequest      `json:"request"`
+	Job       domain.Job           `json:"job"`
+	Discovery DiscoveryEvidence    `json:"discovery"`
+	Analysis  agents.AnalystResult `json:"analysis"`
 	// Target is the function and cause code chose for this cycle's patch, or
 	// nil when the analysis ranks no causes and the optimizer chooses.
 	Target              *agents.Target         `json:"target,omitempty"`

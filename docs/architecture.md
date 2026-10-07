@@ -39,7 +39,6 @@ built by `internal/orchestrator` is:
 
 ```text
 initialize_campaign
-  -> inspect_repository
   -> run_discovery (deterministic; baseline discovery evidence)
   -> analyst (Jev cause classification, ranked in code)
   -> merge_analysis (deterministic; attach source excerpts)

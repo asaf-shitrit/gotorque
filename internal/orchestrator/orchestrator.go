@@ -57,9 +57,9 @@ type campaignGraph struct {
 }
 
 type graphNodes struct {
-	initialize, inspect, discover, analyst workflow.Node
-	mergeAnalysis, optimizer, evaluate     workflow.Node
-	reviewer, decide, route, finalize      workflow.Node
+	initialize, discover, analyst      workflow.Node
+	mergeAnalysis, optimizer, evaluate workflow.Node
+	reviewer, decide, route, finalize  workflow.Node
 }
 
 // New builds the bounded campaign graph.
@@ -102,7 +102,6 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 	agt := workflow.NodeConfig{Timeout: g.cfg.AgentTimeout}
 	n := graphNodes{
 		initialize:    workflow.NewFunctionNode("initialize_campaign", g.initialize, det),
-		inspect:       workflow.NewFunctionNode("inspect_repository", g.inspect, det),
 		discover:      workflow.NewFunctionNode("run_discovery", g.discover, det),
 		mergeAnalysis: workflow.NewFunctionNode("merge_analysis", g.mergeAnalysis, det),
 		evaluate:      workflow.NewFunctionNode("evaluate_candidate", g.evaluate, det),
@@ -225,9 +224,8 @@ func (n degradingNode) reportDegraded(ctx adkagent.Context, cause error) {
 func (n graphNodes) edges() []workflow.Edge {
 	return workflow.NewEdgeBuilder().
 		Add(workflow.Start, n.initialize).
-		AddRoute(n.initialize, n.inspect, workflow.StringRoute(routeContinue)).
+		AddRoute(n.initialize, n.discover, workflow.StringRoute(routeContinue)).
 		AddRoute(n.initialize, n.finalize, workflow.StringRoute(routeFinish)).
-		Add(n.inspect, n.discover).
 		Add(n.discover, n.analyst).
 		Add(n.analyst, n.mergeAnalysis).
 		AddRoute(n.mergeAnalysis, n.optimizer, workflow.StringRoute(routeContinue)).
@@ -278,15 +276,6 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	ev := stateEvent(ctx, state)
 	ev.Routes = []string{next}
 	return ev, nil
-}
-
-func (g *campaignGraph) inspect(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
-	inventory, err := g.deps.Runner.Inspect(ctx, state.Request)
-	if err != nil {
-		return nil, fmt.Errorf("inspect repository: %w", err)
-	}
-	state.Inspection = inventory
-	return stateEvent(ctx, state), nil
 }
 
 // decodeRole decodes one role's output and records the repair it needed, if
