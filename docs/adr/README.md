@@ -44,6 +44,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0035](0035-the-optimizer-is-the-only-model-role.md) | The optimizer is the only model role | accepted |
 | [0036](0036-candidate-evaluation-is-its-own-module.md) | Candidate evaluation is its own module, with no Engine and three ports | accepted |
 | [0037](0037-discovery-is-its-own-module.md) | Discovery is its own module behind a sampler seam | accepted |
+| [0038](0038-the-engine-bridge-is-one-port.md) | The engine bridge is one port, `Bench` | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay

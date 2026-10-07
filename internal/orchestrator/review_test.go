@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
-	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 type fakeReviewAnalyst struct {
@@ -23,19 +22,19 @@ func (f *fakeReviewAnalyst) ReviewPatch(_ context.Context, req ReviewRequest) (a
 	return f.result, f.err
 }
 
-func reviewGraph(t *testing.T, review *fakeReviewAnalyst) (*Orchestrator, *fakeJobService) {
+func reviewGraph(t *testing.T, review *fakeReviewAnalyst) (*Orchestrator, *fakeBench) {
 	t.Helper()
 	var calls int
 	roleSet := agents.Set{
 		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "--- a/main.go\n+++ b/main.go\n"}, &calls),
 	}
-	jobs := &fakeJobService{}
+	bench := hotBench()
 	orch := mustNew(t, Dependencies{
-		Runner: &hotRunner{}, Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}}, Jobs: jobs, Agents: roleSet,
+		Bench: bench, Agents: roleSet,
 		Causes: &fakeCauseAnalyst{result: agents.AnalystResult{Targets: []agents.Target{targetLoop, targetAlloc}}},
 		Review: review,
 	}, Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
-	return orch, jobs
+	return orch, bench
 }
 
 // TestReviewAnalystServesTheReviewerNode: the review sees the patch and its
@@ -56,13 +55,13 @@ func TestReviewAnalystServesTheReviewerNode(t *testing.T) {
 
 func TestFailingReviewAnalystDegradesLikeAnyRole(t *testing.T) {
 	review := &fakeReviewAnalyst{err: errors.New("gateway returned HTTP 429 for Jev")}
-	orch, jobs := reviewGraph(t, review)
+	orch, bench := reviewGraph(t, review)
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-review-degraded", causeCampaign, "finalize_campaign")
 	if result.CandidatesTried != 2 {
 		t.Errorf("candidates tried = %d, want the campaign to continue", result.CandidatesTried)
 	}
 	var degraded int
-	for _, d := range jobs.degraded {
+	for _, d := range bench.degraded {
 		if d.role == "reviewer" {
 			degraded++
 		}

@@ -39,16 +39,17 @@ built by `internal/orchestrator` is:
 
 ```text
 initialize_campaign
-  -> inspect_repository
-  -> run_discovery (deterministic; baseline discovery evidence)
+  -> run_discovery (deterministic; once per graph entry: baseline discovery evidence)
   -> analyst (Jev cause classification, ranked in code)
   -> merge_analysis (deterministic; attach source excerpts)
   -> optimizer (one focused patch)
-  -> evaluate_candidate (deterministic; see below)
+  -> evaluate_candidate (deterministic; see below; the acceptance policy judges the
+     evidence here, so the verdict exists before the reviewer runs)
   -> reviewer (Jev behaviour-hazard checks, advisory only)
-  -> apply_policy (deterministic acceptance decision)
+  -> apply_policy (deterministic; counts the verdict and settles it: the record,
+     the accepted patch, the tallies)
   -> route_campaign
-        continue -> back to run_discovery
+        continue -> back to analyst
         finish   -> finalize_campaign
 ```
 
@@ -56,6 +57,20 @@ The route node stops the loop when the manifest's maximum candidate count or
 consecutive-failure limit is reached; the engine's `max_duration` bound (see
 Campaign bounds) can also end a run from outside the graph, at whatever node
 is executing when it expires.
+
+The graph reaches the deterministic half through one port, `Bench`
+(`internal/orchestrator/bench.go`, ADR 0038), and the engine is its only
+production adapter (`engineBench` in `internal/campaign/adk.go`). `Discovery`
+returns the evidence the engine finished before the graph started, once per
+graph entry; `Excerpts` reads source windows around the hot paths and its
+failure only costs the cycle its excerpts; `Assess` evaluates a proposal and
+returns the evidence together with the acceptance policy's verdict, reached
+before the reviewer runs; `Settle` records that verdict as given, promotes an
+accepted patch, and persists the tallies; `Note` reports the campaign
+starting, a role degrading or being repaired, and the campaign finishing. The
+optimizer (`agents.Set`) and the two Jev advisors (`CauseAnalyst`,
+`ReviewAnalyst`) stay separate seams, because they are the parts that vary
+(live or stubbed) and degrade. Tests drive the graph with one `fakeBench`.
 
 A role whose call fails degrades to an empty result (`role_degraded`) instead
 of ending the run, because every role has a deterministic fallback for an
@@ -109,8 +124,12 @@ synchronously), `machine` (load, the contended threshold and the quiet wait;
 tests script a load burst) and `testBaseline` (what the test gate holds a
 candidate to and may narrow; the campaign's adapter writes the persisted
 state, verification's is a copy). Toolchain and runner stay concrete. Verdicts
-are recorded by one function, `recordVerdict`, for the graph's decision node
-and the null loop alike.
+are recorded by one function, `persistVerdict`, for the graph's settlement
+(`Settle`) and the null loop alike. `Settle` writes an accepted patch to
+`accepted/` before the record that refers to it, saves the record with its
+accepted marker in one state, and persists the tallies last, so a record on
+disk always has its promotion and a stop bound never counts a verdict that is
+not recorded.
 
 0. **Transport resolution (ADR 0022).** With a code-chosen target, the
    optimizer may return `function_source` (the target function's complete new
@@ -780,7 +799,9 @@ Until this, the reviewer's answer reached a policy input the policy ignores and
 nothing kept it. Its concerns are now recorded with the verdict, printed in the
 report under the candidate, and carried into the next cycle's
 `prior_candidates`. They remain advice: the policy
-never reads them.
+never reads them, and now cannot: the verdict is reached when the candidate is
+assessed (`evaluate_candidate`), before the reviewer node runs, and
+`apply_policy` settles that verdict as given.
 
 ## Jev explorer
 
@@ -842,7 +863,7 @@ verdict reads them. The chosen variants are kept in campaign state
 
 ## Jev answer cache
 
-The graph loops (`route_campaign` back to `run_discovery` -> `analyst`) until a candidate is accepted or a bound is hit,
+The graph loops (`route_campaign` back to `analyst`) until a candidate is accepted or a bound is hit,
 and at the same base revision every one of those cycles asks the analyst about
 the same hot functions and the explorer about the same command and `--help`
 text: recorded campaigns made 64 analyst requests for 4 optimizer calls on

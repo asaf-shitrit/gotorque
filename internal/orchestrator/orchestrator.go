@@ -30,12 +30,11 @@ const (
 // rather than as completed.
 var ErrProviderUnavailable = errors.New("model provider unavailable")
 
-// Dependencies are intentionally narrow so deterministic execution, policy,
-// and job persistence can be local, remote, or fake implementations.
+// Dependencies are the campaign's collaborators. The deterministic half is one
+// Bench, the engine in production and a fake in tests; the optimizer is a live
+// model or a stub (agents.Set), and the two Jev advisors are live or stubbed.
 type Dependencies struct {
-	Runner RunnerService
-	Policy PolicyService
-	Jobs   JobService
+	Bench  Bench
 	Agents agents.Set
 	// Causes serves the analyst node: Jev cause classification ranked in code.
 	Causes CauseAnalyst
@@ -57,9 +56,9 @@ type campaignGraph struct {
 }
 
 type graphNodes struct {
-	initialize, inspect, discover, analyst workflow.Node
-	mergeAnalysis, optimizer, evaluate     workflow.Node
-	reviewer, decide, route, finalize      workflow.Node
+	initialize, discover, analyst      workflow.Node
+	mergeAnalysis, optimizer, evaluate workflow.Node
+	reviewer, decide, route, finalize  workflow.Node
 }
 
 // New builds the bounded campaign graph.
@@ -102,7 +101,6 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 	agt := workflow.NodeConfig{Timeout: g.cfg.AgentTimeout}
 	n := graphNodes{
 		initialize:    workflow.NewFunctionNode("initialize_campaign", g.initialize, det),
-		inspect:       workflow.NewFunctionNode("inspect_repository", g.inspect, det),
 		discover:      workflow.NewFunctionNode("run_discovery", g.discover, det),
 		mergeAnalysis: workflow.NewFunctionNode("merge_analysis", g.mergeAnalysis, det),
 		evaluate:      workflow.NewFunctionNode("evaluate_candidate", g.evaluate, det),
@@ -110,7 +108,7 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 		route:         workflow.NewFunctionNode("route_campaign", g.route, det),
 		finalize:      workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
 	}
-	optimizer, err := agentNode(g.deps.Agents.Optimizer, agt, string(agents.RoleOptimizer), g.deps.Jobs)
+	optimizer, err := agentNode(g.deps.Agents.Optimizer, agt, string(agents.RoleOptimizer), g.deps.Bench)
 	if err != nil {
 		return n, err
 	}
@@ -118,8 +116,8 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 	// The Jev nodes keep their role's name, so a degraded classification or
 	// review is reported against "analyst" or "reviewer", and the analyst
 	// falls back to discovery's hot paths.
-	n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Jobs)
-	n.reviewer = degradeNode(workflow.NewFunctionNode(string(agents.RoleReviewer), g.reviewPatch, agt), string(agents.RoleReviewer), g.deps.Jobs)
+	n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Bench)
+	n.reviewer = degradeNode(workflow.NewFunctionNode(string(agents.RoleReviewer), g.reviewPatch, agt), string(agents.RoleReviewer), g.deps.Bench)
 	return n, nil
 }
 
@@ -131,12 +129,12 @@ func (g *campaignGraph) analyzeCauses(ctx adkagent.Context, state CampaignState)
 	return g.deps.Causes.AnalyzeCauses(ctx, CauseRequest{Campaign: state.Request, Discovery: state.Discovery})
 }
 
-func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string, jobs JobService) (workflow.Node, error) {
+func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string, bench Bench) (workflow.Node, error) {
 	n, err := workflow.NewAgentNode(a, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("%s node: %w", role, err)
 	}
-	return degradeNode(n, role, jobs), nil
+	return degradeNode(n, role, bench), nil
 }
 
 // emptyRoleResult is the degraded output every role decodes into a zero value.
@@ -155,12 +153,12 @@ const emptyRoleResult = "{}"
 // reported, and the authoritative decision stays with the deterministic half.
 type degradingNode struct {
 	workflow.Node
-	role string
-	jobs JobService
+	role  string
+	bench Bench
 }
 
-func degradeNode(inner workflow.Node, role string, jobs JobService) workflow.Node {
-	return degradingNode{Node: inner, role: role, jobs: jobs}
+func degradeNode(inner workflow.Node, role string, bench Bench) workflow.Node {
+	return degradingNode{Node: inner, role: role, bench: bench}
 }
 
 func (n degradingNode) Run(ctx adkagent.Context, input any) iter.Seq2[*session.Event, error] {
@@ -214,20 +212,19 @@ func (n degradingNode) emptyResult(ctx adkagent.Context, failure error) *session
 // reportDegraded records the cause of an absorbed role failure. The node
 // continues with an empty result either way, so an operator reading the report
 // learns why a candidate looks empty rather than merely that it does. A wrapper
-// built without a job service simply absorbs the failure.
+// built without a bench simply absorbs the failure.
 func (n degradingNode) reportDegraded(ctx adkagent.Context, cause error) {
-	if n.jobs == nil {
+	if n.bench == nil {
 		return
 	}
-	_ = n.jobs.RecordRoleDegraded(ctx, n.role, cause)
+	_ = n.bench.Note(ctx, Note{Kind: NoteDegraded, Role: n.role, Cause: cause.Error()})
 }
 
 func (n graphNodes) edges() []workflow.Edge {
 	return workflow.NewEdgeBuilder().
 		Add(workflow.Start, n.initialize).
-		AddRoute(n.initialize, n.inspect, workflow.StringRoute(routeContinue)).
+		AddRoute(n.initialize, n.discover, workflow.StringRoute(routeContinue)).
 		AddRoute(n.initialize, n.finalize, workflow.StringRoute(routeFinish)).
-		Add(n.inspect, n.discover).
 		Add(n.discover, n.analyst).
 		Add(n.analyst, n.mergeAnalysis).
 		AddRoute(n.mergeAnalysis, n.optimizer, workflow.StringRoute(routeContinue)).
@@ -236,7 +233,7 @@ func (n graphNodes) edges() []workflow.Edge {
 		Add(n.evaluate, n.reviewer).
 		Add(n.reviewer, n.decide).
 		Add(n.decide, n.route).
-		AddRoute(n.route, n.discover, workflow.StringRoute(routeContinue)).
+		AddRoute(n.route, n.analyst, workflow.StringRoute(routeContinue)).
 		AddRoute(n.route, n.finalize, workflow.StringRoute(routeFinish)).
 		Build()
 }
@@ -250,19 +247,15 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	if err != nil {
 		return nil, err
 	}
-	job, err := g.deps.Jobs.StartCampaign(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("start campaign job: %w", err)
-	}
-	if job.ID == "" {
-		return nil, errors.New("start campaign job: empty job ID")
+	if err := g.deps.Bench.Note(ctx, Note{Kind: NoteStarted, Request: req}); err != nil {
+		return nil, fmt.Errorf("note campaign start: %w", err)
 	}
 	// Deriving the tallies from the recorded candidates rather than starting
 	// at zero is what makes MaxCandidates and the streak bounds campaign
 	// bounds instead of per-process ones, and keeps attempt numbers unique.
 	t := talliesOf(req.RecordedCandidates, g.cfg.MaxConsecutiveInconclusive > 0)
 	state := CampaignState{
-		Request: req, Job: job, StartedAt: time.Now(),
+		Request: req, StartedAt: time.Now(),
 		CandidatesTried: t.tried, ConsecutiveFailures: t.consecutiveFailures, ConsecutiveInconclusive: t.consecutiveInconclusive,
 		PriorCandidates: slices.Clone(req.RecordedCandidates),
 	}
@@ -280,50 +273,44 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	return ev, nil
 }
 
-func (g *campaignGraph) inspect(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
-	inventory, err := g.deps.Runner.Inspect(ctx, state.Request)
-	if err != nil {
-		return nil, fmt.Errorf("inspect repository: %w", err)
-	}
-	state.Inspection = inventory
-	return stateEvent(ctx, state), nil
-}
-
 // decodeRole decodes one role's output and records the repair it needed, if
 // any. The repaired value is still the role's answer; the record exists so an
 // answer the decoder salvaged is not mistaken for the one the model sent.
-func decodeRole[T any](ctx context.Context, jobs JobService, role agents.Role, raw any) (T, agents.Repair, error) {
+func decodeRole[T any](ctx context.Context, bench Bench, role agents.Role, raw any) (T, agents.Repair, error) {
 	result, repair, err := agents.DecodeResultWithRepair[T](raw)
 	if err == nil {
-		recordRepair(ctx, jobs, role, repair)
+		recordRepair(ctx, bench, role, repair)
 	}
 	return result, repair, err
 }
 
 // recordRepair reports a repaired role output. Like a degraded role, a failed
 // record is not a reason to stop the campaign.
-func recordRepair(ctx context.Context, jobs JobService, role agents.Role, repair agents.Repair) {
+func recordRepair(ctx context.Context, bench Bench, role agents.Role, repair agents.Repair) {
 	if repair == "" {
 		return
 	}
-	_ = jobs.RecordRoleRepaired(ctx, string(role), repair)
+	_ = bench.Note(ctx, Note{Kind: NoteRepaired, Role: string(role), Repair: repair})
 }
 
-// discover runs at the start of every cycle. The workloads it measures beyond
-// the manifest's seeds were chosen before the graph started, by code and Jev
-// (internal/campaign/explore.go), and code chooses the cycle's target after
-// the analysis (planTarget); a model coordinator and explorer once filled both
-// jobs, and on a live gron campaign the coordinator took up to 2m40s a cycle
-// and its free-text plan steered the optimizer away from the top target.
+// discover runs once per graph entry, between initialize_campaign and the
+// first analyst. Discovery's evidence is a property of the campaign, not of a
+// cycle: the engine measured it before the graph started (baseline, profile,
+// the workloads beyond the manifest's seeds that code and Jev chose in
+// internal/campaign/explore.go), and nothing a cycle does changes it. The
+// graph used to fetch it again at the head of every cycle, which returned the
+// same value each time. The node stays a node of its own so a failed fetch is
+// still reported as "run discovery" and the event path readers know is kept.
+// Code chooses each cycle's target after the analysis (planTarget); a model
+// coordinator and explorer once filled both jobs, and on a live gron campaign
+// the coordinator took up to 2m40s a cycle and its free-text plan steered the
+// optimizer away from the top target.
 func (g *campaignGraph) discover(ctx adkagent.Context, _ any) (*session.Event, error) {
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
 	}
-	evidence, err := g.deps.Runner.Discover(ctx, DiscoveryRequest{
-		Campaign: state.Request,
-		Attempt:  state.CandidatesTried + 1,
-	})
+	evidence, err := g.deps.Bench.Discovery(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("run discovery: %w", err)
 	}
@@ -336,13 +323,13 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	if err != nil {
 		return nil, fmt.Errorf("analyst output: %w", err)
 	}
-	recordRepair(ctx, g.deps.Jobs, agents.RoleAnalyst, repair)
+	recordRepair(ctx, g.deps.Bench, agents.RoleAnalyst, repair)
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
 	}
 	state.Analysis = result
-	attachExcerpts(ctx, g.deps.Runner, &state, result)
+	attachExcerpts(ctx, g.deps.Bench, &state, result)
 	planTarget(&state)
 	next := routeContinue
 	if end, done := g.ended(state, afterAnalysis); done {
@@ -512,16 +499,12 @@ func priorAnalystResult(raw any) (agents.AnalystResult, bool) {
 	return prior, true
 }
 
-func attachExcerpts(ctx adkagent.Context, runner RunnerService, state *CampaignState, result agents.AnalystResult) {
-	collector, ok := runner.(ExcerptCollector)
-	if !ok {
-		return
-	}
+func attachExcerpts(ctx adkagent.Context, bench Bench, state *CampaignState, result agents.AnalystResult) {
 	analysis := result
 	if len(analysis.HotPaths) == 0 {
 		analysis.HotPaths = discoveryHotPaths(state.Discovery.HotFunctions)
 	}
-	if excerpts, err := collector.CollectExcerpts(ctx, analysis); err == nil {
+	if excerpts, err := bench.Excerpts(ctx, analysis); err == nil {
 		state.SourceExcerpts = excerpts
 	}
 }
@@ -537,7 +520,7 @@ func discoveryHotPaths(fns []string) []agents.HotPath {
 }
 
 func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event, error) {
-	proposal, repair, err := decodeRole[agents.OptimizerResult](ctx, g.deps.Jobs, agents.RoleOptimizer, raw)
+	proposal, repair, err := decodeRole[agents.OptimizerResult](ctx, g.deps.Bench, agents.RoleOptimizer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("optimizer output: %w", err)
 	}
@@ -546,7 +529,7 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 		return nil, err
 	}
 	state.Proposal = proposal
-	evidence, err := g.deps.Runner.EvaluateCandidate(ctx, CandidateRequest{
+	assessment, err := g.deps.Bench.Assess(ctx, CandidateRequest{
 		Campaign:    state.Request,
 		Attempt:     state.CandidatesTried + 1,
 		Analysis:    state.Analysis,
@@ -557,18 +540,25 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 	if err != nil {
 		return nil, fmt.Errorf("evaluate candidate: %w", err)
 	}
-	if evidence.Candidate.ID == "" {
-		return nil, errors.New("evaluate candidate: empty candidate ID")
+	assessment, err = bindAssessment(assessment)
+	if err != nil {
+		return nil, err
 	}
 	// Stamped after the runner returns so no step of the evaluation can see
 	// it: the note rides to the candidate's record and nowhere else.
-	evidence.ProposalRepair = repair
-	state.Candidate = evidence
+	assessment.Evidence.ProposalRepair = repair
+	state.Candidate, state.Verdict = assessment.Evidence, assessment.Verdict
 	return stateEvent(ctx, state), nil
 }
 
+// applyPolicy is the last node of a cycle. The verdict was reached when the
+// candidate was assessed, before the reviewer spoke, so this node decides
+// nothing: it counts the verdict, hands it to the settler to make durable and
+// carries the result forward. The review is decoded only to be recorded and
+// fed to the next cycle's brief. The node keeps its name for the readers of
+// the event path.
 func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Event, error) {
-	review, _, err := decodeRole[agents.ReviewerResult](ctx, g.deps.Jobs, agents.RoleReviewer, raw)
+	review, _, err := decodeRole[agents.ReviewerResult](ctx, g.deps.Bench, agents.RoleReviewer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("reviewer output: %w", err)
 	}
@@ -577,70 +567,67 @@ func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Eve
 		return nil, err
 	}
 	state.Review = review
-	evaluation, err := g.deps.Policy.Evaluate(ctx, PolicyInput{
-		Campaign: state.Request,
-		Evidence: state.Candidate,
-		Review:   review,
-		Target:   state.Target,
+	settled := counted(state, g.cfg.MaxConsecutiveInconclusive > 0)
+	err = g.deps.Bench.Settle(ctx, Settlement{
+		Assessment: Assessment{Evidence: state.Candidate, Verdict: state.Verdict},
+		Target:     state.Target,
+		Review:     review,
+		Progress: CampaignProgress{
+			CandidatesTried:         settled.CandidatesTried,
+			ConsecutiveFailures:     settled.ConsecutiveFailures,
+			ConsecutiveInconclusive: settled.ConsecutiveInconclusive,
+			LastDecision:            state.Verdict.Decision,
+			CandidateID:             state.Verdict.CandidateID,
+		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("evaluate policy: %w", err)
+		return nil, fmt.Errorf("settle candidate: %w", err)
 	}
-	evaluation, err = bindEvaluation(state, evaluation)
-	if err != nil {
-		return nil, err
-	}
-	if err := applyDecision(ctx, g.deps.Runner, &state, evaluation, g.cfg.MaxConsecutiveInconclusive > 0); err != nil {
-		return nil, err
-	}
-	progress := CampaignProgress{
-		CandidatesTried:         state.CandidatesTried,
-		ConsecutiveFailures:     state.ConsecutiveFailures,
-		ConsecutiveInconclusive: state.ConsecutiveInconclusive,
-		LastDecision:            evaluation.Decision,
-		CandidateID:             evaluation.CandidateID,
-	}
-	if err := g.deps.Jobs.RecordProgress(ctx, state.Job, progress); err != nil {
-		return nil, fmt.Errorf("record campaign progress: %w", err)
-	}
-	return stateEvent(ctx, state), nil
+	return stateEvent(ctx, settled), nil
 }
 
-func bindEvaluation(state CampaignState, evaluation domain.Evaluation) (domain.Evaluation, error) {
-	if !validDecision(evaluation.Decision) {
-		return evaluation, fmt.Errorf("evaluate policy: invalid decision %q", evaluation.Decision)
+// bindAssessment holds an assessment to the invariants the graph relies on: a
+// candidate with an ID, a verdict that is one of the three decisions, and a
+// verdict that is about that candidate and no other.
+func bindAssessment(a Assessment) (Assessment, error) {
+	if a.Evidence.Candidate.ID == "" {
+		return a, errors.New("evaluate candidate: empty candidate ID")
 	}
-	if evaluation.CandidateID == "" {
-		evaluation.CandidateID = state.Candidate.Candidate.ID
+	if !validDecision(a.Verdict.Decision) {
+		return a, fmt.Errorf("evaluate candidate: invalid decision %q", a.Verdict.Decision)
 	}
-	if evaluation.CandidateID != state.Candidate.Candidate.ID {
-		return evaluation, fmt.Errorf("evaluate policy: candidate ID %q does not match %q", evaluation.CandidateID, state.Candidate.Candidate.ID)
+	if a.Verdict.CandidateID == "" {
+		a.Verdict.CandidateID = a.Evidence.Candidate.ID
 	}
-	return evaluation, nil
+	if a.Verdict.CandidateID != a.Evidence.Candidate.ID {
+		return a, fmt.Errorf("evaluate candidate: verdict candidate ID %q does not match %q", a.Verdict.CandidateID, a.Evidence.Candidate.ID)
+	}
+	return a, nil
 }
 
-func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignState, evaluation domain.Evaluation, separateInconclusiveBound bool) error {
-	state.Evaluation = evaluation
+// counted is the campaign state once the pending verdict is counted: the
+// attempt, the history the next brief reads, the streaks, and the accepted
+// list. It changes a copy, so a settlement that fails leaves the state the
+// graph holds as it was.
+func counted(state CampaignState, separateInconclusiveBound bool) CampaignState {
+	verdict := state.Verdict
+	state.Evaluation = verdict
 	state.CandidatesTried++
-	state.PriorCandidates = append(state.PriorCandidates, PriorCandidate{
+	state.PriorCandidates = append(slices.Clone(state.PriorCandidates), PriorCandidate{
 		Attempt:        state.CandidatesTried,
 		Hypothesis:     state.Proposal.Hypothesis,
-		Decision:       string(evaluation.Decision),
-		Reasons:        evaluation.Reasons,
+		Decision:       string(verdict.Decision),
+		Reasons:        verdict.Reasons,
 		FailureDetail:  state.Candidate.FailureDetail,
 		Target:         state.Target,
 		Unmeasured:     state.Candidate.Unmeasured,
 		ReviewConcerns: state.Review.Concerns,
 	})
-	countDecision(state, evaluation.Decision, separateInconclusiveBound)
-	if evaluation.Decision != domain.DecisionAccepted {
-		return nil
+	countDecision(&state, verdict.Decision, separateInconclusiveBound)
+	if verdict.Decision == domain.DecisionAccepted {
+		state.AcceptedCandidates = append(slices.Clone(state.AcceptedCandidates), verdict.CandidateID)
 	}
-	if err := runner.PromoteCandidate(ctx, state.Candidate.Candidate); err != nil {
-		return fmt.Errorf("promote candidate: %w", err)
-	}
-	state.AcceptedCandidates = append(state.AcceptedCandidates, evaluation.CandidateID)
-	return nil
+	return state
 }
 
 // countDecision counts one more verdict on the state's streaks (see
@@ -677,30 +664,24 @@ func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*sessi
 func (g *campaignGraph) finalize(ctx adkagent.Context, state CampaignState) (CampaignResult, error) {
 	result := CampaignResult{
 		CampaignID:         state.Request.CampaignID,
-		Job:                state.Job,
 		CandidatesTried:    state.CandidatesTried,
 		AcceptedCandidates: slices.Clone(state.AcceptedCandidates),
 		FinalEvaluation:    state.Evaluation,
 		StopReason:         state.StopReason,
 		ProviderFailure:    state.ProviderFailure,
 	}
-	job, err := g.deps.Jobs.CompleteCampaign(ctx, state.Job, result)
-	if err != nil {
-		return CampaignResult{}, fmt.Errorf("complete campaign job: %w", err)
+	// The result's status is what ended decided: ProviderFailure is set when a
+	// role could not answer, and the caller reads it from here. Nothing is
+	// derived a second time for the note.
+	if err := g.deps.Bench.Note(ctx, Note{Kind: NoteFinished, Result: result}); err != nil {
+		return CampaignResult{}, fmt.Errorf("note campaign finish: %w", err)
 	}
-	result.Job = job
 	return result, nil
 }
 
 func validateDependencies(deps Dependencies) error {
-	if deps.Runner == nil {
-		return errors.New("runner service is required")
-	}
-	if deps.Policy == nil {
-		return errors.New("policy service is required")
-	}
-	if deps.Jobs == nil {
-		return errors.New("job service is required")
+	if deps.Bench == nil {
+		return errors.New("bench is required")
 	}
 	if deps.Agents.Optimizer == nil {
 		return errors.New("optimizer agent is required")

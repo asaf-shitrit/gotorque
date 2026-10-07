@@ -1,8 +1,8 @@
 package orchestrator
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"iter"
 	"maps"
 	"reflect"
@@ -79,15 +79,6 @@ func TestPlanTargetLeavesAnUnrankedAnalysisAlone(t *testing.T) {
 	}
 }
 
-// targetPolicy rejects every candidate and remembers the target each
-// verdict was recorded with.
-type targetPolicy struct{ targets []*agents.Target }
-
-func (p *targetPolicy) Evaluate(_ context.Context, input PolicyInput) (domain.Evaluation, error) {
-	p.targets = append(p.targets, input.Target)
-	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: domain.DecisionRejected}, nil
-}
-
 // TestCodeChoosesEachCycleTarget drives the graph for three cycles: each
 // cycle attacks the next untried
 // target, and once the targets run out the optimizer is left to choose.
@@ -96,18 +87,18 @@ func TestCodeChoosesEachCycleTarget(t *testing.T) {
 	roleSet := agents.Set{
 		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &calls),
 	}
-	policy := &targetPolicy{}
+	bench := hotBench()
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
-	orch := mustNew(t, Dependencies{Runner: &hotRunner{}, Policy: policy, Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
+	orch := mustNew(t, Dependencies{Bench: bench, Agents: roleSet, Causes: analyst},
 		Config{MaxCandidates: 3, MaxConsecutiveFailures: 3, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-targets", causeCampaign, "finalize_campaign")
 
 	if result.CandidatesTried != 3 {
 		t.Fatalf("candidates tried = %d, want 3", result.CandidatesTried)
 	}
-	if len(policy.targets) != 3 || policy.targets[0] == nil || !reflect.DeepEqual(*policy.targets[0], targetLoop) ||
-		policy.targets[1] == nil || !reflect.DeepEqual(*policy.targets[1], targetAlloc) || policy.targets[2] != nil {
-		t.Errorf("targets per verdict = %v, want the loop, then the allocation, then none", policy.targets)
+	if targets := bench.targets(); len(targets) != 3 || targets[0] == nil || !reflect.DeepEqual(*targets[0], targetLoop) ||
+		targets[1] == nil || !reflect.DeepEqual(*targets[1], targetAlloc) || targets[2] != nil {
+		t.Errorf("targets per verdict = %v, want the loop, then the allocation, then none", bench.targets())
 	}
 }
 
@@ -146,7 +137,7 @@ func TestTheOptimizerReadsOnlyItsBrief(t *testing.T) {
 	var inputs []string
 	roleSet := agents.Set{Optimizer: inputRecorder(t, &inputs)}
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop}}}
-	orch := mustNew(t, Dependencies{Runner: &hotRunner{}, Policy: &targetPolicy{}, Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
+	orch := mustNew(t, Dependencies{Bench: hotBench(), Agents: roleSet, Causes: analyst},
 		Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-brief", causeCampaign, "finalize_campaign")
 
@@ -210,40 +201,24 @@ func TestAnUnmeasuredTargetGetsOneMoreAttempt(t *testing.T) {
 	}
 }
 
-// unmeasuredRunner rejects its first candidate before measurement.
-type unmeasuredRunner struct {
-	hotRunner
-	targets []*agents.Target
-}
-
-func (r *unmeasuredRunner) EvaluateCandidate(ctx context.Context, req CandidateRequest) (CandidateEvidence, error) {
-	r.targets = append(r.targets, req.Target)
-	evidence, err := r.hotRunner.EvaluateCandidate(ctx, req)
-	if req.Attempt == 1 {
-		evidence.Unmeasured = true
-		evidence.FailureDetail = "the patch uses bufio without importing it"
-	}
-	return evidence, err
-}
-
 // TestTheGraphRetriesATargetItNeverMeasured drives two cycles: the first
 // candidate never reaches measurement, and the second is told to attack the
 // same target, with the target on the evaluation request both times.
 func TestTheGraphRetriesATargetItNeverMeasured(t *testing.T) {
 	var inputs []string
 	roleSet := agents.Set{Optimizer: inputRecorder(t, &inputs)}
-	policy := &targetPolicy{}
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
-	runner := &unmeasuredRunner{}
-	orch := mustNew(t, Dependencies{Runner: runner, Policy: policy, Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
+	bench := hotBench()
+	bench.unmeasuredFirst = true
+	orch := mustNew(t, Dependencies{Bench: bench, Agents: roleSet, Causes: analyst},
 		Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-retry", causeCampaign, "finalize_campaign")
 
-	if !allTargets(policy.targets, targetLoop, 2) {
-		t.Fatalf("targets per verdict = %v, want the loop twice", policy.targets)
+	if !allTargets(bench.targets(), targetLoop, 2) {
+		t.Fatalf("targets per verdict = %v, want the loop twice", bench.targets())
 	}
-	if !allTargets(runner.targets, targetLoop, 2) {
-		t.Errorf("evaluation requests carried targets %v, want the loop twice", runner.targets)
+	if !allTargets(bench.requestTargets(), targetLoop, 2) {
+		t.Errorf("evaluation requests carried targets %v, want the loop twice", bench.requestTargets())
 	}
 	if len(inputs) != 2 || !strings.Contains(inputs[1], "without importing it") {
 		t.Errorf("the retry's brief should carry the first attempt's reason; got %d inputs", len(inputs))
@@ -355,20 +330,60 @@ func TestAResumeKeepsAnUnmeasuredTargetsRetry(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var inputs []string
-			policy := &targetPolicy{}
+			bench := hotBench()
+			bench.unmeasuredFirst = true
 			analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
-			orch := mustNew(t, Dependencies{Runner: &unmeasuredRunner{}, Policy: policy, Jobs: &fakeJobService{}, Agents: agents.Set{Optimizer: inputRecorder(t, &inputs)}, Causes: analyst},
+			orch := mustNew(t, Dependencies{Bench: bench, Agents: agents.Set{Optimizer: inputRecorder(t, &inputs)}, Causes: analyst},
 				Config{MaxCandidates: 2, MaxConsecutiveFailures: 3, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 			req := causeCampaign
 			loop := targetLoop
 			req.RecordedCandidates = []PriorCandidate{{Attempt: 1, Decision: string(domain.DecisionRejected), Target: &loop, Unmeasured: tc.unmeasured, FailureDetail: "did not build"}}
 			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-resume-retry", req, "finalize_campaign")
 
-			if result.CandidatesTried != 2 || !allTargets(policy.targets, tc.want, 1) {
-				t.Fatalf("tried %d, targets per verdict = %v; want one new candidate on %s", result.CandidatesTried, policy.targets, tc.want.Function)
+			if result.CandidatesTried != 2 || !allTargets(bench.targets(), tc.want, 1) {
+				t.Fatalf("tried %d, targets per verdict = %v; want one new candidate on %s", result.CandidatesTried, bench.targets(), tc.want.Function)
 			}
 			if len(inputs) != 1 || !strings.Contains(inputs[0], "did not build") {
 				t.Errorf("the resumed brief should carry the recorded attempt's failure; got %d inputs", len(inputs))
+			}
+		})
+	}
+}
+
+// TestExcerptsReachTheBriefAndTheirAbsenceIsTolerated: the bench's excerpts are
+// the source the optimizer writes its patch against, filtered to the chosen
+// target. A bench that cannot read source costs the cycle its excerpts, not the
+// campaign: the optimizer is still asked and the candidate still judged.
+func TestExcerptsReachTheBriefAndTheirAbsenceIsTolerated(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		err         error
+		wantExcerpt bool
+	}{
+		{name: "read", wantExcerpt: true},
+		{name: "unreadable", err: errors.New("repository moved")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var inputs []string
+			bench := hotBench()
+			bench.excerpts = excerptsFor("main.go:206", "token.go:141")
+			bench.excerptErr = tc.err
+			if tc.err != nil {
+				bench.excerpts = nil
+			}
+			analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop}}}
+			orch := mustNew(t, Dependencies{Bench: bench, Agents: agents.Set{Optimizer: inputRecorder(t, &inputs)}, Causes: analyst},
+				Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
+			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-excerpts-"+tc.name, causeCampaign, "finalize_campaign")
+
+			if result.CandidatesTried != 1 || bench.excerptCalls != 1 || len(inputs) != 1 {
+				t.Fatalf("tried %d, excerpt reads %d, optimizer inputs %d; want 1 of each", result.CandidatesTried, bench.excerptCalls, len(inputs))
+			}
+			if got := strings.Contains(inputs[0], "source of main.go:206"); got != tc.wantExcerpt {
+				t.Errorf("brief carries the target's excerpt = %v, want %v: %s", got, tc.wantExcerpt, inputs[0])
+			}
+			if strings.Contains(inputs[0], "source of token.go:141") {
+				t.Errorf("brief carries an excerpt outside the target: %s", inputs[0])
 			}
 		})
 	}

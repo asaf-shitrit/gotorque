@@ -10,6 +10,10 @@ Domain terms with a fixed meaning in gotorque's code, docs and ADRs. Add a term 
 - **Tallies**: candidates tried and the two streaks (consecutive failures, consecutive inconclusive). They are always derived from the ledger.
 - **Unmeasured candidate**: a candidate rejected before measurement (its patch was invalid, did not apply, failed the shape check, or did not build). Its target gets one more attempt (ADR 0017).
 - **Ending**: how a campaign stops: the stop reason, and the failure when a role could not answer. `ended` decides it at three checkpoints (`internal/orchestrator/termination.go`).
+- **Bench**: the campaign's deterministic half as the graph sees it, one port with five methods: `Discovery`, `Excerpts`, `Assess`, `Settle`, `Note` (`internal/orchestrator/bench.go`, ADR 0038). The engine is its only production adapter.
+- **Assessment**: what `Assess` returns for one proposal: the candidate evidence and the verdict the acceptance policy drew from it. The verdict exists before the reviewer runs, and nothing downstream recomputes it.
+- **Settlement**: one candidate's verdict handed to `Settle` to be made durable: the assessment, the target, the review and the tallies after the verdict. `Settle` records the verdict as given, copies an accepted patch first, saves the record with its accepted marker, and persists the tallies last.
+- **Note**: one report the graph makes about the campaign's life through `Bench.Note`: started, degraded, repaired or finished. A note is a record, never an input.
 - **Sampler**: the port that runs a target under the OS sampling tool and returns a transcript, without judging it (`internal/profile`, ADR 0037).
 - **Transcript**: what one sampler run produced (report, sampler exit and output, whether the target was alive at attach), recorded as is.
 - **Classification**: `Classify(Transcript)`, the pure mapping of a transcript to a sample or a typed failure (exited early, no frames, idle, unavailable, failed).

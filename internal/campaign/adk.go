@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
@@ -22,9 +21,9 @@ import (
 )
 
 // RunADK executes the bounded ADK graph against this persisted campaign. The
-// deterministic services below are adapters to the same engine state and
-// artifact store used by the CLI path; they do not provide shell access to
-// agents. A caller may inject OpenAI-backed or static agents.
+// engine reaches the graph as one orchestrator.Bench, an adapter over the same
+// engine state and artifact store the CLI path uses; it gives agents no shell
+// access. A caller may inject OpenAI-backed or static agents.
 func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrator.Config) (orchestrator.CampaignResult, error) {
 	// Token usage is accounting, not a verdict, so it is recorded on the way out
 	// whatever happened. A campaign cut short by its budget, or by a provider
@@ -111,8 +110,7 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 	if e.state.Status != StatusCompleted && e.state.Status != StatusRunning {
 		return nil, nil, fmt.Errorf("campaign must be running or baseline-completed before ADK: %s", e.state.Status)
 	}
-	services := adkServices{engine: e}
-	deps := orchestrator.Dependencies{Runner: services, Policy: services, Jobs: services, Agents: roleSet}
+	deps := orchestrator.Dependencies{Bench: engineBench{engine: e}, Agents: roleSet}
 	if e.causeJev != nil {
 		deps.Causes = causeAnalyst{engine: e, evaluator: e.causeJev, usage: roleSet.Usage}
 	}
@@ -208,7 +206,12 @@ func snapshotTokenUsage(usage map[string]agents.RoleUsage) map[string]RoleUsageS
 	return snapshots
 }
 
-type adkServices struct{ engine *Engine }
+// engineBench is the engine as the orchestrator's Bench: its one production
+// adapter. Each method is a thin entry into the engine; the policy, the
+// evaluation loop and the persistence all live there.
+type engineBench struct{ engine *Engine }
+
+var _ orchestrator.Bench = engineBench{}
 
 // excerptCandidates orders the locations worth reading source for: the
 // analyst's hot paths first, then discovery's own resolved positions.
@@ -227,9 +230,8 @@ func excerptCandidates(hotPaths []agents.HotPath, discovered []string) []agents.
 	return candidates
 }
 
-// CollectExcerpts implements the optional orchestrator.ExcerptCollector
-// capability, attaching real source windows around analyst hot paths.
-func (s adkServices) CollectExcerpts(_ context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
+// Excerpts reads real source windows around the analysis's hot paths.
+func (s engineBench) Excerpts(_ context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
 	candidates := excerptCandidates(analysis.HotPaths, s.engine.state.DiscoveryHotFunctions)
 	excerpts, err := extractExcerpts(s.engine.state.Repository, candidates, defaultMaxExcerpts)
 	excerpts = withFileHeaders(s.engine.state.Repository, excerpts)
@@ -242,11 +244,25 @@ func (s adkServices) CollectExcerpts(_ context.Context, analysis agents.AnalystR
 	return excerpts, err
 }
 
-func (s adkServices) StartCampaign(_ context.Context, req orchestrator.CampaignRequest) (domain.Job, error) {
-	now := time.Now().UTC()
-	job := domain.Job{ID: "job-" + req.CampaignID, Kind: "optimization_campaign", Status: domain.JobRunning, CreatedAt: now, UpdatedAt: now}
-	_ = s.engine.saveEvent("adk_started", "ADK workflow started", req)
-	return job, nil
+// Note records what the graph reports about the campaign's life as events on
+// the campaign's own progress stream. The started and finished events are
+// best-effort: the run is already under way or already over, so a store that
+// cannot take them is not a reason to fail it.
+func (s engineBench) Note(_ context.Context, n orchestrator.Note) error {
+	switch n.Kind {
+	case orchestrator.NoteStarted:
+		_ = s.engine.saveEvent("adk_started", "ADK workflow started", n.Request)
+		return nil
+	case orchestrator.NoteDegraded:
+		return s.engine.noteRoleDegraded(n.Role, n.Cause)
+	case orchestrator.NoteRepaired:
+		return s.engine.noteRoleRepaired(n.Role, n.Repair)
+	case orchestrator.NoteFinished:
+		_ = s.engine.saveEvent("adk_finalized", n.Result.StopReason, n.Result)
+		return nil
+	default:
+		return fmt.Errorf("unknown note kind %q", n.Kind)
+	}
 }
 
 // RoleDegradation records one agent node that failed and was absorbed.
@@ -255,28 +271,16 @@ type RoleDegradation struct {
 	Cause string `json:"cause"`
 }
 
-func (s adkServices) RecordProgress(_ context.Context, _ domain.Job, progress orchestrator.CampaignProgress) error {
-	// The orchestrator owns the tallies; persisting them at every decision is
-	// what lets a later process resume the bounds instead of restarting them.
-	s.engine.state.ConsecutiveFailures = progress.ConsecutiveFailures
-	s.engine.state.ConsecutiveInconclusive = progress.ConsecutiveInconclusive
-	return s.engine.saveEvent("adk_progress", "ADK policy decision", progress)
-}
-
-// RecordRoleDegraded persists a role whose model call failed while the graph
+// noteRoleDegraded persists a role whose model call failed while the graph
 // absorbed the failure: the node continued with an empty result, so a candidate
 // may be missing that role's output. Without this the cause reached only the
 // process's stderr, which no report and no API consumer can read, and an
 // operator saw a candidate explained as "patch is empty". The event also puts
 // the cause on the campaign's progress stream, which is the writer the campaign
 // was given rather than the one the process happens to have.
-func (s adkServices) RecordRoleDegraded(_ context.Context, role string, cause error) error {
-	reason := "unknown cause"
-	if cause != nil {
-		reason = cause.Error()
-	}
-	s.engine.state.DegradedRoles = append(s.engine.state.DegradedRoles, RoleDegradation{Role: role, Cause: reason})
-	return s.engine.saveEvent("role_degraded", fmt.Sprintf("%s node failed, continuing with an empty result: %s", role, reason), nil)
+func (e *Engine) noteRoleDegraded(role, cause string) error {
+	e.state.DegradedRoles = append(e.state.DegradedRoles, RoleDegradation{Role: role, Cause: cause})
+	return e.saveEvent("role_degraded", fmt.Sprintf("%s node failed, continuing with an empty result: %s", role, cause), nil)
 }
 
 // RoleRepair records one role output that parsed only after the decoder
@@ -286,33 +290,21 @@ type RoleRepair struct {
 	Repair string `json:"repair"`
 }
 
-// RecordRoleRepaired persists a role whose output parsed only after a repair.
+// noteRoleRepaired persists a role whose output parsed only after a repair.
 // The repaired value is used as the role's answer, which is the point of the
 // repair, but it used to leave no trace: an optimizer patch cut off at the
 // output-token cap was closed by the decoder, had its hunk counts recomputed by
 // normalization, and read in every record like a patch the model meant. The
 // event marks it on the progress stream; the optimizer's repair also reaches
 // its candidate record through the evidence.
-func (s adkServices) RecordRoleRepaired(_ context.Context, role string, repair agents.Repair) error {
+func (e *Engine) noteRoleRepaired(role string, repair agents.Repair) error {
 	message := fmt.Sprintf("%s output parsed only after the decoder %s", role, repair)
-	return s.engine.saveEvent("role_repaired", message, RoleRepair{Role: role, Repair: string(repair)})
+	return e.saveEvent("role_repaired", message, RoleRepair{Role: role, Repair: string(repair)})
 }
 
-func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result orchestrator.CampaignResult) (domain.Job, error) {
-	job.Status = domain.JobSucceeded
-	if result.ProviderFailure != "" {
-		// The graph stopped because nothing answered, not because a bound was
-		// reached, so the job did not succeed.
-		job.Status = domain.JobFailed
-	}
-	job.UpdatedAt = time.Now().UTC()
-	_ = s.engine.saveEvent("adk_finalized", result.StopReason, result)
-	return job, nil
-}
-func (s adkServices) Inspect(_ context.Context, _ orchestrator.CampaignRequest) (orchestrator.Inspection, error) {
-	return orchestrator.Inspection{Packages: append([]string(nil), s.engine.state.Inventory.Packages...), Commands: append([]string(nil), s.engine.state.Inventory.Commands...), Metadata: map[string]string{"authority": s.engine.state.Environment.Authority}}, nil
-}
-func (s adkServices) Discover(_ context.Context, _ orchestrator.DiscoveryRequest) (orchestrator.DiscoveryEvidence, error) {
+// Discovery is the baseline evidence the engine finished before the graph
+// started; nothing in a campaign changes it afterwards.
+func (s engineBench) Discovery(_ context.Context) (orchestrator.DiscoveryEvidence, error) {
 	runs := make([]string, 0, len(s.engine.state.Runs))
 	for _, run := range s.engine.state.Runs {
 		runs = append(runs, run.ID)
@@ -327,36 +319,84 @@ func (s adkServices) Discover(_ context.Context, _ orchestrator.DiscoveryRequest
 	}
 	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: "baseline discovery evidence", Metadata: metadata, HotFunctionWeights: s.engine.state.DiscoveryHotFunctionWeights, UnbufferedWrites: s.engine.state.DiscoveryUnbufferedWrites}, nil
 }
-func (s adkServices) EvaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
-	return s.engine.evaluateCandidate(ctx, req)
+
+// Assess evaluates one proposal and judges the evidence with the campaign's
+// acceptance policy. The verdict is computed here, from measurements and the
+// behavior gate alone: the reviewer has not run, and policyVerdict reads no
+// review.
+func (s engineBench) Assess(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.Assessment, error) {
+	evidence, err := s.engine.evaluateCandidate(ctx, req)
+	if err != nil {
+		return orchestrator.Assessment{}, err
+	}
+	return orchestrator.Assessment{Evidence: evidence, Verdict: s.engine.judge(evidence)}, nil
 }
 
-func (s adkServices) PromoteCandidate(_ context.Context, candidate domain.Candidate) error {
-	acceptedDir := filepath.Join(s.engine.dir, "accepted")
+// judge is the acceptance policy's verdict on one candidate's evidence, as the
+// graph carries it.
+func (e *Engine) judge(evidence orchestrator.CandidateEvidence) domain.Evaluation {
+	result := e.policyVerdict(evidence)
+	return domain.Evaluation{CandidateID: evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: evidence.BehaviorMatches, Comparisons: result.Comparisons, Reasons: result.Reasons}
+}
+
+// Settle makes one candidate's verdict durable, in an order that cannot leave
+// a record without its promotion:
+//
+//  1. An accepted candidate's patch is copied to accepted/ first. Nothing
+//     refers to the copy yet, so a failure or a crash here leaves an orphan
+//     file and no record; the attempt is simply evaluated again on resume.
+//  2. The verdict joins the campaign's records, carrying its accepted marker,
+//     in one saved state: candidate_evaluated, then the report snapshot. A
+//     record on disk therefore always has its artifact, and an operator
+//     reading the live report sees the accepted marker with the verdict.
+//  3. candidate_accepted marks the promotion on the event stream.
+//  4. The tallies are persisted last (adk_progress), after the record they
+//     count, so a bound never counts a verdict that is not on disk.
+//
+// The verdict is recorded as given. It is not recomputed here.
+func (s engineBench) Settle(_ context.Context, settlement orchestrator.Settlement) error {
+	return s.engine.settle(settlement)
+}
+
+func (e *Engine) settle(settlement orchestrator.Settlement) error {
+	evidence, verdict := settlement.Assessment.Evidence, settlement.Assessment.Verdict
+	accepted := verdict.Decision == domain.DecisionAccepted
+	if accepted {
+		if err := e.keepAcceptedPatch(evidence.Candidate); err != nil {
+			return fmt.Errorf("promote candidate: %w", err)
+		}
+	}
+	// A failure to persist the verdict must not fail the settlement: the graph
+	// would stop on it, and the verdict is already decided. The events after it
+	// save the same state, so a store that is really gone fails there.
+	_ = e.persistVerdict(len(e.state.CandidateRecords)+1, evidence, settlement.Target, settlement.Review, policy.Result{Decision: verdict.Decision, Comparisons: verdict.Comparisons, Reasons: verdict.Reasons}, accepted)
+	if accepted {
+		if err := e.saveEvent("candidate_accepted", "policy accepted candidate "+evidence.Candidate.ID, evidence.Candidate); err != nil {
+			return err
+		}
+	}
+	// The orchestrator owns the tallies; persisting them with every verdict is
+	// what lets a later process resume the bounds instead of restarting them.
+	e.state.ConsecutiveFailures = settlement.Progress.ConsecutiveFailures
+	e.state.ConsecutiveInconclusive = settlement.Progress.ConsecutiveInconclusive
+	return e.saveEvent("adk_progress", "ADK policy decision", settlement.Progress)
+}
+
+// keepAcceptedPatch copies an accepted candidate's patch into the campaign's
+// accepted/ directory.
+func (e *Engine) keepAcceptedPatch(candidate domain.Candidate) error {
+	acceptedDir := filepath.Join(e.dir, "accepted")
 	if err := os.MkdirAll(acceptedDir, 0o700); err != nil {
 		return err
 	}
-	if candidate.PatchPath != "" {
-		data, err := os.ReadFile(candidate.PatchPath)
-		if err != nil {
-			return err
-		}
-		acceptedPath := filepath.Join(acceptedDir, candidate.ID+".diff")
-		if err := os.WriteFile(acceptedPath, data, 0o600); err != nil {
-			return err
-		}
+	if candidate.PatchPath == "" {
+		return nil
 	}
-	for i := range s.engine.state.CandidateRecords {
-		if s.engine.state.CandidateRecords[i].CandidateID == candidate.ID {
-			s.engine.state.CandidateRecords[i].Accepted = true
-		}
+	data, err := os.ReadFile(candidate.PatchPath)
+	if err != nil {
+		return err
 	}
-	// The verdict snapshot was written before promotion, so it shows the
-	// decision but not which patch landed. An operator reading the live report
-	// after an accept should see the accepted marker and the accepted/ artifact
-	// without waiting for the campaign to finish.
-	s.engine.snapshotReports()
-	return s.engine.saveEvent("candidate_accepted", "policy accepted candidate "+candidate.ID, candidate)
+	return os.WriteFile(filepath.Join(acceptedDir, candidate.ID+".diff"), data, 0o600)
 }
 
 // policyConfigFromManifest builds the acceptance policy from the target's own
@@ -401,33 +441,24 @@ func eligibleReadings(config policy.Config, comparisons []domain.MetricCompariso
 	return eligible
 }
 
-func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput) (domain.Evaluation, error) {
-	// Eligibility is structural now: every reading of the primary metric may
-	// carry the verdict, and a reading without a workload is the pooled one.
-	// This used to be re-derived here from the comparison's name, a convention
-	// the engine, this function and the policy all had to agree on.
-	// A failure to persist the verdict must not fail the evaluation: the graph
-	// would stop on it, and the verdict is still returned to the caller.
-	result, _ := s.engine.recordVerdict(len(s.engine.state.CandidateRecords)+1, input.Evidence, input.Target, input.Review)
-	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: result.Comparisons, Reasons: result.Reasons}, nil
-}
-
 // recordVerdict judges one candidate's evidence with the campaign's policy and
-// persists the verdict: the record joins the campaign's state, the event is
-// saved immediately (an ADK failure later in the run must not lose
-// already-evaluated verdicts from bbolt), and the report is snapshotted,
-// because a live campaign holds the database's exclusive lock and report.json
-// is the only artifact an operator can read while the run is in flight. The
-// verdict is returned even when persisting it failed. Every caller that
-// records a candidate goes through here: the graph's decision node and the
-// null-candidate loop.
+// persists the verdict. The null-candidate loop reaches its verdicts here; the
+// graph's candidates are judged by Assess and recorded by Settle, which share
+// persistVerdict. The verdict is returned even when persisting it failed.
 func (e *Engine) recordVerdict(attempt int, evidence orchestrator.CandidateEvidence, target *agents.Target, review agents.ReviewerResult) (policy.Result, error) {
 	result := e.policyVerdict(evidence)
+	return result, e.persistVerdict(attempt, evidence, target, review, result, false)
+}
+
+// persistVerdict records a verdict that was already reached. accepted marks the
+// record of a candidate whose patch is already in accepted/.
+func (e *Engine) persistVerdict(attempt int, evidence orchestrator.CandidateEvidence, target *agents.Target, review agents.ReviewerResult, result policy.Result, accepted bool) error {
 	record := candidateRecord(attempt, evidence, target, review, result)
+	record.Accepted = accepted
 	e.state.CandidateRecords = append(e.state.CandidateRecords, record)
 	err := e.saveEvent("candidate_evaluated", candidateEventSummary(record, e.state.Manifest.Performance.PrimaryMetric), record)
 	e.snapshotReports()
-	return result, err
+	return err
 }
 
 // candidateRecord is the persisted verdict for one candidate.

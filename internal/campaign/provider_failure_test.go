@@ -88,50 +88,44 @@ func TestProviderOutageFailsTheCampaignAndResumes(t *testing.T) {
 	require.Len(t, resumed.State().CandidateRecords, 4)
 }
 
-func TestCompleteCampaignFailsTheJobOnlyForAProviderFailure(t *testing.T) {
-	services := adkServices{engine: pgoLaneTestEngine(t)}
-	job, err := services.CompleteCampaign(context.Background(), domain.Job{ID: "job-1"}, orchestrator.CampaignResult{StopReason: "maximum candidate count reached"})
-	require.NoError(t, err)
-	require.Equal(t, domain.JobSucceeded, job.Status)
-
-	job, err = services.CompleteCampaign(context.Background(), domain.Job{ID: "job-1"}, orchestrator.CampaignResult{ProviderFailure: "reviewer: 401 Unauthorized"})
-	require.NoError(t, err)
-	require.Equal(t, domain.JobFailed, job.Status)
-}
-
-func TestRecordRoleRepairedPersistsAnEvent(t *testing.T) {
+// TestNotesBecomeTheEventsReadersKnow: the graph's lifecycle notes are saved
+// under the event kinds the report, scorecard and triage read. A finished note
+// carries the result as given: whether the campaign failed is decided where it
+// ended (CampaignResult.ProviderFailure), not derived again here.
+func TestNotesBecomeTheEventsReadersKnow(t *testing.T) {
 	engine := pgoLaneTestEngine(t)
-	require.NoError(t, adkServices{engine: engine}.RecordRoleRepaired(context.Background(), "optimizer", agents.RepairTerminatedString))
+	notes := engineBench{engine: engine}
+	ctx := context.Background()
+	require.NoError(t, notes.Note(ctx, orchestrator.Note{Kind: orchestrator.NoteStarted, Request: orchestrator.CampaignRequest{CampaignID: "c1"}}))
+	require.NoError(t, notes.Note(ctx, orchestrator.Note{Kind: orchestrator.NoteDegraded, Role: "analyst", Cause: "HTTP 429"}))
+	require.NoError(t, notes.Note(ctx, orchestrator.Note{Kind: orchestrator.NoteRepaired, Role: "optimizer", Repair: agents.RepairTerminatedString}))
+	require.NoError(t, notes.Note(ctx, orchestrator.Note{Kind: orchestrator.NoteFinished, Result: orchestrator.CampaignResult{ProviderFailure: "reviewer: 401 Unauthorized", StopReason: "model provider unavailable"}}))
 
+	require.Equal(t, []string{"adk_started", "role_degraded", "role_repaired", "adk_finalized"}, eventKinds(t, engine))
+	require.Equal(t, []RoleDegradation{{Role: "analyst", Cause: "HTTP 429"}}, engine.state.DegradedRoles)
 	events, err := engine.store.Events()
 	require.NoError(t, err)
-	var found bool
-	for _, event := range events {
-		if event.Type == "role_repaired" {
-			found = true
-			require.Contains(t, event.Message, "optimizer")
-			require.Contains(t, event.Message, string(agents.RepairTerminatedString))
-		}
-	}
-	require.True(t, found, "the repair must be persisted as an event")
+	require.Equal(t, "model provider unavailable", events[3].Message)
+	require.Contains(t, events[1].Message, "analyst node failed, continuing with an empty result: HTTP 429")
+	require.Contains(t, events[2].Message, "optimizer output parsed only after the decoder "+string(agents.RepairTerminatedString))
+
+	require.Error(t, notes.Note(ctx, orchestrator.Note{Kind: "bogus"}))
 }
 
 // A salvaged patch is judged exactly like any other; the repair only rides to
 // the record and the report so it does not read as the patch the model sent.
-func TestEvaluateCarriesTheProposalRepairWithoutJudgingIt(t *testing.T) {
+func TestSettleCarriesTheProposalRepairWithoutJudgingIt(t *testing.T) {
 	evidence := orchestrator.CandidateEvidence{
 		Candidate:          domain.Candidate{ID: "candidate-1", Hypothesis: "buffer output"},
 		BehaviorMatches:    true,
 		SafetyChecksPassed: true,
 		Summary:            "patch applied",
 	}
-	plain, err := adkServices{engine: pgoLaneTestEngine(t)}.Evaluate(context.Background(), orchestrator.PolicyInput{Evidence: evidence})
-	require.NoError(t, err)
+	plain := settleJudged(t, pgoLaneTestEngine(t), evidence, nil, agents.ReviewerResult{})
 
 	engine := pgoLaneTestEngine(t)
 	evidence.ProposalRepair = agents.RepairTerminatedString
-	repaired, err := adkServices{engine: engine}.Evaluate(context.Background(), orchestrator.PolicyInput{Evidence: evidence})
-	require.NoError(t, err)
+	repaired := settleJudged(t, engine, evidence, nil, agents.ReviewerResult{})
 
 	require.Equal(t, plain.Decision, repaired.Decision)
 	require.Equal(t, plain.Reasons, repaired.Reasons)
@@ -150,7 +144,7 @@ func TestRenderMarkdownNamesASalvagedProposal(t *testing.T) {
 
 // A build failure used to reach the record and the report as "exit status 1"
 // alone: the compiler's stderr was captured on the evidence and then dropped.
-func TestEvaluateRecordsTheBuildFailureDetail(t *testing.T) {
+func TestSettleRecordsTheBuildFailureDetail(t *testing.T) {
 	engine := pgoLaneTestEngine(t)
 	evidence := orchestrator.CandidateEvidence{
 		Candidate:     domain.Candidate{ID: "candidate-1", Hypothesis: "concatenate"},
@@ -158,8 +152,7 @@ func TestEvaluateRecordsTheBuildFailureDetail(t *testing.T) {
 		FailureDetail: "execution/context.go:5:2: \"fmt\" imported and not used",
 		Unmeasured:    true,
 	}
-	_, err := adkServices{engine: engine}.Evaluate(context.Background(), orchestrator.PolicyInput{Evidence: evidence})
-	require.NoError(t, err)
+	settleJudged(t, engine, evidence, nil, agents.ReviewerResult{})
 	require.Len(t, engine.state.CandidateRecords, 1)
 	require.Equal(t, evidence.FailureDetail, engine.state.CandidateRecords[0].FailureDetail)
 

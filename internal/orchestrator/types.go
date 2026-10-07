@@ -49,22 +49,6 @@ type CampaignRequest struct {
 	GoVersion string `json:"go_version,omitempty"`
 }
 
-// Inspection is deterministic repository and target inventory.
-type Inspection struct {
-	Packages   []string          `json:"packages,omitempty"`
-	Commands   []string          `json:"commands,omitempty"`
-	Tests      []string          `json:"tests,omitempty"`
-	Benchmarks []string          `json:"benchmarks,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-}
-
-// DiscoveryRequest is the campaign context the deterministic runner discovers
-// against.
-type DiscoveryRequest struct {
-	Campaign CampaignRequest `json:"campaign"`
-	Attempt  int             `json:"attempt"`
-}
-
 // DiscoveryEvidence is normalized measured evidence, with raw data referenced
 // by artifact ID rather than embedded in model context.
 type DiscoveryEvidence struct {
@@ -183,14 +167,26 @@ type CandidateEvidence struct {
 	ProposalRepair agents.Repair `json:"proposal_repair,omitempty"`
 }
 
-// PolicyInput contains all evidence needed for a deterministic decision.
-type PolicyInput struct {
-	Campaign CampaignRequest       `json:"campaign"`
-	Evidence CandidateEvidence     `json:"evidence"`
-	Review   agents.ReviewerResult `json:"review"`
-	// Target is what code told the optimizer to attack, recorded with the
-	// verdict; it never changes the verdict.
-	Target *agents.Target `json:"target,omitempty"`
+// Assessment is what the deterministic half found out about one candidate: the
+// evidence it measured and the verdict the acceptance policy drew from it.
+// The verdict names the evidence's candidate (the graph refuses one that does
+// not), and nothing downstream of the assessment recomputes it.
+type Assessment struct {
+	Evidence CandidateEvidence `json:"evidence"`
+	Verdict  domain.Evaluation `json:"verdict"`
+}
+
+// Settlement is one candidate's verdict, to be made durable. The assessment
+// carries the evidence (with the optimizer's output repair stamped on it) and
+// the verdict; the rest is what the record keeps beside them. Target is what
+// code told the optimizer to attack and Review the reviewer's advice: both are
+// recorded and neither changes the verdict. Progress is the campaign's tallies
+// once this verdict is counted.
+type Settlement struct {
+	Assessment Assessment            `json:"assessment"`
+	Target     *agents.Target        `json:"target,omitempty"`
+	Review     agents.ReviewerResult `json:"review"`
+	Progress   CampaignProgress      `json:"progress"`
 }
 
 // PriorCandidate records one already-evaluated proposal so later cycles
@@ -223,21 +219,23 @@ type RoleFailure struct {
 // nodes, and the degrading wrapper, which records a failed role call in
 // CycleFailures without ever reading the model output it failed to get.
 type CampaignState struct {
-	Request    CampaignRequest      `json:"request"`
-	Job        domain.Job           `json:"job"`
-	Inspection Inspection           `json:"inspection"`
-	Discovery  DiscoveryEvidence    `json:"discovery"`
-	Analysis   agents.AnalystResult `json:"analysis"`
+	Request   CampaignRequest      `json:"request"`
+	Discovery DiscoveryEvidence    `json:"discovery"`
+	Analysis  agents.AnalystResult `json:"analysis"`
 	// Target is the function and cause code chose for this cycle's patch, or
 	// nil when the analysis ranks no causes and the optimizer chooses.
-	Target              *agents.Target         `json:"target,omitempty"`
-	Proposal            agents.OptimizerResult `json:"proposal"`
-	Candidate           CandidateEvidence      `json:"candidate"`
-	Review              agents.ReviewerResult  `json:"review"`
-	Evaluation          domain.Evaluation      `json:"evaluation"`
-	PriorCandidates     []PriorCandidate       `json:"prior_candidates,omitempty"`
-	CandidatesTried     int                    `json:"candidates_tried"`
-	ConsecutiveFailures int                    `json:"consecutive_failures"`
+	Target    *agents.Target         `json:"target,omitempty"`
+	Proposal  agents.OptimizerResult `json:"proposal"`
+	Candidate CandidateEvidence      `json:"candidate"`
+	// Verdict is the acceptance policy's finding on Candidate, computed with
+	// the evidence (Bench.Assess). It waits here through the review
+	// and is recorded by apply_policy.
+	Verdict             domain.Evaluation     `json:"verdict"`
+	Review              agents.ReviewerResult `json:"review"`
+	Evaluation          domain.Evaluation     `json:"evaluation"`
+	PriorCandidates     []PriorCandidate      `json:"prior_candidates,omitempty"`
+	CandidatesTried     int                   `json:"candidates_tried"`
+	ConsecutiveFailures int                   `json:"consecutive_failures"`
 	// ConsecutiveInconclusive counts the run of inconclusive verdicts. It is
 	// only consulted when the campaign configures stop_after_inconclusive;
 	// otherwise an inconclusive verdict extends ConsecutiveFailures, as it
@@ -274,7 +272,41 @@ type SourceExcerpt struct {
 	HotPath   string `json:"hot_path"`
 }
 
-// CampaignProgress is persisted after each deterministic policy decision.
+// NoteKind says what a Note reports.
+type NoteKind string
+
+const (
+	// NoteStarted reports that the graph began a campaign; Request is set.
+	NoteStarted NoteKind = "started"
+	// NoteDegraded reports a role whose model call failed in a way the graph
+	// absorbed: the node continues with an empty result rather than ending the
+	// campaign. Without it the cause exists only on the process's stderr,
+	// where no report and no API consumer can read it, and a candidate that
+	// arrived empty is explained as "patch is empty". Role and Cause are set.
+	NoteDegraded NoteKind = "degraded"
+	// NoteRepaired reports a role whose output parsed only after the decoder
+	// rewrote it: control characters or quotes escaped, closers added, or a
+	// string closed where the output was cut off. The repaired value is used
+	// as the role's answer, so without the note a salvaged answer reads
+	// exactly like an intended one. It is advisory and changes no decision.
+	// Role and Repair are set.
+	NoteRepaired NoteKind = "repaired"
+	// NoteFinished reports the campaign's result; Result is set.
+	NoteFinished NoteKind = "finished"
+)
+
+// Note is one report the graph makes about the campaign's life. Only the
+// fields its kind names are set.
+type Note struct {
+	Kind    NoteKind        `json:"kind"`
+	Request CampaignRequest `json:"request"`
+	Role    string          `json:"role,omitempty"`
+	Cause   string          `json:"cause,omitempty"`
+	Repair  agents.Repair   `json:"repair,omitempty"`
+	Result  CampaignResult  `json:"result"`
+}
+
+// CampaignProgress is the campaign's tallies after a verdict, persisted with it.
 type CampaignProgress struct {
 	CandidatesTried         int             `json:"candidates_tried"`
 	ConsecutiveFailures     int             `json:"consecutive_failures"`
@@ -286,7 +318,6 @@ type CampaignProgress struct {
 // CampaignResult is the graph's single terminal output.
 type CampaignResult struct {
 	CampaignID         string            `json:"campaign_id"`
-	Job                domain.Job        `json:"job"`
 	CandidatesTried    int               `json:"candidates_tried"`
 	AcceptedCandidates []string          `json:"accepted_candidates,omitempty"`
 	FinalEvaluation    domain.Evaluation `json:"final_evaluation"`

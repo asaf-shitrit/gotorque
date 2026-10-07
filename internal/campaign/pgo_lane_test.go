@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
@@ -163,24 +164,19 @@ func (blockingExecutor) Run(ctx context.Context, _ toolchain.Invocation) (toolch
 
 func TestPgoEvidenceFlowsIntoCandidateRecord(t *testing.T) {
 	e := pgoLaneTestEngine(t)
-	services := adkServices{engine: e}
 	pgo := []domain.MetricComparison{{
 		Metric: "wall_time_ns", Workload: "wl", Unit: "ns",
 		Baseline: 100, Candidate: 90, DeltaPercent: -10, StatisticallyFit: true,
 	}}
-	input := orchestrator.PolicyInput{
-		Evidence: orchestrator.CandidateEvidence{
-			Candidate:              domain.Candidate{ID: "cand4"},
-			BehaviorMatches:        true,
-			SafetyChecksPassed:     true,
-			RepresentativeEvidence: true,
-			PgoComparisons:         pgo,
-			PgoNote:                "informational PGO comparison; never changes accept/reject decisions",
-		},
+	evidence := orchestrator.CandidateEvidence{
+		Candidate:              domain.Candidate{ID: "cand4"},
+		BehaviorMatches:        true,
+		SafetyChecksPassed:     true,
+		RepresentativeEvidence: true,
+		PgoComparisons:         pgo,
+		PgoNote:                "informational PGO comparison; never changes accept/reject decisions",
 	}
-	if _, err := services.Evaluate(context.Background(), input); err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
+	settleJudged(t, e, evidence, nil, agents.ReviewerResult{})
 	if len(e.state.CandidateRecords) != 1 {
 		t.Fatalf("records = %d, want 1", len(e.state.CandidateRecords))
 	}
@@ -188,8 +184,8 @@ func TestPgoEvidenceFlowsIntoCandidateRecord(t *testing.T) {
 	if len(record.PgoComparisons) != 1 || (record.PgoComparisons[0].Metric != "wall_time_ns" || record.PgoComparisons[0].Workload != "wl") {
 		t.Fatalf("PgoComparisons did not flow into the record: %+v", record.PgoComparisons)
 	}
-	if record.PgoNote != input.Evidence.PgoNote {
-		t.Fatalf("PgoNote = %q, want %q", record.PgoNote, input.Evidence.PgoNote)
+	if record.PgoNote != evidence.PgoNote {
+		t.Fatalf("PgoNote = %q, want %q", record.PgoNote, evidence.PgoNote)
 	}
 	// The PGO lane must not influence the policy verdict inputs.
 	if record.Decision == "" {

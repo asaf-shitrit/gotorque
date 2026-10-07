@@ -118,9 +118,9 @@ chosen by code and Jev before the graph starts, and code picks each cycle's
 target after the analysis (`planTarget`):
 
 ```
-inspect_repository -> run_discovery -> analyst
+run_discovery (once) -> analyst
   -> merge_analysis -> optimizer -> evaluate_candidate -> reviewer
-  -> apply_policy -> route_campaign (loop or finalize)
+  -> apply_policy -> route_campaign (loop to analyst, or finalize)
 ```
 
 Package map:
@@ -133,7 +133,11 @@ Package map:
   `machine` and `testBaseline` ports (`eval_ports.go`);
   `adk.go` bridges engine state into the ADK graph; `store.go` is bbolt state;
   `excerpts.go` feeds real source windows to the optimizer.
-- `internal/orchestrator`: graph construction, node wiring, service interfaces.
+- `internal/orchestrator`: graph construction, node wiring, and `Bench`
+  (`bench.go`, ADR 0038), the one port to the engine: `Discovery`, `Excerpts`,
+  `Assess` (evidence and verdict), `Settle` (record, promote, tallies) and
+  `Note`. The optimizer (`agents.Set`) and the Jev advisors (`CauseAnalyst`,
+  `ReviewAnalyst`) are the other seams.
 - `internal/agents`: the optimizer agent, OpenAI-compatible provider, model
   routing, and the model-boundary leniency layer (`fence.go`, `decode.go`,
   `types.go`). This layer only removes parse failures; it never relaxes policy.
@@ -186,6 +190,16 @@ Package map:
   checked in every diff header and again in Git's list of changed files after
   apply, because GNU patch can edit a file validation never saw. A
   baseline-passing test that is skipped or missing rejects the candidate.
+- Verdict ordering (`internal/orchestrator/bench.go`, ADR 0038): `Assess`
+  reaches the verdict before the reviewer node runs and `Settle` records it as
+  given, so a review can never change a decision; do not move a policy call
+  after the reviewer, and do not let `Settle` recompute. `Settle` writes an
+  accepted patch to `accepted/` before the record that refers to it and
+  persists the tallies last, so a record on disk always has its promotion and a
+  bound never counts an unrecorded verdict. Node names (`finalize_campaign`,
+  `apply_policy`, the role names the degrade wrappers report under) and event
+  kinds are read by `collectADKResult`, the report, scorecard and triage:
+  rename neither.
 - Model streams (`internal/agents/sse.go`): openai-go fails on SSE comment
   keepalives and accepts a stream cut before `response.completed`. Both are
   handled by the body filter, so model calls must keep going through
