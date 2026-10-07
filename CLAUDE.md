@@ -118,9 +118,9 @@ chosen by code and Jev before the graph starts, and code picks each cycle's
 target after the analysis (`planTarget`):
 
 ```
-run_discovery -> analyst
+run_discovery (once) -> analyst
   -> merge_analysis -> optimizer -> evaluate_candidate -> reviewer
-  -> apply_policy -> route_campaign (loop or finalize)
+  -> apply_policy -> route_campaign (loop to analyst, or finalize)
 ```
 
 Package map:

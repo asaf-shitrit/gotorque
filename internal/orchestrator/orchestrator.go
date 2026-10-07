@@ -234,7 +234,7 @@ func (n graphNodes) edges() []workflow.Edge {
 		Add(n.evaluate, n.reviewer).
 		Add(n.reviewer, n.decide).
 		Add(n.decide, n.route).
-		AddRoute(n.route, n.discover, workflow.StringRoute(routeContinue)).
+		AddRoute(n.route, n.analyst, workflow.StringRoute(routeContinue)).
 		AddRoute(n.route, n.finalize, workflow.StringRoute(routeFinish)).
 		Build()
 }
@@ -298,21 +298,24 @@ func recordRepair(ctx context.Context, jobs JobService, role agents.Role, repair
 	_ = jobs.RecordRoleRepaired(ctx, string(role), repair)
 }
 
-// discover runs at the start of every cycle. The workloads it measures beyond
-// the manifest's seeds were chosen before the graph started, by code and Jev
-// (internal/campaign/explore.go), and code chooses the cycle's target after
-// the analysis (planTarget); a model coordinator and explorer once filled both
-// jobs, and on a live gron campaign the coordinator took up to 2m40s a cycle
-// and its free-text plan steered the optimizer away from the top target.
+// discover runs once per graph entry, between initialize_campaign and the
+// first analyst. Discovery's evidence is a property of the campaign, not of a
+// cycle: the engine measured it before the graph started (baseline, profile,
+// the workloads beyond the manifest's seeds that code and Jev chose in
+// internal/campaign/explore.go), and nothing a cycle does changes it. The
+// graph used to fetch it again at the head of every cycle, which returned the
+// same value each time. The node stays a node of its own so a failed fetch is
+// still reported as "run discovery" and the event path readers know is kept.
+// Code chooses each cycle's target after the analysis (planTarget); a model
+// coordinator and explorer once filled both jobs, and on a live gron campaign
+// the coordinator took up to 2m40s a cycle and its free-text plan steered the
+// optimizer away from the top target.
 func (g *campaignGraph) discover(ctx adkagent.Context, _ any) (*session.Event, error) {
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
 	}
-	evidence, err := g.deps.Runner.Discover(ctx, DiscoveryRequest{
-		Campaign: state.Request,
-		Attempt:  state.CandidatesTried + 1,
-	})
+	evidence, err := g.deps.Runner.Discover(ctx, DiscoveryRequest{Campaign: state.Request})
 	if err != nil {
 		return nil, fmt.Errorf("run discovery: %w", err)
 	}

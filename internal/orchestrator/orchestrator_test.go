@@ -369,6 +369,16 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 	if len(jobs.progress) != 3 || jobs.complete != 1 {
 		t.Errorf("job progress/complete = %d/%d, want 3/1", len(jobs.progress), jobs.complete)
 	}
+	// Discovery's evidence belongs to the campaign, not to a cycle: three
+	// cycles read the one fetch rather than asking again.
+	if runnerService.discoverCalls != 1 {
+		t.Errorf("discovery ran %d times over 3 cycles, want once", runnerService.discoverCalls)
+	}
+	for i, request := range causes.requests {
+		if len(request.Discovery.RunIDs) != 1 || request.Discovery.RunIDs[0] != "run-1" {
+			t.Errorf("cycle %d analyst saw discovery %v, want the one fetch run-1", i+1, request.Discovery.RunIDs)
+		}
+	}
 }
 
 func collectPriorCandidates(t *testing.T, orch *Orchestrator, req CampaignRequest) []PriorCandidate {

@@ -39,7 +39,7 @@ built by `internal/orchestrator` is:
 
 ```text
 initialize_campaign
-  -> run_discovery (deterministic; baseline discovery evidence)
+  -> run_discovery (deterministic; once per graph entry: baseline discovery evidence)
   -> analyst (Jev cause classification, ranked in code)
   -> merge_analysis (deterministic; attach source excerpts)
   -> optimizer (one focused patch)
@@ -47,7 +47,7 @@ initialize_campaign
   -> reviewer (Jev behaviour-hazard checks, advisory only)
   -> apply_policy (deterministic acceptance decision)
   -> route_campaign
-        continue -> back to run_discovery
+        continue -> back to analyst
         finish   -> finalize_campaign
 ```
 
@@ -841,7 +841,7 @@ verdict reads them. The chosen variants are kept in campaign state
 
 ## Jev answer cache
 
-The graph loops (`route_campaign` back to `run_discovery` -> `analyst`) until a candidate is accepted or a bound is hit,
+The graph loops (`route_campaign` back to `analyst`) until a candidate is accepted or a bound is hit,
 and at the same base revision every one of those cycles asks the analyst about
 the same hot functions and the explorer about the same command and `--help`
 text: recorded campaigns made 64 analyst requests for 4 optimizer calls on

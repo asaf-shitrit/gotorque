@@ -53,7 +53,6 @@ type CampaignRequest struct {
 // against.
 type DiscoveryRequest struct {
 	Campaign CampaignRequest `json:"campaign"`
-	Attempt  int             `json:"attempt"`
 }
 
 // DiscoveryEvidence is normalized measured evidence, with raw data referenced
