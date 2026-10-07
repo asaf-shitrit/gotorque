@@ -27,16 +27,15 @@ func TestRepairedRoleOutputIsRecorded(t *testing.T) {
 	truncated := `{"hypothesis":"buffer output","patch":["--- a/m.go","+++ b/m.go","@@ -1,1 +1,1 @@","-a()","+b(`
 	roleSet := agents.Set{Optimizer: staticAgent(t, "optimizer", truncated, &calls)}
 	bench := &fakeBench{}
-	jobs := &fakeJobService{}
-	orch := mustNew(t, Dependencies{Runner: bench, Jobs: jobs, Agents: roleSet},
+	orch := mustNew(t, Dependencies{Runner: bench, Agents: roleSet},
 		Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-repair", repairCampaign, "finalize_campaign")
 
 	want := []repairedRole{
 		{role: "optimizer", repair: agents.RepairTerminatedString},
 	}
-	if !slices.Equal(jobs.repaired, want) {
-		t.Errorf("repaired = %+v, want %+v", jobs.repaired, want)
+	if !slices.Equal(bench.repaired, want) {
+		t.Errorf("repaired = %+v, want %+v", bench.repaired, want)
 	}
 	if len(bench.settled) != 1 {
 		t.Fatalf("settlements = %d, want 1", len(bench.settled))

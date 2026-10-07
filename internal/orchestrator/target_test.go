@@ -88,7 +88,7 @@ func TestCodeChoosesEachCycleTarget(t *testing.T) {
 	}
 	bench := hotBench()
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
-	orch := mustNew(t, Dependencies{Runner: bench, Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
+	orch := mustNew(t, Dependencies{Runner: bench, Agents: roleSet, Causes: analyst},
 		Config{MaxCandidates: 3, MaxConsecutiveFailures: 3, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-targets", causeCampaign, "finalize_campaign")
 
@@ -136,7 +136,7 @@ func TestTheOptimizerReadsOnlyItsBrief(t *testing.T) {
 	var inputs []string
 	roleSet := agents.Set{Optimizer: inputRecorder(t, &inputs)}
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop}}}
-	orch := mustNew(t, Dependencies{Runner: hotBench(), Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
+	orch := mustNew(t, Dependencies{Runner: hotBench(), Agents: roleSet, Causes: analyst},
 		Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-brief", causeCampaign, "finalize_campaign")
 
@@ -209,7 +209,7 @@ func TestTheGraphRetriesATargetItNeverMeasured(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	bench := hotBench()
 	bench.unmeasuredFirst = true
-	orch := mustNew(t, Dependencies{Runner: bench, Jobs: &fakeJobService{}, Agents: roleSet, Causes: analyst},
+	orch := mustNew(t, Dependencies{Runner: bench, Agents: roleSet, Causes: analyst},
 		Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-retry", causeCampaign, "finalize_campaign")
 
@@ -332,7 +332,7 @@ func TestAResumeKeepsAnUnmeasuredTargetsRetry(t *testing.T) {
 			bench := hotBench()
 			bench.unmeasuredFirst = true
 			analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
-			orch := mustNew(t, Dependencies{Runner: bench, Jobs: &fakeJobService{}, Agents: agents.Set{Optimizer: inputRecorder(t, &inputs)}, Causes: analyst},
+			orch := mustNew(t, Dependencies{Runner: bench, Agents: agents.Set{Optimizer: inputRecorder(t, &inputs)}, Causes: analyst},
 				Config{MaxCandidates: 2, MaxConsecutiveFailures: 3, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 			req := causeCampaign
 			loop := targetLoop

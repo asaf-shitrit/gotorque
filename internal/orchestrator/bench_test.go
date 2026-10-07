@@ -32,6 +32,38 @@ type fakeBench struct {
 	settled []Settlement
 	// promoted is the candidates Settle was handed with an accepting verdict.
 	promoted []string
+
+	// started and finished count the campaign-lifecycle notes; degraded and
+	// repaired are the role notes, in order.
+	started, finished int
+	degraded          []degradedRole
+	repaired          []repairedRole
+}
+
+// degradedRole is one absorbed role failure, as the graph reported it.
+type degradedRole struct {
+	role  string
+	cause string
+}
+
+// repairedRole is one role output the decoder had to repair, as reported.
+type repairedRole struct {
+	role   string
+	repair agents.Repair
+}
+
+func (b *fakeBench) Note(_ context.Context, n Note) error {
+	switch n.Kind {
+	case NoteStarted:
+		b.started++
+	case NoteFinished:
+		b.finished++
+	case NoteDegraded:
+		b.degraded = append(b.degraded, degradedRole{role: n.Role, cause: n.Cause})
+	case NoteRepaired:
+		b.repaired = append(b.repaired, repairedRole{role: n.Role, repair: n.Repair})
+	}
+	return nil
 }
 
 func (b *fakeBench) Discover(context.Context, DiscoveryRequest) (DiscoveryEvidence, error) {

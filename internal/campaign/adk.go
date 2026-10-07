@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
@@ -112,7 +111,7 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 		return nil, nil, fmt.Errorf("campaign must be running or baseline-completed before ADK: %s", e.state.Status)
 	}
 	services := adkServices{engine: e}
-	deps := orchestrator.Dependencies{Runner: services, Settler: services, Jobs: services, Agents: roleSet}
+	deps := orchestrator.Dependencies{Runner: services, Settler: services, Notes: services, Agents: roleSet}
 	if e.causeJev != nil {
 		deps.Causes = causeAnalyst{engine: e, evaluator: e.causeJev, usage: roleSet.Usage}
 	}
@@ -242,11 +241,25 @@ func (s adkServices) CollectExcerpts(_ context.Context, analysis agents.AnalystR
 	return excerpts, err
 }
 
-func (s adkServices) StartCampaign(_ context.Context, req orchestrator.CampaignRequest) (domain.Job, error) {
-	now := time.Now().UTC()
-	job := domain.Job{ID: "job-" + req.CampaignID, Kind: "optimization_campaign", Status: domain.JobRunning, CreatedAt: now, UpdatedAt: now}
-	_ = s.engine.saveEvent("adk_started", "ADK workflow started", req)
-	return job, nil
+// Note records what the graph reports about the campaign's life as events on
+// the campaign's own progress stream. The started and finished events are
+// best-effort: the run is already under way or already over, so a store that
+// cannot take them is not a reason to fail it.
+func (s adkServices) Note(_ context.Context, n orchestrator.Note) error {
+	switch n.Kind {
+	case orchestrator.NoteStarted:
+		_ = s.engine.saveEvent("adk_started", "ADK workflow started", n.Request)
+		return nil
+	case orchestrator.NoteDegraded:
+		return s.engine.noteRoleDegraded(n.Role, n.Cause)
+	case orchestrator.NoteRepaired:
+		return s.engine.noteRoleRepaired(n.Role, n.Repair)
+	case orchestrator.NoteFinished:
+		_ = s.engine.saveEvent("adk_finalized", n.Result.StopReason, n.Result)
+		return nil
+	default:
+		return fmt.Errorf("unknown note kind %q", n.Kind)
+	}
 }
 
 // RoleDegradation records one agent node that failed and was absorbed.
@@ -255,20 +268,16 @@ type RoleDegradation struct {
 	Cause string `json:"cause"`
 }
 
-// RecordRoleDegraded persists a role whose model call failed while the graph
+// noteRoleDegraded persists a role whose model call failed while the graph
 // absorbed the failure: the node continued with an empty result, so a candidate
 // may be missing that role's output. Without this the cause reached only the
 // process's stderr, which no report and no API consumer can read, and an
 // operator saw a candidate explained as "patch is empty". The event also puts
 // the cause on the campaign's progress stream, which is the writer the campaign
 // was given rather than the one the process happens to have.
-func (s adkServices) RecordRoleDegraded(_ context.Context, role string, cause error) error {
-	reason := "unknown cause"
-	if cause != nil {
-		reason = cause.Error()
-	}
-	s.engine.state.DegradedRoles = append(s.engine.state.DegradedRoles, RoleDegradation{Role: role, Cause: reason})
-	return s.engine.saveEvent("role_degraded", fmt.Sprintf("%s node failed, continuing with an empty result: %s", role, reason), nil)
+func (e *Engine) noteRoleDegraded(role, cause string) error {
+	e.state.DegradedRoles = append(e.state.DegradedRoles, RoleDegradation{Role: role, Cause: cause})
+	return e.saveEvent("role_degraded", fmt.Sprintf("%s node failed, continuing with an empty result: %s", role, cause), nil)
 }
 
 // RoleRepair records one role output that parsed only after the decoder
@@ -278,29 +287,18 @@ type RoleRepair struct {
 	Repair string `json:"repair"`
 }
 
-// RecordRoleRepaired persists a role whose output parsed only after a repair.
+// noteRoleRepaired persists a role whose output parsed only after a repair.
 // The repaired value is used as the role's answer, which is the point of the
 // repair, but it used to leave no trace: an optimizer patch cut off at the
 // output-token cap was closed by the decoder, had its hunk counts recomputed by
 // normalization, and read in every record like a patch the model meant. The
 // event marks it on the progress stream; the optimizer's repair also reaches
 // its candidate record through the evidence.
-func (s adkServices) RecordRoleRepaired(_ context.Context, role string, repair agents.Repair) error {
+func (e *Engine) noteRoleRepaired(role string, repair agents.Repair) error {
 	message := fmt.Sprintf("%s output parsed only after the decoder %s", role, repair)
-	return s.engine.saveEvent("role_repaired", message, RoleRepair{Role: role, Repair: string(repair)})
+	return e.saveEvent("role_repaired", message, RoleRepair{Role: role, Repair: string(repair)})
 }
 
-func (s adkServices) CompleteCampaign(_ context.Context, job domain.Job, result orchestrator.CampaignResult) (domain.Job, error) {
-	job.Status = domain.JobSucceeded
-	if result.ProviderFailure != "" {
-		// The graph stopped because nothing answered, not because a bound was
-		// reached, so the job did not succeed.
-		job.Status = domain.JobFailed
-	}
-	job.UpdatedAt = time.Now().UTC()
-	_ = s.engine.saveEvent("adk_finalized", result.StopReason, result)
-	return job, nil
-}
 func (s adkServices) Discover(_ context.Context, _ orchestrator.DiscoveryRequest) (orchestrator.DiscoveryEvidence, error) {
 	runs := make([]string, 0, len(s.engine.state.Runs))
 	for _, run := range s.engine.state.Runs {

@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
-	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 // RunnerService owns reproducible workload execution, isolated candidates,
@@ -46,21 +45,13 @@ type Settler interface {
 	Settle(ctx context.Context, s Settlement) error
 }
 
-// JobService persists the asynchronous campaign lifecycle for a CLI control
-// plane. The workflow itself remains independent of storage.
-type JobService interface {
-	StartCampaign(ctx context.Context, req CampaignRequest) (domain.Job, error)
-	CompleteCampaign(ctx context.Context, job domain.Job, result CampaignResult) (domain.Job, error)
-	// RecordRoleDegraded reports a role whose model call failed in a way the
-	// graph absorbed: the node continues with an empty result rather than
-	// ending the campaign. Without it the cause exists only on the process's
-	// stderr, where no report and no API consumer can read it, and a candidate
-	// that arrived empty is explained as "patch is empty".
-	RecordRoleDegraded(ctx context.Context, role string, cause error) error
-	// RecordRoleRepaired reports a role whose output parsed only after the
-	// decoder rewrote it: control characters or quotes escaped, closers added,
-	// or a string closed where the output was cut off. The repaired value is
-	// used as the role's answer, so without the record a salvaged answer reads
-	// exactly like an intended one. It is advisory and changes no decision.
-	RecordRoleRepaired(ctx context.Context, role string, repair agents.Repair) error
+// Notifier carries what the graph reports about the campaign's life: that it
+// started, that a role degraded or needed its output repaired, and that it
+// finished. A note is a record, never an input: the graph's decisions are made
+// from its own state, and the notifier's answer changes none of them. The
+// graph ignores a failed degraded or repaired note (a store that cannot take
+// one is no reason to stop a campaign); a failed started or finished note ends
+// the run, as the store behind it is gone.
+type Notifier interface {
+	Note(ctx context.Context, n Note) error
 }

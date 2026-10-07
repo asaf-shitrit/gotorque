@@ -22,21 +22,19 @@ func (f *fakeCauseAnalyst) AnalyzeCauses(_ context.Context, req CauseRequest) (a
 	return f.result, f.err
 }
 
-func causeGraph(t *testing.T, analyst *fakeCauseAnalyst) (*Orchestrator, *fakeBench, *fakeJobService) {
+func causeGraph(t *testing.T, analyst *fakeCauseAnalyst) (*Orchestrator, *fakeBench) {
 	t.Helper()
 	var calls int
 	roleSet := agents.Set{
 		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &calls),
 	}
 	runner := hotBench()
-	jobs := &fakeJobService{}
 	orch := mustNew(t, Dependencies{
 		Runner: runner,
-		Jobs:   jobs,
 		Agents: roleSet,
 		Causes: analyst,
 	}, Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
-	return orch, runner, jobs
+	return orch, runner
 }
 
 var causeCampaign = CampaignRequest{
@@ -54,7 +52,7 @@ func TestCauseAnalystServesTheAnalystNode(t *testing.T) {
 		HotPaths:            []agents.HotPath{{Location: "main.go:207"}},
 		CandidateHypotheses: []string{"buffer the per-statement writes"},
 	}}
-	orch, runner, _ := causeGraph(t, analyst)
+	orch, runner := causeGraph(t, analyst)
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-causes", causeCampaign, "finalize_campaign")
 
 	if result.CandidatesTried != 2 {
@@ -78,14 +76,14 @@ func TestCauseAnalystServesTheAnalystNode(t *testing.T) {
 // against the analyst role.
 func TestFailingCauseAnalystDegradesLikeAnyRole(t *testing.T) {
 	analyst := &fakeCauseAnalyst{err: errors.New("gateway returned HTTP 429 for Jev")}
-	orch, runner, jobs := causeGraph(t, analyst)
+	orch, runner := causeGraph(t, analyst)
 	result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-causes-degraded", causeCampaign, "finalize_campaign")
 
 	if result.CandidatesTried != 2 {
 		t.Errorf("candidates tried = %d, want the campaign to continue", result.CandidatesTried)
 	}
-	if len(jobs.degraded) != 2 || jobs.degraded[0].role != "analyst" || jobs.degraded[0].cause != "gateway returned HTTP 429 for Jev" {
-		t.Errorf("degraded = %+v, want the analyst's error recorded each cycle", jobs.degraded)
+	if len(runner.degraded) != 2 || runner.degraded[0].role != "analyst" || runner.degraded[0].cause != "gateway returned HTTP 429 for Jev" {
+		t.Errorf("degraded = %+v, want the analyst's error recorded each cycle", runner.degraded)
 	}
 	if len(runner.analyses()) != 2 || len(runner.analyses()[0].CandidateHypotheses) != 0 {
 		t.Errorf("analyses = %+v, want the empty degraded result", runner.analyses())
@@ -102,7 +100,6 @@ func exhaustionGraph(t *testing.T, analyst *fakeCauseAnalyst, stop bool) (*Orche
 	}
 	orch := mustNew(t, Dependencies{
 		Runner: hotBench(domain.DecisionInconclusive),
-		Jobs:   &fakeJobService{},
 		Agents: roleSet,
 		Causes: analyst,
 	}, Config{MaxCandidates: 3, MaxConsecutiveFailures: 5, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1, StopWhenRankingExhausted: stop})

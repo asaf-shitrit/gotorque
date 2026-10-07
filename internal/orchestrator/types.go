@@ -226,7 +226,6 @@ type RoleFailure struct {
 // CycleFailures without ever reading the model output it failed to get.
 type CampaignState struct {
 	Request   CampaignRequest      `json:"request"`
-	Job       domain.Job           `json:"job"`
 	Discovery DiscoveryEvidence    `json:"discovery"`
 	Analysis  agents.AnalystResult `json:"analysis"`
 	// Target is the function and cause code chose for this cycle's patch, or
@@ -279,6 +278,40 @@ type SourceExcerpt struct {
 	HotPath   string `json:"hot_path"`
 }
 
+// NoteKind says what a Note reports.
+type NoteKind string
+
+const (
+	// NoteStarted reports that the graph began a campaign; Request is set.
+	NoteStarted NoteKind = "started"
+	// NoteDegraded reports a role whose model call failed in a way the graph
+	// absorbed: the node continues with an empty result rather than ending the
+	// campaign. Without it the cause exists only on the process's stderr,
+	// where no report and no API consumer can read it, and a candidate that
+	// arrived empty is explained as "patch is empty". Role and Cause are set.
+	NoteDegraded NoteKind = "degraded"
+	// NoteRepaired reports a role whose output parsed only after the decoder
+	// rewrote it: control characters or quotes escaped, closers added, or a
+	// string closed where the output was cut off. The repaired value is used
+	// as the role's answer, so without the note a salvaged answer reads
+	// exactly like an intended one. It is advisory and changes no decision.
+	// Role and Repair are set.
+	NoteRepaired NoteKind = "repaired"
+	// NoteFinished reports the campaign's result; Result is set.
+	NoteFinished NoteKind = "finished"
+)
+
+// Note is one report the graph makes about the campaign's life. Only the
+// fields its kind names are set.
+type Note struct {
+	Kind    NoteKind        `json:"kind"`
+	Request CampaignRequest `json:"request"`
+	Role    string          `json:"role,omitempty"`
+	Cause   string          `json:"cause,omitempty"`
+	Repair  agents.Repair   `json:"repair,omitempty"`
+	Result  CampaignResult  `json:"result"`
+}
+
 // CampaignProgress is the campaign's tallies after a verdict, persisted with it.
 type CampaignProgress struct {
 	CandidatesTried         int             `json:"candidates_tried"`
@@ -291,7 +324,6 @@ type CampaignProgress struct {
 // CampaignResult is the graph's single terminal output.
 type CampaignResult struct {
 	CampaignID         string            `json:"campaign_id"`
-	Job                domain.Job        `json:"job"`
 	CandidatesTried    int               `json:"candidates_tried"`
 	AcceptedCandidates []string          `json:"accepted_candidates,omitempty"`
 	FinalEvaluation    domain.Evaluation `json:"final_evaluation"`

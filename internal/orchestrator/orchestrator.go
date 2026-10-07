@@ -31,11 +31,11 @@ const (
 var ErrProviderUnavailable = errors.New("model provider unavailable")
 
 // Dependencies are intentionally narrow so deterministic execution, verdict
-// persistence and job persistence can be local, remote, or fake implementations.
+// persistence and campaign notes can be local, remote, or fake implementations.
 type Dependencies struct {
 	Runner  RunnerService
 	Settler Settler
-	Jobs    JobService
+	Notes   Notifier
 	Agents  agents.Set
 	// Causes serves the analyst node: Jev cause classification ranked in code.
 	Causes CauseAnalyst
@@ -109,7 +109,7 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 		route:         workflow.NewFunctionNode("route_campaign", g.route, det),
 		finalize:      workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
 	}
-	optimizer, err := agentNode(g.deps.Agents.Optimizer, agt, string(agents.RoleOptimizer), g.deps.Jobs)
+	optimizer, err := agentNode(g.deps.Agents.Optimizer, agt, string(agents.RoleOptimizer), g.deps.Notes)
 	if err != nil {
 		return n, err
 	}
@@ -117,8 +117,8 @@ func (g *campaignGraph) nodes() (graphNodes, error) {
 	// The Jev nodes keep their role's name, so a degraded classification or
 	// review is reported against "analyst" or "reviewer", and the analyst
 	// falls back to discovery's hot paths.
-	n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Jobs)
-	n.reviewer = degradeNode(workflow.NewFunctionNode(string(agents.RoleReviewer), g.reviewPatch, agt), string(agents.RoleReviewer), g.deps.Jobs)
+	n.analyst = degradeNode(workflow.NewFunctionNode(string(agents.RoleAnalyst), g.analyzeCauses, agt), string(agents.RoleAnalyst), g.deps.Notes)
+	n.reviewer = degradeNode(workflow.NewFunctionNode(string(agents.RoleReviewer), g.reviewPatch, agt), string(agents.RoleReviewer), g.deps.Notes)
 	return n, nil
 }
 
@@ -130,12 +130,12 @@ func (g *campaignGraph) analyzeCauses(ctx adkagent.Context, state CampaignState)
 	return g.deps.Causes.AnalyzeCauses(ctx, CauseRequest{Campaign: state.Request, Discovery: state.Discovery})
 }
 
-func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string, jobs JobService) (workflow.Node, error) {
+func agentNode(a adkagent.Agent, cfg workflow.NodeConfig, role string, notes Notifier) (workflow.Node, error) {
 	n, err := workflow.NewAgentNode(a, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("%s node: %w", role, err)
 	}
-	return degradeNode(n, role, jobs), nil
+	return degradeNode(n, role, notes), nil
 }
 
 // emptyRoleResult is the degraded output every role decodes into a zero value.
@@ -154,12 +154,12 @@ const emptyRoleResult = "{}"
 // reported, and the authoritative decision stays with the deterministic half.
 type degradingNode struct {
 	workflow.Node
-	role string
-	jobs JobService
+	role  string
+	notes Notifier
 }
 
-func degradeNode(inner workflow.Node, role string, jobs JobService) workflow.Node {
-	return degradingNode{Node: inner, role: role, jobs: jobs}
+func degradeNode(inner workflow.Node, role string, notes Notifier) workflow.Node {
+	return degradingNode{Node: inner, role: role, notes: notes}
 }
 
 func (n degradingNode) Run(ctx adkagent.Context, input any) iter.Seq2[*session.Event, error] {
@@ -213,12 +213,12 @@ func (n degradingNode) emptyResult(ctx adkagent.Context, failure error) *session
 // reportDegraded records the cause of an absorbed role failure. The node
 // continues with an empty result either way, so an operator reading the report
 // learns why a candidate looks empty rather than merely that it does. A wrapper
-// built without a job service simply absorbs the failure.
+// built without a notifier simply absorbs the failure.
 func (n degradingNode) reportDegraded(ctx adkagent.Context, cause error) {
-	if n.jobs == nil {
+	if n.notes == nil {
 		return
 	}
-	_ = n.jobs.RecordRoleDegraded(ctx, n.role, cause)
+	_ = n.notes.Note(ctx, Note{Kind: NoteDegraded, Role: n.role, Cause: cause.Error()})
 }
 
 func (n graphNodes) edges() []workflow.Edge {
@@ -248,19 +248,15 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 	if err != nil {
 		return nil, err
 	}
-	job, err := g.deps.Jobs.StartCampaign(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("start campaign job: %w", err)
-	}
-	if job.ID == "" {
-		return nil, errors.New("start campaign job: empty job ID")
+	if err := g.deps.Notes.Note(ctx, Note{Kind: NoteStarted, Request: req}); err != nil {
+		return nil, fmt.Errorf("note campaign start: %w", err)
 	}
 	// Deriving the tallies from the recorded candidates rather than starting
 	// at zero is what makes MaxCandidates and the streak bounds campaign
 	// bounds instead of per-process ones, and keeps attempt numbers unique.
 	t := talliesOf(req.RecordedCandidates, g.cfg.MaxConsecutiveInconclusive > 0)
 	state := CampaignState{
-		Request: req, Job: job, StartedAt: time.Now(),
+		Request: req, StartedAt: time.Now(),
 		CandidatesTried: t.tried, ConsecutiveFailures: t.consecutiveFailures, ConsecutiveInconclusive: t.consecutiveInconclusive,
 		PriorCandidates: slices.Clone(req.RecordedCandidates),
 	}
@@ -281,21 +277,21 @@ func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Ev
 // decodeRole decodes one role's output and records the repair it needed, if
 // any. The repaired value is still the role's answer; the record exists so an
 // answer the decoder salvaged is not mistaken for the one the model sent.
-func decodeRole[T any](ctx context.Context, jobs JobService, role agents.Role, raw any) (T, agents.Repair, error) {
+func decodeRole[T any](ctx context.Context, notes Notifier, role agents.Role, raw any) (T, agents.Repair, error) {
 	result, repair, err := agents.DecodeResultWithRepair[T](raw)
 	if err == nil {
-		recordRepair(ctx, jobs, role, repair)
+		recordRepair(ctx, notes, role, repair)
 	}
 	return result, repair, err
 }
 
 // recordRepair reports a repaired role output. Like a degraded role, a failed
 // record is not a reason to stop the campaign.
-func recordRepair(ctx context.Context, jobs JobService, role agents.Role, repair agents.Repair) {
+func recordRepair(ctx context.Context, notes Notifier, role agents.Role, repair agents.Repair) {
 	if repair == "" {
 		return
 	}
-	_ = jobs.RecordRoleRepaired(ctx, string(role), repair)
+	_ = notes.Note(ctx, Note{Kind: NoteRepaired, Role: string(role), Repair: repair})
 }
 
 // discover runs once per graph entry, between initialize_campaign and the
@@ -328,7 +324,7 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	if err != nil {
 		return nil, fmt.Errorf("analyst output: %w", err)
 	}
-	recordRepair(ctx, g.deps.Jobs, agents.RoleAnalyst, repair)
+	recordRepair(ctx, g.deps.Notes, agents.RoleAnalyst, repair)
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
@@ -529,7 +525,7 @@ func discoveryHotPaths(fns []string) []agents.HotPath {
 }
 
 func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event, error) {
-	proposal, repair, err := decodeRole[agents.OptimizerResult](ctx, g.deps.Jobs, agents.RoleOptimizer, raw)
+	proposal, repair, err := decodeRole[agents.OptimizerResult](ctx, g.deps.Notes, agents.RoleOptimizer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("optimizer output: %w", err)
 	}
@@ -567,7 +563,7 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 // fed to the next cycle's brief. The node keeps its name for the readers of
 // the event path.
 func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Event, error) {
-	review, _, err := decodeRole[agents.ReviewerResult](ctx, g.deps.Jobs, agents.RoleReviewer, raw)
+	review, _, err := decodeRole[agents.ReviewerResult](ctx, g.deps.Notes, agents.RoleReviewer, raw)
 	if err != nil {
 		return nil, fmt.Errorf("reviewer output: %w", err)
 	}
@@ -673,18 +669,18 @@ func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*sessi
 func (g *campaignGraph) finalize(ctx adkagent.Context, state CampaignState) (CampaignResult, error) {
 	result := CampaignResult{
 		CampaignID:         state.Request.CampaignID,
-		Job:                state.Job,
 		CandidatesTried:    state.CandidatesTried,
 		AcceptedCandidates: slices.Clone(state.AcceptedCandidates),
 		FinalEvaluation:    state.Evaluation,
 		StopReason:         state.StopReason,
 		ProviderFailure:    state.ProviderFailure,
 	}
-	job, err := g.deps.Jobs.CompleteCampaign(ctx, state.Job, result)
-	if err != nil {
-		return CampaignResult{}, fmt.Errorf("complete campaign job: %w", err)
+	// The result's status is what ended decided: ProviderFailure is set when a
+	// role could not answer, and the caller reads it from here. Nothing is
+	// derived a second time for the note.
+	if err := g.deps.Notes.Note(ctx, Note{Kind: NoteFinished, Result: result}); err != nil {
+		return CampaignResult{}, fmt.Errorf("note campaign finish: %w", err)
 	}
-	result.Job = job
 	return result, nil
 }
 
@@ -695,8 +691,8 @@ func validateDependencies(deps Dependencies) error {
 	if deps.Settler == nil {
 		return errors.New("settler is required")
 	}
-	if deps.Jobs == nil {
-		return errors.New("job service is required")
+	if deps.Notes == nil {
+		return errors.New("notifier is required")
 	}
 	if deps.Agents.Optimizer == nil {
 		return errors.New("optimizer agent is required")

@@ -35,16 +35,6 @@ const (
 	DecisionInconclusive Decision = "inconclusive"
 )
 
-type JobStatus string
-
-const (
-	JobQueued    JobStatus = "queued"
-	JobRunning   JobStatus = "running"
-	JobSucceeded JobStatus = "succeeded"
-	JobFailed    JobStatus = "failed"
-	JobCancelled JobStatus = "cancelled"
-)
-
 type Command struct {
 	Path       string            `json:"path"`
 	Args       []string          `json:"args,omitempty"`
@@ -161,14 +151,4 @@ type Evaluation struct {
 	BehaviorMatches bool               `json:"behavior_matches"`
 	Comparisons     []MetricComparison `json:"comparisons"`
 	Reasons         []string           `json:"reasons"`
-}
-
-type Job struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`
-	Status    JobStatus `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	ResultURI string    `json:"result_uri,omitempty"`
-	Error     string    `json:"error,omitempty"`
 }

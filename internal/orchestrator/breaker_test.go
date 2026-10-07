@@ -84,21 +84,19 @@ func TestProviderOutageStopsTheCampaign(t *testing.T) {
 		{name: "the second cycle also meets the rejection bound", maxCandidates: 8, maxConsecutive: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			jobs := &fakeJobService{}
 			bench := &fakeBench{}
 			orch := mustNew(t, Dependencies{
 				Runner: bench,
-				Jobs:   jobs,
 				Agents: scriptedOptimizerSet(t, 1, 2, 3, 4, 5, 6, 7, 8),
 			}, Config{MaxCandidates: tc.maxCandidates, MaxConsecutiveFailures: tc.maxConsecutive, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-outage", breakerCampaign, "finalize_campaign")
-			assertProviderStop(t, result, bench, jobs)
+			assertProviderStop(t, result, bench)
 		})
 	}
 }
 
 // assertProviderStop checks a campaign the breaker stopped after two cycles.
-func assertProviderStop(t *testing.T, result CampaignResult, bench *fakeBench, jobs *fakeJobService) {
+func assertProviderStop(t *testing.T, result CampaignResult, bench *fakeBench) {
 	t.Helper()
 	if result.CandidatesTried != 2 {
 		t.Errorf("candidates tried = %d, want 2: two cycles of optimizer failure are enough", result.CandidatesTried)
@@ -115,8 +113,11 @@ func assertProviderStop(t *testing.T, result CampaignResult, bench *fakeBench, j
 	if progress := bench.progress(); len(progress) != 2 || progress[1].LastDecision != domain.DecisionRejected {
 		t.Errorf("progress = %+v, want the two rejected verdicts", progress)
 	}
-	if len(jobs.degraded) != 2 {
-		t.Errorf("degraded = %+v, want the optimizer recorded once per cycle", jobs.degraded)
+	if bench.started != 1 || bench.finished != 1 {
+		t.Errorf("started/finished notes = %d/%d, want 1/1", bench.started, bench.finished)
+	}
+	if len(bench.degraded) != 2 {
+		t.Errorf("degraded = %+v, want the optimizer recorded once per cycle", bench.degraded)
 	}
 }
 
@@ -139,7 +140,6 @@ func TestPartialFailuresKeepTheCampaignRunning(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := Dependencies{
 				Runner: &fakeBench{},
-				Jobs:   &fakeJobService{},
 				Agents: scriptedOptimizerSet(t, tc.failOn...),
 			}
 			if tc.jevFailed {
@@ -169,7 +169,6 @@ func TestProviderOutageTripsWhileJevKeepsAnswering(t *testing.T) {
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
 	orch := mustNew(t, Dependencies{
 		Runner: hotBench(),
-		Jobs:   &fakeJobService{},
 		Agents: scriptedOptimizerSet(t, 1, 2, 3, 4),
 		Causes: analyst,
 		Review: review,
@@ -210,7 +209,6 @@ func TestALoneModelRoleSurvivesOneFailedCycle(t *testing.T) {
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
 	orch := mustNew(t, Dependencies{
 		Runner: hotBench(),
-		Jobs:   &fakeJobService{},
 		Agents: scriptedOptimizerSet(t, 2),
 		Causes: analyst,
 		Review: review,
