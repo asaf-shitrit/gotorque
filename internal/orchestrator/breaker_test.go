@@ -86,7 +86,7 @@ func TestProviderOutageStopsTheCampaign(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bench := &fakeBench{}
 			orch := mustNew(t, Dependencies{
-				Runner: bench,
+				Bench:  bench,
 				Agents: scriptedOptimizerSet(t, 1, 2, 3, 4, 5, 6, 7, 8),
 			}, Config{MaxCandidates: tc.maxCandidates, MaxConsecutiveFailures: tc.maxConsecutive, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-outage", breakerCampaign, "finalize_campaign")
@@ -139,7 +139,7 @@ func TestPartialFailuresKeepTheCampaignRunning(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := Dependencies{
-				Runner: &fakeBench{},
+				Bench:  &fakeBench{},
 				Agents: scriptedOptimizerSet(t, tc.failOn...),
 			}
 			if tc.jevFailed {
@@ -168,7 +168,7 @@ func TestProviderOutageTripsWhileJevKeepsAnswering(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
 	orch := mustNew(t, Dependencies{
-		Runner: hotBench(),
+		Bench:  hotBench(),
 		Agents: scriptedOptimizerSet(t, 1, 2, 3, 4),
 		Causes: analyst,
 		Review: review,
@@ -208,7 +208,7 @@ func TestALoneModelRoleSurvivesOneFailedCycle(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
 	orch := mustNew(t, Dependencies{
-		Runner: hotBench(),
+		Bench:  hotBench(),
 		Agents: scriptedOptimizerSet(t, 2),
 		Causes: analyst,
 		Review: review,

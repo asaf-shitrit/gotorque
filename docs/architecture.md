@@ -58,6 +58,20 @@ consecutive-failure limit is reached; the engine's `max_duration` bound (see
 Campaign bounds) can also end a run from outside the graph, at whatever node
 is executing when it expires.
 
+The graph reaches the deterministic half through one port, `Bench`
+(`internal/orchestrator/bench.go`, ADR 0038), and the engine is its only
+production adapter (`engineBench` in `internal/campaign/adk.go`). `Discovery`
+returns the evidence the engine finished before the graph started, once per
+graph entry; `Excerpts` reads source windows around the hot paths and its
+failure only costs the cycle its excerpts; `Assess` evaluates a proposal and
+returns the evidence together with the acceptance policy's verdict, reached
+before the reviewer runs; `Settle` records that verdict as given, promotes an
+accepted patch, and persists the tallies; `Note` reports the campaign
+starting, a role degrading or being repaired, and the campaign finishing. The
+optimizer (`agents.Set`) and the two Jev advisors (`CauseAnalyst`,
+`ReviewAnalyst`) stay separate seams, because they are the parts that vary
+(live or stubbed) and degrade. Tests drive the graph with one `fakeBench`.
+
 A role whose call fails degrades to an empty result (`role_degraded`) instead
 of ending the run, because every role has a deterministic fallback for an
 absent answer. A provider that is down, or a revoked key, used to exploit that:

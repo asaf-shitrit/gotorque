@@ -21,9 +21,9 @@ import (
 )
 
 // RunADK executes the bounded ADK graph against this persisted campaign. The
-// deterministic services below are adapters to the same engine state and
-// artifact store used by the CLI path; they do not provide shell access to
-// agents. A caller may inject OpenAI-backed or static agents.
+// engine reaches the graph as one orchestrator.Bench, an adapter over the same
+// engine state and artifact store the CLI path uses; it gives agents no shell
+// access. A caller may inject OpenAI-backed or static agents.
 func (e *Engine) RunADK(ctx context.Context, roleSet agents.Set, cfg orchestrator.Config) (orchestrator.CampaignResult, error) {
 	// Token usage is accounting, not a verdict, so it is recorded on the way out
 	// whatever happened. A campaign cut short by its budget, or by a provider
@@ -110,8 +110,7 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 	if e.state.Status != StatusCompleted && e.state.Status != StatusRunning {
 		return nil, nil, fmt.Errorf("campaign must be running or baseline-completed before ADK: %s", e.state.Status)
 	}
-	services := adkServices{engine: e}
-	deps := orchestrator.Dependencies{Runner: services, Settler: services, Notes: services, Agents: roleSet}
+	deps := orchestrator.Dependencies{Bench: engineBench{engine: e}, Agents: roleSet}
 	if e.causeJev != nil {
 		deps.Causes = causeAnalyst{engine: e, evaluator: e.causeJev, usage: roleSet.Usage}
 	}
@@ -207,7 +206,12 @@ func snapshotTokenUsage(usage map[string]agents.RoleUsage) map[string]RoleUsageS
 	return snapshots
 }
 
-type adkServices struct{ engine *Engine }
+// engineBench is the engine as the orchestrator's Bench: its one production
+// adapter. Each method is a thin entry into the engine; the policy, the
+// evaluation loop and the persistence all live there.
+type engineBench struct{ engine *Engine }
+
+var _ orchestrator.Bench = engineBench{}
 
 // excerptCandidates orders the locations worth reading source for: the
 // analyst's hot paths first, then discovery's own resolved positions.
@@ -226,9 +230,8 @@ func excerptCandidates(hotPaths []agents.HotPath, discovered []string) []agents.
 	return candidates
 }
 
-// CollectExcerpts implements the optional orchestrator.ExcerptCollector
-// capability, attaching real source windows around analyst hot paths.
-func (s adkServices) CollectExcerpts(_ context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
+// Excerpts reads real source windows around the analysis's hot paths.
+func (s engineBench) Excerpts(_ context.Context, analysis agents.AnalystResult) ([]orchestrator.SourceExcerpt, error) {
 	candidates := excerptCandidates(analysis.HotPaths, s.engine.state.DiscoveryHotFunctions)
 	excerpts, err := extractExcerpts(s.engine.state.Repository, candidates, defaultMaxExcerpts)
 	excerpts = withFileHeaders(s.engine.state.Repository, excerpts)
@@ -245,7 +248,7 @@ func (s adkServices) CollectExcerpts(_ context.Context, analysis agents.AnalystR
 // the campaign's own progress stream. The started and finished events are
 // best-effort: the run is already under way or already over, so a store that
 // cannot take them is not a reason to fail it.
-func (s adkServices) Note(_ context.Context, n orchestrator.Note) error {
+func (s engineBench) Note(_ context.Context, n orchestrator.Note) error {
 	switch n.Kind {
 	case orchestrator.NoteStarted:
 		_ = s.engine.saveEvent("adk_started", "ADK workflow started", n.Request)
@@ -299,7 +302,9 @@ func (e *Engine) noteRoleRepaired(role string, repair agents.Repair) error {
 	return e.saveEvent("role_repaired", message, RoleRepair{Role: role, Repair: string(repair)})
 }
 
-func (s adkServices) Discover(_ context.Context, _ orchestrator.DiscoveryRequest) (orchestrator.DiscoveryEvidence, error) {
+// Discovery is the baseline evidence the engine finished before the graph
+// started; nothing in a campaign changes it afterwards.
+func (s engineBench) Discovery(_ context.Context) (orchestrator.DiscoveryEvidence, error) {
 	runs := make([]string, 0, len(s.engine.state.Runs))
 	for _, run := range s.engine.state.Runs {
 		runs = append(runs, run.ID)
@@ -319,7 +324,7 @@ func (s adkServices) Discover(_ context.Context, _ orchestrator.DiscoveryRequest
 // acceptance policy. The verdict is computed here, from measurements and the
 // behavior gate alone: the reviewer has not run, and policyVerdict reads no
 // review.
-func (s adkServices) Assess(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.Assessment, error) {
+func (s engineBench) Assess(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.Assessment, error) {
 	evidence, err := s.engine.evaluateCandidate(ctx, req)
 	if err != nil {
 		return orchestrator.Assessment{}, err
@@ -349,7 +354,7 @@ func (e *Engine) judge(evidence orchestrator.CandidateEvidence) domain.Evaluatio
 //     count, so a bound never counts a verdict that is not on disk.
 //
 // The verdict is recorded as given. It is not recomputed here.
-func (s adkServices) Settle(_ context.Context, settlement orchestrator.Settlement) error {
+func (s engineBench) Settle(_ context.Context, settlement orchestrator.Settlement) error {
 	return s.engine.settle(settlement)
 }
 

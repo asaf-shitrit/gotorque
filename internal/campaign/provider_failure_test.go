@@ -94,7 +94,7 @@ func TestProviderOutageFailsTheCampaignAndResumes(t *testing.T) {
 // ended (CampaignResult.ProviderFailure), not derived again here.
 func TestNotesBecomeTheEventsReadersKnow(t *testing.T) {
 	engine := pgoLaneTestEngine(t)
-	notes := adkServices{engine: engine}
+	notes := engineBench{engine: engine}
 	ctx := context.Background()
 	require.NoError(t, notes.Note(ctx, orchestrator.Note{Kind: orchestrator.NoteStarted, Request: orchestrator.CampaignRequest{CampaignID: "c1"}}))
 	require.NoError(t, notes.Note(ctx, orchestrator.Note{Kind: orchestrator.NoteDegraded, Role: "analyst", Cause: "HTTP 429"}))

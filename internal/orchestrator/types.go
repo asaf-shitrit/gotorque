@@ -49,12 +49,6 @@ type CampaignRequest struct {
 	GoVersion string `json:"go_version,omitempty"`
 }
 
-// DiscoveryRequest is the campaign context the deterministic runner discovers
-// against.
-type DiscoveryRequest struct {
-	Campaign CampaignRequest `json:"campaign"`
-}
-
 // DiscoveryEvidence is normalized measured evidence, with raw data referenced
 // by artifact ID rather than embedded in model context.
 type DiscoveryEvidence struct {
@@ -234,7 +228,7 @@ type CampaignState struct {
 	Proposal  agents.OptimizerResult `json:"proposal"`
 	Candidate CandidateEvidence      `json:"candidate"`
 	// Verdict is the acceptance policy's finding on Candidate, computed with
-	// the evidence (RunnerService.Assess). It waits here through the review
+	// the evidence (Bench.Assess). It waits here through the review
 	// and is recorded by apply_policy.
 	Verdict             domain.Evaluation     `json:"verdict"`
 	Review              agents.ReviewerResult `json:"review"`

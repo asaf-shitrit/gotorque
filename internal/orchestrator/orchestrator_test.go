@@ -55,8 +55,8 @@ func TestCampaignSurvivesRoleFailures(t *testing.T) {
 	// would trip the provider breaker instead of the rejection bound.
 	roleSet := scriptedOptimizerSet(t, 1)
 	causes := &fakeCauseAnalyst{err: errors.New("provider stalled past the retry ladder")}
-	runnerService := &fakeBench{decisions: []domain.Decision{domain.DecisionRejected, domain.DecisionRejected}}
-	orch := mustNew(t, Dependencies{Runner: runnerService, Agents: roleSet, Causes: causes}, Config{
+	bench := &fakeBench{decisions: []domain.Decision{domain.DecisionRejected, domain.DecisionRejected}}
+	orch := mustNew(t, Dependencies{Bench: bench, Agents: roleSet, Causes: causes}, Config{
 		MaxCandidates:          8,
 		MaxConsecutiveFailures: 2,
 		DeterministicTimeout:   time.Second,
@@ -85,7 +85,7 @@ func TestCampaignSurvivesRoleFailures(t *testing.T) {
 	// A degraded role used to report its cause to the process's stderr, where no
 	// report could read it; the campaign now records it.
 	seen := map[string]int{}
-	for _, degraded := range runnerService.degraded {
+	for _, degraded := range bench.degraded {
 		seen[degraded.role]++
 		if !strings.Contains(degraded.cause, "provider stalled past the retry ladder") && !strings.Contains(degraded.cause, providerDown) {
 			t.Errorf("degraded %s cause = %q, want the role's error", degraded.role, degraded.cause)
@@ -97,16 +97,8 @@ func TestCampaignSurvivesRoleFailures(t *testing.T) {
 }
 
 // withJev supplies the Jev-backed services the graph requires, for tests that
-// do not care what they answer. A test that does passes its own. A runner that
-// also settles and takes notes (the fakeBench) does both for the graph unless
-// told otherwise.
+// do not care what they answer. A test that does passes its own.
 func withJev(deps Dependencies) Dependencies {
-	if settler, ok := deps.Runner.(Settler); ok && deps.Settler == nil {
-		deps.Settler = settler
-	}
-	if notes, ok := deps.Runner.(Notifier); ok && deps.Notes == nil {
-		deps.Notes = notes
-	}
 	if deps.Causes == nil {
 		deps.Causes = &fakeCauseAnalyst{result: agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}}
 	}
@@ -216,14 +208,14 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 	}
 	causes := &fakeCauseAnalyst{result: agents.AnalystResult{CandidateHypotheses: []string{"reuse buffer"}}}
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true, BehaviorArgument: "outputs unchanged"}}
-	runnerService := &fakeBench{decisions: []domain.Decision{
+	bench := &fakeBench{decisions: []domain.Decision{
 		domain.DecisionAccepted,
 		domain.DecisionRejected,
 		domain.DecisionInconclusive,
 	}}
 
 	orch := mustNew(t, Dependencies{
-		Runner: runnerService,
+		Bench:  bench,
 		Agents: roleSet,
 		Causes: causes,
 		Review: review,
@@ -253,16 +245,16 @@ func TestCampaignGraphLoopsWithinDeterministicBounds(t *testing.T) {
 	if result.StopReason != "consecutive rejection/inconclusive limit reached" {
 		t.Errorf("stop reason = %q", result.StopReason)
 	}
-	assertAcceptedPromoted(t, result.AcceptedCandidates, runnerService.promoted)
+	assertAcceptedPromoted(t, result.AcceptedCandidates, bench.promoted)
 	assertRoleCalls(t, 3, map[string]int{
 		"analyst":   len(causes.requests),
 		"optimizer": optimizerCalls,
 		"reviewer":  len(review.requests),
 	})
-	if len(runnerService.settled) != 3 || runnerService.started != 1 || runnerService.finished != 1 {
-		t.Errorf("settled/started/finished = %d/%d/%d, want 3/1/1", len(runnerService.settled), runnerService.started, runnerService.finished)
+	if len(bench.settled) != 3 || bench.started != 1 || bench.finished != 1 {
+		t.Errorf("settled/started/finished = %d/%d/%d, want 3/1/1", len(bench.settled), bench.started, bench.finished)
 	}
-	assertDiscoveredOnce(t, runnerService, causes)
+	assertDiscoveredOnce(t, bench, causes)
 }
 
 // assertDiscoveredOnce: discovery's evidence belongs to the campaign, not to a
@@ -307,9 +299,9 @@ func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
 	roleSet := agents.Set{
 		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &calls),
 	}
-	runnerService := &fakeBench{failureDetail: ".go:9:2: undefined: fasterParse"}
+	bench := &fakeBench{failureDetail: ".go:9:2: undefined: fasterParse"}
 	orch := mustNew(t, Dependencies{
-		Runner: runnerService,
+		Bench:  bench,
 		Agents: roleSet,
 		Review: &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: false, BehaviorArgument: "suspect"}},
 	}, Config{
@@ -323,8 +315,8 @@ func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
 	if len(prior) != 1 {
 		t.Fatalf("prior candidates = %d, want 1", len(prior))
 	}
-	if prior[0].FailureDetail != runnerService.failureDetail {
-		t.Fatalf("prior candidate failure detail = %q, want %q", prior[0].FailureDetail, runnerService.failureDetail)
+	if prior[0].FailureDetail != bench.failureDetail {
+		t.Fatalf("prior candidate failure detail = %q, want %q", prior[0].FailureDetail, bench.failureDetail)
 	}
 	if prior[0].Decision != string(domain.DecisionRejected) {
 		t.Fatalf("decision = %q, want %q", prior[0].Decision, domain.DecisionRejected)
@@ -333,7 +325,7 @@ func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
 
 func TestNewRejectsMissingDeterministicDependency(t *testing.T) {
 	_, err := New(Dependencies{}, DefaultConfig())
-	if err == nil || !strings.Contains(err.Error(), "runner service is required") {
+	if err == nil || !strings.Contains(err.Error(), "bench is required") {
 		t.Fatalf("New() error = %v, want missing runner", err)
 	}
 }
@@ -345,12 +337,10 @@ func TestNewRequiresTheOptimizerAndBothJevServices(t *testing.T) {
 	var calls int
 	bench := &fakeBench{}
 	full := Dependencies{
-		Runner:  bench,
-		Settler: bench,
-		Notes:   bench,
-		Agents:  agents.Set{Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{}, &calls)},
-		Causes:  &fakeCauseAnalyst{},
-		Review:  &fakeReviewAnalyst{},
+		Bench:  bench,
+		Agents: agents.Set{Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{}, &calls)},
+		Causes: &fakeCauseAnalyst{},
+		Review: &fakeReviewAnalyst{},
 	}
 	for _, tc := range []struct {
 		name    string
@@ -382,10 +372,10 @@ func TestCampaignGraphAcceptsStatisticallySupportedCandidate(t *testing.T) {
 	}
 	// The verdict is the bench's: the policy that reaches it lives behind
 	// Assess, and the graph's part is to carry an accepting verdict to Settle.
-	runnerService := &fakeBench{decisions: []domain.Decision{domain.DecisionAccepted}}
+	bench := &fakeBench{decisions: []domain.Decision{domain.DecisionAccepted}}
 
 	orch := mustNew(t, Dependencies{
-		Runner: runnerService,
+		Bench:  bench,
 		Agents: roleSet,
 	}, Config{
 		MaxCandidates:          1,
@@ -404,8 +394,8 @@ func TestCampaignGraphAcceptsStatisticallySupportedCandidate(t *testing.T) {
 	}
 	result := runUntilNode[CampaignResult](t, orch, "gotorque-accept-test", "user-1", "session-1", req, "finalize_campaign")
 
-	assertAcceptedPromoted(t, result.AcceptedCandidates, runnerService.promoted)
-	if progress := runnerService.progress(); len(progress) == 0 || progress[0].LastDecision != domain.DecisionAccepted {
+	assertAcceptedPromoted(t, result.AcceptedCandidates, bench.promoted)
+	if progress := bench.progress(); len(progress) == 0 || progress[0].LastDecision != domain.DecisionAccepted {
 		t.Fatalf("progress decisions = %+v", progress)
 	}
 	if result.StopReason != "maximum candidate count reached" {
@@ -453,9 +443,9 @@ func TestConsecutiveFailureBoundCountsCarriedInFailures(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls int
-			runnerService := &fakeBench{}
+			bench := &fakeBench{}
 			orch := mustNew(t, Dependencies{
-				Runner: runnerService,
+				Bench:  bench,
 				Agents: rejectingRoleSet(t, &calls),
 			}, Config{
 				// MaxCandidates is deliberately slack so the failure bound is
@@ -479,8 +469,8 @@ func TestConsecutiveFailureBoundCountsCarriedInFailures(t *testing.T) {
 			if result.CandidatesTried != tc.priorFailures+tc.wantCandidates {
 				t.Errorf("candidates tried = %d, want %d recorded + %d new", result.CandidatesTried, tc.priorFailures, tc.wantCandidates)
 			}
-			if runnerService.assessCalls != tc.wantCandidates {
-				t.Errorf("candidate evaluations = %d, want %d", runnerService.assessCalls, tc.wantCandidates)
+			if bench.assessCalls != tc.wantCandidates {
+				t.Errorf("candidate evaluations = %d, want %d", bench.assessCalls, tc.wantCandidates)
 			}
 			if result.StopReason != stopReasonConsecutiveFailures {
 				t.Errorf("stop reason = %q, want %q", result.StopReason, stopReasonConsecutiveFailures)
@@ -501,7 +491,7 @@ func rejectedLedger(n int) []PriorCandidate {
 func TestInitializeRejectsAnInvalidRecordedDecision(t *testing.T) {
 	var calls int
 	orch := mustNew(t, Dependencies{
-		Runner: &fakeBench{},
+		Bench:  &fakeBench{},
 		Agents: rejectingRoleSet(t, &calls),
 	}, DefaultConfig())
 	err := runExpectingError(t, orch, "session-negative", CampaignRequest{
@@ -577,7 +567,7 @@ func TestInconclusiveBoundRunsSeparatelyFromFailures(t *testing.T) {
 			// Every verdict is unresolved: nothing was accepted and nothing was
 			// definitively rejected either.
 			orch := mustNew(t, Dependencies{
-				Runner: &fakeBench{decisions: []domain.Decision{domain.DecisionInconclusive}},
+				Bench:  &fakeBench{decisions: []domain.Decision{domain.DecisionInconclusive}},
 				Agents: roleSet,
 			}, Config{
 				MaxCandidates:              8,
@@ -636,7 +626,7 @@ func TestGraphRefusesAnAssessmentItCannotBind(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls int
 			bench := &assessing{alter: tc.alter}
-			orch := mustNew(t, Dependencies{Runner: bench, Agents: rejectingRoleSet(t, &calls)}, DefaultConfig())
+			orch := mustNew(t, Dependencies{Bench: bench, Agents: rejectingRoleSet(t, &calls)}, DefaultConfig())
 			err := runExpectingError(t, orch, "session-bind", CampaignRequest{CampaignID: "campaign-bind", Repository: "/repo", BaseRevision: "abc123", BuildTarget: "./cmd/tool"})
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("run error = %v, want %q", err, tc.wantErr)
@@ -659,7 +649,7 @@ func TestTheReviewNeverReachesTheVerdict(t *testing.T) {
 			var calls int
 			bench := &fakeBench{decisions: []domain.Decision{decision}}
 			objecting := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: false, Concerns: []string{"discards an error"}}}
-			orch := mustNew(t, Dependencies{Runner: bench, Agents: rejectingRoleSet(t, &calls), Review: objecting},
+			orch := mustNew(t, Dependencies{Bench: bench, Agents: rejectingRoleSet(t, &calls), Review: objecting},
 				Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 			runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-review-verdict", breakerCampaign, "finalize_campaign")
 

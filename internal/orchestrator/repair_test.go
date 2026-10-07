@@ -27,7 +27,7 @@ func TestRepairedRoleOutputIsRecorded(t *testing.T) {
 	truncated := `{"hypothesis":"buffer output","patch":["--- a/m.go","+++ b/m.go","@@ -1,1 +1,1 @@","-a()","+b(`
 	roleSet := agents.Set{Optimizer: staticAgent(t, "optimizer", truncated, &calls)}
 	bench := &fakeBench{}
-	orch := mustNew(t, Dependencies{Runner: bench, Agents: roleSet},
+	orch := mustNew(t, Dependencies{Bench: bench, Agents: roleSet},
 		Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-repair", repairCampaign, "finalize_campaign")
 

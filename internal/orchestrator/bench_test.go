@@ -23,6 +23,10 @@ type fakeBench struct {
 	hotFunctions []string
 	// unmeasuredFirst rejects attempt 1 before measurement.
 	unmeasuredFirst bool
+	// excerpts and excerptErr are what Excerpts answers.
+	excerpts     []SourceExcerpt
+	excerptErr   error
+	excerptCalls int
 
 	discoverCalls int
 	assessCalls   int
@@ -66,13 +70,18 @@ func (b *fakeBench) Note(_ context.Context, n Note) error {
 	return nil
 }
 
-func (b *fakeBench) Discover(context.Context, DiscoveryRequest) (DiscoveryEvidence, error) {
+func (b *fakeBench) Discovery(context.Context) (DiscoveryEvidence, error) {
 	b.discoverCalls++
 	return DiscoveryEvidence{
 		RunIDs:       []string{fmt.Sprintf("run-%d", b.discoverCalls)},
 		HotFunctions: b.hotFunctions,
 		Summary:      "measured parser hot path",
 	}, nil
+}
+
+func (b *fakeBench) Excerpts(context.Context, agents.AnalystResult) ([]SourceExcerpt, error) {
+	b.excerptCalls++
+	return b.excerpts, b.excerptErr
 }
 
 func (b *fakeBench) Assess(_ context.Context, req CandidateRequest) (Assessment, error) {

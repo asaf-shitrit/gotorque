@@ -62,7 +62,7 @@ func TestSettleWritesPatchAndRecordsTheCandidateAccepted(t *testing.T) {
 	}
 	e.state.CandidateRecords = []CandidateRecord{{CandidateID: "other"}}
 
-	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-1", PatchPath: patchPath})))
+	require.NoError(t, engineBench{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-1", PatchPath: patchPath})))
 
 	got, err := os.ReadFile(filepath.Join(e.dir, "accepted", "cand-1.diff"))
 	require.NoError(t, err)
@@ -94,7 +94,7 @@ func TestSettleOrdersWhatItMakesDurable(t *testing.T) {
 		MinimumCommandTimeout: manifest.Duration(time.Second),
 	}
 
-	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), settlement))
+	require.NoError(t, engineBench{engine: e}.Settle(context.Background(), settlement))
 
 	require.Equal(t, []string{"candidate_evaluated", "candidate_accepted", "adk_progress"}, eventKinds(t, e))
 	reloaded, err := e.store.Load()
@@ -124,7 +124,7 @@ func TestSettleLeavesNoRecordWhenPromotionFails(t *testing.T) {
 	for name, candidateOf := range map[string]func(*Engine) domain.Candidate{"patch file is missing": missing, "artifact cannot be written": blocked} {
 		t.Run(name, func(t *testing.T) {
 			e := pgoLaneTestEngine(t)
-			err := adkServices{engine: e}.Settle(context.Background(), acceptedSettlement(candidateOf(e)))
+			err := engineBench{engine: e}.Settle(context.Background(), acceptedSettlement(candidateOf(e)))
 			require.Error(t, err)
 			require.Empty(t, e.state.CandidateRecords)
 			require.Empty(t, eventKinds(t, e), "nothing is recorded, so nothing is counted")
@@ -141,7 +141,7 @@ func TestSettleReportsDirectoryCreationFailure(t *testing.T) {
 	}
 	e := &Engine{dir: blocker}
 
-	err := adkServices{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-3", PatchPath: blocker}))
+	err := engineBench{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-3", PatchPath: blocker}))
 	require.Error(t, err)
 	require.Empty(t, e.state.CandidateRecords)
 }
@@ -149,7 +149,7 @@ func TestSettleReportsDirectoryCreationFailure(t *testing.T) {
 func TestSettleWithEmptyPatchPathStillRecordsTheCandidateAccepted(t *testing.T) {
 	e := pgoLaneTestEngine(t)
 
-	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-2"})))
+	require.NoError(t, engineBench{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-2"})))
 	require.True(t, e.state.CandidateRecords[0].Accepted)
 
 	entries, err := os.ReadDir(filepath.Join(e.dir, "accepted"))
@@ -166,7 +166,7 @@ func TestSettleRecordsTheVerdictItIsGiven(t *testing.T) {
 	settlement.Assessment.Verdict = domain.Evaluation{CandidateID: "cand-6", Decision: domain.DecisionRejected, Reasons: []string{"decided upstream"}}
 	settlement.Progress = orchestrator.CampaignProgress{CandidatesTried: 1, ConsecutiveFailures: 1, LastDecision: domain.DecisionRejected, CandidateID: "cand-6"}
 
-	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), settlement))
+	require.NoError(t, engineBench{engine: e}.Settle(context.Background(), settlement))
 
 	require.Equal(t, domain.DecisionRejected, e.state.CandidateRecords[0].Decision)
 	require.Equal(t, []string{"decided upstream"}, e.state.CandidateRecords[0].Reasons)
@@ -180,7 +180,7 @@ func TestSettleRecordsTheVerdictItIsGiven(t *testing.T) {
 // proposal counts.
 func TestDiscoverCarriesNoProposalMetadata(t *testing.T) {
 	engine := &Engine{state: State{}}
-	evidence, err := adkServices{engine: engine}.Discover(context.Background(), orchestrator.DiscoveryRequest{})
+	evidence, err := engineBench{engine: engine}.Discovery(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "baseline discovery evidence", evidence.Summary)
 	require.NotContains(t, evidence.Metadata, "proposals_accepted")
@@ -278,7 +278,7 @@ func TestSettleWritesTheLiveSnapshotWithTheAcceptedMarker(t *testing.T) {
 		MinimumCommandTimeout: manifest.Duration(time.Second),
 	}
 
-	require.NoError(t, adkServices{engine: engine}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-1", PatchPath: patchPath})))
+	require.NoError(t, engineBench{engine: engine}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-1", PatchPath: patchPath})))
 
 	accepted, err := os.ReadFile(filepath.Join(dir, "accepted", "cand-1.diff"))
 	require.NoError(t, err)
@@ -294,7 +294,7 @@ func TestSettleWritesTheLiveSnapshotWithTheAcceptedMarker(t *testing.T) {
 func settleJudged(t *testing.T, e *Engine, evidence orchestrator.CandidateEvidence, target *agents.Target, review agents.ReviewerResult) domain.Evaluation {
 	t.Helper()
 	verdict := e.judge(evidence)
-	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), orchestrator.Settlement{
+	require.NoError(t, engineBench{engine: e}.Settle(context.Background(), orchestrator.Settlement{
 		Assessment: orchestrator.Assessment{Evidence: evidence, Verdict: verdict},
 		Target:     target,
 		Review:     review,

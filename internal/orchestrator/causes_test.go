@@ -30,7 +30,7 @@ func causeGraph(t *testing.T, analyst *fakeCauseAnalyst) (*Orchestrator, *fakeBe
 	}
 	runner := hotBench()
 	orch := mustNew(t, Dependencies{
-		Runner: runner,
+		Bench:  runner,
 		Agents: roleSet,
 		Causes: analyst,
 	}, Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
@@ -99,7 +99,7 @@ func exhaustionGraph(t *testing.T, analyst *fakeCauseAnalyst, stop bool) (*Orche
 		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &optimizerCalls),
 	}
 	orch := mustNew(t, Dependencies{
-		Runner: hotBench(domain.DecisionInconclusive),
+		Bench:  hotBench(domain.DecisionInconclusive),
 		Agents: roleSet,
 		Causes: analyst,
 	}, Config{MaxCandidates: 3, MaxConsecutiveFailures: 5, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1, StopWhenRankingExhausted: stop})

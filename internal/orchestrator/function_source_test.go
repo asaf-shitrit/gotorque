@@ -27,7 +27,7 @@ func TestGraphPassesFunctionSourceThroughWithNoTarget(t *testing.T) {
 		}, &calls),
 	}
 	bench := &fakeBench{}
-	orch := mustNew(t, Dependencies{Runner: bench, Agents: roleSet},
+	orch := mustNew(t, Dependencies{Bench: bench, Agents: roleSet},
 		Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	req := CampaignRequest{CampaignID: "c", Repository: "/repo", BaseRevision: "abc", BuildTarget: "./cmd/tool", OptimizationMode: domain.PolicyIdiomatic}
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-fs", req, "finalize_campaign")
@@ -58,7 +58,7 @@ func TestGraphPassesPatchThroughWithATarget(t *testing.T) {
 	}
 	bench := &fakeBench{}
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: "main.go:206"}}, Targets: []agents.Target{targetLoop}}}
-	orch := mustNew(t, Dependencies{Runner: bench, Agents: roleSet, Causes: analyst},
+	orch := mustNew(t, Dependencies{Bench: bench, Agents: roleSet, Causes: analyst},
 		Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-fs-target", causeCampaign, "finalize_campaign")
 

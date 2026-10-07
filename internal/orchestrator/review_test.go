@@ -30,7 +30,7 @@ func reviewGraph(t *testing.T, review *fakeReviewAnalyst) (*Orchestrator, *fakeB
 	}
 	bench := hotBench()
 	orch := mustNew(t, Dependencies{
-		Runner: bench, Agents: roleSet,
+		Bench: bench, Agents: roleSet,
 		Causes: &fakeCauseAnalyst{result: agents.AnalystResult{Targets: []agents.Target{targetLoop, targetAlloc}}},
 		Review: review,
 	}, Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
