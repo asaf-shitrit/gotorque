@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"context"
 	"slices"
 	"testing"
 	"time"
@@ -18,17 +17,6 @@ var repairCampaign = CampaignRequest{
 	OptimizationMode: domain.PolicyIdiomatic,
 }
 
-// recordingPolicy remembers the input of every decision it makes.
-type recordingPolicy struct {
-	sequencePolicy
-	inputs []PolicyInput
-}
-
-func (p *recordingPolicy) Evaluate(ctx context.Context, input PolicyInput) (domain.Evaluation, error) {
-	p.inputs = append(p.inputs, input)
-	return p.sequencePolicy.Evaluate(ctx, input)
-}
-
 // TestRepairedRoleOutputIsRecorded: an answer the decoder had to salvage used
 // to be indistinguishable from the one the model sent. A patch cut off at the
 // output-token cap now reaches the candidate's evidence with the repair named,
@@ -38,9 +26,9 @@ func TestRepairedRoleOutputIsRecorded(t *testing.T) {
 	var calls int
 	truncated := `{"hypothesis":"buffer output","patch":["--- a/m.go","+++ b/m.go","@@ -1,1 +1,1 @@","-a()","+b(`
 	roleSet := agents.Set{Optimizer: staticAgent(t, "optimizer", truncated, &calls)}
-	policy := &recordingPolicy{sequencePolicy: sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}}}
+	bench := &fakeBench{}
 	jobs := &fakeJobService{}
-	orch := mustNew(t, Dependencies{Runner: &fakeRunnerService{}, Policy: policy, Jobs: jobs, Agents: roleSet},
+	orch := mustNew(t, Dependencies{Runner: bench, Jobs: jobs, Agents: roleSet},
 		Config{MaxCandidates: 1, MaxConsecutiveFailures: 1, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 	runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-repair", repairCampaign, "finalize_campaign")
 
@@ -50,10 +38,10 @@ func TestRepairedRoleOutputIsRecorded(t *testing.T) {
 	if !slices.Equal(jobs.repaired, want) {
 		t.Errorf("repaired = %+v, want %+v", jobs.repaired, want)
 	}
-	if len(policy.inputs) != 1 {
-		t.Fatalf("policy calls = %d, want 1", len(policy.inputs))
+	if len(bench.settled) != 1 {
+		t.Fatalf("settlements = %d, want 1", len(bench.settled))
 	}
-	evidence := policy.inputs[0].Evidence
+	evidence := bench.settled[0].Assessment.Evidence
 	if evidence.ProposalRepair != agents.RepairTerminatedString {
 		t.Errorf("proposal repair = %q, want %q", evidence.ProposalRepair, agents.RepairTerminatedString)
 	}

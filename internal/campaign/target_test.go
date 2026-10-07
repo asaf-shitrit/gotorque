@@ -1,7 +1,6 @@
 package campaign
 
 import (
-	"context"
 	"testing"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
@@ -17,16 +16,8 @@ var bufioTarget = agents.Target{Location: "main.go:206", Function: "gron", Cause
 // handed back to the graph on resume so it is not attacked twice.
 func TestVerdictsRecordTheirTargetAndResumeReadsThemBack(t *testing.T) {
 	engine := pgoLaneTestEngine(t)
-	services := adkServices{engine: engine}
-	_, err := services.Evaluate(context.Background(), orchestrator.PolicyInput{
-		Evidence: orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "candidate-1", Hypothesis: "buffer gron's output"}},
-		Target:   &bufioTarget,
-	})
-	require.NoError(t, err)
-	_, err = services.Evaluate(context.Background(), orchestrator.PolicyInput{
-		Evidence: orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "candidate-2"}},
-	})
-	require.NoError(t, err)
+	settleJudged(t, engine, orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "candidate-1", Hypothesis: "buffer gron's output"}}, &bufioTarget, agents.ReviewerResult{})
+	settleJudged(t, engine, orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "candidate-2"}}, nil, agents.ReviewerResult{})
 
 	require.Equal(t, &bufioTarget, engine.state.CandidateRecords[0].Target)
 	require.Nil(t, engine.state.CandidateRecords[1].Target)

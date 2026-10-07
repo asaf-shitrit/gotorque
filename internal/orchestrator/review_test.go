@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
-	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 type fakeReviewAnalyst struct {
@@ -31,7 +30,7 @@ func reviewGraph(t *testing.T, review *fakeReviewAnalyst) (*Orchestrator, *fakeJ
 	}
 	jobs := &fakeJobService{}
 	orch := mustNew(t, Dependencies{
-		Runner: &hotRunner{}, Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}}, Jobs: jobs, Agents: roleSet,
+		Runner: hotBench(), Jobs: jobs, Agents: roleSet,
 		Causes: &fakeCauseAnalyst{result: agents.AnalystResult{Targets: []agents.Target{targetLoop, targetAlloc}}},
 		Review: review,
 	}, Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})

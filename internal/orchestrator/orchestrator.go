@@ -30,13 +30,13 @@ const (
 // rather than as completed.
 var ErrProviderUnavailable = errors.New("model provider unavailable")
 
-// Dependencies are intentionally narrow so deterministic execution, policy,
-// and job persistence can be local, remote, or fake implementations.
+// Dependencies are intentionally narrow so deterministic execution, verdict
+// persistence and job persistence can be local, remote, or fake implementations.
 type Dependencies struct {
-	Runner RunnerService
-	Policy PolicyService
-	Jobs   JobService
-	Agents agents.Set
+	Runner  RunnerService
+	Settler Settler
+	Jobs    JobService
+	Agents  agents.Set
 	// Causes serves the analyst node: Jev cause classification ranked in code.
 	Causes CauseAnalyst
 	// Review serves the reviewer node: Jev behaviour-hazard checks.
@@ -538,7 +538,7 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 		return nil, err
 	}
 	state.Proposal = proposal
-	evidence, err := g.deps.Runner.EvaluateCandidate(ctx, CandidateRequest{
+	assessment, err := g.deps.Runner.Assess(ctx, CandidateRequest{
 		Campaign:    state.Request,
 		Attempt:     state.CandidatesTried + 1,
 		Analysis:    state.Analysis,
@@ -549,16 +549,23 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 	if err != nil {
 		return nil, fmt.Errorf("evaluate candidate: %w", err)
 	}
-	if evidence.Candidate.ID == "" {
-		return nil, errors.New("evaluate candidate: empty candidate ID")
+	assessment, err = bindAssessment(assessment)
+	if err != nil {
+		return nil, err
 	}
 	// Stamped after the runner returns so no step of the evaluation can see
 	// it: the note rides to the candidate's record and nowhere else.
-	evidence.ProposalRepair = repair
-	state.Candidate = evidence
+	assessment.Evidence.ProposalRepair = repair
+	state.Candidate, state.Verdict = assessment.Evidence, assessment.Verdict
 	return stateEvent(ctx, state), nil
 }
 
+// applyPolicy is the last node of a cycle. The verdict was reached when the
+// candidate was assessed, before the reviewer spoke, so this node decides
+// nothing: it counts the verdict, hands it to the settler to make durable and
+// carries the result forward. The review is decoded only to be recorded and
+// fed to the next cycle's brief. The node keeps its name for the readers of
+// the event path.
 func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Event, error) {
 	review, _, err := decodeRole[agents.ReviewerResult](ctx, g.deps.Jobs, agents.RoleReviewer, raw)
 	if err != nil {
@@ -569,70 +576,67 @@ func (g *campaignGraph) applyPolicy(ctx adkagent.Context, raw any) (*session.Eve
 		return nil, err
 	}
 	state.Review = review
-	evaluation, err := g.deps.Policy.Evaluate(ctx, PolicyInput{
-		Campaign: state.Request,
-		Evidence: state.Candidate,
-		Review:   review,
-		Target:   state.Target,
+	settled := counted(state, g.cfg.MaxConsecutiveInconclusive > 0)
+	err = g.deps.Settler.Settle(ctx, Settlement{
+		Assessment: Assessment{Evidence: state.Candidate, Verdict: state.Verdict},
+		Target:     state.Target,
+		Review:     review,
+		Progress: CampaignProgress{
+			CandidatesTried:         settled.CandidatesTried,
+			ConsecutiveFailures:     settled.ConsecutiveFailures,
+			ConsecutiveInconclusive: settled.ConsecutiveInconclusive,
+			LastDecision:            state.Verdict.Decision,
+			CandidateID:             state.Verdict.CandidateID,
+		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("evaluate policy: %w", err)
+		return nil, fmt.Errorf("settle candidate: %w", err)
 	}
-	evaluation, err = bindEvaluation(state, evaluation)
-	if err != nil {
-		return nil, err
-	}
-	if err := applyDecision(ctx, g.deps.Runner, &state, evaluation, g.cfg.MaxConsecutiveInconclusive > 0); err != nil {
-		return nil, err
-	}
-	progress := CampaignProgress{
-		CandidatesTried:         state.CandidatesTried,
-		ConsecutiveFailures:     state.ConsecutiveFailures,
-		ConsecutiveInconclusive: state.ConsecutiveInconclusive,
-		LastDecision:            evaluation.Decision,
-		CandidateID:             evaluation.CandidateID,
-	}
-	if err := g.deps.Jobs.RecordProgress(ctx, state.Job, progress); err != nil {
-		return nil, fmt.Errorf("record campaign progress: %w", err)
-	}
-	return stateEvent(ctx, state), nil
+	return stateEvent(ctx, settled), nil
 }
 
-func bindEvaluation(state CampaignState, evaluation domain.Evaluation) (domain.Evaluation, error) {
-	if !validDecision(evaluation.Decision) {
-		return evaluation, fmt.Errorf("evaluate policy: invalid decision %q", evaluation.Decision)
+// bindAssessment holds an assessment to the invariants the graph relies on: a
+// candidate with an ID, a verdict that is one of the three decisions, and a
+// verdict that is about that candidate and no other.
+func bindAssessment(a Assessment) (Assessment, error) {
+	if a.Evidence.Candidate.ID == "" {
+		return a, errors.New("evaluate candidate: empty candidate ID")
 	}
-	if evaluation.CandidateID == "" {
-		evaluation.CandidateID = state.Candidate.Candidate.ID
+	if !validDecision(a.Verdict.Decision) {
+		return a, fmt.Errorf("evaluate candidate: invalid decision %q", a.Verdict.Decision)
 	}
-	if evaluation.CandidateID != state.Candidate.Candidate.ID {
-		return evaluation, fmt.Errorf("evaluate policy: candidate ID %q does not match %q", evaluation.CandidateID, state.Candidate.Candidate.ID)
+	if a.Verdict.CandidateID == "" {
+		a.Verdict.CandidateID = a.Evidence.Candidate.ID
 	}
-	return evaluation, nil
+	if a.Verdict.CandidateID != a.Evidence.Candidate.ID {
+		return a, fmt.Errorf("evaluate candidate: verdict candidate ID %q does not match %q", a.Verdict.CandidateID, a.Evidence.Candidate.ID)
+	}
+	return a, nil
 }
 
-func applyDecision(ctx adkagent.Context, runner RunnerService, state *CampaignState, evaluation domain.Evaluation, separateInconclusiveBound bool) error {
-	state.Evaluation = evaluation
+// counted is the campaign state once the pending verdict is counted: the
+// attempt, the history the next brief reads, the streaks, and the accepted
+// list. It changes a copy, so a settlement that fails leaves the state the
+// graph holds as it was.
+func counted(state CampaignState, separateInconclusiveBound bool) CampaignState {
+	verdict := state.Verdict
+	state.Evaluation = verdict
 	state.CandidatesTried++
-	state.PriorCandidates = append(state.PriorCandidates, PriorCandidate{
+	state.PriorCandidates = append(slices.Clone(state.PriorCandidates), PriorCandidate{
 		Attempt:        state.CandidatesTried,
 		Hypothesis:     state.Proposal.Hypothesis,
-		Decision:       string(evaluation.Decision),
-		Reasons:        evaluation.Reasons,
+		Decision:       string(verdict.Decision),
+		Reasons:        verdict.Reasons,
 		FailureDetail:  state.Candidate.FailureDetail,
 		Target:         state.Target,
 		Unmeasured:     state.Candidate.Unmeasured,
 		ReviewConcerns: state.Review.Concerns,
 	})
-	countDecision(state, evaluation.Decision, separateInconclusiveBound)
-	if evaluation.Decision != domain.DecisionAccepted {
-		return nil
+	countDecision(&state, verdict.Decision, separateInconclusiveBound)
+	if verdict.Decision == domain.DecisionAccepted {
+		state.AcceptedCandidates = append(slices.Clone(state.AcceptedCandidates), verdict.CandidateID)
 	}
-	if err := runner.PromoteCandidate(ctx, state.Candidate.Candidate); err != nil {
-		return fmt.Errorf("promote candidate: %w", err)
-	}
-	state.AcceptedCandidates = append(state.AcceptedCandidates, evaluation.CandidateID)
-	return nil
+	return state
 }
 
 // countDecision counts one more verdict on the state's streaks (see
@@ -688,8 +692,8 @@ func validateDependencies(deps Dependencies) error {
 	if deps.Runner == nil {
 		return errors.New("runner service is required")
 	}
-	if deps.Policy == nil {
-		return errors.New("policy service is required")
+	if deps.Settler == nil {
+		return errors.New("settler is required")
 	}
 	if deps.Jobs == nil {
 		return errors.New("job service is required")

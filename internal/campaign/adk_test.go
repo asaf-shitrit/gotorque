@@ -30,53 +30,109 @@ func TestCampaignRequestCarriesTheObjective(t *testing.T) {
 	require.Equal(t, "wall_time_ns", balanced.campaignRequest().Objective)
 }
 
-func TestPromoteCandidateWritesPatchAndMarksRecordAccepted(t *testing.T) {
+// acceptedSettlement is a settlement of a candidate whose verdict is accepted.
+// Settle records the verdict it is handed, so the tests state it directly.
+func acceptedSettlement(candidate domain.Candidate) orchestrator.Settlement {
+	return orchestrator.Settlement{
+		Assessment: orchestrator.Assessment{
+			Evidence: orchestrator.CandidateEvidence{Candidate: candidate, Summary: "measured"},
+			Verdict:  domain.Evaluation{CandidateID: candidate.ID, Decision: domain.DecisionAccepted},
+		},
+		Progress: orchestrator.CampaignProgress{CandidatesTried: 1, LastDecision: domain.DecisionAccepted, CandidateID: candidate.ID},
+	}
+}
+
+func eventKinds(t *testing.T, e *Engine) []string {
+	t.Helper()
+	events, err := e.store.Events()
+	require.NoError(t, err)
+	kinds := make([]string, 0, len(events))
+	for _, ev := range events {
+		kinds = append(kinds, ev.Type)
+	}
+	return kinds
+}
+
+func TestSettleWritesPatchAndRecordsTheCandidateAccepted(t *testing.T) {
 	e := pgoLaneTestEngine(t)
 	patchPath := filepath.Join(t.TempDir(), "cand.diff")
 	patchBody := []byte("diff --git a/x b/x\n")
 	if err := os.WriteFile(patchPath, patchBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	e.state.CandidateRecords = []CandidateRecord{
-		{CandidateID: "other"},
-		{CandidateID: "cand-1"},
-	}
+	e.state.CandidateRecords = []CandidateRecord{{CandidateID: "other"}}
 
-	err := adkServices{engine: e}.PromoteCandidate(context.Background(), domain.Candidate{ID: "cand-1", PatchPath: patchPath})
-	require.NoError(t, err)
+	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-1", PatchPath: patchPath})))
 
 	got, err := os.ReadFile(filepath.Join(e.dir, "accepted", "cand-1.diff"))
 	require.NoError(t, err)
 	require.Equal(t, patchBody, got)
-
+	require.Len(t, e.state.CandidateRecords, 2)
 	require.False(t, e.state.CandidateRecords[0].Accepted, "unrelated record must stay unaccepted")
+	require.Equal(t, "cand-1", e.state.CandidateRecords[1].CandidateID)
+	require.Equal(t, 2, e.state.CandidateRecords[1].Attempt)
 	require.True(t, e.state.CandidateRecords[1].Accepted)
-
-	events, err := e.store.Events()
-	require.NoError(t, err)
-	found := false
-	for _, ev := range events {
-		if ev.Type == "candidate_accepted" {
-			found = true
-		}
-	}
-	require.True(t, found, "expected candidate_accepted event, got %+v", events)
 }
 
-func TestPromoteCandidateWithEmptyPatchPathStillMarksAccepted(t *testing.T) {
+// TestSettleOrdersWhatItMakesDurable pins the sequence an interrupted campaign
+// can be resumed from: the artifact is written before the record that refers to
+// it, the record is saved with its accepted marker in one state, and the
+// tallies come last, so no stop bound ever counts a verdict that is not on disk
+// and no record exists without its promotion.
+func TestSettleOrdersWhatItMakesDurable(t *testing.T) {
 	e := pgoLaneTestEngine(t)
-	e.state.CandidateRecords = []CandidateRecord{{CandidateID: "cand-2"}}
+	patchPath := filepath.Join(t.TempDir(), "cand.diff")
+	require.NoError(t, os.WriteFile(patchPath, []byte("patch"), 0o600))
+	settlement := acceptedSettlement(domain.Candidate{ID: "cand-1", PatchPath: patchPath})
+	settlement.Progress = orchestrator.CampaignProgress{CandidatesTried: 1, ConsecutiveFailures: 0, LastDecision: domain.DecisionAccepted, CandidateID: "cand-1"}
+	e.state.ConsecutiveFailures = 3
+	// The saved state is read back through the manifest's duration type, which
+	// rejects a non-positive value.
+	e.state.Manifest.Campaign = manifest.CampaignLimits{
+		MaxDuration:           manifest.Duration(time.Minute),
+		DiscoveryStallTimeout: manifest.Duration(time.Minute),
+		MinimumCommandTimeout: manifest.Duration(time.Second),
+	}
 
-	err := adkServices{engine: e}.PromoteCandidate(context.Background(), domain.Candidate{ID: "cand-2"})
-	require.NoError(t, err)
-	require.True(t, e.state.CandidateRecords[0].Accepted)
+	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), settlement))
 
-	entries, err := os.ReadDir(filepath.Join(e.dir, "accepted"))
+	require.Equal(t, []string{"candidate_evaluated", "candidate_accepted", "adk_progress"}, eventKinds(t, e))
+	reloaded, err := e.store.Load()
 	require.NoError(t, err)
-	require.Empty(t, entries, "no patch means no .diff artifact")
+	require.Len(t, reloaded.CandidateRecords, 1)
+	require.True(t, reloaded.CandidateRecords[0].Accepted, "the saved record carries its promotion")
+	require.Zero(t, reloaded.ConsecutiveFailures, "the tallies are saved with the progress event")
+	require.FileExists(t, filepath.Join(e.dir, "accepted", "cand-1.diff"))
 }
 
-func TestPromoteCandidateReportsDirectoryCreationFailure(t *testing.T) {
+// TestSettleLeavesNoRecordWhenPromotionFails: a promotion that cannot happen
+// fails the settlement before the verdict is recorded, so a resumed campaign
+// evaluates the attempt again instead of finding an accepted verdict whose
+// patch never landed.
+func TestSettleLeavesNoRecordWhenPromotionFails(t *testing.T) {
+	missing := func(e *Engine) domain.Candidate {
+		return domain.Candidate{ID: "cand-4", PatchPath: filepath.Join(e.dir, "absent.diff")}
+	}
+	blocked := func(e *Engine) domain.Candidate {
+		patchPath := filepath.Join(e.dir, "cand.diff")
+		require.NoError(t, os.WriteFile(patchPath, []byte("patch"), 0o600))
+		// The destination already exists as a directory, so writing the
+		// accepted artifact fails after the accepted directory is created.
+		require.NoError(t, os.MkdirAll(filepath.Join(e.dir, "accepted", "cand-5.diff"), 0o700))
+		return domain.Candidate{ID: "cand-5", PatchPath: patchPath}
+	}
+	for name, candidateOf := range map[string]func(*Engine) domain.Candidate{"patch file is missing": missing, "artifact cannot be written": blocked} {
+		t.Run(name, func(t *testing.T) {
+			e := pgoLaneTestEngine(t)
+			err := adkServices{engine: e}.Settle(context.Background(), acceptedSettlement(candidateOf(e)))
+			require.Error(t, err)
+			require.Empty(t, e.state.CandidateRecords)
+			require.Empty(t, eventKinds(t, e), "nothing is recorded, so nothing is counted")
+		})
+	}
+}
+
+func TestSettleReportsDirectoryCreationFailure(t *testing.T) {
 	// A regular file where the campaign directory should be makes
 	// MkdirAll(campaign/accepted) fail before any state is touched.
 	blocker := filepath.Join(t.TempDir(), "not-a-dir")
@@ -84,35 +140,39 @@ func TestPromoteCandidateReportsDirectoryCreationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &Engine{dir: blocker}
-	e.state.CandidateRecords = []CandidateRecord{{CandidateID: "cand-3"}}
 
-	err := adkServices{engine: e}.PromoteCandidate(context.Background(), domain.Candidate{ID: "cand-3", PatchPath: blocker})
+	err := adkServices{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-3", PatchPath: blocker}))
 	require.Error(t, err)
-	require.False(t, e.state.CandidateRecords[0].Accepted)
+	require.Empty(t, e.state.CandidateRecords)
 }
 
-func TestPromoteCandidateReportsMissingPatchFile(t *testing.T) {
+func TestSettleWithEmptyPatchPathStillRecordsTheCandidateAccepted(t *testing.T) {
 	e := pgoLaneTestEngine(t)
-	e.state.CandidateRecords = []CandidateRecord{{CandidateID: "cand-4"}}
 
-	err := adkServices{engine: e}.PromoteCandidate(context.Background(), domain.Candidate{ID: "cand-4", PatchPath: filepath.Join(e.dir, "absent.diff")})
-	require.Error(t, err)
-	require.False(t, e.state.CandidateRecords[0].Accepted)
+	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-2"})))
+	require.True(t, e.state.CandidateRecords[0].Accepted)
+
+	entries, err := os.ReadDir(filepath.Join(e.dir, "accepted"))
+	require.NoError(t, err)
+	require.Empty(t, entries, "no patch means no .diff artifact")
 }
 
-func TestPromoteCandidateReportsAcceptedArtifactWriteFailure(t *testing.T) {
+// TestSettleRecordsTheVerdictItIsGiven: Settle does not judge. A rejected
+// verdict is recorded as rejected whatever the evidence beside it says, which
+// is what makes computing the verdict before the reviewer ran safe.
+func TestSettleRecordsTheVerdictItIsGiven(t *testing.T) {
 	e := pgoLaneTestEngine(t)
-	patchPath := filepath.Join(e.dir, "cand.diff")
-	if err := os.WriteFile(patchPath, []byte("patch"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// The destination path already exists as a directory, so writing the
-	// accepted artifact fails after the accepted directory is created.
-	acceptedDir := filepath.Join(e.dir, "accepted")
-	require.NoError(t, os.MkdirAll(filepath.Join(acceptedDir, "cand-5.diff"), 0o700))
+	settlement := acceptedSettlement(domain.Candidate{ID: "cand-6"})
+	settlement.Assessment.Verdict = domain.Evaluation{CandidateID: "cand-6", Decision: domain.DecisionRejected, Reasons: []string{"decided upstream"}}
+	settlement.Progress = orchestrator.CampaignProgress{CandidatesTried: 1, ConsecutiveFailures: 1, LastDecision: domain.DecisionRejected, CandidateID: "cand-6"}
 
-	err := adkServices{engine: e}.PromoteCandidate(context.Background(), domain.Candidate{ID: "cand-5", PatchPath: patchPath})
-	require.Error(t, err)
+	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), settlement))
+
+	require.Equal(t, domain.DecisionRejected, e.state.CandidateRecords[0].Decision)
+	require.Equal(t, []string{"decided upstream"}, e.state.CandidateRecords[0].Reasons)
+	require.False(t, e.state.CandidateRecords[0].Accepted)
+	require.Equal(t, []string{"candidate_evaluated", "adk_progress"}, eventKinds(t, e))
+	require.Equal(t, 1, e.state.ConsecutiveFailures)
 }
 
 // Discovery no longer carries explorer proposals: the explorer is code and
@@ -165,7 +225,7 @@ func TestPolicyConfigFallsBackToDefaults(t *testing.T) {
 // win on one eligible workload carries acceptance even when the pooled figure
 // is below the threshold, and the reason names that workload by its manifest
 // seed id rather than the derived run identifier it used to print.
-func TestEvaluateAcceptsAPerWorkloadWinAndNamesIt(t *testing.T) {
+func TestJudgeAcceptsAPerWorkloadWinAndNamesIt(t *testing.T) {
 	support := true
 	engine := pgoLaneTestEngine(t)
 	engine.state.Manifest.Performance = manifest.PerformancePolicy{
@@ -175,10 +235,9 @@ func TestEvaluateAcceptsAPerWorkloadWinAndNamesIt(t *testing.T) {
 		StatisticalSupportRequired:        &support,
 		Guardrails:                        []manifest.Guardrail{{Name: "cpu_time_ns", MaximumRegressionPercent: 2, Required: true}},
 	}
-	services := adkServices{engine: engine}
 
-	evaluation, err := services.Evaluate(context.Background(), orchestrator.PolicyInput{
-		Evidence: orchestrator.CandidateEvidence{
+	evaluation := engine.judge(
+		orchestrator.CandidateEvidence{
 			Candidate:              domain.Candidate{ID: "candidate-1"},
 			BehaviorMatches:        true,
 			SafetyChecksPassed:     true,
@@ -192,17 +251,17 @@ func TestEvaluateAcceptsAPerWorkloadWinAndNamesIt(t *testing.T) {
 				{Metric: "cpu_time_ns", Unit: "ns", Baseline: 500_000, Candidate: 500_000, StatisticallyFit: true},
 			},
 		},
-	})
-	require.NoError(t, err)
+	)
 	require.Equal(t, domain.DecisionAccepted, evaluation.Decision, "reasons: %v", evaluation.Reasons)
 	require.Contains(t, evaluation.Reasons[0], `workload "flatten-users"`)
 	require.NotContains(t, evaluation.Reasons[0], "/wall_time_ns", "a verdict must not print the derived run identifier")
 }
 
 // An operator reading a live report after an accept should see which patch
-// landed: the verdict snapshot is written before promotion, so promotion has to
-// refresh it rather than leave the accepted marker for the end of the campaign.
-func TestPromoteCandidateRefreshesTheLiveSnapshot(t *testing.T) {
+// landed: the record is saved with its accepted marker, so the one snapshot
+// taken with the verdict already shows it rather than leaving the marker for the
+// end of the campaign.
+func TestSettleWritesTheLiveSnapshotWithTheAcceptedMarker(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(filepath.Join(dir, DatabaseName))
 	t.Cleanup(func() { _ = store.Close() })
@@ -218,10 +277,8 @@ func TestPromoteCandidateRefreshesTheLiveSnapshot(t *testing.T) {
 		DiscoveryStallTimeout: manifest.Duration(time.Minute),
 		MinimumCommandTimeout: manifest.Duration(time.Second),
 	}
-	engine.state.CandidateRecords = []CandidateRecord{{Attempt: 1, CandidateID: "cand-1", Decision: domain.DecisionAccepted}}
-	services := adkServices{engine: engine}
 
-	require.NoError(t, services.PromoteCandidate(context.Background(), domain.Candidate{ID: "cand-1", PatchPath: patchPath}))
+	require.NoError(t, adkServices{engine: engine}.Settle(context.Background(), acceptedSettlement(domain.Candidate{ID: "cand-1", PatchPath: patchPath})))
 
 	accepted, err := os.ReadFile(filepath.Join(dir, "accepted", "cand-1.diff"))
 	require.NoError(t, err)
@@ -232,11 +289,25 @@ func TestPromoteCandidateRefreshesTheLiveSnapshot(t *testing.T) {
 	require.True(t, snapshot.CandidateRecords[0].Accepted, "live snapshot must show the accepted marker")
 }
 
-// TestRecordVerdictIsTheOnePlaceAVerdictIsPersisted: the graph's decision node
-// and the null-candidate loop both record through recordVerdict, so one
+// settleJudged judges evidence as Assess would and settles it, the path every
+// graph candidate takes once it has been evaluated.
+func settleJudged(t *testing.T, e *Engine, evidence orchestrator.CandidateEvidence, target *agents.Target, review agents.ReviewerResult) domain.Evaluation {
+	t.Helper()
+	verdict := e.judge(evidence)
+	require.NoError(t, adkServices{engine: e}.Settle(context.Background(), orchestrator.Settlement{
+		Assessment: orchestrator.Assessment{Evidence: evidence, Verdict: verdict},
+		Target:     target,
+		Review:     review,
+		Progress:   orchestrator.CampaignProgress{CandidatesTried: len(e.state.CandidateRecords) + 1, LastDecision: verdict.Decision, CandidateID: verdict.CandidateID},
+	}))
+	return verdict
+}
+
+// TestEveryVerdictIsPersistedByPersistVerdict: the graph's settlement and the
+// null-candidate loop both record through persistVerdict, so one
 // candidate_evaluated event, one record carrying the policy's decision, and a
 // report snapshot follow from a single call, whichever caller made it.
-func TestRecordVerdictIsTheOnePlaceAVerdictIsPersisted(t *testing.T) {
+func TestEveryVerdictIsPersistedByPersistVerdict(t *testing.T) {
 	e := pgoLaneTestEngine(t)
 	evidence := orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "cand-v", PatchPath: "p.diff"}, Summary: "build failed", Unmeasured: true}
 
@@ -246,13 +317,10 @@ func TestRecordVerdictIsTheOnePlaceAVerdictIsPersisted(t *testing.T) {
 	require.Len(t, e.state.CandidateRecords, 1)
 	require.Equal(t, 4, e.state.CandidateRecords[0].Attempt)
 	require.Equal(t, result.Decision, e.state.CandidateRecords[0].Decision)
-	events, err := e.store.Events()
-	require.NoError(t, err)
-	require.Equal(t, "candidate_evaluated", events[len(events)-1].Type)
+	require.Equal(t, "candidate_evaluated", eventKinds(t, e)[0])
 	require.FileExists(t, filepath.Join(e.dir, ReportJSONName))
 
-	viaGraph, err := adkServices{engine: e}.Evaluate(context.Background(), orchestrator.PolicyInput{Evidence: evidence})
-	require.NoError(t, err)
+	viaGraph := settleJudged(t, e, evidence, nil, agents.ReviewerResult{})
 	require.Equal(t, result.Decision, viaGraph.Decision)
 	require.Len(t, e.state.CandidateRecords, 2)
 	require.Equal(t, 2, e.state.CandidateRecords[1].Attempt)

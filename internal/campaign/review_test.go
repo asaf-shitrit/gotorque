@@ -122,11 +122,8 @@ func TestReviewConcernsAreRecordedAndReported(t *testing.T) {
 	engine := pgoLaneTestEngine(t)
 	roles := agents.Set{Jev: jev.Stub{}}
 	engine.SetADK(&roles, nil)
-	_, err := adkServices{engine: engine}.Evaluate(context.Background(), orchestrator.PolicyInput{
-		Evidence: orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "candidate-1"}},
-		Review:   agents.ReviewerResult{Concerns: []string{"an error from a call that can fail is discarded (Jev yes 0.96, +5.0 sd)"}},
-	})
-	require.NoError(t, err)
+	settleJudged(t, engine, orchestrator.CandidateEvidence{Candidate: domain.Candidate{ID: "candidate-1"}}, nil,
+		agents.ReviewerResult{Concerns: []string{"an error from a call that can fail is discarded (Jev yes 0.96, +5.0 sd)"}})
 	require.Equal(t, ReviewerJev, engine.State().Reviewer)
 	report := RenderMarkdown(engine.State())
 	require.Contains(t, report, "- Reviewer: Jev behaviour-hazard checks (`typesafe/jev-1.13-20260917`)")

@@ -22,35 +22,16 @@ func (f *fakeCauseAnalyst) AnalyzeCauses(_ context.Context, req CauseRequest) (a
 	return f.result, f.err
 }
 
-// hotRunner reports measured hot functions from discovery and remembers the
-// analysis each candidate was evaluated with.
-type hotRunner struct {
-	fakeRunnerService
-	analyses []agents.AnalystResult
-}
-
-func (r *hotRunner) Discover(ctx context.Context, req DiscoveryRequest) (DiscoveryEvidence, error) {
-	evidence, err := r.fakeRunnerService.Discover(ctx, req)
-	evidence.HotFunctions = []string{"main.go:207"}
-	return evidence, err
-}
-
-func (r *hotRunner) EvaluateCandidate(ctx context.Context, req CandidateRequest) (CandidateEvidence, error) {
-	r.analyses = append(r.analyses, req.Analysis)
-	return r.fakeRunnerService.EvaluateCandidate(ctx, req)
-}
-
-func causeGraph(t *testing.T, analyst *fakeCauseAnalyst) (*Orchestrator, *hotRunner, *fakeJobService) {
+func causeGraph(t *testing.T, analyst *fakeCauseAnalyst) (*Orchestrator, *fakeBench, *fakeJobService) {
 	t.Helper()
 	var calls int
 	roleSet := agents.Set{
 		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &calls),
 	}
-	runner := &hotRunner{}
+	runner := hotBench()
 	jobs := &fakeJobService{}
 	orch := mustNew(t, Dependencies{
 		Runner: runner,
-		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
 		Jobs:   jobs,
 		Agents: roleSet,
 		Causes: analyst,
@@ -85,7 +66,7 @@ func TestCauseAnalystServesTheAnalystNode(t *testing.T) {
 	if got := analyst.requests[0]; got.Campaign.Repository != "/repo" || !slices.Equal(got.Discovery.HotFunctions, []string{"main.go:207"}) {
 		t.Errorf("cause request = %+v, want the campaign repository and discovery's hot functions", got)
 	}
-	for i, analysis := range runner.analyses {
+	for i, analysis := range runner.analyses() {
 		if !slices.Equal(analysis.CandidateHypotheses, []string{"buffer the per-statement writes"}) {
 			t.Errorf("candidate %d evaluated with analysis %+v, want the cause analyst's", i+1, analysis)
 		}
@@ -106,8 +87,8 @@ func TestFailingCauseAnalystDegradesLikeAnyRole(t *testing.T) {
 	if len(jobs.degraded) != 2 || jobs.degraded[0].role != "analyst" || jobs.degraded[0].cause != "gateway returned HTTP 429 for Jev" {
 		t.Errorf("degraded = %+v, want the analyst's error recorded each cycle", jobs.degraded)
 	}
-	if len(runner.analyses) != 2 || len(runner.analyses[0].CandidateHypotheses) != 0 {
-		t.Errorf("analyses = %+v, want the empty degraded result", runner.analyses)
+	if len(runner.analyses()) != 2 || len(runner.analyses()[0].CandidateHypotheses) != 0 {
+		t.Errorf("analyses = %+v, want the empty degraded result", runner.analyses())
 	}
 }
 
@@ -120,8 +101,7 @@ func exhaustionGraph(t *testing.T, analyst *fakeCauseAnalyst, stop bool) (*Orche
 		Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "buffer output", Patch: "diff"}, &optimizerCalls),
 	}
 	orch := mustNew(t, Dependencies{
-		Runner: &hotRunner{},
-		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionInconclusive}},
+		Runner: hotBench(domain.DecisionInconclusive),
 		Jobs:   &fakeJobService{},
 		Agents: roleSet,
 		Causes: analyst,

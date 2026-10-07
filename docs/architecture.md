@@ -43,9 +43,11 @@ initialize_campaign
   -> analyst (Jev cause classification, ranked in code)
   -> merge_analysis (deterministic; attach source excerpts)
   -> optimizer (one focused patch)
-  -> evaluate_candidate (deterministic; see below)
+  -> evaluate_candidate (deterministic; see below; the acceptance policy judges the
+     evidence here, so the verdict exists before the reviewer runs)
   -> reviewer (Jev behaviour-hazard checks, advisory only)
-  -> apply_policy (deterministic acceptance decision)
+  -> apply_policy (deterministic; counts the verdict and settles it: the record,
+     the accepted patch, the tallies)
   -> route_campaign
         continue -> back to analyst
         finish   -> finalize_campaign
@@ -108,8 +110,12 @@ synchronously), `machine` (load, the contended threshold and the quiet wait;
 tests script a load burst) and `testBaseline` (what the test gate holds a
 candidate to and may narrow; the campaign's adapter writes the persisted
 state, verification's is a copy). Toolchain and runner stay concrete. Verdicts
-are recorded by one function, `recordVerdict`, for the graph's decision node
-and the null loop alike.
+are recorded by one function, `persistVerdict`, for the graph's settlement
+(`Settle`) and the null loop alike. `Settle` writes an accepted patch to
+`accepted/` before the record that refers to it, saves the record with its
+accepted marker in one state, and persists the tallies last, so a record on
+disk always has its promotion and a stop bound never counts a verdict that is
+not recorded.
 
 0. **Transport resolution (ADR 0022).** With a code-chosen target, the
    optimizer may return `function_source` (the target function's complete new
@@ -779,7 +785,9 @@ Until this, the reviewer's answer reached a policy input the policy ignores and
 nothing kept it. Its concerns are now recorded with the verdict, printed in the
 report under the candidate, and carried into the next cycle's
 `prior_candidates`. They remain advice: the policy
-never reads them.
+never reads them, and now cannot: the verdict is reached when the candidate is
+assessed (`evaluate_candidate`), before the reviewer node runs, and
+`apply_policy` settles that verdict as given.
 
 ## Jev explorer
 

@@ -85,20 +85,20 @@ func TestProviderOutageStopsTheCampaign(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			jobs := &fakeJobService{}
+			bench := &fakeBench{}
 			orch := mustNew(t, Dependencies{
-				Runner: &fakeRunnerService{},
-				Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+				Runner: bench,
 				Jobs:   jobs,
 				Agents: scriptedOptimizerSet(t, 1, 2, 3, 4, 5, 6, 7, 8),
 			}, Config{MaxCandidates: tc.maxCandidates, MaxConsecutiveFailures: tc.maxConsecutive, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
 			result := runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-outage", breakerCampaign, "finalize_campaign")
-			assertProviderStop(t, result, jobs)
+			assertProviderStop(t, result, bench, jobs)
 		})
 	}
 }
 
 // assertProviderStop checks a campaign the breaker stopped after two cycles.
-func assertProviderStop(t *testing.T, result CampaignResult, jobs *fakeJobService) {
+func assertProviderStop(t *testing.T, result CampaignResult, bench *fakeBench, jobs *fakeJobService) {
 	t.Helper()
 	if result.CandidatesTried != 2 {
 		t.Errorf("candidates tried = %d, want 2: two cycles of optimizer failure are enough", result.CandidatesTried)
@@ -112,8 +112,8 @@ func assertProviderStop(t *testing.T, result CampaignResult, jobs *fakeJobServic
 	}
 	// The breaker ends the campaign; it does not touch the verdict. The empty
 	// patches were still judged and recorded like any other.
-	if len(jobs.progress) != 2 || jobs.progress[1].LastDecision != domain.DecisionRejected {
-		t.Errorf("progress = %+v, want the two rejected verdicts", jobs.progress)
+	if progress := bench.progress(); len(progress) != 2 || progress[1].LastDecision != domain.DecisionRejected {
+		t.Errorf("progress = %+v, want the two rejected verdicts", progress)
 	}
 	if len(jobs.degraded) != 2 {
 		t.Errorf("degraded = %+v, want the optimizer recorded once per cycle", jobs.degraded)
@@ -138,8 +138,7 @@ func TestPartialFailuresKeepTheCampaignRunning(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := Dependencies{
-				Runner: &fakeRunnerService{},
-				Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+				Runner: &fakeBench{},
 				Jobs:   &fakeJobService{},
 				Agents: scriptedOptimizerSet(t, tc.failOn...),
 			}
@@ -169,8 +168,7 @@ func TestProviderOutageTripsWhileJevKeepsAnswering(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
 	orch := mustNew(t, Dependencies{
-		Runner: &hotRunner{},
-		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+		Runner: hotBench(),
 		Jobs:   &fakeJobService{},
 		Agents: scriptedOptimizerSet(t, 1, 2, 3, 4),
 		Causes: analyst,
@@ -211,8 +209,7 @@ func TestALoneModelRoleSurvivesOneFailedCycle(t *testing.T) {
 	analyst := &fakeCauseAnalyst{result: agents.AnalystResult{HotPaths: []agents.HotPath{{Location: targetLoop.Location}}, Targets: []agents.Target{targetLoop, targetAlloc}}}
 	review := &fakeReviewAnalyst{result: agents.ReviewerResult{Proceed: true}}
 	orch := mustNew(t, Dependencies{
-		Runner: &hotRunner{},
-		Policy: &sequencePolicy{decisions: []domain.Decision{domain.DecisionRejected}},
+		Runner: hotBench(),
 		Jobs:   &fakeJobService{},
 		Agents: scriptedOptimizerSet(t, 2),
 		Causes: analyst,

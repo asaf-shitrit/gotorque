@@ -112,7 +112,7 @@ func (e *Engine) prepareADK(roleSet agents.Set, cfg orchestrator.Config) (*adkru
 		return nil, nil, fmt.Errorf("campaign must be running or baseline-completed before ADK: %s", e.state.Status)
 	}
 	services := adkServices{engine: e}
-	deps := orchestrator.Dependencies{Runner: services, Policy: services, Jobs: services, Agents: roleSet}
+	deps := orchestrator.Dependencies{Runner: services, Settler: services, Jobs: services, Agents: roleSet}
 	if e.causeJev != nil {
 		deps.Causes = causeAnalyst{engine: e, evaluator: e.causeJev, usage: roleSet.Usage}
 	}
@@ -255,14 +255,6 @@ type RoleDegradation struct {
 	Cause string `json:"cause"`
 }
 
-func (s adkServices) RecordProgress(_ context.Context, _ domain.Job, progress orchestrator.CampaignProgress) error {
-	// The orchestrator owns the tallies; persisting them at every decision is
-	// what lets a later process resume the bounds instead of restarting them.
-	s.engine.state.ConsecutiveFailures = progress.ConsecutiveFailures
-	s.engine.state.ConsecutiveInconclusive = progress.ConsecutiveInconclusive
-	return s.engine.saveEvent("adk_progress", "ADK policy decision", progress)
-}
-
 // RecordRoleDegraded persists a role whose model call failed while the graph
 // absorbed the failure: the node continued with an empty result, so a candidate
 // may be missing that role's output. Without this the cause reached only the
@@ -324,36 +316,84 @@ func (s adkServices) Discover(_ context.Context, _ orchestrator.DiscoveryRequest
 	}
 	return orchestrator.DiscoveryEvidence{RunIDs: runs, CoveredPaths: hotFunctions, HotFunctions: hotFunctions, ProfileSummaryPath: s.engine.state.DiscoveryProfileSummaryPath, Summary: "baseline discovery evidence", Metadata: metadata, HotFunctionWeights: s.engine.state.DiscoveryHotFunctionWeights, UnbufferedWrites: s.engine.state.DiscoveryUnbufferedWrites}, nil
 }
-func (s adkServices) EvaluateCandidate(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.CandidateEvidence, error) {
-	return s.engine.evaluateCandidate(ctx, req)
+
+// Assess evaluates one proposal and judges the evidence with the campaign's
+// acceptance policy. The verdict is computed here, from measurements and the
+// behavior gate alone: the reviewer has not run, and policyVerdict reads no
+// review.
+func (s adkServices) Assess(ctx context.Context, req orchestrator.CandidateRequest) (orchestrator.Assessment, error) {
+	evidence, err := s.engine.evaluateCandidate(ctx, req)
+	if err != nil {
+		return orchestrator.Assessment{}, err
+	}
+	return orchestrator.Assessment{Evidence: evidence, Verdict: s.engine.judge(evidence)}, nil
 }
 
-func (s adkServices) PromoteCandidate(_ context.Context, candidate domain.Candidate) error {
-	acceptedDir := filepath.Join(s.engine.dir, "accepted")
+// judge is the acceptance policy's verdict on one candidate's evidence, as the
+// graph carries it.
+func (e *Engine) judge(evidence orchestrator.CandidateEvidence) domain.Evaluation {
+	result := e.policyVerdict(evidence)
+	return domain.Evaluation{CandidateID: evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: evidence.BehaviorMatches, Comparisons: result.Comparisons, Reasons: result.Reasons}
+}
+
+// Settle makes one candidate's verdict durable, in an order that cannot leave
+// a record without its promotion:
+//
+//  1. An accepted candidate's patch is copied to accepted/ first. Nothing
+//     refers to the copy yet, so a failure or a crash here leaves an orphan
+//     file and no record; the attempt is simply evaluated again on resume.
+//  2. The verdict joins the campaign's records, carrying its accepted marker,
+//     in one saved state: candidate_evaluated, then the report snapshot. A
+//     record on disk therefore always has its artifact, and an operator
+//     reading the live report sees the accepted marker with the verdict.
+//  3. candidate_accepted marks the promotion on the event stream.
+//  4. The tallies are persisted last (adk_progress), after the record they
+//     count, so a bound never counts a verdict that is not on disk.
+//
+// The verdict is recorded as given. It is not recomputed here.
+func (s adkServices) Settle(_ context.Context, settlement orchestrator.Settlement) error {
+	return s.engine.settle(settlement)
+}
+
+func (e *Engine) settle(settlement orchestrator.Settlement) error {
+	evidence, verdict := settlement.Assessment.Evidence, settlement.Assessment.Verdict
+	accepted := verdict.Decision == domain.DecisionAccepted
+	if accepted {
+		if err := e.keepAcceptedPatch(evidence.Candidate); err != nil {
+			return fmt.Errorf("promote candidate: %w", err)
+		}
+	}
+	// A failure to persist the verdict must not fail the settlement: the graph
+	// would stop on it, and the verdict is already decided. The events after it
+	// save the same state, so a store that is really gone fails there.
+	_ = e.persistVerdict(len(e.state.CandidateRecords)+1, evidence, settlement.Target, settlement.Review, policy.Result{Decision: verdict.Decision, Comparisons: verdict.Comparisons, Reasons: verdict.Reasons}, accepted)
+	if accepted {
+		if err := e.saveEvent("candidate_accepted", "policy accepted candidate "+evidence.Candidate.ID, evidence.Candidate); err != nil {
+			return err
+		}
+	}
+	// The orchestrator owns the tallies; persisting them with every verdict is
+	// what lets a later process resume the bounds instead of restarting them.
+	e.state.ConsecutiveFailures = settlement.Progress.ConsecutiveFailures
+	e.state.ConsecutiveInconclusive = settlement.Progress.ConsecutiveInconclusive
+	return e.saveEvent("adk_progress", "ADK policy decision", settlement.Progress)
+}
+
+// keepAcceptedPatch copies an accepted candidate's patch into the campaign's
+// accepted/ directory.
+func (e *Engine) keepAcceptedPatch(candidate domain.Candidate) error {
+	acceptedDir := filepath.Join(e.dir, "accepted")
 	if err := os.MkdirAll(acceptedDir, 0o700); err != nil {
 		return err
 	}
-	if candidate.PatchPath != "" {
-		data, err := os.ReadFile(candidate.PatchPath)
-		if err != nil {
-			return err
-		}
-		acceptedPath := filepath.Join(acceptedDir, candidate.ID+".diff")
-		if err := os.WriteFile(acceptedPath, data, 0o600); err != nil {
-			return err
-		}
+	if candidate.PatchPath == "" {
+		return nil
 	}
-	for i := range s.engine.state.CandidateRecords {
-		if s.engine.state.CandidateRecords[i].CandidateID == candidate.ID {
-			s.engine.state.CandidateRecords[i].Accepted = true
-		}
+	data, err := os.ReadFile(candidate.PatchPath)
+	if err != nil {
+		return err
 	}
-	// The verdict snapshot was written before promotion, so it shows the
-	// decision but not which patch landed. An operator reading the live report
-	// after an accept should see the accepted marker and the accepted/ artifact
-	// without waiting for the campaign to finish.
-	s.engine.snapshotReports()
-	return s.engine.saveEvent("candidate_accepted", "policy accepted candidate "+candidate.ID, candidate)
+	return os.WriteFile(filepath.Join(acceptedDir, candidate.ID+".diff"), data, 0o600)
 }
 
 // policyConfigFromManifest builds the acceptance policy from the target's own
@@ -398,33 +438,24 @@ func eligibleReadings(config policy.Config, comparisons []domain.MetricCompariso
 	return eligible
 }
 
-func (s adkServices) Evaluate(_ context.Context, input orchestrator.PolicyInput) (domain.Evaluation, error) {
-	// Eligibility is structural now: every reading of the primary metric may
-	// carry the verdict, and a reading without a workload is the pooled one.
-	// This used to be re-derived here from the comparison's name, a convention
-	// the engine, this function and the policy all had to agree on.
-	// A failure to persist the verdict must not fail the evaluation: the graph
-	// would stop on it, and the verdict is still returned to the caller.
-	result, _ := s.engine.recordVerdict(len(s.engine.state.CandidateRecords)+1, input.Evidence, input.Target, input.Review)
-	return domain.Evaluation{CandidateID: input.Evidence.Candidate.ID, Decision: result.Decision, BehaviorMatches: input.Evidence.BehaviorMatches, Comparisons: result.Comparisons, Reasons: result.Reasons}, nil
-}
-
 // recordVerdict judges one candidate's evidence with the campaign's policy and
-// persists the verdict: the record joins the campaign's state, the event is
-// saved immediately (an ADK failure later in the run must not lose
-// already-evaluated verdicts from bbolt), and the report is snapshotted,
-// because a live campaign holds the database's exclusive lock and report.json
-// is the only artifact an operator can read while the run is in flight. The
-// verdict is returned even when persisting it failed. Every caller that
-// records a candidate goes through here: the graph's decision node and the
-// null-candidate loop.
+// persists the verdict. The null-candidate loop reaches its verdicts here; the
+// graph's candidates are judged by Assess and recorded by Settle, which share
+// persistVerdict. The verdict is returned even when persisting it failed.
 func (e *Engine) recordVerdict(attempt int, evidence orchestrator.CandidateEvidence, target *agents.Target, review agents.ReviewerResult) (policy.Result, error) {
 	result := e.policyVerdict(evidence)
+	return result, e.persistVerdict(attempt, evidence, target, review, result, false)
+}
+
+// persistVerdict records a verdict that was already reached. accepted marks the
+// record of a candidate whose patch is already in accepted/.
+func (e *Engine) persistVerdict(attempt int, evidence orchestrator.CandidateEvidence, target *agents.Target, review agents.ReviewerResult, result policy.Result, accepted bool) error {
 	record := candidateRecord(attempt, evidence, target, review, result)
+	record.Accepted = accepted
 	e.state.CandidateRecords = append(e.state.CandidateRecords, record)
 	err := e.saveEvent("candidate_evaluated", candidateEventSummary(record, e.state.Manifest.Performance.PrimaryMetric), record)
 	e.snapshotReports()
-	return result, err
+	return err
 }
 
 // candidateRecord is the persisted verdict for one candidate.

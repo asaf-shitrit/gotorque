@@ -173,14 +173,26 @@ type CandidateEvidence struct {
 	ProposalRepair agents.Repair `json:"proposal_repair,omitempty"`
 }
 
-// PolicyInput contains all evidence needed for a deterministic decision.
-type PolicyInput struct {
-	Campaign CampaignRequest       `json:"campaign"`
-	Evidence CandidateEvidence     `json:"evidence"`
-	Review   agents.ReviewerResult `json:"review"`
-	// Target is what code told the optimizer to attack, recorded with the
-	// verdict; it never changes the verdict.
-	Target *agents.Target `json:"target,omitempty"`
+// Assessment is what the deterministic half found out about one candidate: the
+// evidence it measured and the verdict the acceptance policy drew from it.
+// The verdict names the evidence's candidate (the graph refuses one that does
+// not), and nothing downstream of the assessment recomputes it.
+type Assessment struct {
+	Evidence CandidateEvidence `json:"evidence"`
+	Verdict  domain.Evaluation `json:"verdict"`
+}
+
+// Settlement is one candidate's verdict, to be made durable. The assessment
+// carries the evidence (with the optimizer's output repair stamped on it) and
+// the verdict; the rest is what the record keeps beside them. Target is what
+// code told the optimizer to attack and Review the reviewer's advice: both are
+// recorded and neither changes the verdict. Progress is the campaign's tallies
+// once this verdict is counted.
+type Settlement struct {
+	Assessment Assessment            `json:"assessment"`
+	Target     *agents.Target        `json:"target,omitempty"`
+	Review     agents.ReviewerResult `json:"review"`
+	Progress   CampaignProgress      `json:"progress"`
 }
 
 // PriorCandidate records one already-evaluated proposal so later cycles
@@ -219,14 +231,18 @@ type CampaignState struct {
 	Analysis  agents.AnalystResult `json:"analysis"`
 	// Target is the function and cause code chose for this cycle's patch, or
 	// nil when the analysis ranks no causes and the optimizer chooses.
-	Target              *agents.Target         `json:"target,omitempty"`
-	Proposal            agents.OptimizerResult `json:"proposal"`
-	Candidate           CandidateEvidence      `json:"candidate"`
-	Review              agents.ReviewerResult  `json:"review"`
-	Evaluation          domain.Evaluation      `json:"evaluation"`
-	PriorCandidates     []PriorCandidate       `json:"prior_candidates,omitempty"`
-	CandidatesTried     int                    `json:"candidates_tried"`
-	ConsecutiveFailures int                    `json:"consecutive_failures"`
+	Target    *agents.Target         `json:"target,omitempty"`
+	Proposal  agents.OptimizerResult `json:"proposal"`
+	Candidate CandidateEvidence      `json:"candidate"`
+	// Verdict is the acceptance policy's finding on Candidate, computed with
+	// the evidence (RunnerService.Assess). It waits here through the review
+	// and is recorded by apply_policy.
+	Verdict             domain.Evaluation     `json:"verdict"`
+	Review              agents.ReviewerResult `json:"review"`
+	Evaluation          domain.Evaluation     `json:"evaluation"`
+	PriorCandidates     []PriorCandidate      `json:"prior_candidates,omitempty"`
+	CandidatesTried     int                   `json:"candidates_tried"`
+	ConsecutiveFailures int                   `json:"consecutive_failures"`
 	// ConsecutiveInconclusive counts the run of inconclusive verdicts. It is
 	// only consulted when the campaign configures stop_after_inconclusive;
 	// otherwise an inconclusive verdict extends ConsecutiveFailures, as it
@@ -263,7 +279,7 @@ type SourceExcerpt struct {
 	HotPath   string `json:"hot_path"`
 }
 
-// CampaignProgress is persisted after each deterministic policy decision.
+// CampaignProgress is the campaign's tallies after a verdict, persisted with it.
 type CampaignProgress struct {
 	CandidatesTried         int             `json:"candidates_tried"`
 	ConsecutiveFailures     int             `json:"consecutive_failures"`
