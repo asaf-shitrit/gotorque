@@ -40,18 +40,31 @@ built by `internal/orchestrator` is:
 ```text
 initialize_campaign
   -> run_discovery (deterministic; once per graph entry: baseline discovery evidence)
-  -> analyst (Jev cause classification, ranked in code)
-  -> merge_analysis (deterministic; attach source excerpts)
-  -> optimizer (one focused patch)
-  -> evaluate_candidate (deterministic; see below; the acceptance policy judges the
-     evidence here, so the verdict exists before the reviewer runs)
-  -> reviewer (Jev behaviour-hazard checks, advisory only)
-  -> apply_policy (deterministic; counts the verdict and settles it: the record,
-     the accepted patch, the tallies)
+  -> campaign_cycle (subgraph; one candidate per run)
+       analyst (Jev cause classification, ranked in code)
+       -> merge_analysis (deterministic; attach source excerpts)
+            continue -> optimizer (one focused patch)
+                        -> evaluate_candidate (deterministic; see below; the acceptance
+                           policy judges the evidence here, so the verdict exists
+                           before the reviewer runs)
+                        -> reviewer (Jev behaviour-hazard checks, advisory only)
+                        -> apply_policy (deterministic; counts the verdict and settles
+                           it: the record, the accepted patch, the tallies)
+            finish   -> skip_candidate (the analysis ended the campaign)
   -> route_campaign
-        continue -> back to analyst
+        continue -> back to campaign_cycle
         finish   -> finalize_campaign
 ```
+
+One cycle is its own ADK subgraph (`workflow.NewWorkflowNode`), and the loop
+runs in the outer graph. The subgraph's output is its terminal node's output,
+the campaign state from `apply_policy` or `skip_candidate`, and that is what
+`route_campaign` judges; a stop decided by `merge_analysis` reaches it with
+`StopReason` already set and passes straight to `finalize_campaign`. ADK
+strips the `Output` from the events a subgraph forwards, so a reader of the
+runner's events sees a cycle's settled state on `route_campaign`, not on
+`apply_policy`. Inner nodes' event paths gain a `campaign_cycle@1/` segment;
+the readers match node names by substring, so they are unaffected.
 
 The route node stops the loop when the manifest's maximum candidate count or
 consecutive-failure limit is reached; the engine's `max_duration` bound (see
