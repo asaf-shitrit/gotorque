@@ -280,7 +280,9 @@ func collectPriorCandidates(t *testing.T, orch *Orchestrator, req CampaignReques
 		if runErr != nil {
 			t.Fatalf("workflow run error = %v", runErr)
 		}
-		if !eventHasNode(event, "apply_policy") {
+		// The cycle subgraph forwards only its terminal's output, so the
+		// settled state is read where it leaves the cycle.
+		if !eventHasNode(event, "route_campaign") {
 			continue
 		}
 		state, ok := tryDecode[CampaignState](event.Output)
@@ -320,6 +322,54 @@ func TestApplyPolicyCarriesFailureDetailIntoPriorCandidates(t *testing.T) {
 	}
 	if prior[0].Decision != string(domain.DecisionRejected) {
 		t.Fatalf("decision = %q, want %q", prior[0].Decision, domain.DecisionRejected)
+	}
+}
+
+func TestCycleRunsAsSubgraph(t *testing.T) {
+	var calls int
+	orch := mustNew(t, Dependencies{
+		Bench:  &fakeBench{},
+		Agents: agents.Set{Optimizer: staticAgent(t, "optimizer", agents.OptimizerResult{Hypothesis: "reuse buffer", Patch: "diff --git a/a.go b/a.go"}, &calls)},
+		Review: &fakeReviewAnalyst{},
+	}, Config{MaxCandidates: 2, MaxConsecutiveFailures: 2, DeterministicTimeout: time.Second, AgentTimeout: time.Second, MaxConcurrency: 1})
+	r := mustRunner(t, "subgraph-test", orch)
+	msg := mustMessage(t, CampaignRequest{CampaignID: "campaign-sg", Repository: "/repo", BaseRevision: "abc123", BuildTarget: "./cmd/tool"})
+	settled := 0
+	for event, runErr := range r.Run(context.Background(), "user-1", "session-sg", msg, adkagent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatalf("workflow run error = %v", runErr)
+		}
+		if event == nil || event.NodeInfo == nil {
+			continue
+		}
+		path := event.NodeInfo.Path
+		checkCycleNesting(t, path)
+		if strings.HasSuffix(path, cycleName+"@1/apply_policy@1") {
+			settled++
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("optimizer calls = %d, want one per cycle (2)", calls)
+	}
+	if settled != 2 {
+		t.Fatalf("settled cycles = %d, want 2", settled)
+	}
+}
+
+// checkCycleNesting fails when a node runs at the wrong level of the graph:
+// a cycle node outside campaign_cycle, or a campaign node inside it.
+func checkCycleNesting(t *testing.T, path string) {
+	t.Helper()
+	nested := strings.Contains(path, cycleName)
+	for _, inner := range []string{"merge_analysis", "evaluate_candidate", "apply_policy"} {
+		if strings.Contains(path, inner) && !nested {
+			t.Errorf("%s ran outside the %s subgraph: %q", inner, cycleName, path)
+		}
+	}
+	for _, outer := range []string{"run_discovery", "route_campaign", "finalize_campaign"} {
+		if strings.Contains(path, outer) && nested {
+			t.Errorf("%s ran inside the %s subgraph: %q", outer, cycleName, path)
+		}
 	}
 }
 

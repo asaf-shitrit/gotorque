@@ -21,6 +21,8 @@ const (
 	stateKey      = "optimizer:campaign_state"
 	routeContinue = "continue"
 	routeFinish   = "finish"
+	// cycleName names the subgraph that runs one candidate cycle.
+	cycleName = "campaign_cycle"
 )
 
 // ErrProviderUnavailable marks a campaign the graph stopped because a role it
@@ -55,10 +57,19 @@ type campaignGraph struct {
 	cfg  Config
 }
 
+// graphNodes are the campaign graph's two levels: the outer nodes run once per
+// graph entry or once per cycle, and the cycle's nodes run inside the
+// campaign_cycle subgraph.
 type graphNodes struct {
-	initialize, discover, analyst      workflow.Node
-	mergeAnalysis, optimizer, evaluate workflow.Node
-	reviewer, decide, route, finalize  workflow.Node
+	initialize, discover, cycle, route, finalize workflow.Node
+	cycleNodes
+}
+
+// cycleNodes are the nodes of one candidate cycle, from the analysis to the
+// settled verdict. skip ends a cycle the analysis already stopped.
+type cycleNodes struct {
+	analyst, mergeAnalysis, optimizer, evaluate workflow.Node
+	reviewer, decide, skip                      workflow.Node
 }
 
 // New builds the bounded campaign graph.
@@ -98,15 +109,33 @@ func (g *campaignGraph) build() (*Orchestrator, error) {
 
 func (g *campaignGraph) nodes() (graphNodes, error) {
 	det := workflow.NodeConfig{Timeout: g.cfg.DeterministicTimeout}
-	agt := workflow.NodeConfig{Timeout: g.cfg.AgentTimeout}
 	n := graphNodes{
-		initialize:    workflow.NewFunctionNode("initialize_campaign", g.initialize, det),
-		discover:      workflow.NewFunctionNode("run_discovery", g.discover, det),
+		initialize: workflow.NewFunctionNode("initialize_campaign", g.initialize, det),
+		discover:   workflow.NewFunctionNode("run_discovery", g.discover, det),
+		route:      workflow.NewFunctionNode("route_campaign", g.route, det),
+		finalize:   workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
+	}
+	inner, err := g.cycleNodes()
+	if err != nil {
+		return n, err
+	}
+	n.cycleNodes = inner
+	cycle, err := workflow.NewWorkflowNode(cycleName, inner.edges())
+	if err != nil {
+		return n, fmt.Errorf("build %s subgraph: %w", cycleName, err)
+	}
+	n.cycle = cycle
+	return n, nil
+}
+
+func (g *campaignGraph) cycleNodes() (cycleNodes, error) {
+	det := workflow.NodeConfig{Timeout: g.cfg.DeterministicTimeout}
+	agt := workflow.NodeConfig{Timeout: g.cfg.AgentTimeout}
+	n := cycleNodes{
 		mergeAnalysis: workflow.NewFunctionNode("merge_analysis", g.mergeAnalysis, det),
 		evaluate:      workflow.NewFunctionNode("evaluate_candidate", g.evaluate, det),
 		decide:        workflow.NewFunctionNode("apply_policy", g.applyPolicy, det),
-		route:         workflow.NewFunctionNode("route_campaign", g.route, det),
-		finalize:      workflow.NewFunctionNode("finalize_campaign", g.finalize, det),
+		skip:          workflow.NewFunctionNode("skip_candidate", g.skipCandidate, det),
 	}
 	optimizer, err := agentNode(g.deps.Agents.Optimizer, agt, string(agents.RoleOptimizer), g.deps.Bench)
 	if err != nil {
@@ -220,22 +249,45 @@ func (n degradingNode) reportDegraded(ctx adkagent.Context, cause error) {
 	_ = n.bench.Note(ctx, Note{Kind: NoteDegraded, Role: n.role, Cause: cause.Error()})
 }
 
+// edges is the outer graph: one discovery, then campaign_cycle until
+// route_campaign finishes the campaign. The loop runs at this level, so the
+// subgraph is one cycle and its output is the state route_campaign judges.
 func (n graphNodes) edges() []workflow.Edge {
 	return workflow.NewEdgeBuilder().
 		Add(workflow.Start, n.initialize).
 		AddRoute(n.initialize, n.discover, workflow.StringRoute(routeContinue)).
 		AddRoute(n.initialize, n.finalize, workflow.StringRoute(routeFinish)).
-		Add(n.discover, n.analyst).
+		Add(n.discover, n.cycle).
+		Add(n.cycle, n.route).
+		AddRoute(n.route, n.cycle, workflow.StringRoute(routeContinue)).
+		AddRoute(n.route, n.finalize, workflow.StringRoute(routeFinish)).
+		Build()
+}
+
+// edges is one candidate cycle. A subgraph forwards the output of the
+// terminal node that ran, so apply_policy and skip_candidate both end it with
+// the campaign state, and only one of them runs in a cycle.
+func (n cycleNodes) edges() []workflow.Edge {
+	return workflow.NewEdgeBuilder().
+		Add(workflow.Start, n.analyst).
 		Add(n.analyst, n.mergeAnalysis).
 		AddRoute(n.mergeAnalysis, n.optimizer, workflow.StringRoute(routeContinue)).
-		AddRoute(n.mergeAnalysis, n.finalize, workflow.StringRoute(routeFinish)).
+		AddRoute(n.mergeAnalysis, n.skip, workflow.StringRoute(routeFinish)).
 		Add(n.optimizer, n.evaluate).
 		Add(n.evaluate, n.reviewer).
 		Add(n.reviewer, n.decide).
-		Add(n.decide, n.route).
-		AddRoute(n.route, n.analyst, workflow.StringRoute(routeContinue)).
-		AddRoute(n.route, n.finalize, workflow.StringRoute(routeFinish)).
 		Build()
+}
+
+// skipCandidate ends a cycle whose analysis stopped the campaign. It reads the
+// session rather than its input, because merge_analysis hands the optimizer
+// its brief as output whenever it planned a target.
+func (g *campaignGraph) skipCandidate(ctx adkagent.Context, _ any) (*session.Event, error) {
+	state, err := loadState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return stateEvent(ctx, state), nil
 }
 
 func (g *campaignGraph) initialize(ctx adkagent.Context, input any) (*session.Event, error) {
@@ -643,6 +695,13 @@ func countDecision(state *CampaignState, decision domain.Decision, separateIncon
 // rejection streak would blame the patches for the provider.
 func (g *campaignGraph) route(ctx adkagent.Context, state CampaignState) (*session.Event, error) {
 	next := routeFinish
+	// The analysis already ended the campaign (skip_candidate): no candidate
+	// was tried this cycle, so there is nothing to judge.
+	if state.StopReason != "" {
+		ev := stateEvent(ctx, state)
+		ev.Routes = []string{next}
+		return ev, nil
+	}
 	if _, down := providerFailure(state); down {
 		state.OutageCycles++
 	} else {
