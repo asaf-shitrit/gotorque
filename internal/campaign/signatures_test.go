@@ -1,6 +1,9 @@
 package campaign
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,4 +143,91 @@ func TestTargetSignaturesShowsOneVariantOfABuildTaggedDeclaration(t *testing.T) 
 	require.Equal(t, 1, strings.Count(joined, "func WriteSlice"), joined)
 	require.Equal(t, 1, strings.Count(joined, "func ReadSlice"), joined)
 	require.NotContains(t, joined, "race variant", "the race-tagged file is not built by default")
+}
+
+// valueTypesFixture is the jj case the issue reports: main's only context
+// entry was `func parseArgs() args`, so the candidate invented fields on
+// args. Every way a value gets a first-party type appears once here.
+const valueTypesFixture = `package main
+
+type args struct {
+	sort   bool
+	indent int
+}
+
+func (a args) apply() {}
+
+func parseArgs() args { return args{} }
+
+func newArgs() *args { return nil }
+
+func run(flags args, src string) {
+	opts := parseArgs()
+	opts.apply()
+	flags.apply()
+	other := newArgs()
+	other.apply()
+	var third args
+	third.apply()
+	converted := args(flags)
+	converted.apply()
+	src.Frame()
+}
+`
+
+func TestTargetSignaturesCarriesTheTypesOfItsValues(t *testing.T) {
+	repo := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "cmd"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "cmd", "main.go"), []byte(valueTypesFixture), 0o600))
+
+	got := targetSignatures(repo, agents.Target{Function: "run", Location: "cmd/main.go:17"})
+	joined := strings.Join(got, "\n---\n")
+	require.Contains(t, joined, "func parseArgs() args")
+	require.Contains(t, joined, "type args struct")
+	require.Contains(t, joined, "sort   bool")
+	require.Equal(t, 1, strings.Count(joined, "func (a args) apply()"), joined)
+	require.Contains(t, joined, "func newArgs() *args")
+}
+
+// TestTargetSignaturesCarriesFirstPartyValueTypes is miller's shape: a value
+// whose type another package of the module declares.
+func TestTargetSignaturesCarriesFirstPartyValueTypes(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		full := filepath.Join(repo, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o700))
+		require.NoError(t, os.WriteFile(full, []byte(src), 0o600))
+	}
+	write("go.mod", "module example.com/m\n\ngo 1.26\n")
+	write("types/types.go", "package types\n\ntype Record struct {\n\tName string\n}\n\nfunc New() *Record { return nil }\n\nfunc (r *Record) Encode() string { return r.Name }\n")
+	write("input/reader.go", "package input\n\nimport \"example.com/m/types\"\n\nfunc read() string {\n\trec := types.New()\n\treturn rec.Encode()\n}\n")
+
+	joined := strings.Join(targetSignatures(repo, agents.Target{Function: "read", Location: "input/reader.go:5"}), "\n---\n")
+	require.Contains(t, joined, "// package types\nfunc New() *Record")
+	require.Contains(t, joined, "// package types\ntype Record struct")
+	require.Contains(t, joined, "// package types\nfunc (r *Record) Encode() string")
+}
+
+// TestTargetSignaturesIgnoresValuesItCannotType keeps a value of an unknown or
+// unresolved type from adding anything: the pass only ever adds advice.
+func TestTargetSignaturesIgnoresValuesItCannotType(t *testing.T) {
+	repo := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "lib"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "lib", "lib.go"), []byte("package lib\n\nfunc run(s string, m map[string]int, any0 any) {\n\ts.Len()\n\tm.Get(\"k\")\n\tany0.Thing()\n\tunknown()\n}\n"), 0o600))
+
+	require.Empty(t, targetSignatures(repo, agents.Target{Function: "run", Location: "lib/lib.go:3"}))
+}
+
+func TestBaseTypeName(t *testing.T) {
+	fset := token.NewFileSet()
+	expr := func(src string) ast.Expr {
+		e, err := parser.ParseExprFrom(fset, "", src, parser.SkipObjectResolution)
+		require.NoError(t, err)
+		return e
+	}
+	require.Equal(t, "Record", baseTypeName(expr("Record")))
+	require.Equal(t, "Record", baseTypeName(expr("*Record")))
+	require.Equal(t, "Record", baseTypeName(expr("Record[T]")))
+	require.Equal(t, "Record", baseTypeName(expr("Record[T, U]")))
+	require.Empty(t, baseTypeName(expr("[]Record")))
 }
