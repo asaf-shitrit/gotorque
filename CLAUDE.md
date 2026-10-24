@@ -41,7 +41,7 @@ gotorque optimize --repo /path/to/repo --manifest targets/go-jsonnet/manifest.js
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --history <earlier-campaign-dir>
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
-gotorque verify <campaign-dir> [--attempt N] [--pairs 60]
+gotorque verify <campaign-dir> [--attempt N] [--pairs 60] [--json]
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --null-candidates 50
 gotorque scorecard <campaign-dir>...
 ```

@@ -636,4 +636,50 @@ func writeVerifications(b *strings.Builder, state State) {
 		fmt.Fprintf(b, "| %d | %d | %s | %s | %s | %s | %s |\n", v.Attempt, v.Pairs, v.Original, v.Decision, orNone(load), outputs, held)
 	}
 	b.WriteString("\n")
+	for _, v := range state.Verifications {
+		fmt.Fprintf(b, "### Verification of attempt %d\n\n", v.Attempt)
+		b.WriteString(RenderVerificationEvidence(v))
+	}
+}
+
+// RenderVerificationEvidence renders what decided a verification: the policy's
+// reasons, every metric comparison with its delta and significance, and the
+// output variants that differed. The report prints it under the summary table
+// and `gotorque verify` prints it under the verdict line, from this one
+// renderer, so both say the same thing about the same verdict.
+//
+// It exists because those fields used to reach only a `candidate_verified`
+// event in the campaign database, so reading why an accepted candidate did not
+// hold meant opening bbolt by hand; the daily gap hunt verifies every accept
+// and paid that detour every time.
+func RenderVerificationEvidence(v Verification) string {
+	var b strings.Builder
+	if v.Summary != "" {
+		fmt.Fprintf(&b, "- Evidence: %s\n", v.Summary)
+	}
+	if len(v.Reasons) == 0 {
+		b.WriteString("- Policy: no reason recorded\n")
+	}
+	for _, reason := range v.Reasons {
+		fmt.Fprintf(&b, "- Policy: %s\n", reason)
+	}
+	if len(v.Comparisons) > 0 {
+		writeVerificationComparisons(&b, v.Comparisons)
+	}
+	if len(v.OutputMismatches) > 0 {
+		fmt.Fprintf(&b, "- Output mismatches: %s\n", strings.Join(v.OutputMismatches, ", "))
+	}
+	return b.String()
+}
+
+// writeVerificationComparisons is the metric table with the significance
+// column as well as support, because a verification's reasons turn on whether
+// a guardrail regression was significant (ADR 0033, ADR 0039) and support
+// alone does not say that.
+func writeVerificationComparisons(b *strings.Builder, comparisons []domain.MetricComparison) {
+	b.WriteString("\n| Comparison | Baseline | Candidate | Δ | Supported | Significant |\n|---|---:|---:|---:|---|---|\n")
+	for _, c := range comparisons {
+		fmt.Fprintf(b, "| `%s` | %.4g | %.4g | %s | %s | %s |\n", tableLabel(c), c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), fitLabel(c.StatisticallyFit), fitLabel(c.Significant))
+	}
+	b.WriteString("\n")
 }

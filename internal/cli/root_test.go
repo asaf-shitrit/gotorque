@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/campaign"
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 	"github.com/asaf-shitrit/gotorque/internal/version"
@@ -182,6 +185,77 @@ func TestVerifyReportsACampaignWithNothingAccepted(t *testing.T) {
 	cmd.SetArgs([]string{"verify", writeCampaignDir(t, campaign.State{ID: "c", Status: campaign.StatusCompleted})})
 	err := cmd.Execute()
 	require.ErrorIs(t, err, campaign.ErrNothingAccepted)
+}
+
+// TestVerifyAcceptsAJSONFlag: the flag is bound on the command, and a campaign
+// with nothing accepted still reports that instead of an empty document. The
+// output path itself is covered by TestPrintVerifications..., which needs no
+// campaign that measures anything.
+func TestVerifyAcceptsAJSONFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"verify", "--json", writeCampaignDir(t, campaign.State{ID: "c", Status: campaign.StatusCompleted})})
+	require.ErrorIs(t, cmd.Execute(), campaign.ErrNothingAccepted)
+	require.Empty(t, stdout.String(), "a JSON run prints no verdict line")
+}
+
+// TestWriteVerificationPrintsWhatDecidedIt: `gotorque verify` prints the
+// policy's reasons, the per-metric deltas with significance and the output
+// mismatches under the verdict line, not only whether the acceptance held.
+func TestWriteVerificationPrintsWhatDecidedIt(t *testing.T) {
+	var out bytes.Buffer
+	require.NoError(t, writeVerification(&out, campaign.Verification{
+		Attempt: 4, Pairs: 60, Original: domain.DecisionAccepted, Decision: domain.DecisionRejected,
+		Reasons:      []string{`guardrail "peak_memory_bytes" regressed by 5.58%, over the 2.00% limit`},
+		Comparisons:  []domain.MetricComparison{{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 38546090.67, DeltaPercent: 5.58, StatisticallyFit: true, Significant: true}},
+		OutputChecks: []string{"s/empty", "s/half"}, OutputMismatches: []string{"s/empty"},
+	}))
+	got := out.String()
+	require.True(t, strings.HasPrefix(got, "attempt 4: rejected on verification over 60 pairs (originally accepted); held: false\n"), got)
+	require.Contains(t, got, `- Policy: guardrail "peak_memory_bytes" regressed by 5.58%, over the 2.00% limit`)
+	require.Contains(t, got, "| `peak_memory_bytes` | 3.651e+07 | 3.855e+07 | +5.58% | yes | yes |")
+	require.Contains(t, got, "- Output mismatches: s/empty")
+}
+
+// stubVerifier answers Verify from a fixed map, so the verify output path is
+// exercised without a campaign that measures anything.
+type stubVerifier struct {
+	verifications map[int]campaign.Verification
+	err           error
+}
+
+func (s stubVerifier) Verify(_ context.Context, attempt, _ int) (campaign.Verification, error) {
+	if s.err != nil {
+		return campaign.Verification{}, s.err
+	}
+	return s.verifications[attempt], nil
+}
+
+// TestPrintVerificationsTextAndJSON: the text path prints one verdict block per
+// attempt, with what decided it; --json emits the verifications and nothing
+// else, as `report --json` emits its state.
+func TestPrintVerificationsTextAndJSON(t *testing.T) {
+	engine := stubVerifier{verifications: map[int]campaign.Verification{
+		1: {Attempt: 1, Pairs: 60, Original: domain.DecisionAccepted, Decision: domain.DecisionAccepted},
+		2: {Attempt: 2, Pairs: 60, Original: domain.DecisionAccepted, Decision: domain.DecisionRejected, Reasons: []string{"peak memory regressed 5.58%"}},
+	}}
+
+	var text bytes.Buffer
+	require.NoError(t, printVerifications(context.Background(), &text, engine, []int{1, 2}, 60, false))
+	require.Contains(t, text.String(), "attempt 1: accepted on verification over 60 pairs (originally accepted); held: true")
+	require.Equal(t, 2, strings.Count(text.String(), "attempt "), "one verdict block per attempt")
+	require.Contains(t, text.String(), "- Policy: peak memory regressed 5.58%")
+
+	var asJSON bytes.Buffer
+	require.NoError(t, printVerifications(context.Background(), &asJSON, engine, []int{1, 2}, 60, true))
+	require.NotContains(t, asJSON.String(), "attempt 1: accepted", "a JSON run prints no verdict block")
+	var decoded []campaign.Verification
+	require.NoError(t, json.Unmarshal(asJSON.Bytes(), &decoded))
+	require.Len(t, decoded, 2)
+	require.Equal(t, []string{"peak memory regressed 5.58%"}, decoded[1].Reasons)
+
+	errVerify := errors.New("verify failed")
+	require.ErrorIs(t, printVerifications(context.Background(), io.Discard, stubVerifier{err: errVerify}, []int{1}, 60, false), errVerify)
 }
 
 func TestNullCandidatesRejectAgents(t *testing.T) {
