@@ -186,6 +186,14 @@ Package map:
   bbolt; in-graph `CampaignState` is rebuilt on every entry. A campaign that
   ran model roles (`ADKMode` set, analyst not `jev`) is refused: it ran model
   roles this build no longer has; start a new campaign.
+- Tier eligibility (`manifest.Manifest.AcceptanceEligible`, ADR 0039): whether a
+  seed can carry an acceptance is the manifest's `tiers.<tier>.acceptance_eligible`
+  and nothing else. `measureSeedWorkloads` measures the eligible seeds for the
+  verdict; `measureStressSeeds` measures every other seed and keeps only
+  behavior plus the `cpu_time_ns`/`peak_memory_bytes` guardrails, which can veto
+  and never carry. Adding a loop that picks seeds by tier name re-opens issue
+  #101, where three loops kept `stress` seeds out of the candidate's run
+  entirely while the docs promised they could veto.
 - Test gate (`internal/candidate/patch.go`, `worktree.go`,
   `internal/campaign/testgate.go`): a patch must never be able to edit what
   judges it. Protected paths (tests, `testdata/`, dependency files) are

@@ -126,6 +126,7 @@ func (e *Engine) policyVerdict(evidence orchestrator.CandidateEvidence) policy.R
 		RepresentativeEvidence: evidence.RepresentativeEvidence,
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligibleReadings(config, evidence.Comparisons),
+		StressComparisons:      evidence.StressComparisons,
 	})
 }
 
@@ -147,12 +148,15 @@ func candidateBinaryOf(evidence orchestrator.CandidateEvidence) string {
 // measured on its seed workloads, and the behavior gate holds it to the
 // target's own tests, but an optimization can still change output only on an
 // input neither exercises: empty, cut short, or longer than any seed. For
-// every representative seed, each variant of its input (see inputVariants)
-// is run once on each binary; a variant the baseline itself does not answer
-// deterministically is skipped rather than compared.
+// every seed whose tier the manifest makes acceptance-eligible, each variant of
+// its input (see inputVariants) is run once on each binary; a variant the
+// baseline itself does not answer deterministically is skipped rather than
+// compared. The variants already have no acceptance-eligible parent in the
+// campaign's measurement, so they are not the place to start with the seeds the
+// manifest keeps out of acceptance (ADR 0039).
 func (e *Engine) verifyOutputs(ctx context.Context, candidateBinary, candidateID string) (checks, mismatches []string) {
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
-		if seed.Tier != domain.TierRepresentative {
+		if !e.state.Manifest.AcceptanceEligible(seed.Tier) {
 			continue
 		}
 		for name, variant := range inputVariants(seed) {

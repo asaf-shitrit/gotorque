@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 )
 
 func TestLoadAppliesDefaults(t *testing.T) {
@@ -146,5 +148,30 @@ func TestLoadValidatesBuildDirectory(t *testing.T) {
 
 	if _, err := Load([]byte(fmt.Sprintf(base, `,"directory":"../escape"`))); err == nil {
 		t.Fatal("expected a repository-escaping build directory to be rejected")
+	}
+}
+
+// TestAcceptanceEligibleReadsTheTierPolicy: the tiers block was validated from
+// the start and nothing read it, so a manifest could not say that a plausible
+// tier carries an acceptance or that a representative one does not and see any
+// difference. Issue #101 found the same for the stress veto: every measurement
+// loop hardcoded the representative tier.
+func TestAcceptanceEligibleReadsTheTierPolicy(t *testing.T) {
+	m, err := LoadFile(filepath.Join("..", "..", "targets", "gojq", "manifest.json"))
+	if err != nil {
+		t.Fatalf("load fixture manifest: %v", err)
+	}
+	if !m.AcceptanceEligible(domain.TierRepresentative) {
+		t.Fatal("the gojq manifest makes its representative tier acceptance-eligible")
+	}
+	for _, tier := range []domain.WorkloadTier{domain.TierPlausible, domain.TierStress, domain.WorkloadTier("unknown")} {
+		if m.AcceptanceEligible(tier) {
+			t.Fatalf("tier %q must not carry an acceptance", tier)
+		}
+	}
+	m.Workloads.Tiers[domain.TierStress] = TierPolicy{Weight: 1, AcceptanceEligible: true}
+	m.Workloads.Tiers[domain.TierRepresentative] = TierPolicy{Weight: 1, AcceptanceEligible: false}
+	if !m.AcceptanceEligible(domain.TierStress) || m.AcceptanceEligible(domain.TierRepresentative) {
+		t.Fatal("the tier policy is what decides, not the tier's name")
 	}
 }

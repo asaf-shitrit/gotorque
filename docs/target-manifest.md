@@ -125,15 +125,37 @@ package named by `build.package` is not reachable from the repository root
 when `directory` is set, so it is left out of the packages profiling tries,
 and profiling falls back to the root module's own benchmarks.
 
-The three tiers serve different roles:
+The three tiers serve different roles, and `tiers.<tier>.acceptance_eligible`
+says which of them the policy may accept on. The engine reads that field, not
+the tier's name: every seed whose tier is acceptance-eligible is measured for
+the verdict, and every seed whose tier is not is measured to veto. A checked-in
+manifest declares `representative` eligible and the other two not, so:
 
-- `representative`: manifest-defined or known common usage. These are the only
-  workloads eligible to establish a performance acceptance.
+- `representative`: manifest-defined or known common usage. With
+  `acceptance_eligible: true` these are the workloads that can establish a
+  performance acceptance.
 - `plausible`: inferred from the repository and documentation. These find
-  opportunities and add evidence, but cannot headline an acceptance.
-- `stress`: extreme sizes, malformed inputs, and unusual shapes. They can
-  expose scaling, safety, or memory regressions and veto a candidate, but
-  cannot accept one alone.
+  opportunities and add evidence, but a workload that is not
+  acceptance-eligible cannot headline an acceptance.
+- `stress`: extreme sizes, malformed inputs, and unusual shapes. They expose
+  scaling, safety, or memory regressions and veto a candidate, but cannot
+  accept one alone.
+
+A seed whose tier is not acceptance-eligible is still run against the
+candidate, once its interleaved A/B series completes, and judged on two things
+only: its exit code and stdout, compared with the baseline exactly as an
+acceptance-eligible seed's are, and its `cpu_time_ns` and
+`peak_memory_bytes` guardrails, read the way the pooled guardrails are. A
+behavior mismatch there rejects the candidate, and so does a guardrail that
+regresses past `maximum_guardrail_regression_percent` with statistical
+support. Neither can carry an acceptance: `wall_time_ns` on such a workload is
+never compared. Issue #101 found that no loop ran the candidate on these
+seeds at all, so a patch that changed output only on an input larger than any
+representative seed was accepted on representative timings (ADR 0039).
+
+`tiers.<tier>.weight` is required by the schema and is not read by the engine:
+no measurement is weighted, and a tier's weight changes nothing. It is kept so
+that a manifest written against version one still loads.
 
 The agent chooses bounded exploration goals. Deterministic generators create
 the concrete mutations, size sweeps, and fixtures using the manifest seed.
@@ -270,12 +292,15 @@ also happens to allocate.
 The deterministic policy returns:
 
 - `accepted` only for behavior-preserving candidates with safety checks passed,
-  representative evidence, statistically supported primary improvement of at
-  least 3%, and no required guardrail regression over 2%.
-- `rejected` for behavior or safety failures, or statistically supported
-  guardrail regressions over their configured limits.
-- `inconclusive` for missing representative evidence, missing/noisy metrics,
-  unsupported statistics, or improvements below the practical threshold.
+  acceptance-eligible evidence, statistically supported primary improvement of
+  at least 3%, and no required guardrail regression over 2%.
+- `rejected` for behavior or safety failures, a behavior mismatch on a
+  workload the manifest keeps out of acceptance, or statistically supported
+  guardrail regressions over their configured limits, including one measured on
+  such a workload.
+- `inconclusive` for missing acceptance-eligible evidence, missing/noisy
+  metrics, unsupported statistics, or improvements below the practical
+  threshold.
 
 The LLM agent may explain the result and choose the next bounded experiment,
 but it cannot override the policy decision.

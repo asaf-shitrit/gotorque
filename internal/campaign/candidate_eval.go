@@ -365,6 +365,9 @@ func (ev *evaluator) measureAndFinalize(ctx context.Context, s evalSettings, evi
 	}
 	ev.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
+	if !ev.measureStressSeeds(ctx, s, evidence, id, candidateBinary) {
+		return false
+	}
 	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, &m) {
 		return false
 	}
@@ -402,7 +405,7 @@ func (ev *evaluator) measureSeedsOnQuietMachine(ctx context.Context, s evalSetti
 
 func (ev *evaluator) measureSeedWorkloads(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	for _, seed := range ev.manifest.Workloads.Seeds {
-		if seed.Tier != domain.TierRepresentative {
+		if !ev.manifest.AcceptanceEligible(seed.Tier) {
 			continue
 		}
 		if !ev.measureOneSeed(ctx, s, seed, id, candidateBinary, evidence, m) {
@@ -410,6 +413,55 @@ func (ev *evaluator) measureSeedWorkloads(ctx context.Context, s evalSettings, e
 		}
 	}
 	return true
+}
+
+// measureStressSeeds runs one interleaved series on every seed whose tier the
+// manifest keeps out of acceptance, and keeps its guardrail readings. The
+// target manifest has promised since it documented its tiers that a stress
+// seed "can veto a candidate" and a plausible one "adds evidence", but no loop
+// ever ran the candidate on either: every measurement loop skipped a seed that
+// was not representative-tier. A patch that changed output, or blew up memory,
+// only on an input larger than any representative seed was therefore accepted
+// on representative timings alone (issue #101, ADR 0039).
+//
+// These seeds can only veto. Behavior is judged exactly as everywhere else
+// (runSeries, recordBehaviorMatch), so a changed exit code or output rejects
+// the candidate; wall time is not compared, because a workload that cannot
+// carry an acceptance must not be able to argue for one. The failure path
+// keeps the representative comparisons already on the evidence, which are what
+// a report shows.
+func (ev *evaluator) measureStressSeeds(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
+	readings := make([]domain.MetricComparison, 0, 2*len(ev.manifest.Workloads.Seeds))
+	measured := 0
+	for _, seed := range ev.manifest.Workloads.Seeds {
+		if ev.manifest.AcceptanceEligible(seed.Tier) {
+			continue
+		}
+		got, ok := ev.measureStressSeed(ctx, s, seed, id, candidateBinary, evidence)
+		if !ok {
+			return false
+		}
+		readings = append(readings, got...)
+		measured++
+	}
+	evidence.StressComparisons = readings
+	if measured > 0 {
+		evidence.Summary += fmt.Sprintf("; the candidate also ran on %d workload(s) the manifest keeps out of acceptance, which can veto it and cannot carry it", measured)
+	}
+	return true
+}
+
+// measureStressSeed runs one non-acceptance-eligible seed and returns its
+// guardrail readings, named by the seed id so a report and a verdict's reason
+// point at the workload an operator wrote in the manifest.
+func (ev *evaluator) measureStressSeed(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, bool) {
+	baseReq, _ := ev.abRequests(seed, id, candidateBinary)
+	runs := seedRuns{seed: seed, deterministic: outputIsDeterministic(ctx, ev.runner, baseReq)}
+	if !ev.runSeries(ctx, s, &runs, id, candidateBinary, evidence, evidence.Comparisons) {
+		return nil, false
+	}
+	readings := compareMetric(seed.ID, "cpu_time_ns", "ns", runs.ab.Baseline, runs.ab.Candidate, cpuTime)
+	return append(readings, compareMetric(seed.ID, "peak_memory_bytes", "bytes", runs.ab.Baseline, runs.ab.Candidate, peakMemory)...), true
 }
 
 func (ev *evaluator) measureOneSeed(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, m *measurement) bool {
@@ -584,6 +636,7 @@ func improvementsToConfirm(config policy.Config, pairs int, evidence *orchestrat
 		RepresentativeEvidence: evidence.RepresentativeEvidence,
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligible,
+		StressComparisons:      evidence.StressComparisons,
 	})
 	switch preview.Decision {
 	case domain.DecisionInconclusive:
@@ -733,7 +786,7 @@ func (ev *evaluator) finalizeCandidateEvidence(ctx context.Context, evidence *or
 	evidence.SafetyChecksPassed = true
 	evidence.RepresentativeEvidence = len(m.seeds) > 0
 	evidence.Comparisons = comparisons
-	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d representative workload(s) measured over %d A/B pairs each", len(m.seeds), len(m.seeds[0].ab.Baseline))
+	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d acceptance-eligible workload(s) measured over %d A/B pairs each", len(m.seeds), len(m.seeds[0].ab.Baseline))
 }
 
 // seedMeasurementRequest builds the measurement runner request for one seed

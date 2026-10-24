@@ -125,11 +125,16 @@ type CandidateEvidence struct {
 	SafetyChecksPassed     bool                      `json:"safety_checks_passed"`
 	RepresentativeEvidence bool                      `json:"representative_evidence"`
 	Comparisons            []domain.MetricComparison `json:"comparisons,omitempty"`
-	RepSamples             []domain.WorkloadSamples  `json:"rep_samples,omitempty"`
-	ValidationJobs         []string                  `json:"validation_jobs,omitempty"`
-	ArtifactURIs           []string                  `json:"artifact_uris,omitempty"`
-	BenchstatOutput        string                    `json:"benchstat_output,omitempty"`
-	Summary                string                    `json:"summary"`
+	// StressComparisons are the guardrail readings of the workloads the
+	// manifest keeps out of acceptance (its plausible and stress tiers). They
+	// can only veto a candidate: wall time on such a workload is never
+	// compared, so nothing measured there can carry an acceptance.
+	StressComparisons []domain.MetricComparison `json:"stress_comparisons,omitempty"`
+	RepSamples        []domain.WorkloadSamples  `json:"rep_samples,omitempty"`
+	ValidationJobs    []string                  `json:"validation_jobs,omitempty"`
+	ArtifactURIs      []string                  `json:"artifact_uris,omitempty"`
+	BenchstatOutput   string                    `json:"benchstat_output,omitempty"`
+	Summary           string                    `json:"summary"`
 	// FailureDetail carries the structured failure output (patch or compiler
 	// stderr tail) behind a rejection so later cycles can avoid repeating
 	// the same failed approach.

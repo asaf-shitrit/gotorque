@@ -98,7 +98,12 @@ type CandidateRecord struct {
 	Decision       domain.Decision           `json:"decision"`
 	Reasons        []string                  `json:"reasons,omitempty"`
 	Comparisons    []domain.MetricComparison `json:"comparisons,omitempty"`
-	Accepted       bool                      `json:"accepted,omitempty"`
+	// StressComparisons are the guardrail readings of the workloads the
+	// manifest keeps out of acceptance (plausible and stress tiers). They are
+	// recorded so a veto, and the reading behind a named reason, can be audited
+	// in the report; a verdict can never rest on one.
+	StressComparisons []domain.MetricComparison `json:"stress_comparisons,omitempty"`
+	Accepted          bool                      `json:"accepted,omitempty"`
 	// Unmeasured marks a candidate rejected before it was measured, so a
 	// resumed campaign still gives its target the one more attempt an
 	// uninterrupted one would (ADR 0017). Records written before this field

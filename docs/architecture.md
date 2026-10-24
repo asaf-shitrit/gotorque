@@ -297,8 +297,9 @@ not recorded.
    most two such re-runs (`maxBaselineRechecks`). The baseline suite, like
    every candidate's, runs in a fresh worktree at the base revision, never
    in the canonical checkout: miller's tests rewrite tracked fixtures.
-5. **Interleaved A/B measurement.** For each representative-tier seed
-   workload, baseline and candidate binaries are measured in serialized
+5. **Interleaved A/B measurement.** For each seed whose tier the manifest
+   makes acceptance-eligible (its `tiers.<tier>.acceptance_eligible`, ADR
+   0039), baseline and candidate binaries are measured in serialized
    alternating pairs (twenty-five pairs per workload, the side that runs first
    alternating pair by pair) so CPU
    contention affects both sides equally. The pair count is sized against the
@@ -347,7 +348,7 @@ not recorded.
    same switch is made whenever the baseline's own repetitions in the A/B
    series printed different stdout (`sameStdout`).
    Exit codes must match in all cases. When an eligible reading (below)
-   regresses past the limit without significance, every representative
+   regresses past the limit without significance, every acceptance-eligible
    workload is measured over a second series of twenty-five pairs, held to
    the same behavior check, and every comparison is derived again from both
    series (`confirmRegressions`, ADR 0016). All workloads are extended, not
@@ -391,15 +392,29 @@ not recorded.
 ### What a verdict rests on
 
 Acceptance is decided over the set of **acceptance-eligible readings**: the
-pooled primary metric plus one comparison per representative-tier seed (only
-those seeds are measured, so every per-workload primary comparison is eligible
-by construction). A candidate passes when any member of that set improves by
+pooled primary metric plus one comparison per seed whose tier the manifest
+makes acceptance-eligible (`measureSeedWorkloads` skips the rest, so every
+per-workload primary comparison is eligible by construction). A checked-in
+manifest makes `representative` eligible and `plausible`/`stress` not. A
+candidate passes when any member of that set improves by
 at least the manifest's `minimum_improvement_percent` with statistical
 support, and no member regresses significantly past
-`maximum_guardrail_regression_percent`;
-the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
+`maximum_guardrail_regression_percent`.
+
+Two further gates come from workloads that cannot carry an acceptance. Every
+seed whose tier is not eligible is measured too, once its interleaved series
+completes (`measureStressSeeds`), and two things there can reject: a behavior
+mismatch, compared exactly as an eligible seed's is, and a regression of
+`cpu_time_ns` or `peak_memory_bytes` past its limit with statistical support.
+The candidate's `wall_time_ns` on those seeds is never compared, so nothing
+measured there can carry an acceptance. This is the stress veto the target
+manifest has documented since it described its tiers; before ADR 0039 the
+candidate was never run on those seeds at all.
+
+The guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as
-before. The reason names the workload the verdict rests on.
+before. The reason names the workload the verdict rests on, and the candidate
+record keeps the out-of-acceptance readings so the report can show them.
 
 Those limits come from the manifest's performance block unless the campaign
 was started with a trade-off (`--tradeoff speed|balanced|lean`, `--allow

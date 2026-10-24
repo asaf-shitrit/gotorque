@@ -48,9 +48,9 @@ type Evidence struct {
 	Comparisons []domain.MetricComparison
 	// Primary lists the comparisons a verdict may rest on: every reading of the
 	// primary metric — the pooled one (Workload empty) and one per
-	// acceptance-eligible workload. The engine measures only representative-tier
-	// seeds, so every per-workload entry it supplies is eligible by
-	// construction.
+	// acceptance-eligible workload. The engine measures only the workloads whose
+	// tier the manifest makes acceptance-eligible, so every per-workload entry it
+	// supplies is eligible by construction.
 	//
 	// The set exists because pooling is a poor fit for a seed whose run is
 	// dominated by process startup: on gron a candidate improved its
@@ -59,6 +59,13 @@ type Evidence struct {
 	// at -0.81% unsupported and pulled the pooled figure to -2.53% against a
 	// 3% bar. An empty set means "judge the pooled primary metric alone".
 	Primary []domain.MetricComparison
+	// StressComparisons are the guardrail readings of workloads the manifest
+	// keeps out of acceptance: its plausible and stress tiers. They can only
+	// veto, never carry, which is what the target manifest has always promised
+	// a stress seed does (ADR 0039). An entry naming a metric that is not a
+	// configured guardrail is ignored, so a caller cannot slip a wall-time win
+	// from an ineligible workload into a verdict.
+	StressComparisons []domain.MetricComparison
 }
 
 type Result struct {
@@ -102,6 +109,9 @@ func Evaluate(config Config, evidence Evidence) Result {
 	if early, done := checkEligibleRegressions(config, eligible, result); done {
 		return early
 	}
+	if early, done := checkStressComparisons(config, evidence.StressComparisons, result); done {
+		return early
+	}
 	result = decideOnImprovement(config, eligible, result)
 	for _, comparison := range unconfirmed(config, eligible) {
 		result.Reasons = append(result.Reasons, fmt.Sprintf("%s read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", readingSubject(comparison), comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent))
@@ -109,7 +119,65 @@ func Evaluate(config Config, evidence Evidence) Result {
 	for _, g := range unconfirmedGuardrails(config, byName) {
 		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", g.name, g.comparison.DeltaPercent, g.limit))
 	}
+	for _, reading := range unconfirmedStress(config, evidence.StressComparisons) {
+		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q mixed %+.2f%% on workload %q, over the %.2f%% limit, but the difference is not statistically significant; that workload cannot carry a verdict", reading.Metric, reading.DeltaPercent, reading.Workload, config.MaximumGuardrailRegressionPercent))
+	}
 	return result
+}
+
+// checkStressComparisons refuses a candidate that regressed a configured
+// guardrail on a workload the manifest keeps out of acceptance. The workloads
+// are measured, but their wall time is never compared: a seed that cannot
+// carry an acceptance must not be able to argue for one, while its behavior
+// (judged before this policy runs) and its guardrails can still reject.
+//
+// The rule is the one the representative guardrails use: over the limit and
+// significant, or over the limit alone when the manifest does not ask for
+// statistical support. These readings get no confirmation series of their own,
+// so an insignificant one is named in the reasons instead of rejecting
+// (unconfirmedStress), the way an insignificant pooled guardrail is.
+func checkStressComparisons(config Config, comparisons []domain.MetricComparison, result Result) (Result, bool) {
+	for _, comparison := range comparisonResults(comparisons) {
+		guardrail, ok := guardrailNamed(config, comparison.Metric)
+		if !ok || !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
+			continue
+		}
+		limit := guardrailLimit(config, guardrail)
+		if comparison.DeltaPercent > limit && (comparison.Significant || !config.StatisticalSupportRequired) {
+			return reject(result, fmt.Sprintf("guardrail %q regressed by %.2f%% on workload %q, over the %.2f%% limit; the manifest keeps that workload out of acceptance, so it can veto a candidate but never carry one", comparison.Metric, comparison.DeltaPercent, comparison.Workload, limit)), true
+		}
+	}
+	return result, false
+}
+
+// unconfirmedStress returns the stress-workload guardrail readings over their
+// limit that are not statistically significant: the ones Evaluate names in the
+// reasons instead of rejecting on. An insignificant reading is not evidence of
+// a regression, and these workloads have no confirmation series to turn one
+// into evidence; naming it keeps the reading auditable without letting noise
+// reject a good candidate, the rule ADR 0016 set for every other reading.
+func unconfirmedStress(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
+	var readings []domain.MetricComparison
+	for _, comparison := range comparisonResults(comparisons) {
+		guardrail, ok := guardrailNamed(config, comparison.Metric)
+		if !ok || !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
+			continue
+		}
+		if config.StatisticalSupportRequired && comparison.DeltaPercent > guardrailLimit(config, guardrail) && !comparison.Significant {
+			readings = append(readings, comparison)
+		}
+	}
+	return readings
+}
+
+// guardrailNamed resolves a metric name against the configured guardrails.
+func guardrailNamed(config Config, name string) (Guardrail, bool) {
+	for _, guardrail := range config.Guardrails {
+		if guardrail.Name == name {
+			return guardrail, true
+		}
+	}
+	return Guardrail{}, false
 }
 
 // eligiblePrimary resolves the comparisons that may carry acceptance. A caller
