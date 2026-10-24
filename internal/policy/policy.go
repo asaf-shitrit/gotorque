@@ -453,6 +453,21 @@ func guardrailLimit(config Config, guardrail Guardrail) float64 {
 	return config.MaximumGuardrailRegressionPercent
 }
 
+// RegressionLimit returns the regression ceiling one metric is judged by: the
+// guardrail's own limit when the manifest gives it one — which is where
+// --tradeoff and --allow land — and the config's shared ceiling otherwise.
+// Callers outside the verdict use it to reason about the same bound Evaluate
+// applies, rather than a copy of the default.
+func RegressionLimit(config Config, metric string) float64 {
+	config = withDefaults(config)
+	for _, guardrail := range config.Guardrails {
+		if guardrail.Name == metric {
+			return guardrailLimit(config, guardrail)
+		}
+	}
+	return config.MaximumGuardrailRegressionPercent
+}
+
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
 func finitePositive(value float64) bool { return value > 0 && finite(value) }

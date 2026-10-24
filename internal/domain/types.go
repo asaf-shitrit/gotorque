@@ -140,8 +140,9 @@ type MetricComparison struct {
 	StatisticallyFit bool    `json:"statistically_supported"`
 	// Significant says the two sample sets differ: benchstat's p below 0.05
 	// when it ran, otherwise Welch's |t| above 2.2. StatisticallyFit is not
-	// that, because it is also granted to a flat reading whose interval rules
-	// out a regression, so a regression is judged on this field instead.
+	// that, because it is also granted to a reading that is not an improvement
+	// when its interval rules out a regression past the metric's limit, so a
+	// regression is judged on this field instead.
 	Significant bool `json:"significant"`
 }
 

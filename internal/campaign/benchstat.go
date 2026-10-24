@@ -114,7 +114,7 @@ func (s benchstatSummary) supported() bool {
 // and the verdict all speak in the same name the operator writes in the
 // target manifest. Pass an empty workload for the pooled reading.
 func (ev *evaluator) compareWallTimeMetric(ctx context.Context, workload string, baselineRuns, candidateRuns []domain.RunResult) ([]domain.MetricComparison, string) {
-	comparisons := compareMetric(workload, "wall_time_ns", "ns", baselineRuns, candidateRuns, wallTime)
+	comparisons := compareMetric(workload, "wall_time_ns", "ns", ev.regressionLimit("wall_time_ns"), baselineRuns, candidateRuns, wallTime)
 	baseVals := collectMetric(baselineRuns, wallTime)
 	candVals := collectMetric(candidateRuns, wallTime)
 	output, summary, ok := ev.runBenchstat(ctx, workload, baseVals, candVals)

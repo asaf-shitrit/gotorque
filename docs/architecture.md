@@ -376,9 +376,18 @@ not recorded.
    the coarse t-test may have granted, and delta-only legacy output is
    informational and can never grant support by itself. Each comparison
    also records `significant`: benchstat's p below 0.05 when it ran,
-   otherwise `|t| > 2.2`. That is not the same as support, which is also
-   granted to a flat reading whose interval rules out a 2% regression, and
-   it is what a regression is judged on. Trimmed benchstat
+   otherwise `|t| > 2.2`. That is not the same as support. Support has a
+   second route, for a reading that is **not** an improvement: when the 95%
+   interval of its delta lies entirely below the metric's regression limit
+   (`policy.RegressionLimit`: the guardrail's own
+   `maximum_regression_percent`, which is where `--tradeoff` and `--allow`
+   land, or the manifest's `maximum_guardrail_regression_percent`), the data
+   confidently rules out a material regression even though no significant
+   change was detected, which is what a jittery flat guardrail needs. An
+   improvement gets no such support: ruling out a regression says nothing
+   about whether a win is real, so an improved reading is supported only when
+   it is significant (ADR 0039). `significant` is what a regression is
+   judged on. Trimmed benchstat
    output is kept in the candidate record for reports. Representative
    workloads are folded per repetition before the pooled comparison: the
    mean across workloads for wall and CPU time, the maximum for peak memory,
