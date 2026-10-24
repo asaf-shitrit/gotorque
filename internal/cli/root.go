@@ -34,7 +34,7 @@ func New(deps Dependencies) *cobra.Command {
 	root.AddCommand(newManifestCommand(deps.Stdout))
 	root.AddCommand(newOptimizeCommand(deps.Stdout))
 	root.AddCommand(newReportCommand(deps.Stdout))
-	root.AddCommand(newVerifyCommand(deps.Stdout))
+	root.AddCommand(newVerifyCommand(deps.Stdout, deps.Stderr))
 	root.AddCommand(newScorecardCommand(deps.Stdout))
 	root.AddCommand(newVersionCommand(deps.Stdout))
 	return root
@@ -407,7 +407,7 @@ func newVersionCommand(out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func newVerifyCommand(out io.Writer) *cobra.Command {
+func newVerifyCommand(out, errOut io.Writer) *cobra.Command {
 	var attempt, pairs int
 	var asJSON bool
 	cmd := &cobra.Command{
@@ -415,7 +415,7 @@ func newVerifyCommand(out io.Writer) *cobra.Command {
 		Short: "Evaluate a campaign's accepted candidates again from their recorded patches",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runVerify(cmd.Context(), out, args[0], attempt, pairs, asJSON)
+			return runVerify(cmd.Context(), out, verifyProgress(out, errOut, asJSON), args[0], attempt, pairs, asJSON)
 		},
 	}
 	cmd.Flags().IntVar(&attempt, "attempt", 0, "verify only this attempt (default: every accepted attempt)")
@@ -424,12 +424,22 @@ func newVerifyCommand(out io.Writer) *cobra.Command {
 	return cmd
 }
 
+// verifyProgress picks where the resumed engine reports its events: the
+// stream the text output uses, or stderr when --json owns stdout.
+func verifyProgress(out, errOut io.Writer, asJSON bool) io.Writer {
+	if asJSON {
+		return errOut
+	}
+	return out
+}
+
 // runVerify prints the verdict line and then what decided it, from the same
 // renderer the report uses, so an operator can read why an accept did not hold
 // without opening the campaign database. With --json the verifications are the
-// only output, as report --json does.
-func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs int, asJSON bool) (err error) {
-	engine, err := campaign.Resume(dir, out)
+// only output, as report --json does, so the engine's progress goes to progress
+// rather than to out.
+func runVerify(ctx context.Context, out, progress io.Writer, dir string, attempt, pairs int, asJSON bool) (err error) {
+	engine, err := campaign.Resume(dir, progress)
 	if err != nil {
 		return err
 	}

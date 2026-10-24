@@ -325,7 +325,8 @@ not recorded.
    refusals and the PGO lane off, and records whether the acceptance held. It
    prints the policy's reasons, every metric comparison with its delta and
    significance, and the output variants that differed under the verdict line
-   (`--json` emits the verifications alone), and the report's Verification
+   (`--json` emits the verifications alone on stdout, with the engine's
+   progress on stderr), and the report's Verification
    section carries the same detail, so reading why an accept did not hold never
    means opening the campaign database. Its
    test gate narrows a scratch copy of the baseline, never the campaign's. It automates the

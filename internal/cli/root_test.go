@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -263,4 +265,132 @@ func TestNullCandidatesRejectAgents(t *testing.T) {
 	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
 	cmd.SetArgs([]string{"optimize", "--repo", t.TempDir(), "--manifest", "m.json", "--adk-stub", "--null-candidates", "3"})
 	require.ErrorContains(t, cmd.Execute(), "--null-candidates replaces the agents")
+}
+
+// verifyFixtureManifest is a target manifest for the verify fixture: one tiny
+// Go program, one workload, no discovery, one-minute bounds.
+const verifyFixtureManifest = `{
+  "version": "v1", "name": "fixture",
+  "target": {"repository": "local", "build": {"package": ".", "binary": "fixture"}, "command": []},
+  "workloads": {
+    "seeds": [{"id": "fixture", "name": "fixture", "tier": "representative", "args": [], "files": [{"path": "fixture.txt", "content": "hello\n"}], "provenance": "test"}],
+    "discovery": {"enabled": false, "sources": [], "strategies": [], "seed": 1, "max_cases": 1, "max_depth": 1},
+    "tiers": {"representative": {"weight": 1.0, "acceptance_eligible": true}, "plausible": {"weight": 0.5, "acceptance_eligible": false}, "stress": {"weight": 0.0, "acceptance_eligible": false}}
+  },
+  "sandbox": {"network": "deny", "filesystem": {"read": "repo_and_assets", "write": "temp_only"}, "environment": {"allow": [], "passthrough": []}, "max_processes": 1},
+  "normalization": {"stdout": {"mode": "exact"}, "stderr": {"mode": "exact"}, "files": []},
+  "performance": {"primary_metric": "wall_time_ns", "minimum_improvement_percent": 3, "maximum_guardrail_regression_percent": 2, "statistical_support_required": true, "guardrails": []},
+  "campaign": {"max_duration": "1m", "max_candidate_patches": 1, "max_concurrent_candidates": 1, "stop_after_failures": 1, "discovery_stall_timeout": "30s", "per_command_timeout_multiple": 2, "minimum_command_timeout": "10s"},
+  "optimization_policy": "idiomatic"
+}`
+
+// verifyFixturePatch buffers the fixture's stdout writes: a patch the guardrails
+// can accept, so a verification runs end to end.
+const verifyFixturePatch = `--- a/main.go
++++ b/main.go
+@@ -1,11 +1,14 @@
+ package main
+ 
+ import (
++	"bufio"
+ 	"fmt"
+ 	"os"
+ )
+ 
+ func main() {
+ 	b, _ := os.ReadFile("fixture.txt")
+-	fmt.Printf("%s", b)
++	w := bufio.NewWriter(os.Stdout)
++	defer w.Flush()
++	_, _ = fmt.Fprintf(w, "%s", b)
+ }
+`
+
+// TestVerifyJSONStdoutCarriesOnlyTheVerifications: the resumed engine reports
+// each event on its progress writer, so in JSON mode that writer must not be
+// stdout. It was, and `verify --json` emitted progress lines in front of the
+// array, which `jq` and json.Unmarshal rejected.
+func TestVerifyJSONStdoutCarriesOnlyTheVerifications(t *testing.T) {
+	repo, manifestPath := writeVerifyFixture(t)
+	campaignDir := filepath.Join(t.TempDir(), "campaign")
+	engine, err := campaign.Create(context.Background(), campaign.Options{
+		Repository: repo, ManifestPath: manifestPath, CampaignDir: campaignDir,
+		TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, engine.Close())
+	recordAcceptedAttempt(t, campaignDir)
+
+	var stdout, stderr bytes.Buffer
+	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"verify", campaignDir, "--json", "--attempt", "1", "--pairs", "2"})
+	require.NoError(t, cmd.Execute())
+
+	require.Contains(t, stderr.String(), "[candidate_verified]", "the engine's progress belongs on stderr when --json owns stdout")
+	var decoded []campaign.Verification
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &decoded), "stdout holds the array alone; it was %q", stdout.String())
+	require.Len(t, decoded, 1)
+	require.Equal(t, 1, decoded[0].Attempt)
+}
+
+// TestVerifyTextKeepsProgressWithTheReport: without --json the progress lines
+// and the verdict blocks share the one stream an operator reads.
+func TestVerifyTextKeepsProgressWithTheReport(t *testing.T) {
+	repo, manifestPath := writeVerifyFixture(t)
+	campaignDir := filepath.Join(t.TempDir(), "campaign")
+	engine, err := campaign.Create(context.Background(), campaign.Options{
+		Repository: repo, ManifestPath: manifestPath, CampaignDir: campaignDir,
+		TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, engine.Close())
+	recordAcceptedAttempt(t, campaignDir)
+
+	var stdout, stderr bytes.Buffer
+	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"verify", campaignDir, "--attempt", "1", "--pairs", "2"})
+	require.NoError(t, cmd.Execute())
+
+	require.Contains(t, stdout.String(), "attempt 1: ")
+	require.Contains(t, stdout.String(), "[candidate_verified]")
+	require.Empty(t, stderr.String())
+}
+
+// writeVerifyFixture builds the small Git repository and manifest a verification
+// can run against, and returns their paths.
+func writeVerifyFixture(t *testing.T) (repo, manifestPath string) {
+	t.Helper()
+	repo = t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module test.local/fixture\n\ngo 1.26\n"), 0o600))
+	main := "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc main() {\n\tb, _ := os.ReadFile(\"fixture.txt\")\n\tfmt.Printf(\"%s\", b)\n}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "main.go"), []byte(main), 0o600))
+	for _, args := range [][]string{{"init"}, {"add", "main.go", "go.mod"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = repo
+		output, err := cmd.CombinedOutput()
+		cancel()
+		require.NoError(t, err, string(output))
+	}
+	manifestPath = filepath.Join(t.TempDir(), "manifest.json")
+	require.NoError(t, os.WriteFile(manifestPath, []byte(verifyFixtureManifest), 0o600))
+	return repo, manifestPath
+}
+
+// recordAcceptedAttempt records attempt 1 as accepted, so verify has a candidate
+// to evaluate again without running a campaign that measures one.
+func recordAcceptedAttempt(t *testing.T, campaignDir string) {
+	t.Helper()
+	patchPath := filepath.Join(t.TempDir(), "attempt-1.patch")
+	require.NoError(t, os.WriteFile(patchPath, []byte(verifyFixturePatch), 0o600))
+	store, err := campaign.OpenStore(filepath.Join(campaignDir, campaign.DatabaseName))
+	require.NoError(t, err)
+	state, err := store.Load()
+	require.NoError(t, err)
+	state.CandidateRecords = append(state.CandidateRecords, campaign.CandidateRecord{
+		Attempt: 1, Accepted: true, Decision: domain.DecisionAccepted, PatchPath: patchPath,
+		Target: &agents.Target{Location: "main.go:10", Function: "main", Cause: "unbuffered_io"},
+	})
+	require.NoError(t, store.Save(state))
+	require.NoError(t, store.Close())
 }
