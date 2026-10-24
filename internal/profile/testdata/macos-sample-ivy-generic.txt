@@ -1,0 +1,146 @@
+Analysis of sampling 1598a61e32b30275190e6942-ivy (pid 97093) every 1 millisecond
+Process:         1598a61e32b30275190e6942-ivy [97093]
+Path:            /Users/USER/*/1598a61e32b30275190e6942-ivy
+Load Address:    0x102c2c000
+Identifier:      1598a61e32b30275190e6942-ivy
+Version:         ???
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  gotorque-main-bin [96880]
+Target Type:     live task
+
+Date/Time:       2026-10-02 03:49:02.976 +0300
+Launch Time:     2026-10-02 03:49:02.424 +0300
+OS Version:      macOS 15.4.1 (24E263)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         36.0M
+Physical footprint (peak):  42.3M
+Idle exit:                  untracked
+----
+
+
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        31370
+        __semwait_signal  (in libsystem_kernel.dylib)        3905
+        kevent  (in libsystem_kernel.dylib)        3582
+        runtime.typePointers.next  (in 1598a61e32b30275190e6942-ivy)        555
+        runtime.mallocgcTinySC2  (in 1598a61e32b30275190e6942-ivy)        405
+        getrusage  (in libsystem_kernel.dylib)        368
+        runtime.tryDeferToSpanScan  (in 1598a61e32b30275190e6942-ivy)        279
+        sync/atomic.(*Value).Load  (in 1598a61e32b30275190e6942-ivy)        254
+        __psynch_cvsignal  (in libsystem_kernel.dylib)        214
+        runtime.mapaccess2_faststr  (in 1598a61e32b30275190e6942-ivy)        202
+        robpike.io/ivy/value/persist.(*Slice[go.shape.interface { Eval(robpike.io/ivy/value.Context) robpike.io/ivy/value.Value; Inner() robpike.io/ivy/value.Value; ProgString() string; Rank() int; Sprint(robpike.io/ivy/value.Context) string; String() string; robpike.io/ivy/value.shrink() robpike.io/ivy/value.Value; robpike.io/ivy/value.toType(string, robpike.io/ivy/value.Context, robpike.io/ivy/value.valueType) robpike.io/ivy/value.Value }]).At  (in 1598a61e32b30275190e6942-ivy)        154
+        runtime.mallocgc  (in 1598a61e32b30275190e6942-ivy)        142
+        write  (in libsystem_kernel.dylib)        134
+        runtime.convT64  (in 1598a61e32b30275190e6942-ivy)        125
+        robpike.io/ivy/value.(*binaryOp).EvalBinary  (in 1598a61e32b30275190e6942-ivy)        98
+        robpike.io/ivy/value.whichType  (in 1598a61e32b30275190e6942-ivy)        97
+        robpike.io/ivy/value/persist.(*TransientSlice[go.shape.interface { Eval(robpike.io/ivy/value.Context) robpike.io/ivy/value.Value; Inner() robpike.io/ivy/value.Value; ProgString() string; Rank() int; Sprint(robpike.io/ivy/value.Context) string; String() string; robpike.io/ivy/value.shrink() robpike.io/ivy/value.Value; robpike.io/ivy/value.toType(string, robpike.io/ivy/value.Context, robpike.io/ivy/value.valueType) robpike.io/ivy/value.Value }]).wnode  (in 1598a61e32b30275190e6942-ivy)        96
+        robpike.io/ivy/exec.(*Context).EvalBinary  (in 1598a61e32b30275190e6942-ivy)        79
+        runtime.memequal  (in 1598a61e32b30275190e6942-ivy)        78
+        robpike.io/ivy/value/persist.(*TransientSlice[go.shape.interface { Eval(robpike.io/ivy/value.Context) robpike.io/ivy/value.Value; Inner() robpike.io/ivy/value.Value; ProgString() string; Rank() int; Sprint(robpike.io/ivy/value.Context) string; String() string; robpike.io/ivy/value.shrink() robpike.io/ivy/value.Value; robpike.io/ivy/value.toType(string, robpike.io/ivy/value.Context, robpike.io/ivy/value.valueType) robpike.io/ivy/value.Value }]).Set  (in 1598a61e32b30275190e6942-ivy)        77
+        runtime.scanObject  (in 1598a61e32b30275190e6942-ivy)        77
+        internal/bytealg.IndexByteString  (in 1598a61e32b30275190e6942-ivy)        76
+        robpike.io/ivy/value.Int.toType  (in 1598a61e32b30275190e6942-ivy)        73
+        strings.Trim  (in 1598a61e32b30275190e6942-ivy)        72
+        internal/runtime/maps.memHashAES  (in 1598a61e32b30275190e6942-ivy)        71
+        runtime.stealWork  (in 1598a61e32b30275190e6942-ivy)        71
+        math/big.rsh  (in 1598a61e32b30275190e6942-ivy)        68
+        mach_absolute_time  (in libsystem_kernel.dylib)        57
+        internal/stringslite.Index  (in 1598a61e32b30275190e6942-ivy)        49
+        robpike.io/ivy/value.init.0.func15  (in 1598a61e32b30275190e6942-ivy)        48
+        robpike.io/ivy/value.(*Int).toType  (in 1598a61e32b30275190e6942-ivy)        46
+        runtime.mapaccess1_faststr  (in 1598a61e32b30275190e6942-ivy)        46
+        robpike.io/ivy/value/persist.(*TransientSlice[go.shape.interface { Eval(robpike.io/ivy/value.Context) robpike.io/ivy/value.Value; Inner() robpike.io/ivy/value.Value; ProgString() string; Rank() int; Sprint(robpike.io/ivy/value.Context) string; String() string; robpike.io/ivy/value.shrink() robpike.io/ivy/value.Value; robpike.io/ivy/value.toType(string, robpike.io/ivy/value.Context, robpike.io/ivy/value.valueType) robpike.io/ivy/value.Value }]).wleaf  (in 1598a61e32b30275190e6942-ivy)        45
+        robpike.io/ivy/value.init.0.func5  (in 1598a61e32b30275190e6942-ivy)        37
+        runtime.pcvalue  (in 1598a61e32b30275190e6942-ivy)        36
+        robpike.io/ivy/value.(*Int).Inner  (in 1598a61e32b30275190e6942-ivy)        35
+        runtime.memclrNoHeapPointers  (in 1598a61e32b30275190e6942-ivy)        31
+        runtime.mallocgcTinySlowPath  (in 1598a61e32b30275190e6942-ivy)        30
+        runtime.asmcgocall.abi0  (in 1598a61e32b30275190e6942-ivy)        28
+        runtime.mallocgcSmallScanNoHeader  (in 1598a61e32b30275190e6942-ivy)        27
+        _sigtramp  (in libsystem_platform.dylib)        24
+        robpike.io/ivy/scan.(*Scanner).readRune  (in 1598a61e32b30275190e6942-ivy)        24
+        runtime.(*mspan).writeHeapBitsSmall  (in 1598a61e32b30275190e6942-ivy)        23
+        robpike.io/ivy/value.swing  (in 1598a61e32b30275190e6942-ivy)        22
+        math/big.mulAddVWW.abi0  (in 1598a61e32b30275190e6942-ivy)        19
+        runtime.checkTimersNoP  (in 1598a61e32b30275190e6942-ivy)        19
+        runtime.(*sweepLocked).sweep  (in 1598a61e32b30275190e6942-ivy)        18
+        runtime.memmove  (in 1598a61e32b30275190e6942-ivy)        18
+        runtime.gcmarknewobject  (in 1598a61e32b30275190e6942-ivy)        17
+        __psynch_mutexwait  (in libsystem_kernel.dylib)        16
+        robpike.io/ivy/value.binaryVectorOp.func3  (in 1598a61e32b30275190e6942-ivy)        16
+        runtime.gcNextMarkRoot  (in 1598a61e32b30275190e6942-ivy)        16
+        runtime.casgstatus  (in 1598a61e32b30275190e6942-ivy)        15
+        math/big.nat.convertWords  (in 1598a61e32b30275190e6942-ivy)        14
+        runtime.libcCall  (in 1598a61e32b30275190e6942-ivy)        14
+        math/big.(*Float).round  (in 1598a61e32b30275190e6942-ivy)        13
+        runtime.growslice  (in 1598a61e32b30275190e6942-ivy)        13
+        math/big.nat.divBasic  (in 1598a61e32b30275190e6942-ivy)        12
+        math/big.subVV.abi0  (in 1598a61e32b30275190e6942-ivy)        12
+        robpike.io/ivy/value.binaryArithType  (in 1598a61e32b30275190e6942-ivy)        12
+        runtime.lock2  (in 1598a61e32b30275190e6942-ivy)        12
+        runtime.mallocgcSmallScanNoHeaderSC4  (in 1598a61e32b30275190e6942-ivy)        12
+        _pthread_cond_wait  (in libsystem_pthread.dylib)        11
+        runtime.findfunc  (in 1598a61e32b30275190e6942-ivy)        11
+        runtime.mallocgcSmallNoscan  (in 1598a61e32b30275190e6942-ivy)        11
+        runtime.step  (in 1598a61e32b30275190e6942-ivy)        11
+        math/big.divWW  (in 1598a61e32b30275190e6942-ivy)        10
+        runtime.(*mspan).nextFreeIndex  (in 1598a61e32b30275190e6942-ivy)        10
+        runtime.unlock2  (in 1598a61e32b30275190e6942-ivy)        10
+        robpike.io/ivy/exec.(*Context).Config  (in 1598a61e32b30275190e6942-ivy)        9
+        robpike.io/ivy/scan.lexAny  (in 1598a61e32b30275190e6942-ivy)        9
+        robpike.io/ivy/value.Reduce  (in 1598a61e32b30275190e6942-ivy)        9
+        robpike.io/ivy/value.product1  (in 1598a61e32b30275190e6942-ivy)        9
+        runtime.(*mcache).nextFree  (in 1598a61e32b30275190e6942-ivy)        9
+        DYLD-STUB$$kill  (in 1598a61e32b30275190e6942-ivy)        8
+        math/big.nat.mul  (in 1598a61e32b30275190e6942-ivy)        8
+        robpike.io/ivy/config.(*Config).Debug  (in 1598a61e32b30275190e6942-ivy)        8
+        robpike.io/ivy/parse.(*Parser).readTokensToNewline  (in 1598a61e32b30275190e6942-ivy)        8
+        robpike.io/ivy/scan.(*Scanner).loadLine  (in 1598a61e32b30275190e6942-ivy)        8
+        robpike.io/ivy/value/persist.(*TransientSlice[go.shape.interface { Eval(robpike.io/ivy/value.Context) robpike.io/ivy/value.Value; Inner() robpike.io/ivy/value.Value; ProgString() string; Rank() int; Sprint(robpike.io/ivy/value.Context) string; String() string; robpike.io/ivy/value.shrink() robpike.io/ivy/value.Value; robpike.io/ivy/value.toType(string, robpike.io/ivy/value.Context, robpike.io/ivy/value.valueType) robpike.io/ivy/value.Value }]).copy  (in 1598a61e32b30275190e6942-ivy)        8
+        runtime.(*moduledata).textAddr  (in 1598a61e32b30275190e6942-ivy)        8
+        runtime.mallocgcSmallScanNoHeaderSC5  (in 1598a61e32b30275190e6942-ivy)        8
+        runtime.wbBufFlush1  (in 1598a61e32b30275190e6942-ivy)        8
+        math/big.nat.mulAddWW  (in 1598a61e32b30275190e6942-ivy)        7
+        math/big.nat.sqr  (in 1598a61e32b30275190e6942-ivy)        7
+        robpike.io/ivy/scan.isAlphaNumeric  (in 1598a61e32b30275190e6942-ivy)        7
+        robpike.io/ivy/value.(*Statement).expr  (in 1598a61e32b30275190e6942-ivy)        7
+        runtime.(*timers).check  (in 1598a61e32b30275190e6942-ivy)        7
+        runtime.adjustframe  (in 1598a61e32b30275190e6942-ivy)        7
+        runtime.deductSweepCredit  (in 1598a61e32b30275190e6942-ivy)        7
+        runtime.procresize  (in 1598a61e32b30275190e6942-ivy)        7
+        runtime.runqgrab  (in 1598a61e32b30275190e6942-ivy)        7
+        bufio.(*Reader).ReadByte  (in 1598a61e32b30275190e6942-ivy)        6
+        gcWriteBarrier  (in 1598a61e32b30275190e6942-ivy)        6
+        madvise  (in libsystem_kernel.dylib)        6
+        math/big.(*Float).ucmp  (in 1598a61e32b30275190e6942-ivy)        6
+        math/big.lshVU.abi0  (in 1598a61e32b30275190e6942-ivy)        6
+        robpike.io/ivy/scan.(*Scanner).atTerminator  (in 1598a61e32b30275190e6942-ivy)        6
+        robpike.io/ivy/scan.(*Scanner).emit  (in 1598a61e32b30275190e6942-ivy)        6
+        robpike.io/ivy/value.formatRow  (in 1598a61e32b30275190e6942-ivy)        6
+        robpike.io/ivy/value/persist.(*TransientSlice[go.shape.interface { Eval(robpike.io/ivy/value.Context) robpike.io/ivy/value.Value; Inner() robpike.io/ivy/value.Value; ProgString() string; Rank() int; Sprint(robpike.io/ivy/value.Context) string; String() string; robpike.io/ivy/value.shrink() robpike.io/ivy/value.Value; robpike.io/ivy/value.toType(string, robpike.io/ivy/value.Context, robpike.io/ivy/value.valueType) robpike.io/ivy/value.Value }]).writeTail  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.(*mspan).moveInlineMarks  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.(*pallocBits).summarize  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.(*stkframe).getStackMap  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.findRunnable  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.makeslice  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.mallocgcSmallNoScanSC5  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.scanObjectsSmall  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.scanblock  (in 1598a61e32b30275190e6942-ivy)        6
+        runtime.sweepone  (in 1598a61e32b30275190e6942-ivy)        6
+        math/big.(*Int).mul  (in 1598a61e32b30275190e6942-ivy)        5
+        math/big.nat.divLarge  (in 1598a61e32b30275190e6942-ivy)        5
+        robpike.io/ivy/parse.(*Parser).statementList  (in 1598a61e32b30275190e6942-ivy)        5
+        robpike.io/ivy/value.(*Statement).atOperand  (in 1598a61e32b30275190e6942-ivy)        5
+        runtime.(*consistentHeapStats).acquire  (in 1598a61e32b30275190e6942-ivy)        5
+        runtime.(*spanSet).reset  (in 1598a61e32b30275190e6942-ivy)        5
+        runtime.checkRunqsNoP  (in 1598a61e32b30275190e6942-ivy)        5
+        runtime.execute  (in 1598a61e32b30275190e6942-ivy)        5
+        runtime.mallocgcSmallScanNoHeaderSC2  (in 1598a61e32b30275190e6942-ivy)        5
+        runtime.pthread_cond_wait.abi0  (in 1598a61e32b30275190e6942-ivy)        5
+        strings.IndexRune  (in 1598a61e32b30275190e6942-ivy)        5
+

@@ -958,6 +958,19 @@ sampler's half-second liveness check. Sampler frames are
 annotated with source positions through the same repository search the
 benchmark path uses, because sampler frames name a symbol but no position.
 
+A frame's symbol runs to the ` (in <binary>)` module marker, not to its first
+space, on every sampler path (macOS top-of-stack rows, macOS call-graph rows
+and Linux `perf script` frames). A generic method instantiated over an
+interface shape prints its whole instantiation
+(`persist.(*TransientSlice[go.shape.interface { Eval(…) … }]).Set`), and
+cutting at the first space merged every method of that instantiation into one
+truncated name that resolved to no declaration: in the ivy campaign the two
+hottest entries were `(*TransientSlice[go.shape.interface` and
+`(*Slice[go.shape.interface`, and no attempt could target them. A
+`[go.shape.…]` type argument is then rewritten to `[...]` the way pprof does,
+so every instantiation of one generic function reports as one symbol and
+resolves to one declaration.
+
 ### The discovery module and its sampler seam
 
 Discovery lives in `internal/discovery` (ADR 0037) and takes no `*Engine`.
