@@ -188,6 +188,14 @@ func (ev *evaluator) prepareCandidate(ctx context.Context, req orchestrator.Cand
 		evidence.Summary = fmt.Sprintf("candidate rejected before build: %v", err)
 		evidence.FailureDetail = tail(err.Error(), 400)
 		evidence.Unmeasured = true
+		// A diff git refuses to apply is the one pre-build rejection whose
+		// proposal can still be answered differently: the optimizer hand-wrote
+		// a patch where a code-chosen target asked for function_source, and
+		// nothing about the change has been judged yet. The error travels with
+		// the evidence so the graph can ask once, quoting it (issue #72).
+		if errors.Is(err, candidate.ErrPatchDoesNotApply) {
+			evidence.ReaskCause = err.Error()
+		}
 		return nil, false
 	}
 	evidence.Candidate = prepared.Candidate

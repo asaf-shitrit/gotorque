@@ -46,6 +46,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0037](0037-discovery-is-its-own-module.md) | Discovery is its own module behind a sampler seam | accepted |
 | [0038](0038-the-engine-bridge-is-one-port.md) | The engine bridge is one port, `Bench` | accepted |
 | [0039](0039-an-improvement-needs-significance.md) | An improvement is supported only when it is significant | accepted |
+| [0041](0041-a-refused-answer-is-asked-again-once.md) | An answer refused before it could be judged is asked again once, in the same attempt | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay

@@ -23,6 +23,11 @@ type fakeBench struct {
 	hotFunctions []string
 	// unmeasuredFirst rejects attempt 1 before measurement.
 	unmeasuredFirst bool
+	// reaskCauses are the apply refusals to report, one per assessment in
+	// order: the n-th assessment is rejected before build with the n-th error
+	// as its ReaskCause, and assessments past the slice measure
+	// normally.
+	reaskCauses []string
 	// excerpts and excerptErr are what Excerpts answers.
 	excerpts     []SourceExcerpt
 	excerptErr   error
@@ -42,6 +47,7 @@ type fakeBench struct {
 	started, finished int
 	degraded          []degradedRole
 	repaired          []repairedRole
+	reasked           []degradedRole
 }
 
 // degradedRole is one absorbed role failure, as the graph reported it.
@@ -66,6 +72,8 @@ func (b *fakeBench) Note(_ context.Context, n Note) error {
 		b.degraded = append(b.degraded, degradedRole{role: n.Role, cause: n.Cause})
 	case NoteRepaired:
 		b.repaired = append(b.repaired, repairedRole{role: n.Role, repair: n.Repair})
+	case NoteReasked:
+		b.reasked = append(b.reasked, degradedRole{role: n.Role, cause: n.Cause})
 	}
 	return nil
 }
@@ -102,6 +110,11 @@ func (b *fakeBench) Assess(_ context.Context, req CandidateRequest) (Assessment,
 	if b.unmeasuredFirst && req.Attempt == 1 {
 		evidence.Unmeasured = true
 		evidence.FailureDetail = "the patch uses bufio without importing it"
+	}
+	if i := b.assessCalls - 1; i < len(b.reaskCauses) && b.reaskCauses[i] != "" {
+		evidence.Unmeasured = true
+		evidence.ReaskCause = b.reaskCauses[i]
+		evidence.Summary = "candidate rejected before build: " + evidence.ReaskCause
 	}
 	decision := domain.DecisionRejected
 	if len(b.decisions) > 0 {

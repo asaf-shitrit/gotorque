@@ -21,6 +21,10 @@ const (
 	stateKey      = "optimizer:campaign_state"
 	routeContinue = "continue"
 	routeFinish   = "finish"
+	// routeReask sends the optimize step around once more, with the previous
+	// answer's pre-build refusal quoted, instead of settling a candidate whose
+	// diff git refused to apply.
+	routeReask = "reask"
 	// cycleName names the subgraph that runs one candidate cycle.
 	cycleName = "campaign_cycle"
 )
@@ -274,7 +278,8 @@ func (n cycleNodes) edges() []workflow.Edge {
 		AddRoute(n.mergeAnalysis, n.optimizer, workflow.StringRoute(routeContinue)).
 		AddRoute(n.mergeAnalysis, n.skip, workflow.StringRoute(routeFinish)).
 		Add(n.optimizer, n.evaluate).
-		Add(n.evaluate, n.reviewer).
+		AddRoute(n.evaluate, n.optimizer, workflow.StringRoute(routeReask)).
+		AddRoute(n.evaluate, n.reviewer, workflow.StringRoute(routeContinue)).
 		Add(n.reviewer, n.decide).
 		Build()
 }
@@ -383,6 +388,11 @@ func (g *campaignGraph) mergeAnalysis(ctx adkagent.Context, raw any) (*session.E
 	state.Analysis = result
 	attachExcerpts(ctx, g.deps.Bench, &state, result)
 	planTarget(&state)
+	// A new target opens a new attempt cycle, so its one re-ask is unspent.
+	// A cycle that ended between the re-ask and the next evaluation leaves the
+	// marker set in session state, and without this the next cycle would keep
+	// it.
+	state.ReaskCause = ""
 	next := routeContinue
 	if end, done := g.ended(state, afterAnalysis); done {
 		state.StopReason, state.ProviderFailure = end.reason, end.failure
@@ -413,6 +423,11 @@ type OptimizerBrief struct {
 	EarlierCandidates []PriorCandidate `json:"earlier_candidates,omitempty"`
 	// GoVersion is the target module's declared Go language version.
 	GoVersion string `json:"go_version,omitempty"`
+	// ReaskCause is set only on the re-ask: the answer before this one was
+	// refused before it could be judged. The refusal is quoted so the next
+	// answer can avoid it, and the instruction says what an ask carrying it
+	// wants.
+	ReaskCause string `json:"reask_cause,omitempty"`
 }
 
 func optimizerBrief(state CampaignState) OptimizerBrief {
@@ -423,6 +438,7 @@ func optimizerBrief(state CampaignState) OptimizerBrief {
 		PriorCandidates:   state.PriorCandidates,
 		EarlierCandidates: state.Request.EarlierCandidates,
 		GoVersion:         state.Request.GoVersion,
+		ReaskCause:        state.ReaskCause,
 	}
 }
 
@@ -600,7 +616,54 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 	// it: the note rides to the candidate's record and nowhere else.
 	assessment.Evidence.ProposalRepair = repair
 	state.Candidate, state.Verdict = assessment.Evidence, assessment.Verdict
-	return stateEvent(ctx, state), nil
+	if reaskable(state, assessment.Evidence) {
+		return g.reask(ctx, state, assessment.Evidence), nil
+	}
+	// Whatever the cycle's re-ask came to, it is spent: the candidate under
+	// judgement is the last answer this attempt gets.
+	state.ReaskCause = ""
+	ev := stateEvent(ctx, state)
+	ev.Routes = []string{routeContinue}
+	return ev, nil
+}
+
+// reaskable reports whether this candidate is worth one more ask instead of
+// the rejection it just earned: a code-chosen target whose answer hand-wrote a
+// patch, sent no function_source to fall back on, and had that patch refused
+// by git. Nothing about the change has been judged — the refusal is about
+// diff mechanics — and the deterministic transport the target asked for
+// (function_source, ADR 0022) answers exactly that failure. Issue #72: in the
+// record of 151 campaigns this is four attempts, cue's 2 and 3 and one each on
+// s2c and otto, every one a hand-written patch with no function_source beside
+// it. One ask per cycle, never more: the rejection still ends the attempt when
+// the second answer fails too. ADR 0041.
+func reaskable(state CampaignState, evidence CandidateEvidence) bool {
+	if state.Target == nil || state.ReaskCause != "" || evidence.ReaskCause == "" {
+		return false
+	}
+	return state.Proposal.Patch != "" && !proposalHasFunctionSource(state.Proposal)
+}
+
+// proposalHasFunctionSource reports whether the proposal carries the
+// deterministic transport at all, so a re-ask never replaces an answer that
+// already has one: a patch that won over a function_source keeps its verdict,
+// which is the precedence ADR 0022 sets.
+func proposalHasFunctionSource(p agents.OptimizerResult) bool {
+	return strings.TrimSpace(p.FunctionSource) != "" || len(p.FunctionSources) > 0
+}
+
+// reask records a pre-build failure the attempt can still answer and sends the
+// optimizer back around with it quoted. The state carries the cause so the
+// optimizer's brief names it and so the second evaluation cannot spend a
+// second re-ask. No verdict is settled for the refused answer: it was never
+// measured, and the attempt it belonged to is still open.
+func (g *campaignGraph) reask(ctx adkagent.Context, state CampaignState, evidence CandidateEvidence) *session.Event {
+	state.ReaskCause = evidence.ReaskCause
+	_ = g.deps.Bench.Note(ctx, Note{Kind: NoteReasked, Role: string(agents.RoleOptimizer), Cause: evidence.ReaskCause})
+	ev := stateEvent(ctx, state)
+	ev.Output = optimizerBrief(state)
+	ev.Routes = []string{routeReask}
+	return ev
 }
 
 // applyPolicy is the last node of a cycle. The verdict was reached when the

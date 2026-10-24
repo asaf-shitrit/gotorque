@@ -36,3 +36,12 @@ func TestOptimizerInstructionNamesGoVersion(t *testing.T) {
 func TestOptimizerInstructionNamesTargetContext(t *testing.T) {
 	require.Contains(t, optimizerInstruction, "target.context")
 }
+
+// TestOptimizerInstructionNamesTheReask pins the sentence that tells the
+// optimizer what a turn carrying reask_cause is: its previous patch did
+// not apply, that patch is discarded, and this ask wants function_source
+// (issue #72).
+func TestOptimizerInstructionNamesTheReask(t *testing.T) {
+	require.Contains(t, optimizerInstruction, "reask_cause")
+	require.Contains(t, optimizerInstruction, "function_source (and imports) only")
+}

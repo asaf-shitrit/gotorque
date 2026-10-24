@@ -64,6 +64,23 @@ func TestPrepareAppliesAnOrdinarySourcePatch(t *testing.T) {
 	require.Contains(t, string(data), `println("hi")`)
 }
 
+// TestPrepareMarksAPatchGitRefused: the graph re-asks the optimizer once for
+// a patch git refuses to apply (issue #72), and tells that refusal apart from
+// the protected-path and shape rejections that also end a candidate before
+// build. Neither strict git apply nor the fuzzy fallback can place a hunk that
+// removes a line the file does not have, so the error carries the sentinel.
+func TestPrepareMarksAPatchGitRefused(t *testing.T) {
+	manager, _ := preparedRepository(t)
+	patch := "--- a/main.go\n+++ b/main.go\n@@ -2,3 +2,3 @@\n \n func main() {\n-\tprintln(\"goodbye\")\n+\tprintln(\"hi\")\n }\n"
+	_, err := manager.Prepare(context.Background(), "HEAD", writePatch(t, patch), "", Policy{})
+	require.ErrorIs(t, err, ErrPatchDoesNotApply)
+	require.Contains(t, err.Error(), "git apply check")
+
+	_, err = manager.Prepare(context.Background(), "HEAD", writePatch(t, "--- a/main_test.go\n+++ b/main_test.go\n@@ -4,1 +4,1 @@\n-func TestMain(t *testing.T) {}\n+func TestMain(t *testing.T) { t.Skip() }\n"), "", Policy{})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrPatchDoesNotApply, "a protected-path rejection is not the re-askable one")
+}
+
 // Each of these passed the old +++-only header check and reached the build.
 func TestPrepareRejectsPatchesThatTouchTheGate(t *testing.T) {
 	cases := map[string]struct {

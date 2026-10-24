@@ -129,6 +129,13 @@ func (m *WorktreeManager) loadPreparedPatch(patchPath string) ([]byte, error) {
 	return data, nil
 }
 
+// ErrPatchDoesNotApply marks a patch the base revision refuses: `git apply
+// --check` rejected it, and the fuzzy fallback did not rescue it either. It is
+// the one pre-build failure the caller can still answer with a different
+// transport, because nothing about the change itself was judged (see the
+// optimizer's one-shot re-ask in internal/orchestrator).
+var ErrPatchDoesNotApply = errors.New("the patch does not apply to the base revision")
+
 func (m *WorktreeManager) applyPreparedPatch(ctx context.Context, prepared *Prepared, path, patchPath string) error {
 	checkResult, checkErr := m.Toolchain.ApplyPatchCheck(ctx, path, patchPath)
 	if checkErr != nil {
@@ -137,7 +144,7 @@ func (m *WorktreeManager) applyPreparedPatch(ctx context.Context, prepared *Prep
 		// fallback actually changed, since it may not be the ones validated.
 		if _, fuzzyErr := m.Toolchain.ApplyPatchFuzzy(ctx, path, patchPath); fuzzyErr != nil {
 			_ = prepared.Close(context.WithoutCancel(ctx))
-			return fmt.Errorf("git apply check: %w%s", checkErr, stderrSuffix(checkResult.Stderr))
+			return fmt.Errorf("%w: git apply check: %w%s", ErrPatchDoesNotApply, checkErr, stderrSuffix(checkResult.Stderr))
 		}
 		return nil
 	}

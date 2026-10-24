@@ -47,7 +47,9 @@ initialize_campaign
                         -> evaluate_candidate (deterministic; see below; the acceptance
                            policy judges the evidence here, so the verdict exists
                            before the reviewer runs)
-                        -> reviewer (Jev behaviour-hazard checks, advisory only)
+                             reask -> back to optimizer, once per attempt, carrying a
+                               pre-build refusal (ADR 0041)
+                             continue -> reviewer (Jev behaviour-hazard checks, advisory only)
                         -> apply_policy (deterministic; counts the verdict and settles
                            it: the record, the accepted patch, the tallies)
             finish   -> skip_candidate (the analysis ended the campaign)
@@ -80,7 +82,8 @@ failure only costs the cycle its excerpts; `Assess` evaluates a proposal and
 returns the evidence together with the acceptance policy's verdict, reached
 before the reviewer runs; `Settle` records that verdict as given, promotes an
 accepted patch, and persists the tallies; `Note` reports the campaign
-starting, a role degrading or being repaired, and the campaign finishing. The
+starting, a role degrading or being repaired, a role asked again within an
+attempt, and the campaign finishing. The
 optimizer (`agents.Set`) and the two Jev advisors (`CauseAnalyst`,
 `ReviewAnalyst`) stay separate seams, because they are the parts that vary
 (live or stubbed) and degrade. Tests drive the graph with one `fakeBench`.
@@ -173,6 +176,14 @@ not recorded.
    `git apply --check`. What reaches step 1 is always a unified diff; nothing
    past this point can tell which transport produced it, which is the point.
    `domain.Candidate.Transport` records which one did, for the report.
+   One of those rejections is answered instead of recorded: with a
+   code-chosen target, an answer that hand-wrote a patch, sent no
+   `function_source`, and had it refused by git is asked once more inside the
+   same attempt, for `function_source`, with the refusal quoted (ADR 0041,
+   `reaskable` in `internal/orchestrator`). The trigger is the
+   `candidate.ErrPatchDoesNotApply` sentinel reaching the evidence as
+   `ReaskCause`, the second answer is judged by every gate the first would
+   have faced, and the answer that was refused earns no verdict.
 1. **Diff validation and normalization.** The proposed unified diff is
    normalized by `internal/candidate/normalize.go`, which repairs hunk line
    counts, truncates hunks at the first malformed body line, drops emptied
