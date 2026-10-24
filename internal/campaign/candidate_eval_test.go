@@ -13,6 +13,7 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/policy"
 	"github.com/asaf-shitrit/gotorque/internal/runner"
 )
 
@@ -153,6 +154,10 @@ func TestPercentDelta(t *testing.T) {
 	}
 }
 
+// defaultLimit is the manifest's default regression ceiling: the limit these
+// comparisons are judged by unless a test varies it.
+const defaultLimit = policy.DefaultMaximumGuardrailRegressionPercent
+
 func runWithMetric(name string, value float64) domain.RunResult {
 	return domain.RunResult{Metrics: []domain.Metric{{Name: name, Value: value}}}
 }
@@ -240,7 +245,7 @@ func TestCompareMetric(t *testing.T) {
 }
 
 func testCompareMetricMissingBaseline(t *testing.T) {
-	got := compareMetric("wl", "wall_time_ns", "ns", []domain.RunResult{{}}, metricRuns("wall_time_ns", 1, 2), wallTime)
+	got := compareMetric("wl", "wall_time_ns", "ns", defaultLimit, []domain.RunResult{{}}, metricRuns("wall_time_ns", 1, 2), wallTime)
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1", len(got))
 	}
@@ -255,7 +260,7 @@ func testCompareMetricZeroMean(t *testing.T) {
 	// constant zeros: se==0 with equal means -> confidently unchanged,
 	// which counts as supported (no regression possible).
 	cand := metricRuns("peak_memory_bytes", 0, 0, 0, 0)
-	got := compareMetric("w", "peak_memory_bytes", "bytes", base, cand, peakMemory)
+	got := compareMetric("w", "peak_memory_bytes", "bytes", defaultLimit, base, cand, peakMemory)
 	c := got[0]
 	if c.Baseline != 0 || c.Candidate != 0 || c.DeltaPercent != 0 || !c.StatisticallyFit {
 		t.Fatalf("unexpected comparison %+v", c)
@@ -265,7 +270,7 @@ func testCompareMetricZeroMean(t *testing.T) {
 func testCompareMetricImprovement(t *testing.T) {
 	base := metricRuns("wall_time_ns", 100, 102, 99, 101, 100, 98, 101)
 	cand := metricRuns("wall_time_ns", 50, 51, 49, 50, 52, 48, 51)
-	got := compareMetric("wid", "wall_time_ns", "ns", base, cand, wallTime)
+	got := compareMetric("wid", "wall_time_ns", "ns", defaultLimit, base, cand, wallTime)
 	if len(got) != 1 {
 		t.Fatalf("len = %d", len(got))
 	}
@@ -288,7 +293,7 @@ func testCompareMetricImprovement(t *testing.T) {
 func testCompareMetricNoise(t *testing.T) {
 	base := metricRuns("cpu_time_ns", 100, 105, 95, 103, 97, 102, 98)
 	cand := metricRuns("cpu_time_ns", 101, 96, 104, 99, 102, 97, 100)
-	got := compareMetric("w", "cpu_time_ns", "ns", base, cand, cpuTime)[0]
+	got := compareMetric("w", "cpu_time_ns", "ns", defaultLimit, base, cand, cpuTime)[0]
 	if got.StatisticallyFit {
 		t.Fatalf("noise should not be statistically fit: %+v", got)
 	}
@@ -645,13 +650,13 @@ func scaledMs(series ...[]float64) [][]float64 {
 // of measurement noise), so the test measures the workload mix rather than the
 // candidate's effect and a measured 20.83% win reads as no evidence at all.
 func testConcatenatedSamplesHideImprovement(t *testing.T) {
-	pooled := compareMetric("", "wall_time_ns", "ns",
+	pooled := compareMetric("", "wall_time_ns", "ns", defaultLimit,
 		wallRunsMs(gronBigBaseMs, gronSmallBaseMs),
 		wallRunsMs(gronBigCandMs, gronSmallCandMs), wallTime)[0]
 	if pooled.StatisticallyFit {
 		t.Fatalf("concatenated pooling claimed support, so this test no longer guards the defect: %+v", pooled)
 	}
-	affected := compareMetric("big", "wall_time_ns", "ns",
+	affected := compareMetric("big", "wall_time_ns", "ns", defaultLimit,
 		wallRunsMs(gronBigBaseMs), wallRunsMs(gronBigCandMs), wallTime)[0]
 	if !affected.StatisticallyFit {
 		t.Fatalf("the affected workload on its own must show support: %+v", affected)
@@ -659,10 +664,10 @@ func testConcatenatedSamplesHideImprovement(t *testing.T) {
 }
 
 func testFoldingKeepsDeltaAndFindsSupport(t *testing.T) {
-	folded := compareMetric("", "wall_time_ns", "ns",
+	folded := compareMetric("", "wall_time_ns", "ns", defaultLimit,
 		pooledAsRuns(meanPerRepetition(scaledMs(gronBigBaseMs, gronSmallBaseMs)), "wall_time_ns"),
 		pooledAsRuns(meanPerRepetition(scaledMs(gronBigCandMs, gronSmallCandMs)), "wall_time_ns"), wallTime)[0]
-	concatenated := compareMetric("", "wall_time_ns", "ns",
+	concatenated := compareMetric("", "wall_time_ns", "ns", defaultLimit,
 		wallRunsMs(gronBigBaseMs, gronSmallBaseMs),
 		wallRunsMs(gronBigCandMs, gronSmallCandMs), wallTime)[0]
 
@@ -724,14 +729,119 @@ func TestEvaluateCandidateRefusesATestFileEditBeforeBuild(t *testing.T) {
 // interval rules out a regression, so a regression is judged on significance,
 // which only a difference earns.
 func TestSignificanceIsNotSupport(t *testing.T) {
-	shifted := compareMetric("w", "wall_time_ns", "ns", metricRuns("wall_time_ns", 100, 102, 99, 101, 100, 98, 101), metricRuns("wall_time_ns", 50, 51, 49, 50, 52, 48, 51), wallTime)[0]
+	shifted := compareMetric("w", "wall_time_ns", "ns", defaultLimit, metricRuns("wall_time_ns", 100, 102, 99, 101, 100, 98, 101), metricRuns("wall_time_ns", 50, 51, 49, 50, 52, 48, 51), wallTime)[0]
 	if !shifted.StatisticallyFit || !shifted.Significant {
 		t.Fatalf("a clear shift is supported and significant: %+v", shifted)
 	}
-	flat := compareMetric("w", "wall_time_ns", "ns", metricRuns("wall_time_ns", 100, 100.4, 99.6, 100.2, 99.8, 100.1, 99.9), metricRuns("wall_time_ns", 100.1, 99.7, 100.3, 99.9, 100.2, 99.8, 100), wallTime)[0]
+	flat := compareMetric("w", "wall_time_ns", "ns", defaultLimit, metricRuns("wall_time_ns", 100, 100.4, 99.6, 100.2, 99.8, 100.1, 99.9), metricRuns("wall_time_ns", 100.1, 99.7, 100.3, 99.9, 100.2, 99.8, 100), wallTime)[0]
 	if !flat.StatisticallyFit || flat.Significant {
 		t.Fatalf("a confidently flat reading is supported but not significant: %+v", flat)
 	}
+}
+
+// issue100Series is the wall-time series from issue #100: a shared per-pair
+// jitter of up to ±12 ms rides on both sides, so the 3.50% win has no
+// detectable difference (Welch |t| about 1.3 with 25 pairs, p about 0.16).
+func issue100Series(pairs int) (base, cand []domain.RunResult) {
+	for i := range pairs {
+		jitter := float64(i%5-2) * 6e6
+		base = append(base, runWithMetric("wall_time_ns", 100e6+jitter))
+		cand = append(cand, runWithMetric("wall_time_ns", 96.5e6+jitter))
+	}
+	return base, cand
+}
+
+// TestANonSignificantWinIsNotSupported: issue #100. Support used to be granted
+// to any reading whose interval fell under the 2% equivalence bound, an
+// improvement included, so this series was accepted without benchstat even
+// though no test found a difference in it. An improvement now needs
+// significance, and the verdict is inconclusive.
+func TestANonSignificantWinIsNotSupported(t *testing.T) {
+	base, cand := issue100Series(25)
+	c := compareMetric("", "wall_time_ns", "ns", defaultLimit, base, cand, wallTime)[0]
+	require.InDelta(t, -3.5, c.DeltaPercent, 1e-9)
+	require.False(t, c.Significant, "the series carries no detectable difference: %+v", c)
+	require.False(t, c.StatisticallyFit, "an insignificant improvement must not be supported: %+v", c)
+
+	result := policy.Evaluate(policy.DefaultConfig(), policy.Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: append([]domain.MetricComparison{c}, guardrailsUnaffected()...),
+	})
+	require.Equal(t, domain.DecisionInconclusive, result.Decision, result.Reasons)
+}
+
+// TestTheSecondSeriesStillDoesNotAcceptTheInsignificantWin: ADR 0021 measures
+// the reading again rather than accepting it, and the same distribution over
+// fifty pairs still shows no difference, so the verdict stays inconclusive
+// (ADR 0034's borderline re-measure never sees the reading, which is
+// unsupported).
+func TestTheSecondSeriesStillDoesNotAcceptTheInsignificantWin(t *testing.T) {
+	config := policy.DefaultConfig()
+	base, cand := issue100Series(25)
+	evidence := &orchestrator.CandidateEvidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		// The before-fix value: the equivalence branch granted support here,
+		// which is what made the candidate an accept rather than a re-measure.
+		Comparisons: append([]domain.MetricComparison{compareMetric("", "wall_time_ns", "ns", defaultLimit, base, cand, wallTime)[0]}, guardrailsUnaffected()...),
+	}
+	unconfirmed, note := improvementsToConfirm(config, 25, evidence)
+	require.Len(t, unconfirmed, 1, "the unsupported win is what a second series is for")
+	require.Contains(t, note, "improved past the 3.00% minimum without significance")
+	require.Empty(t, policy.BorderlineImprovements(config, unconfirmed), "an unsupported win is not a borderline accept")
+
+	base50, cand50 := issue100Series(50)
+	second := compareMetric("", "wall_time_ns", "ns", defaultLimit, base50, cand50, wallTime)[0]
+	require.False(t, second.StatisticallyFit, "fifty pairs still do not separate this series: %+v", second)
+	result := policy.Evaluate(config, policy.Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: append([]domain.MetricComparison{second}, guardrailsUnaffected()...),
+		Primary:     []domain.MetricComparison{second},
+	})
+	require.Equal(t, domain.DecisionInconclusive, result.Decision, result.Reasons)
+}
+
+// TestAFlatGuardrailIsStillSupported: the equivalence branch keeps doing its
+// job for the reading it was written for, a jittery guardrail that moved by
+// nothing and whose interval rules out a regression.
+func TestAFlatGuardrailIsStillSupported(t *testing.T) {
+	for _, tc := range []struct {
+		metric   string
+		base     []float64
+		cand     []float64
+		selector metricSelector
+		wantFit  bool
+	}{
+		{"cpu_time_ns", []float64{100, 102, 98, 101, 99, 100.5, 99.5}, []float64{99.5, 101.5, 100.5, 99, 100, 101, 98.5}, cpuTime, true},
+		{"peak_memory_bytes", []float64{100, 100.4, 99.6, 100.2, 99.8, 100.1, 99.9}, []float64{100.1, 99.7, 100.3, 99.9, 100.2, 99.8, 100}, peakMemory, true},
+		{"cpu_time_ns", []float64{100, 105, 95, 103, 97, 102, 98}, []float64{101, 96, 104, 99, 102, 97, 100}, cpuTime, false},
+	} {
+		c := compareMetric("", tc.metric, "ns", defaultLimit, metricRuns(tc.metric, tc.base...), metricRuns(tc.metric, tc.cand...), tc.selector)[0]
+		require.False(t, c.Significant, "%s: the reading carries no difference: %+v", tc.metric, c)
+		require.Equal(t, tc.wantFit, c.StatisticallyFit, "%s: %+v", tc.metric, c)
+	}
+}
+
+// TestTheEquivalenceBoundIsTheMetricsOwnLimit: the bound is the metric's
+// guardrail limit (2% by default, 5% for binary size in the go-jsonnet
+// manifest, and whatever --allow sets), not a second copy of the default.
+func TestTheEquivalenceBoundIsTheMetricsOwnLimit(t *testing.T) {
+	size := func(r domain.RunResult) (float64, bool) {
+		for _, m := range r.Metrics {
+			if m.Name == "binary_size_bytes" {
+				return m.Value, true
+			}
+		}
+		return 0, false
+	}
+	base := metricRuns("binary_size_bytes", 98, 98, 98, 101, 101, 102, 102)
+	cand := metricRuns("binary_size_bytes", 99, 99, 99, 102, 102, 103, 103)
+	atDefault := compareMetric("", "binary_size_bytes", "bytes", defaultLimit, base, cand, size)[0]
+	require.InDelta(t, 1.0, atDefault.DeltaPercent, 1e-9)
+	require.False(t, atDefault.Significant, "a 1% move in this spread is no difference: %+v", atDefault)
+	require.False(t, atDefault.StatisticallyFit, "the 2% default bound does not cover this reading: %+v", atDefault)
+
+	atManifest := compareMetric("", "binary_size_bytes", "bytes", 5.0, base, cand, size)[0]
+	require.True(t, atManifest.StatisticallyFit, "the manifest's own 5%% binary-size limit does: %+v", atManifest)
 }
 
 // TestBehaviorMatchTreatsVaryingBaselineOutputAsUnordered is live8-scc: the

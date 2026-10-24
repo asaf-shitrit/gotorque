@@ -62,7 +62,7 @@ type Evidence struct {
 	// StressComparisons are the guardrail readings of workloads the manifest
 	// keeps out of acceptance: its plausible and stress tiers. They can only
 	// veto, never carry, which is what the target manifest has always promised
-	// a stress seed does (ADR 0039). An entry naming a metric that is not a
+	// a stress seed does (ADR 0040). An entry naming a metric that is not a
 	// configured guardrail is ignored, so a caller cannot slip a wall-time win
 	// from an ineligible workload into a verdict.
 	StressComparisons []domain.MetricComparison
@@ -120,7 +120,7 @@ func Evaluate(config Config, evidence Evidence) Result {
 		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", g.name, g.comparison.DeltaPercent, g.limit))
 	}
 	for _, reading := range unconfirmedStress(config, evidence.StressComparisons) {
-		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q mixed %+.2f%% on workload %q, over the %.2f%% limit, but the difference is not statistically significant; that workload cannot carry a verdict", reading.Metric, reading.DeltaPercent, reading.Workload, config.MaximumGuardrailRegressionPercent))
+		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%% on workload %q, over the %.2f%% limit, but the difference is not statistically significant; that workload cannot carry a verdict", reading.name, reading.comparison.DeltaPercent, reading.comparison.Workload, reading.limit))
 	}
 	return result
 }
@@ -155,16 +155,19 @@ func checkStressComparisons(config Config, comparisons []domain.MetricComparison
 // reasons instead of rejecting on. An insignificant reading is not evidence of
 // a regression, and these workloads have no confirmation series to turn one
 // into evidence; naming it keeps the reading auditable without letting noise
-// reject a good candidate, the rule ADR 0016 set for every other reading.
-func unconfirmedStress(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
-	var readings []domain.MetricComparison
+// reject a good candidate, the rule ADR 0016 set for every other reading. The
+// reading carries the limit it was judged by, so the reason states the bound
+// the check applied: an --allow or a manifest's own ceiling, not the shared one.
+func unconfirmedStress(config Config, comparisons []domain.MetricComparison) []guardrailReading {
+	var readings []guardrailReading
 	for _, comparison := range comparisonResults(comparisons) {
 		guardrail, ok := guardrailNamed(config, comparison.Metric)
 		if !ok || !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
 			continue
 		}
-		if config.StatisticalSupportRequired && comparison.DeltaPercent > guardrailLimit(config, guardrail) && !comparison.Significant {
-			readings = append(readings, comparison)
+		limit := guardrailLimit(config, guardrail)
+		if config.StatisticalSupportRequired && comparison.DeltaPercent > limit && !comparison.Significant {
+			readings = append(readings, guardrailReading{name: guardrail.Name, limit: limit, comparison: comparison})
 		}
 	}
 	return readings
@@ -517,6 +520,21 @@ func comparisonResults(comparisons []domain.MetricComparison) []domain.MetricCom
 func guardrailLimit(config Config, guardrail Guardrail) float64 {
 	if guardrail.MaximumRegressionPercent > 0 {
 		return guardrail.MaximumRegressionPercent
+	}
+	return config.MaximumGuardrailRegressionPercent
+}
+
+// RegressionLimit returns the regression ceiling one metric is judged by: the
+// guardrail's own limit when the manifest gives it one — which is where
+// --tradeoff and --allow land — and the config's shared ceiling otherwise.
+// Callers outside the verdict use it to reason about the same bound Evaluate
+// applies, rather than a copy of the default.
+func RegressionLimit(config Config, metric string) float64 {
+	config = withDefaults(config)
+	for _, guardrail := range config.Guardrails {
+		if guardrail.Name == metric {
+			return guardrailLimit(config, guardrail)
+		}
 	}
 	return config.MaximumGuardrailRegressionPercent
 }

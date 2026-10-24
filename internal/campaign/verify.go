@@ -153,7 +153,7 @@ func candidateBinaryOf(evidence orchestrator.CandidateEvidence) string {
 // baseline itself does not answer deterministically is skipped rather than
 // compared. The variants already have no acceptance-eligible parent in the
 // campaign's measurement, so they are not the place to start with the seeds the
-// manifest keeps out of acceptance (ADR 0039).
+// manifest keeps out of acceptance (ADR 0040).
 func (e *Engine) verifyOutputs(ctx context.Context, candidateBinary, candidateID string) (checks, mismatches []string) {
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
 		if !e.state.Manifest.AcceptanceEligible(seed.Tier) {

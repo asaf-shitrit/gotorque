@@ -186,7 +186,7 @@ Package map:
   bbolt; in-graph `CampaignState` is rebuilt on every entry. A campaign that
   ran model roles (`ADKMode` set, analyst not `jev`) is refused: it ran model
   roles this build no longer has; start a new campaign.
-- Tier eligibility (`manifest.Manifest.AcceptanceEligible`, ADR 0039): whether a
+- Tier eligibility (`manifest.Manifest.AcceptanceEligible`, ADR 0040): whether a
   seed can carry an acceptance is the manifest's `tiers.<tier>.acceptance_eligible`
   and nothing else. `measureSeedWorkloads` measures the eligible seeds for the
   verdict; `measureStressSeeds` measures every other seed and keeps only

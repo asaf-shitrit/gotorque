@@ -45,7 +45,8 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0036](0036-candidate-evaluation-is-its-own-module.md) | Candidate evaluation is its own module, with no Engine and three ports | accepted |
 | [0037](0037-discovery-is-its-own-module.md) | Discovery is its own module behind a sampler seam | accepted |
 | [0038](0038-the-engine-bridge-is-one-port.md) | The engine bridge is one port, `Bench` | accepted |
-| [0039](0039-ineligible-seeds-can-only-veto.md) | Seeds whose tier cannot accept are measured, and can only veto | accepted |
+| [0039](0039-an-improvement-needs-significance.md) | An improvement is supported only when it is significant | accepted |
+| [0040](0040-ineligible-seeds-can-only-veto.md) | Seeds whose tier cannot accept are measured, and can only veto | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay

@@ -299,7 +299,7 @@ not recorded.
    in the canonical checkout: miller's tests rewrite tracked fixtures.
 5. **Interleaved A/B measurement.** For each seed whose tier the manifest
    makes acceptance-eligible (its `tiers.<tier>.acceptance_eligible`, ADR
-   0039), baseline and candidate binaries are measured in serialized
+   0040), baseline and candidate binaries are measured in serialized
    alternating pairs (twenty-five pairs per workload, the side that runs first
    alternating pair by pair) so CPU
    contention affects both sides equally. The pair count is sized against the
@@ -377,9 +377,18 @@ not recorded.
    the coarse t-test may have granted, and delta-only legacy output is
    informational and can never grant support by itself. Each comparison
    also records `significant`: benchstat's p below 0.05 when it ran,
-   otherwise `|t| > 2.2`. That is not the same as support, which is also
-   granted to a flat reading whose interval rules out a 2% regression, and
-   it is what a regression is judged on. Trimmed benchstat
+   otherwise `|t| > 2.2`. That is not the same as support. Support has a
+   second route, for a reading that is **not** an improvement: when the 95%
+   interval of its delta lies entirely below the metric's regression limit
+   (`policy.RegressionLimit`: the guardrail's own
+   `maximum_regression_percent`, which is where `--tradeoff` and `--allow`
+   land, or the manifest's `maximum_guardrail_regression_percent`), the data
+   confidently rules out a material regression even though no significant
+   change was detected, which is what a jittery flat guardrail needs. An
+   improvement gets no such support: ruling out a regression says nothing
+   about whether a win is real, so an improved reading is supported only when
+   it is significant (ADR 0039). `significant` is what a regression is
+   judged on. Trimmed benchstat
    output is kept in the candidate record for reports. Representative
    workloads are folded per repetition before the pooled comparison: the
    mean across workloads for wall and CPU time, the maximum for peak memory,
@@ -408,7 +417,7 @@ mismatch, compared exactly as an eligible seed's is, and a regression of
 `cpu_time_ns` or `peak_memory_bytes` past its limit with statistical support.
 The candidate's `wall_time_ns` on those seeds is never compared, so nothing
 measured there can carry an acceptance. This is the stress veto the target
-manifest has documented since it described its tiers; before ADR 0039 the
+manifest has documented since it described its tiers; before ADR 0040 the
 candidate was never run on those seeds at all.
 
 The guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,

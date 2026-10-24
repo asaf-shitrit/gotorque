@@ -169,7 +169,7 @@ type TierPolicy struct {
 // the start, but nothing read it: the engine hardcoded representative-tier
 // seeds, so a manifest could not say `acceptance_eligible: false` on a
 // representative tier or `true` on a plausible one and see any difference
-// (ADR 0039).
+// (ADR 0040).
 func (m Manifest) AcceptanceEligible(tier domain.WorkloadTier) bool {
 	tierPolicy, ok := m.Workloads.Tiers[tier]
 	return ok && tierPolicy.AcceptanceEligible

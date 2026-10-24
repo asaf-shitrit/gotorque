@@ -429,8 +429,33 @@ func TestEvaluateNamesAnInsignificantStressGuardrail(t *testing.T) {
 	if result.Decision != domain.DecisionAccepted {
 		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
 	}
-	if !strings.Contains(strings.Join(result.Reasons, " "), `"cpu_time_ns" mixed +4.00% on workload "large-array"`) {
+	if !strings.Contains(strings.Join(result.Reasons, " "), `"cpu_time_ns" read +4.00% on workload "large-array"`) {
 		t.Fatalf("reasons = %v", result.Reasons)
+	}
+}
+
+// TestAnInsignificantStressGuardrailNamesTheLimitItWasJudgedBy: the reason for
+// a named stress reading must state the bound the check applied. A manifest's
+// own ceiling, a --tradeoff or an --allow reaches guardrailLimit, so printing
+// the shared ceiling named a limit the reading was never compared to.
+func TestAnInsignificantStressGuardrailNamesTheLimitItWasJudgedBy(t *testing.T) {
+	config := DefaultConfig()
+	config.Guardrails = []Guardrail{
+		{Name: "peak_memory_bytes", MaximumRegressionPercent: 5, Required: true},
+		{Name: "cpu_time_ns", MaximumRegressionPercent: 2, Required: true},
+	}
+	result := Evaluate(config, acceptedOnRepresentative([]domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Workload: "large-array", Baseline: 100, Candidate: 106},
+	}))
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	reasons := strings.Join(result.Reasons, " ")
+	if !strings.Contains(reasons, `"peak_memory_bytes" read +6.00% on workload "large-array", over the 5.00% limit`) {
+		t.Fatalf("reasons = %v", result.Reasons)
+	}
+	if strings.Contains(reasons, "over the 2.00% limit") {
+		t.Fatalf("reason names the shared ceiling, not the metric's own: %v", result.Reasons)
 	}
 }
 
@@ -470,5 +495,31 @@ func TestEvaluateStressGuardrailRejectsOnThePointEstimateWithoutRequiredSupport(
 	}))
 	if result.Decision != domain.DecisionRejected {
 		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+}
+
+// TestRegressionLimitIsTheMetricsOwnCeiling: the equivalence check that grants
+// support to a non-improving reading is bounded by the same per-metric limit
+// the verdict applies, so a manifest's narrower limit, a trade-off or an
+// --allow reaches it, and a metric with no guardrail of its own falls back to
+// the shared ceiling.
+func TestRegressionLimitIsTheMetricsOwnCeiling(t *testing.T) {
+	config := DefaultConfig()
+	config.MaximumGuardrailRegressionPercent = 2.5
+	config.Guardrails = []Guardrail{
+		{Name: "peak_memory_bytes", MaximumRegressionPercent: 5, Required: true},
+		{Name: "cpu_time_ns"}, // no own limit: the shared ceiling applies
+	}
+	if got := RegressionLimit(config, "peak_memory_bytes"); got != 5 {
+		t.Fatalf("RegressionLimit(peak_memory_bytes) = %v, want the guardrail's own 5", got)
+	}
+	if got := RegressionLimit(config, "cpu_time_ns"); got != 2.5 {
+		t.Fatalf("RegressionLimit(cpu_time_ns) = %v, want the shared 2.5", got)
+	}
+	if got := RegressionLimit(config, "wall_time_ns"); got != 2.5 {
+		t.Fatalf("RegressionLimit(wall_time_ns) = %v, want the shared 2.5 for a metric with no guardrail", got)
+	}
+	if got := RegressionLimit(Config{}, "peak_memory_bytes"); got != DefaultMaximumGuardrailRegressionPercent {
+		t.Fatalf("RegressionLimit on an empty config = %v, want the default", got)
 	}
 }
