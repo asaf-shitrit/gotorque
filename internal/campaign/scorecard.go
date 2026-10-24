@@ -27,9 +27,14 @@ type ScorecardRow struct {
 	Campaign   string
 	Target     string
 	StopReason string
-	Counts     map[string]int
-	Verified   int
-	Held       int
+	// NullCandidates is the campaign's persisted null-candidate bound. A
+	// positive value marks a campaign that measured code-generated patches
+	// changing nothing instead of running the agent graph (runNullCandidates),
+	// so any accept it recorded is a false accept of the harness itself.
+	NullCandidates int
+	Counts         map[string]int
+	Verified       int
+	Held           int
 }
 
 // Scorecard summarises campaigns for the stability criteria: how many
@@ -49,7 +54,7 @@ func Scorecard(dirs []string) ([]ScorecardRow, error) {
 }
 
 func scorecardRow(name string, state State) ScorecardRow {
-	row := ScorecardRow{Campaign: name, Target: state.Manifest.Name, StopReason: state.StopReason, Counts: map[string]int{}}
+	row := ScorecardRow{Campaign: name, Target: state.Manifest.Name, StopReason: state.StopReason, NullCandidates: state.NullCandidates, Counts: map[string]int{}}
 	held := map[int]bool{}
 	for _, v := range state.Verifications {
 		held[v.Attempt] = v.Confirmed()
@@ -93,22 +98,52 @@ func verdictClass(r CandidateRecord) string {
 
 var scorecardColumns = []string{classAccepted, classInconclusive, classGuardrail, classTests, classBuild, classHarness, classOther}
 
-// RenderScorecard is the scorecard as a Markdown table with a totals row.
+// splitScorecardRows separates the agent campaigns from the null-candidate
+// campaigns. Only the latter's counts measure a false accept or a false
+// reject, so the two never share a totals row.
+func splitScorecardRows(rows []ScorecardRow) (agent, null []ScorecardRow) {
+	for _, r := range rows {
+		if r.NullCandidates > 0 {
+			null = append(null, r)
+			continue
+		}
+		agent = append(agent, r)
+	}
+	return agent, null
+}
+
+// RenderScorecard is the scorecard as Markdown: one table of agent-campaign
+// verdicts with a totals row, and, when the input holds null campaigns, a
+// second table of their false-accept and false-reject rates. A null campaign
+// accepts nothing a sound harness could call a speedup, so its accepts are
+// kept out of the agent totals and reported as false accepts.
 func RenderScorecard(rows []ScorecardRow) string {
+	agent, null := splitScorecardRows(rows)
 	var b strings.Builder
+	if len(null) > 0 {
+		b.WriteString("## Agent campaigns\n\n")
+	}
+	writeAgentScorecard(&b, agent)
+	if len(null) > 0 {
+		b.WriteString("\n")
+		writeNullScorecard(&b, null)
+	}
+	return b.String()
+}
+
+func writeAgentScorecard(b *strings.Builder, rows []ScorecardRow) {
 	b.WriteString("| Campaign | Target | " + strings.Join(scorecardColumns, " | ") + " | verified/held | stop |\n")
 	b.WriteString("|---|---|" + strings.Repeat("---:|", len(scorecardColumns)) + "---|---|\n")
 	total := ScorecardRow{Counts: map[string]int{}}
 	for _, r := range rows {
-		writeScorecardRow(&b, r.Campaign, r.Target, r, r.StopReason)
+		writeScorecardRow(b, r.Campaign, r.Target, r, r.StopReason)
 		for class, n := range r.Counts {
 			total.Counts[class] += n
 		}
 		total.Verified += r.Verified
 		total.Held += r.Held
 	}
-	writeScorecardRow(&b, "**total**", fmt.Sprintf("%d campaigns", len(rows)), total, "")
-	return b.String()
+	writeScorecardRow(b, "**total**", fmt.Sprintf("%d campaigns", len(rows)), total, "")
 }
 
 func writeScorecardRow(b *strings.Builder, campaign, target string, r ScorecardRow, stop string) {
@@ -118,3 +153,65 @@ func writeScorecardRow(b *strings.Builder, campaign, target string, r ScorecardR
 	}
 	fmt.Fprintf(b, "| %s | %s | %s | %d/%d | %s |\n", campaign, target, strings.Join(cells, " | "), r.Verified, r.Held, stop)
 }
+
+// nullTableColumns are the null section's rate columns, each printed as a rate
+// followed by its exact one-sided 95% upper bound.
+var nullTableColumns = []string{"valid runs", "false accepts", "false rejects", "false-accept rate", "95% upper", "false-reject rate", "95% upper"}
+
+// nullScore is one null campaign's share of the harness's own error rates.
+type nullScore struct {
+	Valid        int
+	FalseAccepts int
+	FalseRejects int
+}
+
+// nullScore counts what a null campaign's verdicts say about the harness: a
+// harness-class verdict says nothing about the patch and is left out of the
+// valid runs. An inconclusive verdict is the correct outcome for a null, so
+// only guardrail, test and build rejections count as false rejects.
+func (r ScorecardRow) nullScore() nullScore {
+	score := nullScore{}
+	for class, n := range r.Counts {
+		if class != classHarness {
+			score.Valid += n
+		}
+	}
+	score.FalseAccepts = r.Counts[classAccepted]
+	score.FalseRejects = r.Counts[classGuardrail] + r.Counts[classTests] + r.Counts[classBuild]
+	return score
+}
+
+func (s nullScore) add(o nullScore) nullScore {
+	return nullScore{Valid: s.Valid + o.Valid, FalseAccepts: s.FalseAccepts + o.FalseAccepts, FalseRejects: s.FalseRejects + o.FalseRejects}
+}
+
+func writeNullScorecard(b *strings.Builder, rows []ScorecardRow) {
+	b.WriteString("## Null candidates\n\n")
+	b.WriteString("Code-generated patches that change nothing. An accept is a false accept of the harness, and a guardrail, test or build rejection is a false reject; inconclusive is the right answer. Harness-class verdicts are left out of the valid runs. The bounds are exact one-sided 95% Clopper-Pearson limits.\n\n")
+	b.WriteString("| Campaign | Target | " + strings.Join(nullTableColumns, " | ") + " | stop |\n")
+	b.WriteString("|---|---|" + strings.Repeat("---:|", len(nullTableColumns)) + "---|\n")
+	total := nullScore{}
+	for _, r := range rows {
+		score := r.nullScore()
+		writeNullScorecardRow(b, r.Campaign, r.Target, score, r.StopReason)
+		total = total.add(score)
+	}
+	writeNullScorecardRow(b, "**total**", fmt.Sprintf("%d campaigns", len(rows)), total, "")
+}
+
+func writeNullScorecardRow(b *strings.Builder, campaign, target string, score nullScore, stop string) {
+	acceptRate, acceptUpper := rateCell(score.FalseAccepts, score.Valid)
+	rejectRate, rejectUpper := rateCell(score.FalseRejects, score.Valid)
+	fmt.Fprintf(b, "| %s | %s | %d | %d | %d | %s | %s | %s | %s | %s |\n", campaign, target, score.Valid,
+		score.FalseAccepts, score.FalseRejects, acceptRate, acceptUpper, rejectRate, rejectUpper, stop)
+}
+
+// rateCell is a rate and its bound as percentages of the valid runs.
+func rateCell(hits, runs int) (rate, upper string) {
+	if runs == 0 {
+		return "n/a", "n/a"
+	}
+	return percent(float64(hits) / float64(runs)), percent(clopperPearsonUpper(hits, runs))
+}
+
+func percent(v float64) string { return fmt.Sprintf("%.2f%%", 100*v) }
