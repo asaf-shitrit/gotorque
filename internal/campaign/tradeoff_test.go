@@ -87,3 +87,25 @@ func TestACampaignKeepsAndReportsItsTradeoff(t *testing.T) {
 	require.Contains(t, report, "cpu_time_ns +1%")
 	require.Contains(t, report, "--tradeoff speed --allow cpu_time_ns=1%")
 }
+
+// TestAnAllowanceReachesTheEquivalenceBound: a manifest's guardrail limit, and
+// the one an --allow or a trade-off preset sets, is what the equivalence check
+// grants support against — not a second copy of the 2% default. Go-jsonnet
+// allows binary size 5%, so a 1% move with no detectable difference is
+// supported there and not under the 2% default.
+func TestAnAllowanceReachesTheEquivalenceBound(t *testing.T) {
+	m, err := manifest.LoadFile(filepath.Join("..", "..", "targets", "go-jsonnet", "manifest.json"))
+	require.NoError(t, err)
+	ev := &evaluator{manifest: m}
+	require.InDelta(t, 5, ev.regressionLimit("binary_size_bytes"), 1e-9)
+	require.InDelta(t, 2, ev.regressionLimit("wall_time_ns"), 1e-9)
+
+	speed, err := manifest.ResolveTradeoff("speed", []string{"memory=5%"})
+	require.NoError(t, err)
+	m.Performance, err = speed.Apply(m.Performance)
+	require.NoError(t, err)
+	ev = &evaluator{manifest: m}
+	require.InDelta(t, 5, ev.regressionLimit("peak_memory_bytes"), 1e-9)
+	require.InDelta(t, 5, ev.regressionLimit("cpu_time_ns"), 1e-9, "the speed preset allows CPU 5%")
+	require.InDelta(t, 2, ev.regressionLimit("wall_time_ns"), 1e-9, "the objective is no longer a guardrail")
+}

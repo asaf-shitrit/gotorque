@@ -722,9 +722,9 @@ func (ev *evaluator) finalizeCandidateEvidence(ctx context.Context, evidence *or
 	if wallBenchstat != "" {
 		evidence.BenchstatOutput += "pooled representative workloads:\n" + wallBenchstat
 	}
-	comparisons = append(comparisons, compareMetric("", "cpu_time_ns", "ns",
+	comparisons = append(comparisons, compareMetric("", "cpu_time_ns", "ns", ev.regressionLimit("cpu_time_ns"),
 		pooledAsRuns(meanPerRepetition(pooled.cpuBase), "cpu_time_ns"), pooledAsRuns(meanPerRepetition(pooled.cpuCand), "cpu_time_ns"), cpuTime)...)
-	comparisons = append(comparisons, compareMetric("", "peak_memory_bytes", "bytes",
+	comparisons = append(comparisons, compareMetric("", "peak_memory_bytes", "bytes", ev.regressionLimit("peak_memory_bytes"),
 		pooledAsRuns(maxPerRepetition(pooled.memBase), "peak_memory_bytes"), pooledAsRuns(maxPerRepetition(pooled.memCand), "peak_memory_bytes"), peakMemory)...)
 	if m.sizeErr == nil {
 		comparisons = append(comparisons, domain.MetricComparison{Metric: "binary_size_bytes", Unit: "bytes", Baseline: float64(m.baselineSize), Candidate: float64(m.candSize), DeltaPercent: percentDelta(float64(m.baselineSize), float64(m.candSize)), StatisticallyFit: true, Significant: m.baselineSize != m.candSize})
@@ -907,9 +907,9 @@ func (ev *evaluator) measurePgoWorkloads(ctx context.Context, s evalSettings, ev
 			ev.skipPgoLane(evidence, fmt.Sprintf("PGO-built binaries diverged on workload %q at repetition %d", seed.ID, rep))
 			return nil, 0, false
 		}
-		comparisons = append(comparisons, compareMetric(seed.ID, "wall_time_ns", "ns", ab.Baseline, ab.Candidate, wallTime)...)
-		comparisons = append(comparisons, compareMetric(seed.ID, "cpu_time_ns", "ns", ab.Baseline, ab.Candidate, cpuTime)...)
-		comparisons = append(comparisons, compareMetric(seed.ID, "peak_memory_bytes", "bytes", ab.Baseline, ab.Candidate, peakMemory)...)
+		comparisons = append(comparisons, compareMetric(seed.ID, "wall_time_ns", "ns", ev.regressionLimit("wall_time_ns"), ab.Baseline, ab.Candidate, wallTime)...)
+		comparisons = append(comparisons, compareMetric(seed.ID, "cpu_time_ns", "ns", ev.regressionLimit("cpu_time_ns"), ab.Baseline, ab.Candidate, cpuTime)...)
+		comparisons = append(comparisons, compareMetric(seed.ID, "peak_memory_bytes", "bytes", ev.regressionLimit("peak_memory_bytes"), ab.Baseline, ab.Candidate, peakMemory)...)
 		measured++
 	}
 	return comparisons, measured, true
@@ -1027,8 +1027,10 @@ func peakMemory(r domain.RunResult) (float64, bool) {
 // compareMetric aggregates one metric across A/B samples into a comparison
 // with a conservative two-sample t-test for statistical support. The
 // comparison name carries the workload so guardrails can be evaluated per
-// workload; policy treats any regressed guardrail as a rejection.
-func compareMetric(workload, metric, unit string, baseline, candidateRuns []domain.RunResult, selector metricSelector) []domain.MetricComparison {
+// workload; policy treats any regressed guardrail as a rejection. limit is the
+// regression ceiling the metric is judged by, which bounds the equivalence
+// branch of metricSupport (see regressionLimit).
+func compareMetric(workload, metric, unit string, limit float64, baseline, candidateRuns []domain.RunResult, selector metricSelector) []domain.MetricComparison {
 	baseVals := collectMetric(baseline, selector)
 	candVals := collectMetric(candidateRuns, selector)
 	result := domain.MetricComparison{Metric: metric, Workload: workload, Unit: unit}
@@ -1042,7 +1044,7 @@ func compareMetric(workload, metric, unit string, baseline, candidateRuns []doma
 	if meanBase > 0 {
 		result.DeltaPercent = percentDelta(meanBase, meanCand)
 	}
-	result.StatisticallyFit = metricSupport(baseVals, candVals, result.Baseline, result.DeltaPercent)
+	result.StatisticallyFit = metricSupport(baseVals, candVals, result.Baseline, result.DeltaPercent, limit)
 	result.Significant = statisticallySupported(baseVals, candVals)
 	return []domain.MetricComparison{result}
 }
@@ -1068,15 +1070,35 @@ func mean(values []float64) (float64, bool) {
 	return sum / float64(len(values)), true
 }
 
+// regressionLimit is the ceiling a metric is judged by: the manifest's
+// maximum_guardrail_regression_percent, narrowed or widened for one metric by
+// a trade-off preset or an --allow, since both land in that guardrail's own
+// limit. It bounds the equivalence branch of metricSupport.
+func (ev *evaluator) regressionLimit(metric string) float64 {
+	return policy.RegressionLimit(policyConfigFromManifest(ev.manifest), metric)
+}
+
+// welchSignificance is the |t| a difference must exceed to count, about
+// p < 0.05 two-sided at these sample counts. Statistical support and
+// significance both start from it.
+const welchSignificance = 2.2
+
 // metricSupport answers the question policy actually asks: "are these
-// samples strong evidence about the candidate's effect?" A comparison is
-// supported when the Welch test detects a significant difference OR when
-// the 95% confidence interval of the relative delta lies entirely below
-// the 2% guardrail limit, i.ev. the data confidently rules out a material
-// regression even though no significant change was detected. The latter
-// case matters for jittery metrics like peak memory, where a genuinely
-// flat candidate otherwise reads as unsupported.
-func metricSupport(a, b []float64, baselineMean, deltaPercent float64) bool {
+// samples strong evidence about the candidate's effect?" Two things count as
+// evidence. A significant difference (Welch's |t| above welchSignificance) is
+// evidence of whatever the samples show. A reading that is not an improvement
+// is also supported when the 95% confidence interval of its relative delta
+// lies entirely below the metric's regression limit, i.e. the data confidently
+// rules out a material regression even though no significant change was
+// detected; that matters for jittery metrics like peak memory, where a
+// genuinely flat candidate otherwise reads as unsupported.
+//
+// An improvement gets no equivalence support: ruling out a regression past the
+// limit says nothing about whether a win is real. Before this split the branch
+// admitted any win whose interval happened to fall under the limit, so without
+// benchstat a 3.50% wall-time reading from a series with no detectable
+// difference (Welch |t| 1.3) was accepted on the t-test fallback.
+func metricSupport(a, b []float64, baselineMean, deltaPercent, limit float64) bool {
 	if len(a) < 4 || len(b) < 4 {
 		return false
 	}
@@ -1091,14 +1113,17 @@ func metricSupport(a, b []float64, baselineMean, deltaPercent float64) bool {
 		return ma == mb // exact identical measurements
 	}
 	t := math.Abs(ma-mb) / se
-	if t > 2.2 {
+	if t > welchSignificance {
 		return true
 	}
-	if baselineMean <= 0 || deltaPercent >= 2.0 {
+	if deltaPercent < 0 {
+		return false // an improvement needs significance, not equivalence
+	}
+	if baselineMean <= 0 || deltaPercent >= limit {
 		return false
 	}
-	ciUpper := ((mb - ma) + 2.2*se) / baselineMean * 100
-	return ciUpper < 2.0
+	ciUpper := ((mb - ma) + welchSignificance*se) / baselineMean * 100
+	return ciUpper < limit
 }
 
 // statisticallySupported is retained for direct significance queries.
@@ -1118,7 +1143,7 @@ func statisticallySupported(a, b []float64) bool {
 		return ma != mb
 	}
 	t := math.Abs(ma-mb) / math.Sqrt(se2)
-	return t > 2.2
+	return t > welchSignificance
 }
 
 func variance(values []float64) float64 {

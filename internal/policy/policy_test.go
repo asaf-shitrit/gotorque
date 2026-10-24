@@ -382,3 +382,29 @@ func TestBorderlineImprovementsSelectsOnlyANearThresholdAccept(t *testing.T) {
 		t.Fatalf("without required support nothing is re-measured: %+v", got)
 	}
 }
+
+// TestRegressionLimitIsTheMetricsOwnCeiling: the equivalence check that grants
+// support to a non-improving reading is bounded by the same per-metric limit
+// the verdict applies, so a manifest's narrower limit, a trade-off or an
+// --allow reaches it, and a metric with no guardrail of its own falls back to
+// the shared ceiling.
+func TestRegressionLimitIsTheMetricsOwnCeiling(t *testing.T) {
+	config := DefaultConfig()
+	config.MaximumGuardrailRegressionPercent = 2.5
+	config.Guardrails = []Guardrail{
+		{Name: "peak_memory_bytes", MaximumRegressionPercent: 5, Required: true},
+		{Name: "cpu_time_ns"}, // no own limit: the shared ceiling applies
+	}
+	if got := RegressionLimit(config, "peak_memory_bytes"); got != 5 {
+		t.Fatalf("RegressionLimit(peak_memory_bytes) = %v, want the guardrail's own 5", got)
+	}
+	if got := RegressionLimit(config, "cpu_time_ns"); got != 2.5 {
+		t.Fatalf("RegressionLimit(cpu_time_ns) = %v, want the shared 2.5", got)
+	}
+	if got := RegressionLimit(config, "wall_time_ns"); got != 2.5 {
+		t.Fatalf("RegressionLimit(wall_time_ns) = %v, want the shared 2.5 for a metric with no guardrail", got)
+	}
+	if got := RegressionLimit(Config{}, "peak_memory_bytes"); got != DefaultMaximumGuardrailRegressionPercent {
+		t.Fatalf("RegressionLimit on an empty config = %v, want the default", got)
+	}
+}
