@@ -330,7 +330,10 @@ not recorded.
    package clause (`runNullCandidates`, which builds each patch against the base tree). The code is identical and only line
    numbers move, so a sound harness accepts none of them and rejects almost
    none; the run's verdicts are its false-acceptance and false-rejection
-   rates. An A/A check on csvtk (the same binary on both
+   rates. `gotorque scorecard` reads the persisted bound
+   (`null_candidates`, above zero for such a campaign) and reports those
+   campaigns in their own section, so a null accept can never be added
+   to an agent campaign's accepted, verified or held column. An A/A check on csvtk (the same binary on both
    sides, fifty pairs, baseline first) found no order bias, but the same check
    on miller's filter-value-threshold found the second run of each pair 2.66%
    slower in 41 of 60 pairs with byte-identical binaries, enough to reject
@@ -1451,6 +1454,24 @@ workload results, and one section per candidate experiment with the verdict
 policy reasons, a metric comparison table (baseline, candidate, delta
 percent, statistical support), trimmed benchstat output when benchstat
 contributed, and a per-role token usage table.
+
+`gotorque scorecard DIR...` classifies every campaign's candidate records
+and prints them as a Markdown table with a totals row. It splits the input by
+the persisted `null_candidates` field: agent campaigns keep the table above
+and the totals row over their own rows, and null campaigns get a second table.
+For a null campaign the valid runs are its records minus harness-class
+verdicts, which say nothing about the patch. An accept is a false accept; a
+guardrail, test or build rejection is a false reject, because the patch
+changed no code; an inconclusive verdict is the correct outcome for a null and
+counts in neither. Each rate is printed with its exact one-sided 95%
+Clopper-Pearson upper bound (`clopper.go`): the p at which the chance of
+seeing at most that many hits is 0.05, which for no hits in n runs is
+1 - 0.05^(1/n), about 3/n. The exact bound rather than a normal
+approximation, because the reading that matters is usually zero hits, where a
+Wald interval collapses to a point at zero. The table is computed from the
+persisted records alone, so campaigns already on disk score without a
+migration, and held-out versus development splitting stays the caller's job:
+it passes the directories it wants grouped.
 
 A running campaign holds the database's exclusive lock, so a report read
 while one is in flight used to fail with bbolt's lock timeout. The engine
