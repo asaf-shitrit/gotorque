@@ -202,6 +202,13 @@ Package map:
   `apply_policy`, the role names the degrade wrappers report under) and event
   kinds are read by `collectADKResult`, the report, scorecard and triage:
   rename neither.
+- Confirmation series (`internal/campaign/candidate_eval.go`): the second look
+  runs `confirmRegressions`, then `confirmSelection`, then
+  `confirmImprovements`, and one `interleaved-ab-confirmation` job marks it, so
+  a candidate never gets two. A selection re-measurement (ADR 0041) *replaces*
+  the workload's runs instead of extending them: the series that selected the
+  workload is where the winner's-curse bias lives, so pooling it back keeps the
+  bias, and the verdict must rest on the fresh series alone.
 - Model streams (`internal/agents/sse.go`): openai-go fails on SSE comment
   keepalives and accepts a stream cut before `response.completed`. Both are
   handled by the body filter, so model calls must keep going through

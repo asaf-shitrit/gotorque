@@ -406,10 +406,24 @@ func makeRepository(t *testing.T) string {
 
 func writeManifest(t *testing.T, dir string) string {
 	t.Helper()
+	return writeManifestWithSeeds(t, dir, []any{fixtureSeed("fixture", []string{})})
+}
+
+// fixtureSeed is one representative workload: the fixture program, which reads
+// fixture.txt and prints it, so a workload's args do not change what it prints.
+func fixtureSeed(id string, args []string) map[string]any {
+	return map[string]any{"id": id, "name": id, "tier": "representative", "args": args, "files": []any{map[string]any{"path": "fixture.txt", "content": "hello\n"}}, "provenance": "test"}
+}
+
+// writeManifestWithSeeds writes the fixture target's manifest with the given
+// representative workloads, for the tests that need more than one reading to
+// choose between.
+func writeManifestWithSeeds(t *testing.T, dir string, seeds []any) string {
+	t.Helper()
 	accept := true
 	document := map[string]any{
 		"version": "v1", "name": "fixture", "target": map[string]any{"repository": "local", "build": map[string]any{"package": ".", "binary": "fixture"}, "command": []string{}},
-		"workloads": map[string]any{"seeds": []any{map[string]any{"id": "fixture", "name": "fixture", "tier": "representative", "args": []string{}, "files": []any{map[string]any{"path": "fixture.txt", "content": "hello\n"}}, "provenance": "test"}}, "discovery": map[string]any{"enabled": false, "sources": []string{}, "strategies": []string{}, "seed": 1, "max_cases": 1, "max_depth": 1}, "tiers": map[string]any{
+		"workloads": map[string]any{"seeds": seeds, "discovery": map[string]any{"enabled": false, "sources": []string{}, "strategies": []string{}, "seed": 1, "max_cases": 1, "max_depth": 1}, "tiers": map[string]any{
 			"representative": map[string]any{"weight": 1.0, "acceptance_eligible": true},
 			"plausible":      map[string]any{"weight": 0.5, "acceptance_eligible": false},
 			"stress":         map[string]any{"weight": 0.0, "acceptance_eligible": false},

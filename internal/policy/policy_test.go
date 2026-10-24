@@ -408,3 +408,36 @@ func TestRegressionLimitIsTheMetricsOwnCeiling(t *testing.T) {
 		t.Fatalf("RegressionLimit on an empty config = %v, want the default", got)
 	}
 }
+
+// TestSelectedImprovementsReturnsOnlyAPerWorkloadAccept: the reading an accept
+// would rest on is returned when it is one workload's rather than the pooled
+// metric, and nothing when the aggregate carries the accept, the reading is
+// unsupported or below the minimum, or the manifest does not require support.
+func TestSelectedImprovementsReturnsOnlyAPerWorkloadAccept(t *testing.T) {
+	workload := func(candidate float64, fit bool) domain.MetricComparison {
+		return domain.MetricComparison{Metric: "wall_time_ns", Workload: "w", Baseline: 100, Candidate: candidate, StatisticallyFit: fit}
+	}
+	pooled := func(candidate float64) domain.MetricComparison {
+		return domain.MetricComparison{Metric: "wall_time_ns", Baseline: 100, Candidate: candidate, StatisticallyFit: true}
+	}
+	if got := SelectedImprovements(DefaultConfig(), []domain.MetricComparison{pooled(98), workload(93.49, true)}); len(got) != 1 || got[0].Workload != "w" {
+		t.Fatalf("a supported workload -6.51%% carries the accept: %+v", got)
+	}
+	if got := SelectedImprovements(DefaultConfig(), []domain.MetricComparison{pooled(90), workload(98, true)}); len(got) != 0 {
+		t.Fatalf("an accept the pooled metric carries chooses no workload reading: %+v", got)
+	}
+	for name, eligible := range map[string][]domain.MetricComparison{
+		"unsupported":   {pooled(98), workload(91, false)},
+		"below minimum": {pooled(98), workload(98, true)},
+		"empty":         {},
+	} {
+		if got := SelectedImprovements(DefaultConfig(), eligible); len(got) != 0 {
+			t.Fatalf("%s: got %+v, want nothing", name, got)
+		}
+	}
+	noSupport := DefaultConfig()
+	noSupport.StatisticalSupportRequired = false
+	if got := SelectedImprovements(noSupport, []domain.MetricComparison{pooled(98), workload(93.49, true)}); len(got) != 0 {
+		t.Fatalf("without required support the verdict rests on the point estimate: %+v", got)
+	}
+}

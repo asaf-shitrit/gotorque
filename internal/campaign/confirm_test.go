@@ -25,7 +25,24 @@ func measuredEvaluator(t *testing.T) (*evaluator, *orchestrator.CandidateEvidenc
 // campaign would pass, such as verification's pair count.
 func measuredEvaluatorWith(t *testing.T, s evalSettings) (*evaluator, *orchestrator.CandidateEvidence, *measurement, string) {
 	t.Helper()
-	engine, err := Create(context.Background(), Options{Repository: makeRepository(t), ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true})
+	return measuredOverManifest(t, s, func(dir string) string { return writeManifest(t, dir) })
+}
+
+// measuredTwoWorkloadEvaluator measures the fixture target, which carries two
+// representative workloads, so a verdict has more than one reading to choose
+// the best from.
+func measuredTwoWorkloadEvaluator(t *testing.T, s evalSettings) (*evaluator, *orchestrator.CandidateEvidence, *measurement, string) {
+	t.Helper()
+	return measuredOverManifest(t, s, func(dir string) string {
+		return writeManifestWithSeeds(t, dir, []any{fixtureSeed("fixture", []string{}), fixtureSeed("second", []string{"second"})})
+	})
+}
+
+// measuredOverManifest is measuredEvaluatorWith with the manifest chosen by the
+// caller.
+func measuredOverManifest(t *testing.T, s evalSettings, manifestPath func(dir string) string) (*evaluator, *orchestrator.CandidateEvidence, *measurement, string) {
+	t.Helper()
+	engine, err := Create(context.Background(), Options{Repository: makeRepository(t), ManifestPath: manifestPath(t.TempDir()), CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = engine.Close() })
 	require.NoError(t, engine.Run(context.Background()))
@@ -281,4 +298,96 @@ func TestConfirmationNotesNameTheSeriesLengthThatRan(t *testing.T) {
 			require.Contains(t, evidence.Summary, tc.want)
 		})
 	}
+}
+
+// perWorkloadAccept plants the readings of a candidate whose verdict would
+// accept on one workload's reading: the pooled primary stays below the
+// minimum, so acceptance rests on the workload that read best of two.
+func perWorkloadAccept() []domain.MetricComparison {
+	return append([]domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 98, StatisticallyFit: true},
+		{Metric: "wall_time_ns", Workload: "fixture", Baseline: 100, Candidate: 93.49, StatisticallyFit: true, Significant: true},
+		{Metric: "wall_time_ns", Workload: "second", Baseline: 100, Candidate: 99, StatisticallyFit: true},
+	}, guardrailsUnaffected()...)
+}
+
+// TestAPerWorkloadAcceptIsMeasuredAgainFromScratch: ADR 0041. The accept rested
+// on one workload's reading, which was chosen because it read best of several,
+// so that workload alone is measured over a fresh series and judged on that
+// series alone: the series that selected it is replaced, not extended.
+func TestAPerWorkloadAcceptIsMeasuredAgainFromScratch(t *testing.T) {
+	s := evalSettings{pairs: 5, refuseRepeats: true}
+	ev, evidence, m, candidate := measuredTwoWorkloadEvaluator(t, s)
+	evidence.Comparisons = perWorkloadAccept()
+
+	journal := &recordingJournal{}
+	ev.journal = journal
+	require.True(t, ev.confirmSelection(context.Background(), s, evidence, "candidate", candidate, m))
+
+	require.Len(t, evidence.RepSamples, 2)
+	require.Len(t, evidence.RepSamples[0].BaselineNs, s.pairs, "the selecting series is replaced, not extended")
+	require.Len(t, evidence.RepSamples[1].BaselineNs, s.pairs, "the workload the accept did not rest on is untouched")
+	require.Contains(t, evidence.Summary, `workload "fixture" read -6.51% as the best of the workload readings, so it alone was measured over 5 fresh pairs and judged on those alone:`)
+	require.Contains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
+	require.Equal(t, "selection_confirmed", journal.events[len(journal.events)-1].kind)
+	for _, c := range evidence.Comparisons {
+		require.NotEqual(t, 93.49, c.Candidate, "the planted reading is derived again from the fresh series")
+	}
+}
+
+// TestAPooledAcceptIsNotMeasuredAgainForSelection: an accept that rests on the
+// pooled metric never chose among the workload readings, so the bias this
+// corrects is not there.
+func TestAPooledAcceptIsNotMeasuredAgainForSelection(t *testing.T) {
+	s := evalSettings{pairs: 3, refuseRepeats: true}
+	ev, evidence, m, candidate := measuredTwoWorkloadEvaluator(t, s)
+	evidence.Comparisons = append([]domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 91, StatisticallyFit: true, Significant: true},
+		{Metric: "wall_time_ns", Workload: "fixture", Baseline: 100, Candidate: 98, StatisticallyFit: true},
+		{Metric: "wall_time_ns", Workload: "second", Baseline: 100, Candidate: 99, StatisticallyFit: true},
+	}, guardrailsUnaffected()...)
+
+	require.True(t, ev.confirmSelection(context.Background(), s, evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, s.pairs)
+	require.NotContains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
+}
+
+// TestASingleWorkloadAcceptIsNotMeasuredAgainForSelection: with one
+// representative workload there was no choice among readings to inflate.
+func TestASingleWorkloadAcceptIsNotMeasuredAgainForSelection(t *testing.T) {
+	ev, evidence, m, candidate := measuredEvaluator(t)
+	evidence.Comparisons = append([]domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 98, StatisticallyFit: true},
+		{Metric: "wall_time_ns", Workload: "fixture", Baseline: 100, Candidate: 93.49, StatisticallyFit: true, Significant: true},
+	}, guardrailsUnaffected()...)
+
+	require.True(t, ev.confirmSelection(context.Background(), campaignDefaults(), evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, measurementRepetitions)
+	require.NotContains(t, evidence.ValidationJobs, "interleaved-ab-confirmation")
+}
+
+// TestSelectionConfirmationIsHeldToBehaviour mirrors the other confirmation
+// series: a fresh series whose output differs takes the verified behaviour
+// back, so the policy never judges a changed program on its timings.
+func TestSelectionConfirmationIsHeldToBehaviour(t *testing.T) {
+	s := evalSettings{pairs: 3, refuseRepeats: true}
+	ev, evidence, m, candidate := measuredTwoWorkloadEvaluator(t, s)
+	evidence.Comparisons = perWorkloadAccept()
+	require.NoError(t, os.WriteFile(candidate, []byte("#!/bin/sh\necho changed\n"), 0o700)) //nolint:gosec // stands in for the candidate binary, so it must be executable
+
+	require.False(t, ev.confirmSelection(context.Background(), s, evidence, "candidate", candidate, m))
+	require.False(t, evidence.BehaviorMatches)
+	require.Contains(t, evidence.Summary, `behavior mismatch (byte-exact comparison) on workload "fixture"`)
+}
+
+// TestTheExtraSeriesBoundCoversSelection: a candidate whose regression
+// confirmation already measured every workload again gets no selection series.
+func TestTheExtraSeriesBoundCoversSelection(t *testing.T) {
+	s := evalSettings{pairs: 3, refuseRepeats: true}
+	ev, evidence, m, candidate := measuredTwoWorkloadEvaluator(t, s)
+	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
+	evidence.Comparisons = perWorkloadAccept()
+
+	require.True(t, ev.confirmSelection(context.Background(), s, evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, s.pairs, "no additional series was measured")
 }
