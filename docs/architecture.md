@@ -353,7 +353,13 @@ not recorded.
    regresses past the limit without significance, every representative
    workload is measured over a second series of twenty-five pairs, held to
    the same behavior check, and every comparison is derived again from both
-   series (`confirmRegressions`, ADR 0016). All workloads are extended, not
+   series (`confirmRegressions`, ADR 0016). A `peak_memory_bytes` breach that
+   is already significant gets the same series for a different reason
+   (`policy.GuardrailsToReplicate`, ADR 0040): peak RSS is a per-run
+   high-water mark that steps with allocator and GC pacing, so it rejects only
+   when the fresh series' own readings reproduce the breach, and those
+   readings are kept in `Evidence.FreshGuardrails` for the policy and the
+   report. All workloads are extended, not
    only the one that read high, because the pooled reading folds them per
    repetition. The second series has no budget of its own: it costs what
    the first did, and the campaign deadline bounds both. The same thing
@@ -495,9 +501,14 @@ out.
    first gets a second series of pairs (`confirmRegressions`); if it stays
    insignificant it is named in the reasons and neither rejects nor makes the
    candidate inconclusive. A consistent regression is significant even with
-   no spread, and binary size compares exact sizes, so a real regression
-   still rejects: on the point estimate, 20 comment-only null candidates on
-   gron lost 2 to `cpu_time_ns` noise (+2.16%, +3.06%). A guardrail within
+   no spread, and binary size compares exact sizes, so on the point estimate,
+   20 comment-only null candidates on gron lost 2 to `cpu_time_ns` noise
+   (+2.16%, +3.06%), a real regression still rejects. Peak memory is the one
+   exception, because a high-water mark can read high with support from one
+   contended run or one GC step: its breach rejects only when a fresh series'
+   own readings breach too (ADR 0040, `policy.GuardrailsToReplicate`), and one
+   that does not reproduce is named in the reasons with both readings. A
+   guardrail within
    its limit never needs support: demanding proof of the absence of a
    regression from a jittery high-water mark once reported inconclusive for
    a candidate that moved it by a fraction of the limit. Every verdict is persisted with

@@ -113,6 +113,11 @@ type CandidateRecord struct {
 	// the recorded decision; see runPgoLane.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
+	// FreshComparisons are the pooled guardrail readings of the fresh series
+	// that checked whether a peak-memory breach reproduces. Comparisons holds
+	// every series together, so this is the record of what one independent
+	// series said on its own.
+	FreshComparisons []domain.MetricComparison `json:"fresh_comparisons,omitempty"`
 	// ProposalRepair names the rewrite the optimizer's output needed before it
 	// parsed, empty when it parsed as sent. A salvaged patch -- one cut off at
 	// the output-token cap above all -- otherwise reads exactly like an

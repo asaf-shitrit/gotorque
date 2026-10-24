@@ -408,3 +408,111 @@ func TestRegressionLimitIsTheMetricsOwnCeiling(t *testing.T) {
 		t.Fatalf("RegressionLimit on an empty config = %v, want the default", got)
 	}
 }
+
+// peakMemoryEvidence is a candidate that doubles nothing: a supported wall-time
+// win, a flat CPU time, an unchanged binary, and a peak-memory reading of the
+// caller's choosing.
+func peakMemoryEvidence(memory, freshMemory domain.MetricComparison, fresh bool) Evidence {
+	evidence := Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 80, StatisticallyFit: true},
+			memory,
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		},
+	}
+	if fresh {
+		evidence.FreshGuardrails = []domain.MetricComparison{freshMemory}
+	}
+	return evidence
+}
+
+// TestASignificantPeakMemoryBreachNeedsAFreshSeries: peak memory is a per-run
+// high-water mark, so a supported breach on one series is not enough to reject.
+// The same two binaries read +5.58% on one 60-pair verification and -0.68% on
+// the next, and a candidate that only removed garbage lost a supported -3.4%
+// wall-time win to a +2.78% reading it did not cause.
+func TestASignificantPeakMemoryBreachNeedsAFreshSeries(t *testing.T) {
+	breach := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 38546091, StatisticallyFit: true, Significant: true}
+	quiet := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 36507648, StatisticallyFit: false}
+	repeated := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 39000000, StatisticallyFit: true, Significant: true}
+
+	unmeasured := Evaluate(DefaultConfig(), peakMemoryEvidence(breach, quiet, false))
+	if unmeasured.Decision != domain.DecisionRejected {
+		t.Fatalf("with no fresh series the single-series rule holds: decision = %s, reasons = %v", unmeasured.Decision, unmeasured.Reasons)
+	}
+
+	didNotReproduce := Evaluate(DefaultConfig(), peakMemoryEvidence(breach, quiet, true))
+	if didNotReproduce.Decision != domain.DecisionAccepted {
+		t.Fatalf("a breach a fresh series did not reproduce must not reject the win: decision = %s, reasons = %v", didNotReproduce.Decision, didNotReproduce.Reasons)
+	}
+	reasons := strings.Join(didNotReproduce.Reasons, "; ")
+	if !strings.Contains(reasons, `guardrail "peak_memory_bytes" read +5.58% on the first series, over the 2.00% limit and significant, but a fresh series read +0.00% and did not reproduce the breach`) {
+		t.Fatalf("the unreplicated breach is not named: %v", didNotReproduce.Reasons)
+	}
+
+	reproduced := Evaluate(DefaultConfig(), peakMemoryEvidence(breach, repeated, true))
+	if reproduced.Decision != domain.DecisionRejected {
+		t.Fatalf("a breach a fresh series reproduces still rejects: decision = %s, reasons = %v", reproduced.Decision, reproduced.Reasons)
+	}
+	if reasons := strings.Join(reproduced.Reasons, "; "); !strings.Contains(reasons, "and a fresh series reproduced it at +6.83%") {
+		t.Fatalf("the rejection does not say the breach reproduced: %v", reproduced.Reasons)
+	}
+}
+
+// TestCPUAndSizeBreachesKeepTheSingleSeriesRule: only peak memory steps with
+// allocator and GC pacing. A supported CPU-time breach rejects on one series,
+// however the fresh series read.
+func TestCPUAndSizeBreachesKeepTheSingleSeriesRule(t *testing.T) {
+	evidence := Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 80, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 106, StatisticallyFit: true, Significant: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		},
+		FreshGuardrails: []domain.MetricComparison{{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true}},
+	}
+	result := Evaluate(DefaultConfig(), evidence)
+	if result.Decision != domain.DecisionRejected {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if got := GuardrailsToReplicate(DefaultConfig(), evidence.Comparisons); len(got) != 0 {
+		t.Fatalf("no guardrail but peak memory is replicated: %+v", got)
+	}
+}
+
+// TestGuardrailsToReplicateNamesSupportedPeakMemoryBreaches: the engine runs a
+// fresh series for exactly the readings the verdict would otherwise reject on
+// from one series: a supported peak-memory breach.
+func TestGuardrailsToReplicateNamesSupportedPeakMemoryBreaches(t *testing.T) {
+	comparisons := []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 105, StatisticallyFit: true, Significant: true},
+	}
+	got := GuardrailsToReplicate(DefaultConfig(), comparisons)
+	if len(got) != 1 || got[0].Metric != "peak_memory_bytes" {
+		t.Fatalf("GuardrailsToReplicate = %+v, want the peak_memory_bytes reading", got)
+	}
+
+	unsupported := []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 105},
+	}
+	if got := GuardrailsToReplicate(DefaultConfig(), unsupported); len(got) != 0 {
+		t.Fatalf("an unsupported reading is already handled by UnconfirmedGuardrails: %+v", got)
+	}
+
+	withinLimit := []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 101, StatisticallyFit: true, Significant: true},
+	}
+	if got := GuardrailsToReplicate(DefaultConfig(), withinLimit); len(got) != 0 {
+		t.Fatalf("a reading within the limit is not a breach: %+v", got)
+	}
+
+	noSupport := DefaultConfig()
+	noSupport.StatisticalSupportRequired = false
+	if got := GuardrailsToReplicate(noSupport, comparisons); len(got) != 0 {
+		t.Fatalf("without required support the point estimate decides alone: %+v", got)
+	}
+}

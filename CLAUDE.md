@@ -202,6 +202,12 @@ Package map:
   `apply_policy`, the role names the degrade wrappers report under) and event
   kinds are read by `collectADKResult`, the report, scorecard and triage:
   rename neither.
+- Guardrail replication (`internal/policy`, ADR 0040): a `peak_memory_bytes`
+  breach rejects only when `Evidence.FreshGuardrails`, measured in
+  `confirmRegressions`, breaches too. Both policy call sites
+  (`policyVerdict` and `improvementsToConfirm`) must pass the field: a caller
+  that does not supply it keeps the old single-series rule, so a forgotten
+  field looks like a test failure rather than a silent policy change.
 - Model streams (`internal/agents/sse.go`): openai-go fails on SSE comment
   keepalives and accepts a stream cut before `response.completed`. Both are
   handled by the body filter, so model calls must keep going through
