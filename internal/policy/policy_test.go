@@ -408,3 +408,114 @@ func TestRegressionLimitIsTheMetricsOwnCeiling(t *testing.T) {
 		t.Fatalf("RegressionLimit on an empty config = %v, want the default", got)
 	}
 }
+
+// TestEvaluateThresholdsAcceptanceOnTheRobustShift replays the recorded
+// go-jsonnet candidate whose mean win was inflated by two slow baseline runs:
+// -5.16% by the mean, -2.56% by the Hodges–Lehmann shift. Acceptance reads the
+// shift, so the candidate is inconclusive and the reason names the estimator.
+func TestEvaluateThresholdsAcceptanceOnTheRobustShift(t *testing.T) {
+	wall := domain.MetricComparison{
+		Metric: "wall_time_ns", Workload: "order-report", Baseline: 100, Candidate: 94.84,
+		StatisticallyFit: true, Significant: true,
+		Shift: domain.ShiftHodgesLehmann, ShiftPercent: -2.56,
+	}
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: append([]domain.MetricComparison{wall}, flatGuardrails()...),
+		Primary:     []domain.MetricComparison{wall},
+	})
+	if result.Decision != domain.DecisionInconclusive {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[0], "improved by 2.56% (Hodges–Lehmann shift), below the 3.00% threshold") {
+		t.Fatalf("the reason should name the robust shift: %v", result.Reasons)
+	}
+}
+
+// TestEvaluateAcceptsAWinTheRobustShiftSupportsWhenTheMeanIsBelowTheMinimum is
+// the other side of the same coin: a skewed sample can understate a real win in
+// the mean, and the shift is the number acceptance was asked to trust.
+func TestEvaluateAcceptsAWinTheRobustShiftSupportsWhenTheMeanIsBelowTheMinimum(t *testing.T) {
+	wall := domain.MetricComparison{
+		Metric: "wall_time_ns", Baseline: 100, Candidate: 98,
+		StatisticallyFit: true, Significant: true,
+		Shift: domain.ShiftHodgesLehmann, ShiftPercent: -4,
+	}
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: append([]domain.MetricComparison{wall}, flatGuardrails()...),
+		Primary:     []domain.MetricComparison{wall},
+	})
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[0], "primary metric improved by 4.00% (Hodges–Lehmann shift)") {
+		t.Fatalf("the accept reason should name the robust shift: %v", result.Reasons)
+	}
+}
+
+// TestEvaluateRegressionsKeepTheMeanDelta: the robust shift decides
+// acceptance, not the regression ceiling. In the recorded replay a robust
+// regression reading turned six A/A null candidates from inconclusive into
+// rejected, so a reading over the limit is still judged on its sample mean.
+func TestEvaluateRegressionsKeepTheMeanDelta(t *testing.T) {
+	wall := domain.MetricComparison{
+		Metric: "wall_time_ns", Baseline: 100, Candidate: 103,
+		StatisticallyFit: true, Significant: true,
+		Shift: domain.ShiftHodgesLehmann, ShiftPercent: -1,
+	}
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: append([]domain.MetricComparison{wall}, flatGuardrails()...),
+		Primary:     []domain.MetricComparison{wall},
+	})
+	if result.Decision != domain.DecisionRejected || !strings.Contains(result.Reasons[0], "regressed by +3.00%, over the 2.00% limit") {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+}
+
+func TestImprovementDeltaPrefersTheMeasuredShift(t *testing.T) {
+	withShift := domain.MetricComparison{DeltaPercent: -5, Shift: domain.ShiftHodgesLehmann, ShiftPercent: -2.5}
+	if got := ImprovementDelta(withShift); got != -2.5 {
+		t.Fatalf("ImprovementDelta = %v, want the robust shift", got)
+	}
+	for name, comparison := range map[string]domain.MetricComparison{
+		"no shift":          {DeltaPercent: -5},
+		"unknown estimator": {DeltaPercent: -5, Shift: "bootstrap", ShiftPercent: -2.5},
+		"non-finite shift":  {DeltaPercent: -5, Shift: domain.ShiftHodgesLehmann, ShiftPercent: math.NaN()},
+	} {
+		if got := ImprovementDelta(comparison); got != -5 {
+			t.Fatalf("%s: ImprovementDelta = %v, want the mean delta", name, got)
+		}
+	}
+}
+
+// TestBorderlineAndUnconfirmedReadTheSameDeltaAsTheVerdict: a candidate whose
+// mean cleared the minimum but whose robust shift did not is neither accepted
+// on the point estimate nor re-measured to confirm it.
+func TestBorderlineAndUnconfirmedReadTheSameDeltaAsTheVerdict(t *testing.T) {
+	comparison := domain.MetricComparison{
+		Metric: "wall_time_ns", Baseline: 100, Candidate: 94.84,
+		StatisticallyFit: false,
+		Shift:            domain.ShiftHodgesLehmann, ShiftPercent: -2.56,
+	}
+	if got := UnconfirmedImprovements(DefaultConfig(), []domain.MetricComparison{comparison}); len(got) != 0 {
+		t.Fatalf("a robust shift under the minimum needs no second series: %+v", got)
+	}
+	comparison.StatisticallyFit = true
+	if got := BorderlineImprovements(DefaultConfig(), []domain.MetricComparison{comparison}); len(got) != 0 {
+		t.Fatalf("a robust shift under the minimum is not borderline: %+v", got)
+	}
+	comparison.ShiftPercent = -3.5
+	if got := BorderlineImprovements(DefaultConfig(), []domain.MetricComparison{comparison}); len(got) != 1 {
+		t.Fatalf("a robust shift just past the minimum is borderline: %+v", got)
+	}
+}
+
+func flatGuardrails() []domain.MetricComparison {
+	return []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+	}
+}

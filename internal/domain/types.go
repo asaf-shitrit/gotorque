@@ -132,12 +132,24 @@ type MetricComparison struct {
 	// comparison is eligible for a verdict when its Metric is the primary one,
 	// and it is the aggregate rather than a single workload when Workload is
 	// empty (ADR 0001).
-	Workload         string  `json:"workload,omitempty"`
-	Unit             string  `json:"unit"`
-	Baseline         float64 `json:"baseline"`
-	Candidate        float64 `json:"candidate"`
-	DeltaPercent     float64 `json:"delta_percent"`
-	StatisticallyFit bool    `json:"statistically_supported"`
+	Workload     string  `json:"workload,omitempty"`
+	Unit         string  `json:"unit"`
+	Baseline     float64 `json:"baseline"`
+	Candidate    float64 `json:"candidate"`
+	DeltaPercent float64 `json:"delta_percent"`
+	// ShiftPercent is the outlier-robust estimate of the same effect: a
+	// Hodges–Lehmann shift, the median of every candidate-minus-baseline
+	// pairwise difference, as a percentage of the baseline median. Acceptance
+	// and its borderline re-measurement threshold on it (ADR 0040), while
+	// DeltaPercent stays the sample-mean delta that the regression and
+	// guardrail checks use: in the recorded-campaign replay a robust regression
+	// reading turned six A/A null candidates from inconclusive into rejected.
+	ShiftPercent float64 `json:"shift_percent,omitempty"`
+	// Shift names the estimator behind ShiftPercent. Empty means no robust
+	// shift was measured (a metric with no samples, or too few samples), so
+	// acceptance falls back to DeltaPercent.
+	Shift            string `json:"shift,omitempty"`
+	StatisticallyFit bool   `json:"statistically_supported"`
 	// Significant says the two sample sets differ: benchstat's p below 0.05
 	// when it ran, otherwise Welch's |t| above 2.2. StatisticallyFit is not
 	// that, because it is also granted to a reading that is not an improvement
@@ -145,6 +157,11 @@ type MetricComparison struct {
 	// regression is judged on this field instead.
 	Significant bool `json:"significant"`
 }
+
+// ShiftHodgesLehmann names the estimator in MetricComparison.Shift: the
+// Hodges–Lehmann shift, the median of all candidate-minus-baseline pairwise
+// differences (ADR 0040).
+const ShiftHodgesLehmann = "hodges_lehmann"
 
 type Evaluation struct {
 	CandidateID     string             `json:"candidate_id"`

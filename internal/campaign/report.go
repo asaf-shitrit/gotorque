@@ -72,6 +72,9 @@ func primaryComparisonSummary(comparisons []domain.MetricComparison, primaryMetr
 	if c.StatisticallyFit {
 		support = "supported"
 	}
+	if c.Shift != "" {
+		return fmt.Sprintf("%s %+.2f%% mean, %s HL (%s)", comparisonLabel(c), c.DeltaPercent, formatDelta(c.ShiftPercent), support)
+	}
 	return fmt.Sprintf("%s %+.2f%% (%s)", comparisonLabel(c), c.DeltaPercent, support)
 }
 
@@ -391,7 +394,7 @@ func writeCandidateSamples(b *strings.Builder, record CandidateRecord) {
 
 func writeCandidateComparisons(b *strings.Builder, record CandidateRecord) {
 	if len(record.Comparisons) > 0 {
-		writeMetricTable(b, "\n| Comparison | Baseline | Candidate | Δ | Supported |\n|---|---:|---:|---:|---|\n", record.Comparisons)
+		writeMetricTable(b, "\n| Comparison | Baseline | Candidate | Mean Δ | HL shift | Supported |\n|---|---:|---:|---:|---:|---|\n", record.Comparisons)
 	}
 	if record.BenchstatOutput != "" {
 		fmt.Fprintf(b, "\nBenchstat comparison:\n\n```text\n%s\n```\n", record.BenchstatOutput)
@@ -410,16 +413,26 @@ func writeCandidatePGO(b *strings.Builder, record CandidateRecord) {
 		fmt.Fprintf(b, "%s\n\n", record.PgoNote)
 	}
 	if len(record.PgoComparisons) > 0 {
-		writeMetricTable(b, "| PGO comparison | Baseline-pgo | Candidate-pgo | Δ | Supported |\n|---|---:|---:|---:|---|\n", record.PgoComparisons)
+		writeMetricTable(b, "| PGO comparison | Baseline-pgo | Candidate-pgo | Mean Δ | HL shift | Supported |\n|---|---:|---:|---:|---:|---|\n", record.PgoComparisons)
 	}
 }
 
 func writeMetricTable(b *strings.Builder, header string, comparisons []domain.MetricComparison) {
 	b.WriteString(header)
 	for _, c := range comparisons {
-		fmt.Fprintf(b, "| `%s` | %.4g | %.4g | %s | %s |\n", tableLabel(c), c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), fitLabel(c.StatisticallyFit))
+		fmt.Fprintf(b, "| `%s` | %.4g | %.4g | %s | %s | %s |\n", tableLabel(c), c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), formatShift(c), fitLabel(c.StatisticallyFit))
 	}
 	b.WriteString("\n")
+}
+
+// formatShift renders the outlier-robust shift beside the mean delta. A
+// comparison without one (a metric with no samples, or too few) says so
+// rather than showing a zero that would read as "no effect".
+func formatShift(comparison domain.MetricComparison) string {
+	if comparison.Shift == "" {
+		return "n/a"
+	}
+	return formatDelta(comparison.ShiftPercent)
 }
 
 func fitLabel(fit bool) string {

@@ -282,3 +282,17 @@ func TestConfirmationNotesNameTheSeriesLengthThatRan(t *testing.T) {
 		})
 	}
 }
+
+// TestImprovementConfirmationNoteNamesTheDecidingDelta: the note explains why
+// a second series ran, so it reads the same robust shift the trigger read.
+func TestImprovementConfirmationNoteNamesTheDecidingDelta(t *testing.T) {
+	shifted := domain.MetricComparison{
+		Workload: "order-report", DeltaPercent: -5.16, Shift: domain.ShiftHodgesLehmann, ShiftPercent: -3.05,
+	}
+	note := improvementConfirmationNote([]domain.MetricComparison{shifted}, 3, 25)
+	require.Contains(t, note, "order-report -3.05% improved past the 3.00% minimum")
+	require.NotContains(t, note, "-5.16%")
+
+	note = borderlineConfirmationNote([]domain.MetricComparison{shifted}, 3, 25)
+	require.Contains(t, note, "order-report improved by 3.05%, less than twice the 3.00% minimum")
+}

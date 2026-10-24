@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "replay-heldout-dyff",
+  "repository": "/work/dyff",
+  "manifest_path": "/work/campaigns/dyff.json",
+  "schema_version": 1,
+  "status": "completed",
+  "manifest": {
+    "version": "v1",
+    "name": "dyff fixture",
+    "target": {"repository": "https://github.com/homeport/dyff"},
+    "performance": {
+      "primary_metric": "wall_time_ns",
+      "minimum_improvement_percent": 3,
+      "maximum_guardrail_regression_percent": 2,
+      "statistical_support_required": true,
+      "guardrails": [
+        {"name": "peak_memory_bytes", "maximum_regression_percent": 2, "required": true},
+        {"name": "cpu_time_ns", "maximum_regression_percent": 2, "required": true}
+      ]
+    }
+  },
+  "candidate_records": [
+    {
+      "attempt": 1,
+      "candidate_id": "candidate-1",
+      "decision": "accepted",
+      "comparisons": [
+        {"metric": "wall_time_ns", "workload": "between-lists", "unit": "ns", "baseline": 100, "candidate": 94.84, "delta_percent": -5.16, "statistically_supported": true, "significant": true},
+        {"metric": "peak_memory_bytes", "unit": "bytes", "baseline": 1000, "candidate": 1000, "delta_percent": 0, "statistically_supported": true},
+        {"metric": "cpu_time_ns", "unit": "ns", "baseline": 80, "candidate": 80, "delta_percent": 0, "statistically_supported": true}
+      ],
+      "samples": [
+        {
+          "workload": "between-lists",
+          "baseline_ns": [100000000, 100000000, 100000000, 100000000, 100000000],
+          "candidate_ns": [97440000, 97440000, 97440000, 97440000, 84440000]
+        }
+      ]
+    }
+  ]
+}
