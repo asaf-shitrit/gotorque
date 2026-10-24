@@ -186,8 +186,27 @@ func (r typeResolver) resolve(expr ast.Expr) (valueType, bool) {
 		return r.resolve(e.Type)
 	case *ast.CallExpr:
 		return r.callResult(e)
+	case *ast.SelectorExpr:
+		return r.qualified(e)
 	}
 	return valueType{}, false
+}
+
+// qualified resolves a type another first-party package declares, written as
+// pkg.T: a parameter, a typed var and a composite literal all spell a value's
+// type that way, and the methods called on it are declared in that package's
+// own files. Only an import name resolves, so a selector on a local variable
+// adds nothing.
+func (r typeResolver) qualified(sel *ast.SelectorExpr) (valueType, bool) {
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return valueType{}, false
+	}
+	other := r.pkgs.index(pkg.Name)
+	if other.decls == nil {
+		return valueType{}, false
+	}
+	return r.named(other, "// package "+pkg.Name+"\n", sel.Sel.Name)
 }
 
 // named returns the value type when index declares that type.
@@ -217,6 +236,12 @@ func (r typeResolver) callResult(call *ast.CallExpr) (valueType, bool) {
 	if !ok {
 		return valueType{}, false
 	}
+	return r.selectorResult(sel)
+}
+
+// selectorResult resolves a call on a first-party package's function,
+// pkg.New(), to the type of its first result.
+func (r typeResolver) selectorResult(sel *ast.SelectorExpr) (valueType, bool) {
 	pkg, ok := sel.X.(*ast.Ident)
 	if !ok {
 		return valueType{}, false
@@ -229,11 +254,13 @@ func (r typeResolver) callResult(call *ast.CallExpr) (valueType, bool) {
 }
 
 // result returns the declared type of the first result of index's funcs name,
-// when that function has exactly one result.
+// when that result names a type. A function with several results still yields
+// one the target uses: `rec, err := types.New()` is the most common way Go
+// code gets a value.
 func (r typeResolver) result(index packageIndex, label, name string) (valueType, bool) {
 	for _, node := range index.decls[name] {
 		fd, ok := node.(*ast.FuncDecl)
-		if !ok || fd.Type.Results == nil || len(fd.Type.Results.List) != 1 {
+		if !ok || fd.Type.Results == nil || len(fd.Type.Results.List) == 0 {
 			continue
 		}
 		if vt, isType := r.named(index, label, baseTypeName(fd.Type.Results.List[0].Type)); isType {
@@ -299,10 +326,11 @@ func addValueSpec(types map[string]valueType, spec *ast.ValueSpec, r typeResolve
 	}
 }
 
-// addAssign records a single-value assignment, which is how a call's result
-// reaches a variable.
+// addAssign records the type a call's result reaches a variable with. Only a
+// first result resolves: `rec, err := types.New()` types rec and leaves err
+// alone, and a multi-value assignment of literals resolves nothing.
 func addAssign(types map[string]valueType, stmt *ast.AssignStmt, r typeResolver) {
-	if len(stmt.Lhs) != 1 || len(stmt.Rhs) != 1 {
+	if len(stmt.Lhs) == 0 || len(stmt.Rhs) != 1 {
 		return
 	}
 	id, ok := stmt.Lhs[0].(*ast.Ident)

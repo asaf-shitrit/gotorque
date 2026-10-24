@@ -686,7 +686,10 @@ never appears in the body. So the context also carries, for each first-party
 value the target reads through a selector, that value's declared type with its
 fields and the methods it calls on it, resolved from the packages' own
 AST declarations (no module load, so it stays offline and degrades to
-nothing); on jj the target's whole context was `func parseArgs() args` and the
+nothing). Resolution follows the shapes a value's type is written in: a call's
+first result, so `rec, err := types.New()` types `rec`; a parameter, a typed
+var or a composite literal spelling `types.Record`; `new`; and a conversion.
+On jj the target's whole context was `func parseArgs() args` and the
 candidate invented fields on `args`. With function_source, deterministic code
 finds the function by name in the base revision and builds the diff itself,
 which removes context-line and header mismatches as a way to lose a
