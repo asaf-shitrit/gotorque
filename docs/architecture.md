@@ -322,7 +322,13 @@ not recorded.
    after the fact: it evaluates each accepted candidate again from its
    recorded patch through the same evaluation and policy, with 60 pairs per
    workload by default instead of 25 and with the duplicate and accepted-fix
-   refusals and the PGO lane off, and records whether the acceptance held. Its
+   refusals and the PGO lane off, and records whether the acceptance held. It
+   prints the policy's reasons, every metric comparison with its delta and
+   significance, and the output variants that differed under the verdict line
+   (`--json` emits the verifications alone on stdout, with the engine's
+   progress on stderr), and the report's Verification
+   section carries the same detail, so reading why an accept did not hold never
+   means opening the campaign database. Its
    test gate narrows a scratch copy of the baseline, never the campaign's. It automates the
    re-measurement that exposed overnight-miller-1's false acceptance. `--null-candidates N` measures the other
    side: instead of running agents, the campaign evaluates N code-generated

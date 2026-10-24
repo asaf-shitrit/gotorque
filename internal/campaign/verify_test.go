@@ -158,6 +158,69 @@ func TestVerificationReportNamesOutputMismatches(t *testing.T) {
 	require.Contains(t, b.String(), "| 2 checked, differ: s/empty | no |")
 }
 
+// TestVerificationReportExplainsWhyItDidNotHold: the reasons, the per-metric
+// deltas with significance and the output mismatches used to reach only a
+// `candidate_verified` event in the campaign database, so reading why an
+// accepted candidate did not hold meant opening bbolt by hand.
+func TestVerificationReportExplainsWhyItDidNotHold(t *testing.T) {
+	verification := Verification{
+		Attempt: 4, Pairs: 60,
+		Original: domain.DecisionAccepted, Decision: domain.DecisionRejected,
+		Reasons: []string{`guardrail "peak_memory_bytes" regressed by 5.58%, over the 2.00% limit`},
+		Comparisons: []domain.MetricComparison{
+			{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 38546090.67, DeltaPercent: 5.58, StatisticallyFit: true, Significant: true},
+			{Metric: manifest.DefaultPrimaryMetric, Baseline: 1e9, Candidate: 9.6e8, DeltaPercent: -4, StatisticallyFit: true},
+		},
+		OutputChecks: []string{"s/empty", "s/half"}, OutputMismatches: []string{"s/empty"},
+	}
+	var b strings.Builder
+	writeVerifications(&b, State{Verifications: []Verification{verification}})
+	got := b.String()
+
+	require.Contains(t, got, "### Verification of attempt 4")
+	require.Contains(t, got, `- Policy: guardrail "peak_memory_bytes" regressed by 5.58%, over the 2.00% limit`)
+	require.Contains(t, got, "| `peak_memory_bytes` | 3.651e+07 | 3.855e+07 | +5.58% | yes | yes |")
+	require.Contains(t, got, "| `wall_time_ns` | 1e+09 | 9.6e+08 | -4.00% | yes | no |", "a comparison the statistics did not support says so")
+	require.Contains(t, got, "- Output mismatches: s/empty")
+}
+
+// TestRenderVerificationEvidenceIsTheSameTextForVerifyAndTheReport keeps the
+// two surfaces from drifting: `gotorque verify` prints this string under its
+// verdict line, and the report prints it under its summary table.
+func TestRenderVerificationEvidenceIsTheSameTextForVerifyAndTheReport(t *testing.T) {
+	verification := Verification{Attempt: 2, Reasons: []string{"no eligible metric improved by the 3.00% minimum"}, Decision: domain.DecisionInconclusive}
+	var b strings.Builder
+	writeVerifications(&b, State{Verifications: []Verification{verification}})
+	require.Contains(t, b.String(), RenderVerificationEvidence(verification))
+	require.Contains(t, RenderVerificationEvidence(Verification{Attempt: 1}), "- Policy: no reason recorded")
+}
+
+// TestVerificationReasonsReachReportJSON pins the machine-readable side: an
+// operator scripting over report.json reads the verdict's reasons, its
+// per-metric significance and its output mismatches from the same file.
+func TestVerificationReasonsReachReportJSON(t *testing.T) {
+	dir := t.TempDir()
+	declared, err := manifest.LoadFile(writeManifest(t, t.TempDir()))
+	require.NoError(t, err)
+	require.NoError(t, WriteReports(dir, State{ID: "c", Manifest: declared, Verifications: []Verification{{
+		Attempt: 4, Original: domain.DecisionAccepted, Decision: domain.DecisionRejected,
+		Reasons:      []string{`guardrail "peak_memory_bytes" regressed by 5.58%`},
+		Comparisons:  []domain.MetricComparison{{Metric: "peak_memory_bytes", DeltaPercent: 5.58, Significant: true}},
+		OutputChecks: []string{"s/empty", "s/half"}, OutputMismatches: []string{"s/empty"},
+	}}}))
+
+	loaded, err := loadReportSnapshot(filepath.Join(dir, ReportJSONName))
+	require.NoError(t, err)
+	require.Len(t, loaded.Verifications, 1)
+	require.Equal(t, []string{`guardrail "peak_memory_bytes" regressed by 5.58%`}, loaded.Verifications[0].Reasons)
+	require.True(t, loaded.Verifications[0].Comparisons[0].Significant)
+	require.Equal(t, []string{"s/empty"}, loaded.Verifications[0].OutputMismatches)
+
+	markdown, err := os.ReadFile(filepath.Join(dir, ReportMarkdownName))
+	require.NoError(t, err)
+	require.Contains(t, string(markdown), `- Policy: guardrail "peak_memory_bytes" regressed by 5.58%`)
+}
+
 // TestVerifyLeavesTheCampaignsRequiredTestsAlone: the test gate can stop
 // requiring baseline tests that did not pass on a second run of the unpatched
 // revision (pruneUnstablePasses), and it records that in the campaign's state.

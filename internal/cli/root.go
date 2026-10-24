@@ -34,7 +34,7 @@ func New(deps Dependencies) *cobra.Command {
 	root.AddCommand(newManifestCommand(deps.Stdout))
 	root.AddCommand(newOptimizeCommand(deps.Stdout))
 	root.AddCommand(newReportCommand(deps.Stdout))
-	root.AddCommand(newVerifyCommand(deps.Stdout))
+	root.AddCommand(newVerifyCommand(deps.Stdout, deps.Stderr))
 	root.AddCommand(newScorecardCommand(deps.Stdout))
 	root.AddCommand(newVersionCommand(deps.Stdout))
 	return root
@@ -407,23 +407,39 @@ func newVersionCommand(out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func newVerifyCommand(out io.Writer) *cobra.Command {
+func newVerifyCommand(out, errOut io.Writer) *cobra.Command {
 	var attempt, pairs int
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "verify CAMPAIGN_DIR",
 		Short: "Evaluate a campaign's accepted candidates again from their recorded patches",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runVerify(cmd.Context(), out, args[0], attempt, pairs)
+			return runVerify(cmd.Context(), out, verifyProgress(out, errOut, asJSON), args[0], attempt, pairs, asJSON)
 		},
 	}
 	cmd.Flags().IntVar(&attempt, "attempt", 0, "verify only this attempt (default: every accepted attempt)")
 	cmd.Flags().IntVar(&pairs, "pairs", campaign.DefaultVerifyPairs, "interleaved A/B pairs per workload")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
 	return cmd
 }
 
-func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs int) (err error) {
-	engine, err := campaign.Resume(dir, out)
+// verifyProgress picks where the resumed engine reports its events: the
+// stream the text output uses, or stderr when --json owns stdout.
+func verifyProgress(out, errOut io.Writer, asJSON bool) io.Writer {
+	if asJSON {
+		return errOut
+	}
+	return out
+}
+
+// runVerify prints the verdict line and then what decided it, from the same
+// renderer the report uses, so an operator can read why an accept did not hold
+// without opening the campaign database. With --json the verifications are the
+// only output, as report --json does, so the engine's progress goes to progress
+// rather than to out.
+func runVerify(ctx context.Context, out, progress io.Writer, dir string, attempt, pairs int, asJSON bool) (err error) {
+	engine, err := campaign.Resume(dir, progress)
 	if err != nil {
 		return err
 	}
@@ -435,16 +451,45 @@ func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs in
 	if len(attempts) == 0 {
 		return campaign.ErrNothingAccepted
 	}
+	return printVerifications(ctx, out, engine, attempts, pairs, asJSON)
+}
+
+func printVerifications(ctx context.Context, out io.Writer, engine verifier, attempts []int, pairs int, asJSON bool) error {
+	verified := make([]campaign.Verification, 0, len(attempts))
 	for _, a := range attempts {
-		v, verr := engine.Verify(ctx, a, pairs)
-		if verr != nil {
-			return verr
+		v, err := engine.Verify(ctx, a, pairs)
+		if err != nil {
+			return err
 		}
-		if _, err := fmt.Fprintf(out, "attempt %d: %s on verification over %d pairs (originally %s); held: %t\n", v.Attempt, v.Decision, v.Pairs, v.Original, v.Confirmed()); err != nil {
+		if asJSON {
+			verified = append(verified, v)
+			continue
+		}
+		if err := writeVerification(out, v); err != nil {
 			return err
 		}
 	}
-	return nil
+	if !asJSON {
+		return nil
+	}
+	return json.NewEncoder(out).Encode(verified)
+}
+
+// verifier is the one engine method verify needs, so the output path can be
+// tested without building a campaign that measures anything.
+type verifier interface {
+	Verify(ctx context.Context, attempt, pairs int) (campaign.Verification, error)
+}
+
+// writeVerification prints one verdict line and, under it, the reasons, the
+// per-metric deltas with significance and the output mismatches that decided
+// it.
+func writeVerification(out io.Writer, v campaign.Verification) error {
+	if _, err := fmt.Fprintf(out, "attempt %d: %s on verification over %d pairs (originally %s); held: %t\n", v.Attempt, v.Decision, v.Pairs, v.Original, v.Confirmed()); err != nil {
+		return err
+	}
+	_, err := io.WriteString(out, campaign.RenderVerificationEvidence(v))
+	return err
 }
 
 func newScorecardCommand(out io.Writer) *cobra.Command {
