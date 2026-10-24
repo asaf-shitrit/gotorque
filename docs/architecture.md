@@ -359,9 +359,13 @@ not recorded.
    high-water mark that steps with allocator and GC pacing, so it rejects only
    when the fresh series' own readings reproduce the breach, and those
    readings are kept in `Evidence.FreshGuardrails` for the policy and the
-   report. All workloads are extended, not
-   only the one that read high, because the pooled reading folds them per
-   repetition. The second series has no budget of its own: it costs what
+   report. The first series' own readings of the re-measured guardrails go in
+   `Evidence.FirstSeriesGuardrails`, because the pooled comparisons hold one
+   value for both series once the fresh one has run, and a reason that says
+   what the first series read has to quote what it produced. All workloads
+   are extended, not only the one that read high, because the pooled reading
+   folds them per repetition. The second series has no budget of its own: it
+   costs what
    the first did, and the campaign deadline bounds both. The same thing
    happens on the acceptance side: when the candidate would otherwise end
    inconclusive only because an eligible reading improved by at least
@@ -501,9 +505,9 @@ out.
    first gets a second series of pairs (`confirmRegressions`); if it stays
    insignificant it is named in the reasons and neither rejects nor makes the
    candidate inconclusive. A consistent regression is significant even with
-   no spread, and binary size compares exact sizes, so on the point estimate,
-   20 comment-only null candidates on gron lost 2 to `cpu_time_ns` noise
-   (+2.16%, +3.06%), a real regression still rejects. Peak memory is the one
+   no spread, and binary size compares exact sizes, so a real regression still
+   rejects: on the point estimate, 20 comment-only null candidates on gron lost
+   2 to `cpu_time_ns` noise (+2.16%, +3.06%). Peak memory is the one
    exception, because a high-water mark can read high with support from one
    contended run or one GC step: its breach rejects only when a fresh series'
    own readings breach too (ADR 0040, `policy.GuardrailsToReplicate`), and one

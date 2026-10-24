@@ -131,6 +131,7 @@ func (e *Engine) policyVerdict(evidence orchestrator.CandidateEvidence) policy.R
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligibleReadings(config, evidence.Comparisons),
 		FreshGuardrails:        evidence.FreshGuardrails,
+		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
 	})
 }
 

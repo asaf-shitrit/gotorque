@@ -503,6 +503,11 @@ func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evi
 	if len(unconfirmed) == 0 && len(replicate) == 0 {
 		return true
 	}
+	// The readings the first series produced for the guardrails a fresh series
+	// re-measures, kept before both series are pooled into Comparisons: the
+	// verdict's reasons say what the first series read, and the pooled value is
+	// no longer that number.
+	firstSeries := policy.ReplicatedGuardrails(config, evidence.Comparisons)
 	starts := seriesStarts(m.seeds)
 	for i := range m.seeds {
 		if !ev.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
@@ -510,6 +515,7 @@ func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evi
 		}
 	}
 	ev.rederive(ctx, evidence, m)
+	evidence.FirstSeriesGuardrails = firstSeries
 	notes := make([]string, 0, 2)
 	if len(unconfirmed) > 0 {
 		notes = append(notes, confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs))
@@ -644,6 +650,7 @@ func improvementsToConfirm(config policy.Config, pairs int, evidence *orchestrat
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligible,
 		FreshGuardrails:        evidence.FreshGuardrails,
+		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
 	})
 	switch preview.Decision {
 	case domain.DecisionInconclusive:

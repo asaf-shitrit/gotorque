@@ -65,6 +65,14 @@ type Evidence struct {
 	// reproduces the breach; the engine runs that series when
 	// GuardrailsToReplicate names a breach, and records the readings here.
 	FreshGuardrails []domain.MetricComparison
+	// FirstSeriesGuardrails are the pooled guardrail readings of the first
+	// series, for the guardrails a fresh series re-measures
+	// (ReplicatedGuardrails), taken before that series was folded in. They are
+	// recorded because Comparisons then hold one pooled value for both series:
+	// a reason that says what the first series read cannot quote that value.
+	// An empty set means no fresh series ran, so Comparisons still hold the
+	// first series' own readings.
+	FirstSeriesGuardrails []domain.MetricComparison
 }
 
 type Result struct {
@@ -489,7 +497,7 @@ func unreplicatedGuardrails(config Config, byName map[string]domain.MetricCompar
 		if !replicatedGuardrail(guardrail.Name) {
 			continue
 		}
-		comparison, found := byName[guardrail.Name]
+		comparison, found := firstSeriesGuardrail(evidence, byName, guardrail.Name)
 		limit := guardrailLimit(config, guardrail)
 		if !found || !breached(config, comparison, limit) {
 			continue
@@ -500,6 +508,41 @@ func unreplicatedGuardrails(config Config, byName map[string]domain.MetricCompar
 		}
 	}
 	return out
+}
+
+// firstSeriesGuardrail resolves the reading the first series produced for one
+// guardrail. Evidence.FirstSeriesGuardrails is authoritative when it is there:
+// a fresh series was measured, so the pooled Comparisons no longer hold the
+// first series' value, and a reason quoting it must not read them. Without it
+// no fresh series ran, and the pooled reading is the first series' own.
+func firstSeriesGuardrail(evidence Evidence, byName map[string]domain.MetricComparison, name string) (domain.MetricComparison, bool) {
+	if len(evidence.FirstSeriesGuardrails) > 0 {
+		comparison, found := indexComparisons(comparisonResults(evidence.FirstSeriesGuardrails))[name]
+		return comparison, found
+	}
+	comparison, found := byName[name]
+	return comparison, found
+}
+
+// ReplicatedGuardrails returns the pooled readings of the guardrails whose
+// breach has to reproduce in a fresh series (replicatedGuardrail), breach or
+// not. The engine records them on the evidence before it measures that series:
+// once the fresh readings are folded in, Comparisons hold one value for both
+// series, and a reason that says what the first series read has to quote what
+// that series produced.
+func ReplicatedGuardrails(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
+	config = withDefaults(config)
+	byName := indexComparisons(comparisonResults(comparisons))
+	var readings []domain.MetricComparison
+	for _, guardrail := range config.Guardrails {
+		if !replicatedGuardrail(guardrail.Name) {
+			continue
+		}
+		if comparison, found := byName[guardrail.Name]; found {
+			readings = append(readings, comparison)
+		}
+	}
+	return readings
 }
 
 // GuardrailsToReplicate returns the pooled guardrail readings that are over

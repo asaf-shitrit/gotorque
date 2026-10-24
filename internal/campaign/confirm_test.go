@@ -25,6 +25,15 @@ func measuredEvaluator(t *testing.T) (*evaluator, *orchestrator.CandidateEvidenc
 // campaign would pass, such as verification's pair count.
 func measuredEvaluatorWith(t *testing.T, s evalSettings) (*evaluator, *orchestrator.CandidateEvidence, *measurement, string) {
 	t.Helper()
+	_, ev, evidence, m, candidate := measuredEngineEvaluator(t, s)
+	return ev, evidence, m, candidate
+}
+
+// measuredEngineEvaluator keeps the engine, for a test that drives the
+// evaluator's measurement and then the engine's verdict path over the evidence
+// it produced.
+func measuredEngineEvaluator(t *testing.T, s evalSettings) (*Engine, *evaluator, *orchestrator.CandidateEvidence, *measurement, string) {
+	t.Helper()
 	engine, err := Create(context.Background(), Options{Repository: makeRepository(t), ManifestPath: writeManifest(t, t.TempDir()), CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = engine.Close() })
@@ -39,7 +48,7 @@ func measuredEvaluatorWith(t *testing.T, s evalSettings) (*evaluator, *orchestra
 	require.True(t, ev.measureSeedWorkloads(context.Background(), s, evidence, "candidate", candidate, m), evidence.Summary)
 	ev.finalizeCandidateEvidence(context.Background(), evidence, m)
 	require.Len(t, evidence.RepSamples[0].BaselineNs, s.pairs)
-	return ev, evidence, m, candidate
+	return engine, ev, evidence, m, candidate
 }
 
 // TestAnUnresolvedRegressionIsMeasuredAgain: a reading over the limit without
@@ -311,6 +320,42 @@ func TestASignificantPeakMemoryBreachIsMeasuredAgain(t *testing.T) {
 	require.Equal(t, "measurement_confirmed", journal.events[len(journal.events)-1].kind)
 }
 
+// TestAVerdictQuotesTheFirstSeriesReading: the reason a breach did not
+// reproduce says what the first series read, and the engine records that
+// reading before the fresh one is folded in. The pooled comparisons hold one
+// value for both series, so once a fresh series ran they are no longer what the
+// first series produced.
+func TestAVerdictQuotesTheFirstSeriesReading(t *testing.T) {
+	engine, ev, evidence, m, candidate := measuredEngineEvaluator(t, campaignDefaults())
+	breach := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 38546091, StatisticallyFit: true, Significant: true}
+	evidence.BehaviorMatches, evidence.SafetyChecksPassed, evidence.RepresentativeEvidence = true, true, true
+	evidence.Comparisons = []domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 80, StatisticallyFit: true, Significant: true},
+		breach,
+		{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+	}
+
+	require.True(t, ev.confirmRegressions(context.Background(), campaignDefaults(), evidence, "candidate", candidate, m))
+	require.Len(t, evidence.FirstSeriesGuardrails, 1, "the first series' peak-memory reading is recorded")
+	require.InDelta(t, breach.Candidate, evidence.FirstSeriesGuardrails[0].Candidate, 0.0)
+
+	// The fresh series reads quiet, so the breach did not reproduce and the
+	// verdict names both readings instead of rejecting. The comparisons are the
+	// pooled readings the confirmation derived from both series; the fixture
+	// builds no binary of its own, so its binary-size reading is not usable.
+	evidence.Comparisons = []domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 80, StatisticallyFit: true, Significant: true},
+		{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 37497005, StatisticallyFit: true, Significant: true},
+		{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+	}
+	evidence.FreshGuardrails = []domain.MetricComparison{{Metric: "peak_memory_bytes", Baseline: breach.Baseline, Candidate: breach.Baseline, StatisticallyFit: true}}
+	result := engine.policyVerdict(*evidence)
+	require.NotEqual(t, domain.DecisionRejected, result.Decision)
+	require.Contains(t, strings.Join(result.Reasons, "; "), `guardrail "peak_memory_bytes" read +5.58% on the first series, over the 2.00% limit and significant, but a fresh series read +0.00% and did not reproduce the breach`)
+}
+
 // TestASupportedCPUGuardrailBreachStaysFinal: only peak memory is replicated.
 // A supported CPU-time breach rejects on its first series, as ADR 0033 says.
 func TestASupportedCPUGuardrailBreachStaysFinal(t *testing.T) {
@@ -323,7 +368,9 @@ func TestASupportedCPUGuardrailBreachStaysFinal(t *testing.T) {
 }
 
 // TestPolicyVerdictReadsTheFreshSeries pins the wiring: the verdict must see
-// the fresh series, or a breach it did not reproduce would reject anyway.
+// the fresh series, or a breach it did not reproduce would reject anyway. After
+// a fresh series the pooled comparisons hold both series together, so the
+// first series' own reading arrives on the evidence beside them.
 func TestPolicyVerdictReadsTheFreshSeries(t *testing.T) {
 	engine, err := Create(context.Background(), Options{
 		Repository: makeRepository(t), ManifestPath: writeManifest(t, t.TempDir()),
@@ -334,15 +381,17 @@ func TestPolicyVerdictReadsTheFreshSeries(t *testing.T) {
 	breach := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 38546091, StatisticallyFit: true, Significant: true}
 	comparisons := []domain.MetricComparison{
 		{Metric: "wall_time_ns", Baseline: 100, Candidate: 80, StatisticallyFit: true},
-		breach,
+		{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 37500000, StatisticallyFit: true, Significant: true},
 		{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 		{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
 	}
-	evidence := orchestrator.CandidateEvidence{BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true, Comparisons: comparisons}
-	require.Equal(t, domain.DecisionRejected, engine.policyVerdict(evidence).Decision)
+	evidence := orchestrator.CandidateEvidence{BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true, Comparisons: comparisons, FirstSeriesGuardrails: []domain.MetricComparison{breach}}
+	require.Equal(t, domain.DecisionRejected, engine.policyVerdict(evidence).Decision, "with no fresh series the single-series rule holds")
 
 	evidence.FreshGuardrails = []domain.MetricComparison{{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 36507648}}
 	result := engine.policyVerdict(evidence)
 	require.Equal(t, domain.DecisionAccepted, result.Decision)
-	require.Contains(t, strings.Join(result.Reasons, "; "), "did not reproduce the breach")
+	reasons := strings.Join(result.Reasons, "; ")
+	require.Contains(t, reasons, "did not reproduce the breach")
+	require.Contains(t, reasons, "read +5.58% on the first series", "the reason quotes the first series, not the pooled +2.72%")
 }

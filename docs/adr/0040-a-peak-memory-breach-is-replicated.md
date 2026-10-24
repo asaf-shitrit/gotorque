@@ -44,7 +44,10 @@ when those fresh readings also breach: over the limit, with support.
 
 A breach the fresh series does not reproduce is named in the verdict's reasons
 with both deltas and neither rejects nor makes the candidate inconclusive, the
-rule ADR 0033 set for an insignificant reading. The fresh readings are recorded
+rule ADR 0033 set for an insignificant reading. The reason quotes the readings
+the first series produced, which the engine records in
+`Evidence.FirstSeriesGuardrails` before the two series are pooled, because
+`Comparisons` then hold one value for both. The fresh readings are recorded
 (`fresh_guardrails` on the evidence, `fresh_comparisons` in the candidate
 record) and the report shows them as their own table, so the verdict can be
 re-read from disk.

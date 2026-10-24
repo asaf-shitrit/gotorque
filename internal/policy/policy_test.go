@@ -461,6 +461,31 @@ func TestASignificantPeakMemoryBreachNeedsAFreshSeries(t *testing.T) {
 	}
 }
 
+// TestAnUnreplicatedBreachQuotesTheFirstSeries: once a fresh series has run,
+// the pooled comparisons hold one value for both series. The reason says "on
+// the first series", so it quotes Evidence.FirstSeriesGuardrails: here the
+// pooled +2.71% is the number a reader was shown under that label, and the
+// first series read +5.58%.
+func TestAnUnreplicatedBreachQuotesTheFirstSeries(t *testing.T) {
+	firstSeries := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 38546091, StatisticallyFit: true, Significant: true}
+	pooled := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 37497005, StatisticallyFit: true, Significant: true}
+	quiet := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 36507648, StatisticallyFit: true}
+	evidence := peakMemoryEvidence(pooled, quiet, true)
+	evidence.FirstSeriesGuardrails = []domain.MetricComparison{firstSeries}
+
+	result := Evaluate(DefaultConfig(), evidence)
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	reasons := strings.Join(result.Reasons, "; ")
+	if !strings.Contains(reasons, `read +5.58% on the first series`) {
+		t.Fatalf("the reason does not quote what the first series read: %v", result.Reasons)
+	}
+	if strings.Contains(reasons, "+2.71%") {
+		t.Fatalf("the reason quotes the pooled reading as the first series' own: %v", result.Reasons)
+	}
+}
+
 // TestCPUAndSizeBreachesKeepTheSingleSeriesRule: only peak memory steps with
 // allocator and GC pacing. A supported CPU-time breach rejects on one series,
 // however the fresh series read.
