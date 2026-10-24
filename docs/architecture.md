@@ -379,10 +379,14 @@ not recorded.
    `policy.SelectedImprovements`, ADR 0041). The rule repeats while the verdict
    still rests on a per-workload reading, measuring each such workload at most
    once more, so a fresh reading that no longer clears the bar cannot hand the
-   accept to the reading that selected it. At most one extra series runs per
-   candidate in total, plus that fresh series per workload the accept would
-   rest on — if the regression confirmation already extended every seed, the
-   improvement and selection checks run no series of their own.
+   accept to the reading that selected it. The regression and improvement
+   confirmations run at most one series per candidate between them: if the
+   regression confirmation already extended every seed, the improvement check
+   runs no series of its own. Selection is the exception, and runs its fresh
+   series even then: an extended seed is not a replaced one, so the pairs that
+   selected the workload would still be in a pooled reading. That fresh series
+   is as long as the one it replaces, because the pooled reading folds the
+   seeds per repetition.
 6. **Statistics.** Each metric gets a two-sample Welch t-test against a
    conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
    sample sizes); support is never reported from fewer than four samples per

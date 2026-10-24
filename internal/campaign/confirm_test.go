@@ -380,14 +380,38 @@ func TestSelectionConfirmationIsHeldToBehaviour(t *testing.T) {
 	require.Contains(t, evidence.Summary, `behavior mismatch (byte-exact comparison) on workload "fixture"`)
 }
 
-// TestTheExtraSeriesBoundCoversSelection: a candidate whose regression
-// confirmation already measured every workload again gets no selection series.
-func TestTheExtraSeriesBoundCoversSelection(t *testing.T) {
+// TestAPerWorkloadAcceptIsMeasuredAgainAfterARegressionConfirmation: a
+// regression confirmation extends every seed rather than replacing it, so a
+// per-workload accept then rests on the 50 pooled pairs that still hold the 25
+// that selected the workload. The selected workload is measured fresh and the
+// pooled series is replaced, so the accept is judged on the fresh reading alone
+// (ADR 0041). The fresh series is as long as the one it replaces, because the
+// pooled reading folds the seeds per repetition.
+func TestAPerWorkloadAcceptIsMeasuredAgainAfterARegressionConfirmation(t *testing.T) {
 	s := evalSettings{pairs: 3, refuseRepeats: true}
 	ev, evidence, m, candidate := measuredTwoWorkloadEvaluator(t, s)
-	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
-	evidence.Comparisons = perWorkloadAccept()
+	evidence.Comparisons = []domain.MetricComparison{{Metric: "wall_time_ns", Workload: "fixture", Baseline: 100, Candidate: 104}}
+	require.True(t, ev.confirmRegressions(context.Background(), s, evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*s.pairs, "the regression confirmation extended every workload")
 
+	evidence.Comparisons = perWorkloadAccept()
 	require.True(t, ev.confirmSelection(context.Background(), s, evidence, "candidate", candidate, m))
-	require.Len(t, evidence.RepSamples[0].BaselineNs, s.pairs, "no additional series was measured")
+
+	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*s.pairs, "the fresh series replaces the extended one")
+	require.Len(t, evidence.RepSamples[1].BaselineNs, 2*s.pairs, "the workload the accept did not rest on is untouched")
+	require.Contains(t, evidence.Summary, `workload "fixture" read -6.51% as the best of the workload readings, so it alone was measured over 6 fresh pairs and judged on those alone:`)
+	require.Equal(t, 1, countJob(evidence.ValidationJobs, "interleaved-ab-confirmation"), "the confirmation job is recorded once")
+	for _, c := range evidence.Comparisons {
+		require.NotEqual(t, 93.49, c.Candidate, "the planted reading is derived again from the fresh series")
+	}
+}
+
+func countJob(jobs []string, job string) int {
+	count := 0
+	for _, j := range jobs {
+		if j == job {
+			count++
+		}
+	}
+	return count
 }

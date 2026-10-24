@@ -618,17 +618,19 @@ func evaluateEvidence(config policy.Config, evidence *orchestrator.CandidateEvid
 // comparison is derived again from the fresh runs, so the record holds the
 // series the verdict rests on.
 //
+// A candidate whose regression or unsupported-improvement confirmation already
+// ran is measured again here too: that confirmation extended every seed, so a
+// per-workload accept would rest on both series pooled, and the pairs that
+// selected the workload are still in them. The fresh series replaces the pooled
+// one for the workload that carries the accept, so it is as long as what it
+// replaces and the pooled reading keeps one length per seed.
+//
 // Each workload that would carry the accept is measured at most once more, so
 // a candidate whose fresh reading no longer clears the bar but whose second
 // workload's does is measured again there rather than accepted on the reading
 // that selected it. The campaign deadline bounds the cost, as it bounds every
 // series.
 func (ev *evaluator) confirmSelection(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
-	// A regression confirmation has already measured every workload again, so
-	// this candidate has had its second series.
-	if slices.Contains(evidence.ValidationJobs, "interleaved-ab-confirmation") {
-		return true
-	}
 	// The bias being corrected is choosing the best of several readings: a
 	// target with one representative workload offered no choice to inflate.
 	if len(m.seeds) < 2 {
@@ -659,7 +661,9 @@ func (ev *evaluator) confirmSelection(ctx context.Context, s evalSettings, evide
 	}
 	note := strings.Join(notes, "; ")
 	evidence.Summary += "; " + note
-	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
+	if !slices.Contains(evidence.ValidationJobs, "interleaved-ab-confirmation") {
+		evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
+	}
 	_ = ev.journal.event("selection_confirmed", note, nil)
 	return true
 }
@@ -679,19 +683,29 @@ func selectedWorkloadToRemeasure(config policy.Config, evidence *orchestrator.Ca
 	return selected
 }
 
-// remeasureSelectedWorkload replaces one workload's runs with a fresh series,
-// derives every comparison again from what is now measured, and returns the
-// note that records what the reading the verdict rested on said and what the
-// fresh series alone says.
+// remeasureSelectedWorkload replaces one workload's runs with a fresh series of
+// the length the replaced one held, derives every comparison again from what is
+// now measured, and returns the note that records what the reading the verdict
+// rested on said and what the fresh series alone says.
 func (ev *evaluator) remeasureSelectedWorkload(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement, seed int, selected domain.MetricComparison) (string, bool) {
 	fresh := seedRuns{seed: m.seeds[seed].seed, deterministic: m.seeds[seed].deterministic}
-	if !ev.runSeries(ctx, s, &fresh, id, candidateBinary, evidence, evidence.Comparisons) {
-		return "", false
+	// A regression confirmation has already extended every seed to twice the
+	// pair count. Re-measuring over one series of the campaign's count would
+	// leave this seed shorter than the others, and the pooled reading folds the
+	// seeds per repetition, so it would drop the other seeds' second series.
+	replaced := len(m.seeds[seed].ab.Baseline)
+	step := max(1, s.pairs)
+	for remaining := replaced; remaining > 0; remaining -= step {
+		series := s
+		series.pairs = min(step, remaining)
+		if !ev.runSeries(ctx, series, &fresh, id, candidateBinary, evidence, evidence.Comparisons) {
+			return "", false
+		}
 	}
 	m.seeds[seed] = fresh
 	ev.rederive(ctx, evidence, m)
 	judged := workloadReading(m.comparisons, m.seeds[seed].seed.ID, ev.manifest.Performance.PrimaryMetric)
-	return selectionNote(selected, judged, s.pairs), true
+	return selectionNote(selected, judged, replaced), true
 }
 
 // workloadReading finds one per-workload reading by the seed id the comparison
