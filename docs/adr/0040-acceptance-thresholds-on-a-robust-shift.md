@@ -28,8 +28,17 @@ the mean otherwise. A comparison without a shift (binary size, too few samples) 
 mean.
 
 Support is unchanged: an improvement still needs significance (ADR 0039), and the shift only
-decides which magnitude the minimum is compared against. A supported mean win whose robust shift
+replaces the magnitude the minimum is compared against. A supported mean win whose robust shift
 sits under the minimum is inconclusive, not accepted.
+
+A shift may supply a win's size but never its existence. `policy.estimatorsAgree` requires the mean
+delta to point the same way as the shift before the shift can carry an accept, and
+`policy.bestImprovement` skips a reading the two disagree about while any other eligible reading is
+left. Without that rule the shift turns an unsupported reading into an accept: `metricSupport`
+sets `StatisticallyFit` for a reading that is not an improvement whenever the data confidently rule
+out a material regression, so a bimodal candidate with a flat-to-slower mean (75% of runs at 96, 25%
+at 112 against a baseline of 100; mean +0.36%, shift -3.60%) accepted as a 3.60% win. Support there
+says "no regression", and no reading of it says "faster".
 
 Regression and guardrail checks keep `DeltaPercent`. The report shows both columns, and the event
 summary shows both numbers when they differ.
@@ -45,6 +54,11 @@ when absent, as in CI) and never reads a campaign on a held-out target. It recor
   puts it inside ADR 0034's borderline band, so a live campaign would measure it over a second
   series before the verdict.
 - No candidate the mean accepted was rejected, and none it refused was accepted.
+
+The estimator-agreement rule (QA round 1 on #110) changes no verdict in the same replay: 306
+measured candidates, the same single change. `TestEvaluateRefusesAShiftTheMeanContradicts`,
+`TestConfirmationTriggersSkipAContradictingShift` and
+`TestDisagreeingReadingDoesNotHideAnAgreeingWin` cover it in `internal/policy`.
 
 The alternative — switching the regression side too — was replayed and declined: it changed 17
 verdicts, six of them A/A null candidates (null2-fzf 12, null2-scc 10, 11) going from inconclusive
@@ -62,6 +76,8 @@ that the unpaired one did not.
   shift, with the mean beside it.
 - A win the mean understates is still accepted when the shift clears the minimum, which the small
   replay counts show happens less often than the reverse.
+- A reading whose mean delta contradicts its shift never accepts, however large the shift, and the
+  verdict's reason names both numbers.
 - A comparison with fewer than two samples per side, or a non-positive baseline median, keeps the
   mean delta and accepts on it, as before.
 - The regression ceiling is still a mean threshold. A guardrail regression that only the mean shows

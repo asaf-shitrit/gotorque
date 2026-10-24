@@ -153,7 +153,9 @@ Package map:
   variants.
 - `internal/policy`: pure acceptance decision. No filesystem, process, or
   network access; keep it that way. Improvements are thresholded on the
-  Hodges–Lehmann shift, regressions on the mean delta (ADR 0040).
+  Hodges–Lehmann shift, regressions on the mean delta (ADR 0040), and the shift
+  may only size a win: a reading whose mean delta points the other way never
+  accepts.
 - `internal/candidate`: unified-diff normalization, validation, worktrees.
 - `internal/toolchain`: allowlisted wrappers for `go`, `git`, `pprof`,
   `benchstat`. It deliberately exposes no general shell API; add a typed method

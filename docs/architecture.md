@@ -406,7 +406,11 @@ not recorded.
    a percentage of the baseline median (`campaign.hodgesLehmannShift`,
    `robustShiftPercent`). `policy.ImprovementDelta` returns the shift when one
    was measured and the mean otherwise, and acceptance, the accept reason and
-   both confirmation triggers (ADR 0021, ADR 0034) read it. The regression
+   both confirmation triggers (ADR 0021, ADR 0034) read it. The shift may only
+   size a win, not create one: `policy.estimatorsAgree` refuses a reading whose
+   mean delta points the other way, because support there came from
+   `metricSupport`'s equivalence branch, which rules out a regression rather
+   than showing a win. The regression
    and guardrail checks deliberately keep the mean delta: in the recorded
    replay a robust regression reading turned six A/A null candidates from
    inconclusive into rejected, and a robust estimate can understate a real
@@ -424,7 +428,8 @@ pooled primary metric plus one comparison per representative-tier seed (only
 those seeds are measured, so every per-workload primary comparison is eligible
 by construction). A candidate passes when any member of that set improves by
 at least the manifest's `minimum_improvement_percent` with statistical
-support — read from the Hodges–Lehmann shift (ADR 0040) — and no member
+support — read from the Hodges–Lehmann shift (ADR 0040), with the mean delta
+agreeing that the reading improved — and no member
 regresses significantly past `maximum_guardrail_regression_percent`, read from
 the mean delta; the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as

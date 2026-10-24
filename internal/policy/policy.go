@@ -260,6 +260,23 @@ func hasRobustShift(comparison domain.MetricComparison) bool {
 	return comparison.Shift == domain.ShiftHodgesLehmann && finite(comparison.ShiftPercent)
 }
 
+// estimatorsAgree reports whether the mean delta and the robust shift point the
+// same way. A shift may supply a win's magnitude but never its existence:
+// metricSupport (internal/campaign) sets StatisticallyFit for a reading that is
+// not an improvement whenever the data confidently rules out a material
+// regression, so support there says "no regression", not "faster". Reading a
+// win off the shift while the mean says otherwise therefore has no evidence
+// behind it, and accepting on it is a false accept: a reading of +1.5% by the
+// mean beside a -4% shift was accepted as a 4.00% improvement (ADR 0040). A
+// comparison with no measured shift carries only the mean, so it agrees by
+// construction.
+func estimatorsAgree(comparison domain.MetricComparison) bool {
+	if !hasRobustShift(comparison) {
+		return true
+	}
+	return finite(comparison.DeltaPercent) && (comparison.DeltaPercent <= 0) == (comparison.ShiftPercent <= 0)
+}
+
 // BorderlineImprovements returns the reading an accept would rest on when it
 // cleared the minimum by less than borderlineFactor, or nothing. The engine
 // measures such a candidate again before the verdict, as it does an
@@ -289,7 +306,7 @@ const borderlineFactor = 2.0
 // verdict cannot disagree about which win is borderline.
 func improvedAtLeastMinimum(config Config, comparison domain.MetricComparison) bool {
 	delta := ImprovementDelta(comparison)
-	return finite(delta) && -delta >= config.MinimumImprovementPercent
+	return estimatorsAgree(comparison) && finite(delta) && -delta >= config.MinimumImprovementPercent
 }
 
 // decideOnImprovement accepts on the best supported win in the eligible set.
@@ -303,6 +320,9 @@ func decideOnImprovement(config Config, eligible []domain.MetricComparison, resu
 	}
 	if improvement < config.MinimumImprovementPercent {
 		return inconclusive(result, fmt.Sprintf("best acceptance-eligible measurement improved by %.2f%%%s, below the %.2f%% threshold", improvement, estimatorNote(best), config.MinimumImprovementPercent))
+	}
+	if !estimatorsAgree(best) {
+		return inconclusive(result, fmt.Sprintf("best acceptance-eligible measurement reads %.2f%%%s beside a mean delta of %+.2f%%, so the two estimators disagree on whether it improved", improvement, estimatorNote(best), best.DeltaPercent))
 	}
 	result.Decision = domain.DecisionAccepted
 	result.Reasons = []string{fmt.Sprintf("%s improved by %.2f%%%s with required evidence and no guardrail regression", acceptanceSubject(best), improvement, estimatorNote(best))}
@@ -322,11 +342,24 @@ func estimatorNote(comparison domain.MetricComparison) string {
 // bestImprovement returns the largest improvement in the eligible set together
 // with whether that comparison carried statistical support. The supported
 // comparison wins when one exists, because that is the one acceptance rests
-// on.
+// on. A reading whose mean delta contradicts its shift cannot carry an accept,
+// so it is skipped while any other reading is left: ranking it first would hide
+// an agreeing win behind it. When every reading disagrees, they all compete, so
+// the verdict names the largest shift it refused.
 func bestImprovement(eligible []domain.MetricComparison) (domain.MetricComparison, bool) {
-	best := eligible[0]
+	candidates := eligible
+	agreeing := make([]domain.MetricComparison, 0, len(eligible))
+	for _, comparison := range eligible {
+		if estimatorsAgree(comparison) {
+			agreeing = append(agreeing, comparison)
+		}
+	}
+	if len(agreeing) > 0 {
+		candidates = agreeing
+	}
+	best := candidates[0]
 	supported := best.StatisticallyFit
-	for _, comparison := range eligible[1:] {
+	for _, comparison := range candidates[1:] {
 		better := ImprovementDelta(comparison) < ImprovementDelta(best)
 		if better || (comparison.StatisticallyFit && !supported) {
 			best, supported = comparison, comparison.StatisticallyFit

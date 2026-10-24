@@ -474,6 +474,73 @@ func TestEvaluateRegressionsKeepTheMeanDelta(t *testing.T) {
 	}
 }
 
+// TestEvaluateRefusesAShiftTheMeanContradicts: support can arrive from
+// metricSupport's equivalence branch, which says the data rule out a material
+// regression, not that the candidate is faster. A shift that reads a win beside
+// a mean that reads a loss has no evidence of a win behind it, and accepting on
+// it is a false accept on average.
+func TestEvaluateRefusesAShiftTheMeanContradicts(t *testing.T) {
+	wall := domain.MetricComparison{
+		Metric: "wall_time_ns", Baseline: 100, Candidate: 101.5,
+		StatisticallyFit: true,
+		Shift:            domain.ShiftHodgesLehmann, ShiftPercent: -4,
+	}
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: append([]domain.MetricComparison{wall}, flatGuardrails()...),
+		Primary:     []domain.MetricComparison{wall},
+	})
+	if result.Decision != domain.DecisionInconclusive {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[0], "reads 4.00% (Hodges–Lehmann shift) beside a mean delta of +1.50%, so the two estimators disagree") {
+		t.Fatalf("the reason should name both readings and the disagreement: %v", result.Reasons)
+	}
+}
+
+// TestConfirmationTriggersSkipAContradictingShift: neither confirmation trigger
+// may ask for a second series on a reading the verdict will not accept.
+func TestConfirmationTriggersSkipAContradictingShift(t *testing.T) {
+	comparison := domain.MetricComparison{
+		Metric: "wall_time_ns", Baseline: 100, Candidate: 101.5,
+		Shift: domain.ShiftHodgesLehmann, ShiftPercent: -4,
+	}
+	if got := UnconfirmedImprovements(DefaultConfig(), []domain.MetricComparison{comparison}); len(got) != 0 {
+		t.Fatalf("a contradicted shift needs no second series: %+v", got)
+	}
+	comparison.StatisticallyFit = true
+	if got := BorderlineImprovements(DefaultConfig(), []domain.MetricComparison{comparison}); len(got) != 0 {
+		t.Fatalf("a contradicted shift is not borderline: %+v", got)
+	}
+}
+
+// TestDisagreeingReadingDoesNotHideAnAgreeingWin: the contradicted reading is
+// skipped when another eligible reading's estimators agree, so the verdict does
+// not lose a win the mean also supports.
+func TestDisagreeingReadingDoesNotHideAnAgreeingWin(t *testing.T) {
+	contradicting := domain.MetricComparison{
+		Metric: "wall_time_ns", Baseline: 100, Candidate: 100.4,
+		StatisticallyFit: true,
+		Shift:            domain.ShiftHodgesLehmann, ShiftPercent: -8,
+	}
+	agreeing := domain.MetricComparison{
+		Metric: "wall_time_ns", Workload: "large-doc", Baseline: 100, Candidate: 95,
+		StatisticallyFit: true,
+		Shift:            domain.ShiftHodgesLehmann, ShiftPercent: -5,
+	}
+	result := Evaluate(DefaultConfig(), Evidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: append([]domain.MetricComparison{contradicting, agreeing}, flatGuardrails()...),
+		Primary:     []domain.MetricComparison{contradicting, agreeing},
+	})
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[0], `workload "large-doc" improved by 5.00%`) {
+		t.Fatalf("the accept should rest on the agreeing reading: %v", result.Reasons)
+	}
+}
+
 func TestImprovementDeltaPrefersTheMeasuredShift(t *testing.T) {
 	withShift := domain.MetricComparison{DeltaPercent: -5, Shift: domain.ShiftHodgesLehmann, ShiftPercent: -2.5}
 	if got := ImprovementDelta(withShift); got != -2.5 {
