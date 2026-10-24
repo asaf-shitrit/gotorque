@@ -396,6 +396,9 @@ func TestParsePerfScriptKeepsGenericMethodsWhole(t *testing.T) {
 	const output = `ivy 6902/6902 [000] 12345.678901: cpu-clock:
 	102d7b37c robpike.io/ivy/value/persist.(*TransientSlice[go.shape.interface { Eval(robpike.io/ivy/value.Context) robpike.io/ivy/value.Value }]).Set+0x2c (/tmp/ivy)
 	102d7b9a0 robpike.io/ivy/run.main (+0x12ab) (/tmp/ivy)
+	ffffffffffffffff [unknown] ([unknown])
+	7f3a2b1c [unknown] (/usr/lib/libc.so.6)
+	ffffffff8100 do_syscall_64+0x5b ([kernel.kallsyms])
 
 `
 	functions := ParsePerfScript(output)
@@ -409,6 +412,14 @@ func TestParsePerfScriptKeepsGenericMethodsWhole(t *testing.T) {
 	}
 	if weights["robpike.io/ivy/run.main"] != 1 {
 		t.Fatalf("weights = %v, want the frame's module and offset trimmed", weights)
+	}
+	if weights["do_syscall_64"] != 1 {
+		t.Fatalf("weights = %v, want the kernel frame's module and offset trimmed", weights)
+	}
+	for name := range weights {
+		if strings.Contains(name, "unknown") {
+			t.Fatalf("weights = %v, want no unsymbolized frame; it names no hot function", weights)
+		}
 	}
 }
 

@@ -128,6 +128,12 @@ func parseMacOSSampleTopOfStack(report string) []Function {
 // matching and made this fallback useless on a real report. Rows are read by
 // parseCallGraphRow so this fallback accepts the same frame text the stacks
 // parser does, generic instantiations included.
+//
+// That shared reader is stricter than the pattern this fallback used to own:
+// it drops a row whose count does not sit in the column its depth implies
+// (four, then two per level). Every row in the recorded reports meets the
+// rule; a row that does not names no frame this parser can place, so dropping
+// it is intended rather than a lost sample.
 func parseMacOSSampleCallGraph(report string) []Function {
 	weights := map[string]int{}
 	for _, line := range strings.Split(report, "\n") {
@@ -291,16 +297,21 @@ func ParsePerfScript(output string) []Function {
 // so a generic instantiation keeps the spaces in its type argument; taking the
 // second whitespace-separated field cut it at the first of them, the same
 // truncation the macOS parser had.
+//
+// The module column is what ends the symbol, and it is found by shape rather
+// than by matching ` (/` and ` (+0x`: perf prints a frame it could not
+// symbolize as `address [unknown] ([unknown])`, whose module is a bare
+// `([unknown])`. Both are cut by perfScriptModuleStart, so the `[unknown]`
+// rejection sees the symbol alone and such a frame never becomes a hot-list
+// entry or a stack node.
 func perfScriptFrame(frame string) string {
 	_, rest, ok := strings.Cut(strings.TrimLeft(frame, " \t"), " ")
 	if !ok {
 		return ""
 	}
 	name := strings.TrimSpace(rest)
-	for _, marker := range []string{" (+0x", " (/"} {
-		if idx := strings.Index(name, marker); idx > 0 {
-			name = name[:idx]
-		}
+	if idx := perfScriptModuleStart(name); idx > 0 {
+		name = name[:idx]
 	}
 	if idx := strings.Index(name, "+0x"); idx > 0 {
 		name = name[:idx]
@@ -310,6 +321,31 @@ func perfScriptFrame(frame string) string {
 		return ""
 	}
 	return normalizeShapeArgs(name)
+}
+
+// perfScriptModuleStart returns where perf's module column opens, the ` (` that
+// follows the symbol and its offset, or -1 when the frame has no module.
+// Brackets and braces are tracked because a generic instantiation's type
+// argument holds spaces and parentheses of its own (`[go.shape.interface {
+// Eval(value.Context) value.Value }]`); treating the first ` (` as the module
+// column would cut the symbol there instead.
+func perfScriptModuleStart(name string) int {
+	depth := 0
+	for i := 0; i+1 < len(name); i++ {
+		switch name[i] {
+		case '[', '{':
+			depth++
+		case ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ' ':
+			if depth == 0 && name[i+1] == '(' {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // rankWeights converts a name->weight map into the Function summary shape,

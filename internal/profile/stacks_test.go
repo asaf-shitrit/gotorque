@@ -127,7 +127,7 @@ func TestAttributeToOwnOnRealGronReport(t *testing.T) {
 }
 
 func TestPerfScriptStacksKeepsEachEventLeafFirst(t *testing.T) {
-	output := "gron 100 [000] 1.0: cycles:\n\t1 write (/usr/lib/libc.so)\n\t2 syscall.write (/tmp/gron)\n\t3 main.gron (/tmp/gron)\n\ngron 100 [000] 1.1: cycles:\n\t4 main.statements.Less (/tmp/gron)\n\t4 main.statements.Less (/tmp/gron)\n"
+	output := "gron 100 [000] 1.0: cycles:\n\t1 write (/usr/lib/libc.so)\n\t2 syscall.write (/tmp/gron)\n\t3 main.gron (/tmp/gron)\n\t4 [unknown] ([unknown])\n\ngron 100 [000] 1.1: cycles:\n\t4 main.statements.Less (/tmp/gron)\n\t4 main.statements.Less (/tmp/gron)\n"
 	stacks := PerfScriptStacks(output)
 	want := []Stack{
 		{Frames: []string{"write", "syscall.write", "main.gron"}, Weight: 1},
