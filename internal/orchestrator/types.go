@@ -160,6 +160,12 @@ type CandidateEvidence struct {
 	// widens the same trigger to a function_source that does not parse and an
 	// answer carrying no code at all.
 	ReaskCause string `json:"reask_cause,omitempty"`
+	// ReaskedFor names the refusal the previous answer in this attempt earned,
+	// set only on the answer that answered a re-ask: the attempt then took two
+	// optimizer calls, and the record of the answer that survived has nothing
+	// else saying so (ADR 0041). Like ReaskCause it is a transport note, and
+	// policy never reads it.
+	ReaskedFor string `json:"reasked_for,omitempty"`
 	// PgoComparisons and PgoNote record the informational PGO lane: one extra
 	// interleaved A/B series in which baseline and candidate were both built
 	// with the same discovery-derived pprof CPU profile. The lane attributes

@@ -615,6 +615,10 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 	// Stamped after the runner returns so no step of the evaluation can see
 	// it: the note rides to the candidate's record and nowhere else.
 	assessment.Evidence.ProposalRepair = repair
+	// The answer before this one was refused before it could be judged, and the
+	// cycle spent its one re-ask on it (ADR 0041). Stamped here so the record of
+	// the answer that survived says the attempt took two optimizer calls.
+	assessment.Evidence.ReaskedFor = state.ReaskCause
 	state.Candidate, state.Verdict = assessment.Evidence, assessment.Verdict
 	if reaskable(state, assessment.Evidence) {
 		return g.reask(ctx, state, assessment.Evidence), nil

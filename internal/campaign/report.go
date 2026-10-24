@@ -347,6 +347,23 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 	if record.PatchPath != "" {
 		fmt.Fprintf(b, "- Patch: `%s`%s\n", record.PatchPath, acceptedMarker(record.Accepted))
 	}
+	writeCandidateTransportNotes(b, record)
+	if record.Summary != "" {
+		fmt.Fprintf(b, "- Evidence: %s\n", record.Summary)
+	}
+	for _, reason := range record.Reasons {
+		fmt.Fprintf(b, "- Policy: %s\n", reason)
+	}
+	for _, concern := range record.ReviewConcerns {
+		fmt.Fprintf(b, "- Review: %s\n", concern)
+	}
+}
+
+// writeCandidateTransportNotes says how the diff under judgement was produced
+// and what the answer needed on the way in: a salvaged output, or a second ask
+// after a refusal. None of it changes a verdict; without it, an attempt with
+// two optimizer calls reads like any other (ADR 0041).
+func writeCandidateTransportNotes(b *strings.Builder, record CandidateRecord) {
 	switch record.Transport {
 	case FunctionSourceTransport:
 		b.WriteString("- Transport: function_source (code built the diff from the optimizer's replacement function)\n")
@@ -358,14 +375,8 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 		// it from reading as the one the model sent.
 		fmt.Fprintf(b, "- Proposal salvaged: the optimizer's output parsed only after the decoder %s, so the patch may not be the one the model intended\n", record.ProposalRepair)
 	}
-	if record.Summary != "" {
-		fmt.Fprintf(b, "- Evidence: %s\n", record.Summary)
-	}
-	for _, reason := range record.Reasons {
-		fmt.Fprintf(b, "- Policy: %s\n", reason)
-	}
-	for _, concern := range record.ReviewConcerns {
-		fmt.Fprintf(b, "- Review: %s\n", concern)
+	if record.ReaskedFor != "" {
+		fmt.Fprintf(b, "- Re-asked: the previous answer in this attempt was refused, so the optimizer was asked once more for `function_source`: %s\n", oneLine(record.ReaskedFor, maxEventReasonChars))
 	}
 }
 

@@ -247,7 +247,10 @@ Package map:
   the `candidate.ErrPatchDoesNotApply` sentinel on the evidence's
   `ReaskCause`, one ask per cycle, and #77 widens that same trigger rather
   than adding a second. Do not move the ask into evaluation: it takes no
-  model role (ADR 0035) and `DeterministicTimeout` bounds it. `findFuncDecl` matches by `funcName`'s format
+  model role (ADR 0035) and `DeterministicTimeout` bounds it. The second
+  answer's record carries the refusal as `ReaskedFor`, so the report says the
+  attempt took two optimizer calls; the refusal quoted to the model leaves out
+  the toolchain's command line, because it spells the campaign's patch path. `findFuncDecl` matches by `funcName`'s format
   (`causes.go`), not by line number, so a target's `location` line going
   stale between analysis and optimization does not break the match.
 

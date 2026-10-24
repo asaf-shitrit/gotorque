@@ -183,7 +183,9 @@ not recorded.
    `reaskable` in `internal/orchestrator`). The trigger is the
    `candidate.ErrPatchDoesNotApply` sentinel reaching the evidence as
    `ReaskCause`, the second answer is judged by every gate the first would
-   have faced, and the answer that was refused earns no verdict.
+   have faced, and the answer that was refused earns no verdict. The answer
+   that survives carries the refusal as `ReaskedFor`, so the record and
+   `report.md` say the attempt took two optimizer calls.
 1. **Diff validation and normalization.** The proposed unified diff is
    normalized by `internal/candidate/normalize.go`, which repairs hunk line
    counts, truncates hunks at the first malformed body line, drops emptied

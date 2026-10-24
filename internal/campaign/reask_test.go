@@ -50,9 +50,10 @@ func other() int { return 1 }
 // else.
 func TestEvaluateCandidateTellsAnApplyRefusalApart(t *testing.T) {
 	repo := refusingRepo(t)
+	campaignDir := filepath.Join(t.TempDir(), "campaign")
 	engine, err := Create(context.Background(), Options{
 		Repository: repo, ManifestPath: writeManifest(t, t.TempDir()),
-		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+		CampaignDir: campaignDir, TestingUnsafeDisableIsolation: true,
 	})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, engine.Close()) }()
@@ -68,5 +69,8 @@ func TestEvaluateCandidateTellsAnApplyRefusalApart(t *testing.T) {
 	require.Contains(t, evidence.Summary, "candidate rejected before build")
 	require.Contains(t, evidence.ReaskCause, "does not apply")
 	require.Contains(t, evidence.ReaskCause, "main.go")
+	// The cause is quoted back to the optimizer, so it names the refusal and
+	// not the campaign's own patch artifact path.
+	require.NotContains(t, evidence.ReaskCause, campaignDir)
 	require.Len(t, evidence.ArtifactURIs, 1, "nothing was built")
 }

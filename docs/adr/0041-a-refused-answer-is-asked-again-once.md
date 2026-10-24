@@ -49,6 +49,13 @@ event naming the refusal. The second answer is judged by every gate the first
 would have faced. A `NoteReasked` reaches the journal through `Bench.Note`, so
 a campaign with two optimizer calls and one settlement says why.
 
+The answer that survives the re-ask carries the refusal as `ReaskedFor`, which
+reaches the candidate record and prints in `report.md`, so a reader of the
+report — not only of the event stream — sees why an attempt spent two optimizer
+calls. The quoted refusal is the sentinel's cause and git's own stderr, without
+the toolchain's command line: that line spells the campaign's absolute patch
+path, which tells the model nothing about the change.
+
 `ReaskCause` is deliberately not an apply-specific field. #77 widens the same
 trigger — a `function_source` that does not parse at EOF, an answer with no
 code at all — by setting it from its own pre-build rejection and adding its

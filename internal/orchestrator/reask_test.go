@@ -125,11 +125,15 @@ func assertReaskedOnce(t *testing.T, bench *fakeBench) {
 }
 
 // assertSecondAnswerSettled holds that the answer the re-ask earned is the one
-// the campaign judged.
+// the campaign judged, and that its record names the refusal it replaced so a
+// reader of the report can see the attempt took two optimizer calls.
 func assertSecondAnswerSettled(t *testing.T, bench *fakeBench) {
 	t.Helper()
 	if len(bench.settled) != 1 || bench.settled[0].Assessment.Evidence.Candidate.ID != "candidate-2" {
 		t.Fatalf("settled = %+v, want exactly the second answer's verdict", bench.settled)
+	}
+	if got := bench.settled[0].Assessment.Evidence.ReaskedFor; got != applyRefusal {
+		t.Errorf("reasked_for = %q, want the refusal the first answer earned", got)
 	}
 }
 
@@ -147,6 +151,9 @@ func TestApplyRefusalIsAskedAgainOnce(t *testing.T) {
 	}
 	if len(bench.settled) != 1 || !bench.settled[0].Assessment.Evidence.Unmeasured {
 		t.Fatalf("settled = %+v, want the second refusal's unmeasured verdict", bench.settled)
+	}
+	if got := bench.settled[0].Assessment.Evidence.ReaskedFor; got != applyRefusal {
+		t.Errorf("reasked_for = %q, want the refusal the first answer earned", got)
 	}
 	if len(bench.reasked) != 1 {
 		t.Errorf("re-ask notes = %+v, want one", bench.reasked)
@@ -188,6 +195,9 @@ func TestRefusedPatchWithAFunctionSourceIsNotAskedAgain(t *testing.T) {
 	}
 	if len(bench.settled) != 1 {
 		t.Errorf("settled = %+v, want the refusal recorded once", bench.settled)
+	}
+	if got := bench.settled[0].Assessment.Evidence.ReaskedFor; got != "" {
+		t.Errorf("reasked_for = %q, want empty: no re-ask happened", got)
 	}
 }
 

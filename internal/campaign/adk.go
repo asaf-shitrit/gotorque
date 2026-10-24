@@ -500,6 +500,7 @@ func candidateRecord(attempt int, evidence orchestrator.CandidateEvidence, targe
 		PgoComparisons:   evidence.PgoComparisons,
 		PgoNote:          evidence.PgoNote,
 		ProposalRepair:   string(evidence.ProposalRepair),
+		ReaskedFor:       evidence.ReaskedFor,
 		FailureDetail:    evidence.FailureDetail,
 		LoadAverages:     evidence.LoadAverages,
 		LoadContended:    evidence.LoadContended,

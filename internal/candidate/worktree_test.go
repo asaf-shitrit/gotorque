@@ -72,9 +72,14 @@ func TestPrepareAppliesAnOrdinarySourcePatch(t *testing.T) {
 func TestPrepareMarksAPatchGitRefused(t *testing.T) {
 	manager, _ := preparedRepository(t)
 	patch := "--- a/main.go\n+++ b/main.go\n@@ -2,3 +2,3 @@\n \n func main() {\n-\tprintln(\"goodbye\")\n+\tprintln(\"hi\")\n }\n"
-	_, err := manager.Prepare(context.Background(), "HEAD", writePatch(t, patch), "", Policy{})
+	patchPath := writePatch(t, patch)
+	_, err := manager.Prepare(context.Background(), "HEAD", patchPath, "", Policy{})
 	require.ErrorIs(t, err, ErrPatchDoesNotApply)
 	require.Contains(t, err.Error(), "git apply check")
+	// The graph quotes this message back to the optimizer, so it must not
+	// carry the campaign's own patch artifact path: that says nothing about
+	// the change and only tells the model where the harness keeps its files.
+	require.NotContains(t, err.Error(), filepath.Dir(patchPath))
 
 	_, err = manager.Prepare(context.Background(), "HEAD", writePatch(t, "--- a/main_test.go\n+++ b/main_test.go\n@@ -4,1 +4,1 @@\n-func TestMain(t *testing.T) {}\n+func TestMain(t *testing.T) { t.Skip() }\n"), "", Policy{})
 	require.Error(t, err)
