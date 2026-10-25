@@ -528,17 +528,70 @@ func added(change *fileChange, fd *ast.FuncDecl, first, last int) bool {
 	})
 }
 
+// remedyShape is the mechanism a cause names: any one of anyOf in the added
+// lines takes it, or a net removal of any one of anyGone.
+type remedyShape struct {
+	anyOf   []string
+	anyGone []buildRemoval
+	missing string
+}
+
 // remedyShapes are the mechanisms whose absence rules a patch out, for the
 // causes whose remedy has exactly one recognisable shape. The other causes
 // (allocation, fast path, superlinear work, redundant work) are fixed in too
 // many ways to name one, so they are not judged here.
-var remedyShapes = map[jev.Cause]struct {
-	anyOf   []string
-	missing string
-}{
-	jev.CauseUnbufferedIO: {[]string{"bufio."}, "the target's remedy is buffered I/O, but the patch adds no bufio reader or writer"},
-	jev.CauseStringBuild:  {[]string{"strings.Builder", "bytes.Buffer", "strconv.", "append(", ".Grow("}, "the target's remedy is building strings with strings.Builder, strconv or appends, and the patch adds none of them"},
-	jev.CausePrealloc:     {[]string{"make(", ".Grow("}, "the target's remedy is sizing a container up front, and the patch adds no make or Grow call"},
+var remedyShapes = map[jev.Cause]remedyShape{
+	jev.CauseUnbufferedIO: {
+		anyOf:   []string{"bufio."},
+		missing: "the target's remedy is buffered I/O, but the patch adds no bufio reader or writer",
+	},
+	jev.CauseStringBuild: {
+		anyOf:   []string{"strings.Builder", "bytes.Buffer", "strconv.", "append(", ".Grow("},
+		anyGone: buildRemovals,
+		missing: "the target's remedy is building strings with strings.Builder, strconv or appends, or removing string conversions, concatenations or fmt formatting, and the patch does neither",
+	},
+	jev.CausePrealloc: {
+		anyOf:   []string{"make(", ".Grow("},
+		missing: "the target's remedy is sizing a container up front, and the patch adds no make or Grow call",
+	},
+}
+
+// buildRemoval counts, on one source line, the uses of a string-building
+// mechanism a patch can take away instead of adding one. The other direction
+// of a string_build remedy is a patch that deletes conversions, concatenation
+// or fmt formatting; on the ycat scanner it removed three []rune to string
+// conversions and was rejected for adding no builder, which is the false
+// rejection ADR 0017 forbids.
+//
+// The counts are textual, like the added-line checks: the build, the tests and
+// the measurement still judge the candidate, so a loose count costs a build
+// while a false rejection costs a good candidate.
+type buildRemoval struct {
+	count func(string) int
+}
+
+var buildRemovals = []buildRemoval{
+	{countStringConversions},
+	{stringConcats},
+	{func(line string) int { return strings.Count(line, "fmt.Sprint") }},
+}
+
+var stringConversion = regexp.MustCompile(`\bstring\(`)
+
+// countStringConversions counts `string(...)` conversions on one line. The
+// word boundary keeps a call like mystring(x) out of it.
+func countStringConversions(line string) int {
+	return len(stringConversion.FindAllString(line, -1))
+}
+
+// stringConcats counts the string concatenations on one line: a `+` beside
+// something visibly string. Types are unknown here, so arithmetic that shares
+// its line with nothing string-like is not mistaken for the remedy.
+func stringConcats(line string) int {
+	if !containsAny(line, `"`, "string(", "strconv.", "strings.", "fmt.Sprint") {
+		return 0
+	}
+	return strings.Count(line, "+") - strings.Count(line, "++")
 }
 
 // checkRemedy asks the added lines for the mechanism the target's cause names.
@@ -570,6 +623,18 @@ func checkCauseShape(worktree string, changes map[string]*fileChange, target *ag
 	if !ok {
 		return nil
 	}
+	text := addedText(changes)
+	if !shape.permits(text, changes) {
+		return errors.New(shape.missing)
+	}
+	if strings.Contains(text, "bufio.NewWriter") && !strings.Contains(text, ".Flush(") && !fileFlushes(worktree, target.Location) {
+		return errors.New("the patch adds a bufio.Writer but never flushes it, so buffered output would be lost")
+	}
+	return nil
+}
+
+// addedText is every line the patch added, joined, for the substring checks.
+func addedText(changes map[string]*fileChange) string {
 	var added strings.Builder
 	for _, c := range changes {
 		for _, line := range c.added {
@@ -577,14 +642,31 @@ func checkCauseShape(worktree string, changes map[string]*fileChange, target *ag
 			added.WriteByte('\n')
 		}
 	}
-	text := added.String()
-	if !containsAny(text, shape.anyOf...) {
-		return errors.New(shape.missing)
-	}
-	if strings.Contains(text, "bufio.NewWriter") && !strings.Contains(text, ".Flush(") && !fileFlushes(worktree, target.Location) {
-		return errors.New("the patch adds a bufio.Writer but never flushes it, so buffered output would be lost")
-	}
-	return nil
+	return added.String()
+}
+
+// permits reports whether the patch carries the cause's remedy at all: it adds
+// one of the named mechanisms, or it removes more uses of one than it adds.
+func (s remedyShape) permits(added string, changes map[string]*fileChange) bool {
+	return containsAny(added, s.anyOf...) || removesOne(changes, s.anyGone)
+}
+
+// removesOne reports whether the patch nets out at least one use of one of the
+// mechanisms: removed lines count for it, added lines against it, so a rewrite
+// that trades one conversion for another has netted none.
+func removesOne(changes map[string]*fileChange, removals []buildRemoval) bool {
+	return slices.ContainsFunc(removals, func(r buildRemoval) bool {
+		net := 0
+		for _, c := range changes {
+			for _, line := range c.removed {
+				net += r.count(line)
+			}
+			for _, line := range c.added {
+				net -= r.count(line)
+			}
+		}
+		return net > 0
+	})
 }
 
 // checkSwitchedCallers holds a throwaway_result patch to its remedy: the

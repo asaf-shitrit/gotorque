@@ -224,7 +224,10 @@ not recorded.
    mechanism, the added lines must carry it: a `bufio.` reader or writer
    (flushed, when it is a writer) for unbuffered I/O, a `strings.Builder`,
    `bytes.Buffer`, `strconv.`, `append(` or `Grow(` for string building, a
-   `make(` or `Grow(` for preallocation. A failure rejects before build with
+   `make(` or `Grow(` for preallocation. A string-building patch may also
+   take the cost away instead of adding a mechanism: a net removal of a
+   `string(...)` conversion, a string concatenation or a `fmt.Sprint*` call
+   passes the same rule (issue #76). A failure rejects before build with
    the reason as failure detail. A target function that wraps a writer in a
    `bufio.Writer` must also route every write through it: a direct write left
    on the wrapped writer lands before the buffered output and reorders it,
