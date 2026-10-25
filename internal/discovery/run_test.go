@@ -5,10 +5,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/asaf-shitrit/gotorque/internal/toolchain"
@@ -119,6 +121,86 @@ func TestRunReportsNoSourceWhenNothingCanBeProfiled(t *testing.T) {
 	require.Contains(t, ev.Events[1].Message, "benchmark CPU profile unavailable")
 	require.Empty(t, ev.HotFunctions)
 	require.Empty(t, ev.PGOProfilePath)
+}
+
+// TestRunSamplesEveryAcceptanceEligibleSeed: a hot spot only a second
+// representative seed reaches can never become a target if discovery samples
+// the first seed alone. actionlint's quadratic error-snippet lookup was that
+// hot spot. Seeds of a tier the manifest does not mark acceptance-eligible
+// reach no campaign reading, so they are not sampled.
+func TestRunSamplesEveryAcceptanceEligibleSeed(t *testing.T) {
+	in := runInputs(t, moduleRepo(t, false))
+	in.Seeds = []manifest.SeedWorkload{
+		{ID: "oneline", Tier: domain.TierRepresentative, Args: []string{"-oneline"}},
+		{ID: "json", Tier: domain.TierRepresentative, Args: []string{"-format", "json"}},
+		{ID: "plausible", Tier: domain.TierPlausible, Args: []string{"-plausible"}},
+		{ID: "huge", Tier: domain.TierStress, Args: []string{"-huge"}},
+	}
+	in.Tiers = map[domain.WorkloadTier]manifest.TierPolicy{
+		domain.TierRepresentative: {Weight: 1, AcceptanceEligible: true},
+		domain.TierPlausible:      {Weight: 0.5},
+		domain.TierStress:         {Weight: 0},
+	}
+	replay := profile.NewReplay(recordedBusy(t), recordedBusy(t))
+	ev, err := Run(context.Background(), in, replay, testToolchain)
+	require.NoError(t, err)
+	require.Empty(t, ev.Events)
+
+	requests := replay.Requests()
+	require.Len(t, requests, 2)
+	require.Equal(t, []string{"-oneline"}, requests[0].Args)
+	require.Equal(t, []string{"-format", "json"}, requests[1].Args)
+	require.Equal(t, filepath.Join(in.Dir, "profile-sample", "sample-report-seed-2.txt"), requests[1].OutputPath)
+	require.Equal(t, []SeedSample{{Seed: "oneline", Weight: 1}, {Seed: "json", Weight: 1}}, ev.SeedSamples)
+	require.Equal(t, filepath.Join(in.Dir, "profile-sample", "sample-report.txt"), ev.ProfileSummaryPath, "the first seed's report stays the summary")
+}
+
+// TestRunRecordsAnAcceptanceEligibleSeedItCouldNotSample: one seed that cannot
+// be sampled is left out and recorded, and the hot list still comes from the
+// seed that sampled.
+func TestRunRecordsAnAcceptanceEligibleSeedItCouldNotSample(t *testing.T) {
+	in := runInputs(t, moduleRepo(t, false))
+	in.Seeds = []manifest.SeedWorkload{
+		{ID: "oneline", Tier: domain.TierRepresentative, Args: []string{"-oneline"}},
+		{ID: "json", Tier: domain.TierRepresentative, Args: []string{"-format", "json"}},
+	}
+	in.Tiers = map[domain.WorkloadTier]manifest.TierPolicy{
+		domain.TierRepresentative: {Weight: 1, AcceptanceEligible: true},
+	}
+	ev, err := Run(context.Background(), in, profile.NewReplay(recordedBusy(t), gone), testToolchain)
+	require.NoError(t, err)
+	require.Equal(t, SourceTargetSample, ev.Source)
+	require.Equal(t, []string{"workload_sample_skipped"}, kinds(ev.Events))
+	require.Contains(t, ev.Events[0].Message, "acceptance-eligible seed json could not be sampled")
+	require.Equal(t, []SeedSample{{Seed: "oneline", Weight: 1}}, ev.SeedSamples)
+	require.NotEmpty(t, ev.HotFunctions)
+}
+
+// TestRunWeightsAStressSeedThatStoodInForTheFirst: the ladder
+// samples a stress seed when the first seed cannot be sampled at all. That
+// sample answers for the first seed's workload, so it carries the first seed's
+// tier weight instead of the zero a stress reading counts for.
+func TestRunWeightsAStressSeedThatStoodInForTheFirst(t *testing.T) {
+	in := runInputs(t, moduleRepo(t, false))
+	in.Seeds = []manifest.SeedWorkload{
+		{ID: "quick", Tier: domain.TierRepresentative, Args: []string{"quick"}},
+		{ID: "long", Tier: domain.TierStress, Args: []string{"long"}},
+	}
+	in.Tiers = map[domain.WorkloadTier]manifest.TierPolicy{
+		domain.TierRepresentative: {Weight: 1, AcceptanceEligible: true},
+		domain.TierStress:         {Weight: 0},
+	}
+	busy := recordedBusy(t)
+	sampler := profile.SamplerFunc(func(_ context.Context, req profile.SampleTarget) (profile.Transcript, error) {
+		if slices.Contains(req.Args, "long") {
+			return busy, nil
+		}
+		return gone, nil
+	})
+	ev, err := Run(context.Background(), in, sampler, testToolchain)
+	require.NoError(t, err)
+	require.Equal(t, []SeedSample{{Seed: "long", Weight: 1}}, ev.SeedSamples, "the stress sample stands in for the first seed and carries its weight")
+	require.NotEmpty(t, ev.HotFunctions)
 }
 
 func TestRunSkipsSamplingWhenThereIsNothingToSample(t *testing.T) {

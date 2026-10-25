@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 )
@@ -146,6 +147,17 @@ func TestRenderMarkdownNamesTheDiscoveryProfileSource(t *testing.T) {
 	require.Contains(t, report, "- Discovery profile: targets chosen from a target sample + a benchmark alloc_space profile")
 
 	require.NotContains(t, RenderMarkdown(State{}), "Discovery profile", "no recorded source means no line")
+}
+
+// TestRenderMarkdownNamesTheDiscoverySeeds: discovery merges the hot list from
+// every acceptance-eligible seed, so the report must say which seeds it came
+// from and how much each counted; a campaign that recorded no sample names no
+// line.
+func TestRenderMarkdownNamesTheDiscoverySeeds(t *testing.T) {
+	report := RenderMarkdown(State{DiscoverySeedSamples: []discovery.SeedSample{{Seed: "lint-oneline", Weight: 1}, {Seed: "lint-json", Weight: 1}}})
+	require.Contains(t, report, "- Discovery seeds: `lint-oneline` (weight 1), `lint-json` (weight 1)")
+
+	require.NotContains(t, RenderMarkdown(State{}), "Discovery seeds", "no recorded samples means no line")
 }
 
 // A campaign in which an agent node failed must say so in its report: the

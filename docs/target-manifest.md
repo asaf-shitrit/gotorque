@@ -135,6 +135,16 @@ The three tiers serve different roles:
   expose scaling, safety, or memory regressions and veto a candidate, but
   cannot accept one alone.
 
+`acceptance_eligible` decides both whether a reading of that tier can establish
+an acceptance and whether discovery samples that seed: discovery samples every
+acceptance-eligible seed, then merges their samples into one hot list (ADR
+0044). A seed's sample carries its tier's `weight` into that merge, so a lower
+weighted tier still contributes its own share of the profile. A verdict never
+reads `weight`; it reads eligibility alone. A seed that is not
+acceptance-eligible is sampled only as the fallback ladder's stand-in when the
+first seed cannot be sampled at all, and then it carries the first seed's
+weight.
+
 The agent chooses bounded exploration goals. Deterministic generators create
 the concrete mutations, size sweeps, and fixtures using the manifest seed.
 Every generated workload should retain its source seed, generator strategy,

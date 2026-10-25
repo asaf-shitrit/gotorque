@@ -21,20 +21,20 @@ func TestUnbufferedWritesKeepsHotListSites(t *testing.T) {
 	})
 	own := func(symbol string) bool { return ownSymbol([]string{"example.com/fz"}, symbol) }
 	write := []string{"syscall.write", "fmt.Fprintln"}
-	results := []profile.SampleResult{
-		{Stacks: []profile.Stack{
+	samples := []weightedSample{
+		{Result: profile.SampleResult{Stacks: []profile.Stack{
 			{Frames: append(append([]string{}, write...), "main.defaultOptions.func1", "main.filter", "main.Run", "main.main"), Weight: 80},
 			{Frames: append(append([]string{}, write...), "main.main"), Weight: 50},
-		}},
-		{Stacks: []profile.Stack{
+		}}},
+		{Result: profile.SampleResult{Stacks: []profile.Stack{
 			{Frames: append(append([]string{}, write...), "main.defaultOptions.func1", "main.filter"), Weight: 10},
 			{Frames: []string{"main.defaultOptions.func1"}, Weight: 10},
-		}},
+		}}},
 	}
 	hot := []string{"options.go:7", "filter.go:3"}
-	got := unbufferedWrites(context.Background(), locator{repository: repo}, hot, own, results)
+	got := unbufferedWrites(context.Background(), locator{repository: repo}, hot, own, samples)
 	require.Equal(t, []orchestrator.UnbufferedWrite{{Location: "options.go:7", Share: 1, Callers: []string{"filter.go:3"}}}, got)
 
-	require.Empty(t, unbufferedWrites(context.Background(), locator{repository: repo}, []string{"filter.go:3"}, own, results), "a write site outside the hot list is dropped")
-	require.Empty(t, unbufferedWrites(context.Background(), locator{repository: repo}, nil, own, results), "with no hot list there is nothing to keep")
+	require.Empty(t, unbufferedWrites(context.Background(), locator{repository: repo}, []string{"filter.go:3"}, own, samples), "a write site outside the hot list is dropped")
+	require.Empty(t, unbufferedWrites(context.Background(), locator{repository: repo}, nil, own, samples), "with no hot list there is nothing to keep")
 }

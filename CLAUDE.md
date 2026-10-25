@@ -164,10 +164,12 @@ Package map:
 - `internal/runner`: sandboxed workload execution (bubblewrap / `sandbox-exec`).
 - `internal/discovery`: hot-path discovery, with no `*Engine` (ADR 0037):
   `Run(ctx, Inputs, profile.Sampler, toolchain)` samples the baseline binary
-  through the fallback ladder, falls back to benchmark profiles, and returns an
-  `Evidence` (hot list, weights, unbuffered writes, PGO profile, events) that
-  `runDiscoveryStep` applies to state. The explorer stays in `campaign` and is
-  passed in as a function.
+  through the fallback ladder on every acceptance-eligible seed and the
+  explorer's option variants, merges the samples weighted by each seed's tier
+  weight (ADR 0044), falls back to benchmark profiles, and returns an
+  `Evidence` (hot list, weights, the seed samples it came from, unbuffered
+  writes, PGO profile, events) that `runDiscoveryStep` applies to state. The
+  explorer stays in `campaign` and is passed in as a function.
 - `internal/profile`: benchmark/CPU profiling, symbol filtering, source
   position annotation, and the sampler seam: `Sampler` adapters return a
   `Transcript`, `Classify` judges it, `Replay` scripts it for tests.

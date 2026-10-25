@@ -62,6 +62,8 @@ func TestDiscoveryStepAppliesEvidenceToTheStateResumeReads(t *testing.T) {
 	require.FileExists(t, state.DiscoveryProfileSummaryPath)
 	require.Contains(t, state.SandboxIsolationNotes, "max_memory_bytes is not enforced while sampling")
 	require.Len(t, replay.Requests(), 1)
+	require.Equal(t, []discovery.SeedSample{{Seed: "fixture", Weight: 1}}, state.DiscoverySeedSamples, "the record names the seed the hot list came from")
+	require.Contains(t, RenderMarkdown(state), "- Discovery seeds: `fixture` (weight 1)")
 
 	completed := eventsOf(t, engine)["discovery_profile_completed"]
 	require.Equal(t, "measured "+strconv.Itoa(len(state.DiscoveryHotFunctions))+" hot functions from a target sample", completed.Message)
@@ -72,6 +74,7 @@ func TestDiscoveryStepAppliesEvidenceToTheStateResumeReads(t *testing.T) {
 	t.Cleanup(func() { _ = resumed.Close() })
 	require.Equal(t, state.DiscoveryHotFunctions, resumed.State().DiscoveryHotFunctions)
 	require.Equal(t, state.DiscoveryProfileSource, resumed.State().DiscoveryProfileSource)
+	require.Equal(t, state.DiscoverySeedSamples, resumed.State().DiscoverySeedSamples)
 }
 
 // TestDiscoveryStepSavesWhyEveryProfileFailed: a sampler that cannot sample

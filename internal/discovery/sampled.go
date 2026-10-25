@@ -29,14 +29,15 @@ func ownSymbol(packages []string, symbol string) bool {
 // It returns up to twice the budget, because resolving folds symbols that
 // share a declaration and keeps resolving until the budget is filled.
 //
-// With explored workloads there are several samples; mergeAttributed weighs
-// each as a whole, so a mode only a variant reaches ranks by its share of that
+// With several sampled workloads, seed and variants, there are several
+// samples; mergeAttributed weighs each one by its tier and as a fraction of
+// its own total, so a mode only a variant reaches ranks by its share of that
 // variant's time rather than disappearing behind the seed.
-func sampledHotNames(results []profile.SampleResult, own func(string) bool) []string {
+func sampledHotNames(samples []weightedSample, own func(string) bool) []string {
 	limit := 2 * hotFunctionBudget
-	names := hotFunctionNames(mergeAttributed(results, own), limit)
-	for _, result := range results {
-		for _, name := range hotFunctionNames(result.Functions, limit) {
+	names := hotFunctionNames(mergeAttributed(samples, own), limit)
+	for _, sample := range samples {
+		for _, name := range hotFunctionNames(sample.Result.Functions, limit) {
 			if len(names) < limit && !slices.Contains(names, name) {
 				names = append(names, name)
 			}
@@ -49,10 +50,10 @@ func sampledHotNames(results []profile.SampleResult, own func(string) bool) []st
 // that ranking (the same names, unranked and untruncated) carried, so a
 // throwaway_result target's caller ranking (callers.go) has real profile
 // hotness to rank by instead of call-site count alone.
-func sampledHotNamesAndWeights(results []profile.SampleResult, own func(string) bool) ([]string, map[string]float64) {
-	weights := HotFunctionWeights(mergeAttributed(results, own))
-	for _, result := range results {
-		weights = MergeWeights(weights, HotFunctionWeights(result.Functions))
+func sampledHotNamesAndWeights(samples []weightedSample, own func(string) bool) ([]string, map[string]float64) {
+	weights := HotFunctionWeights(mergeAttributed(samples, own))
+	for _, sample := range samples {
+		weights = MergeWeights(weights, HotFunctionWeights(sample.Result.Functions))
 	}
-	return sampledHotNames(results, own), weights
+	return sampledHotNames(samples, own), weights
 }
