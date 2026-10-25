@@ -208,7 +208,12 @@ Package map:
   `confirmRegressions`, breaches too. Both policy call sites
   (`policyVerdict` and `improvementsToConfirm`) must pass the field: a caller
   that does not supply it keeps the old single-series rule, so a forgotten
-  field looks like a test failure rather than a silent policy change.
+  field looks like a test failure rather than a silent policy change. The
+  engine records that field for every over-limit peak-memory reading the
+  series was measured for (`policy.ReplicatedGuardrailsOverLimit`), not only
+  the supported breaches: a reading over the limit without significance runs
+  the series as an unconfirmed guardrail, and pooling the series can be what
+  makes it significant.
 - Confirmation series (`internal/campaign/candidate_eval.go`, `secondLook`): the
   second look runs `confirmRegressions`, then `confirmImprovements`, then
   `confirmSelection`, and one `interleaved-ab-confirmation` job marks it, so a

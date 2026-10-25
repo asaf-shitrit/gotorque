@@ -513,6 +513,14 @@ func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evi
 	// one contended run or one GC step moves a high-water mark by megabytes
 	// without the candidate costing more memory (see policy.replicatedGuardrail).
 	replicate := policy.GuardrailsToReplicate(config, evidence.Comparisons)
+	// Every over-limit reading of a re-measured guardrail gets the fresh
+	// series' own reading recorded, not only the supported breaches that ask
+	// for the series themselves: an over-limit reading without significance is
+	// re-measured as an unconfirmed guardrail, and folding the fresh series in
+	// can be what makes it significant. The policy then needs that reading to
+	// decide whether the breach reproduces (ADR 0040); leaving it out lets the
+	// verdict reject on the pooled series alone.
+	overLimit := policy.ReplicatedGuardrailsOverLimit(config, evidence.Comparisons)
 	if len(unconfirmed) == 0 && len(replicate) == 0 {
 		return true
 	}
@@ -533,8 +541,10 @@ func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evi
 	if len(unconfirmed) > 0 {
 		notes = append(notes, confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs))
 	}
-	if len(replicate) > 0 {
+	if len(overLimit) > 0 {
 		evidence.FreshGuardrails = ev.freshGuardrailComparisons(m.seeds, starts)
+	}
+	if len(replicate) > 0 {
 		notes = append(notes, replicationNote(replicate, config.MaximumGuardrailRegressionPercent, s.pairs))
 	}
 	evidence.Summary += "; " + strings.Join(notes, "; ")

@@ -519,6 +519,46 @@ func TestAnUnreplicatedBreachQuotesTheFirstSeries(t *testing.T) {
 	}
 }
 
+// TestAPooledPeakMemoryBreachAFreshSeriesDidNotReproduceDoesNotReject: a
+// peak-memory reading over its limit without significance is re-measured as an
+// unconfirmed guardrail, and folding that fresh series in is what can make the
+// pooled reading significant. The rejection then rests on the fresh series' own
+// reading, as it does for a breach that was already significant on the first
+// series (ADR 0040), and the reason says which reading breached so a reader can
+// see why nothing rejected.
+func TestAPooledPeakMemoryBreachAFreshSeriesDidNotReproduceDoesNotReject(t *testing.T) {
+	// +2.55% against the 2.00% limit, without support: the reading that runs the
+	// confirmation series.
+	firstSeries := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 37440000, StatisticallyFit: true}
+	// The pooled reading, +2.71% and significant.
+	pooled := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 37497005, StatisticallyFit: true, Significant: true}
+	quiet := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 36507648, StatisticallyFit: true}
+
+	unmeasured := Evaluate(DefaultConfig(), peakMemoryEvidence(pooled, quiet, false))
+	if unmeasured.Decision != domain.DecisionRejected {
+		t.Fatalf("with no fresh series the single-series rule holds: decision = %s, reasons = %v", unmeasured.Decision, unmeasured.Reasons)
+	}
+
+	evidence := peakMemoryEvidence(pooled, quiet, true)
+	evidence.FirstSeriesGuardrails = []domain.MetricComparison{firstSeries}
+	result := Evaluate(DefaultConfig(), evidence)
+	if result.Decision != domain.DecisionAccepted {
+		t.Fatalf("a pooled breach the fresh series did not reproduce must not reject the win: decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	reasons := strings.Join(result.Reasons, "; ")
+	if !strings.Contains(reasons, `guardrail "peak_memory_bytes" read +2.71% over the 2.00% limit and significant only once the fresh series was pooled in, but that series read +0.00% and did not reproduce the breach`) {
+		t.Fatalf("the pooled breach is not named: %v", result.Reasons)
+	}
+	if strings.Contains(reasons, "on the first series") {
+		t.Fatalf("the reason calls the pooled reading the first series' own: %v", result.Reasons)
+	}
+
+	reproduced := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 39000000, StatisticallyFit: true, Significant: true}
+	if result := Evaluate(DefaultConfig(), peakMemoryEvidence(pooled, reproduced, true)); result.Decision != domain.DecisionRejected {
+		t.Fatalf("a pooled breach the fresh series reproduces still rejects: decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+}
+
 // TestCPUAndSizeBreachesKeepTheSingleSeriesRule: only peak memory steps with
 // allocator and GC pacing. A supported CPU-time breach rejects on one series,
 // however the fresh series read.
@@ -539,6 +579,42 @@ func TestCPUAndSizeBreachesKeepTheSingleSeriesRule(t *testing.T) {
 	}
 	if got := GuardrailsToReplicate(DefaultConfig(), evidence.Comparisons); len(got) != 0 {
 		t.Fatalf("no guardrail but peak memory is replicated: %+v", got)
+	}
+}
+
+// TestReplicatedGuardrailsOverLimitNamesEveryOverLimitReading: the engine
+// records the fresh series' readings for every re-measured guardrail that is
+// over its limit, significant or not. A reading without support is what runs
+// the confirmation series, and pooling that series can be what makes it
+// significant, so leaving it out of the recorded readings would leave the
+// policy judging the pooled series alone.
+func TestReplicatedGuardrailsOverLimitNamesEveryOverLimitReading(t *testing.T) {
+	unsupported := []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 105},
+	}
+	if got := ReplicatedGuardrailsOverLimit(DefaultConfig(), unsupported); len(got) != 1 || got[0].Metric != "peak_memory_bytes" {
+		t.Fatalf("ReplicatedGuardrailsOverLimit = %+v, want the over-limit peak_memory_bytes reading", got)
+	}
+
+	supported := []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 105, StatisticallyFit: true, Significant: true},
+	}
+	if got := ReplicatedGuardrailsOverLimit(DefaultConfig(), supported); len(got) != 1 {
+		t.Fatalf("a supported breach is over its limit too: %+v", got)
+	}
+
+	withinLimit := []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 101, StatisticallyFit: true},
+		{Metric: "cpu_time_ns", Baseline: 100, Candidate: 106, StatisticallyFit: true},
+	}
+	if got := ReplicatedGuardrailsOverLimit(DefaultConfig(), withinLimit); len(got) != 0 {
+		t.Fatalf("only an over-limit reading of a re-measured guardrail counts: %+v", got)
+	}
+
+	noSupport := DefaultConfig()
+	noSupport.StatisticalSupportRequired = false
+	if got := ReplicatedGuardrailsOverLimit(noSupport, unsupported); len(got) != 0 {
+		t.Fatalf("without required support the point estimate decides alone: %+v", got)
 	}
 }
 

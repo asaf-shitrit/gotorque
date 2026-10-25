@@ -368,7 +368,13 @@ not recorded.
    high-water mark that steps with allocator and GC pacing, so it rejects only
    when the fresh series' own readings reproduce the breach, and those
    readings are kept in `Evidence.FreshGuardrails` for the policy and the
-   report. The first series' own readings of the re-measured guardrails go in
+   report. Every over-limit peak-memory reading of that series has its fresh
+   reading recorded, not only the supported breaches that ask for it
+   (`policy.ReplicatedGuardrailsOverLimit`): a reading that was over the limit
+   without significance is re-measured as an unconfirmed guardrail, and
+   folding the fresh series in is what can make the pooled reading
+   significant, which the policy judges on the fresh reading like any other
+   replicated breach. The first series' own readings of the re-measured guardrails go in
    `Evidence.FirstSeriesGuardrails`, because the pooled comparisons hold one
    value for both series once the fresh one has run, and a reason that says
    what the first series read has to quote what it produced. All workloads
@@ -536,7 +542,10 @@ out.
    exception, because a high-water mark can read high with support from one
    contended run or one GC step: its breach rejects only when a fresh series'
    own readings breach too (ADR 0040, `policy.GuardrailsToReplicate`), and one
-   that does not reproduce is named in the reasons with both readings. A
+   that does not reproduce is named in the reasons with both readings. That
+   holds whether the breach was significant on the first series or only became
+   significant once the confirmation series was pooled in, and the reason says
+   which of the two it was. A
    guardrail within
    its limit never needs support: demanding proof of the absence of a
    regression from a jittery high-water mark once reported inconclusive for
