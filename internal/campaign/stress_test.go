@@ -73,6 +73,41 @@ func TestTheCandidateRunsOnWorkloadsThatCannotAccept(t *testing.T) {
 	require.Contains(t, evidence.Summary, "the candidate also ran on 2 workload(s) the manifest keeps out of acceptance, which can veto it and cannot carry it")
 }
 
+// TestAContendedStressPassIsMeasuredAgain: the seeds that can only veto are
+// measured inside the pass measureSeedsOnQuietMachine repeats, so a load burst
+// that ends the pass contended throws their readings away with the rest.
+// Measured outside that retry, a burst during a stress series could push a
+// guardrail reading past its limit, and without statistical support that
+// reading alone rejects, which is a false reject (lead review on #109).
+func TestAContendedStressPassIsMeasuredAgain(t *testing.T) {
+	ev, _, candidate := stressEvaluator(t)
+	ev.localIsolation = true
+	runs, reset := countingCandidate(t, ev, candidate)
+	s := campaignDefaults()
+	measure := func() *orchestrator.CandidateEvidence {
+		m := &measurement{comparisons: make([]domain.MetricComparison, 0, 4)}
+		evidence := &orchestrator.CandidateEvidence{LoadAverages: []float64{1}}
+		require.True(t, ev.measureSeedsOnQuietMachine(context.Background(), s, evidence, "candidate", candidate, m), evidence.Summary)
+		require.Len(t, m.seeds, 1, "the fixture has one acceptance-eligible seed")
+		return evidence
+	}
+
+	ev.machine = &scriptedMachine{loads: [][]float64{{2}}, limit: 5}
+	quietPass := measure()
+	onePass := runs()
+	require.Positive(t, onePass)
+	require.Len(t, quietPass.StressComparisons, 4, "both seeds the manifest keeps out of acceptance were measured")
+
+	reset()
+	burst := &scriptedMachine{loads: [][]float64{{9}, {2}}, limit: 5}
+	ev.machine = burst
+	burstPass := measure()
+	require.Equal(t, 2*onePass, runs(), "the contended pass ran again, stress seeds included")
+	require.Equal(t, 1, burst.waits)
+	require.Len(t, burstPass.StressComparisons, 4, "only the second pass's stress readings reach the verdict")
+	require.NotEmpty(t, burstPass.DiscardedLoad, "the discarded pass's load is kept beside the record")
+}
+
 // TestAStressWorkloadHoldsTheCandidateToItsBehaviour: the behavior comparison
 // is the same one every other measurement is held to, so a candidate that
 // changes output on an input no representative seed reaches is rejected

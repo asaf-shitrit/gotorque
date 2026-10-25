@@ -191,7 +191,9 @@ Package map:
   and nothing else. `measureSeedWorkloads` measures the eligible seeds for the
   verdict; `measureStressSeeds` measures every other seed and keeps only
   behavior plus the `cpu_time_ns`/`peak_memory_bytes` guardrails, which can veto
-  and never carry. Adding a loop that picks seeds by tier name re-opens issue
+  and never carry. Both run inside `measurePass`, which is what the contention
+  re-measurement repeats, so a stress reading never survives a pass that was
+  thrown away. Adding a loop that picks seeds by tier name re-opens issue
   #101, where three loops kept `stress` seeds out of the candidate's run
   entirely while the docs promised they could veto.
 - Test gate (`internal/candidate/patch.go`, `worktree.go`,

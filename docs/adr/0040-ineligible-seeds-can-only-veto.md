@@ -45,7 +45,10 @@ ADR recorded a decision to keep it that way.
    every other measurement compares it (`runSeries` and `recordBehaviorMatch`),
    so a different exit code or stdout on such a seed rejects the candidate. The
    guardrails `cpu_time_ns` and `peak_memory_bytes` are compared per workload
-   and handed to the policy as `Evidence.StressComparisons`.
+   and handed to the policy as `Evidence.StressComparisons`. The pass runs
+   inside `measurePass`, the one pass the contention re-measurement repeats, so
+   a load burst during a stress series is discarded with the eligible seeds'
+   readings instead of rejecting a candidate on noise.
 3. `wall_time_ns` is not compared on those seeds. A workload the manifest keeps
    out of acceptance must not be able to argue for one, so the primary metric is
    absent from the readings by construction.

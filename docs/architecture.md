@@ -318,7 +318,9 @@ not recorded.
    pairs is contended the engine discards them, waits again and measures
    every seed once more from scratch (`measureSeedsOnQuietMachine`); only the
    second pass reaches the verdict, and the report names the discarded
-   pass's load.
+   pass's load. A pass is the eligible seeds plus, per ADR 0040, the seeds
+   that can only veto, so a burst during a stress series is discarded with
+   the rest instead of reaching the verdict.
    Tests, which disable local isolation, never wait. `gotorque verify DIR` checks an accepted verdict
    after the fact: it evaluates each accepted candidate again from its
    recorded patch through the same evaluation and policy, with 60 pairs per
@@ -411,8 +413,9 @@ support, and no member regresses significantly past
 `maximum_guardrail_regression_percent`.
 
 Two further gates come from workloads that cannot carry an acceptance. Every
-seed whose tier is not eligible is measured too, once its interleaved series
-completes (`measureStressSeeds`), and two things there can reject: a behavior
+seed whose tier is not eligible is measured too, in the same pass as the
+eligible seeds (`measureStressSeeds`, from `measurePass`), so a contended pass
+re-measures them with the rest, and two things there can reject: a behavior
 mismatch, compared exactly as an eligible seed's is, and a regression of
 `cpu_time_ns` or `peak_memory_bytes` past its limit with statistical support.
 The candidate's `wall_time_ns` on those seeds is never compared, so nothing

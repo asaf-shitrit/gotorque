@@ -359,22 +359,18 @@ func (ev *evaluator) measureAndFinalize(ctx context.Context, s evalSettings, evi
 		return false
 	}
 	if len(m.seeds) == 0 {
-		evidence.Summary = "no representative seed workloads available for measurement"
+		evidence.Summary = "no acceptance-eligible seed workloads available for measurement"
 		evidence.Comparisons = m.comparisons
 		return false
 	}
-	ev.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	if !ev.measureStressSeeds(ctx, s, evidence, id, candidateBinary) {
-		return false
-	}
 	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, &m) {
 		return false
 	}
 	return ev.confirmImprovements(ctx, s, evidence, id, candidateBinary, &m)
 }
 
-// measureSeedsOnQuietMachine measures every representative seed, and
+// measureSeedsOnQuietMachine measures every seed a verdict can rest on, and
 // measures them all again from scratch, once, when the machine was contended
 // by the time the first pass ended. The wait before measuring only protects
 // the start: on overnight-miller-4 the load went from 6.4 to 16.6 during a
@@ -384,10 +380,19 @@ func (ev *evaluator) measureAndFinalize(ctx context.Context, s evalSettings, evi
 // second pass reaches the verdict; its load is what the record reports, with
 // the discarded pass's load kept beside it. A second contended pass is kept
 // as it is, flagged.
+//
+// One pass is all of measurePass, so the seeds that can only veto a candidate
+// are measured under the same protection: a burst during a stress series can
+// push a guardrail reading past its limit, and without statistical support
+// that reading alone rejects (lead review on #109). Measuring them outside
+// this retry left them the one set of readings no re-measurement covered.
 func (ev *evaluator) measureSeedsOnQuietMachine(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	before, fresh := *evidence, *m
-	if !ev.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m) {
+	if !ev.measurePass(ctx, s, evidence, id, candidateBinary, m) {
 		return false
+	}
+	if len(m.seeds) == 0 {
+		return true
 	}
 	host := ev.machine
 	mid := host.load()
@@ -400,7 +405,22 @@ func (ev *evaluator) measureSeedsOnQuietMachine(ctx context.Context, s evalSetti
 	evidence.QuietWaitExpired = expired
 	evidence.DiscardedLoad = slices.Concat(before.LoadAverages, mid)
 	evidence.LoadAverages = host.load()
-	return ev.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m)
+	return ev.measurePass(ctx, s, evidence, id, candidateBinary, m)
+}
+
+// measurePass measures one pass of the workloads and folds its comparisons,
+// and it is what the contention re-measurement repeats. Anything a verdict may
+// rest on, or be vetoed by, has to live inside it: a reading measured outside
+// keeps a load burst's noise when the other readings are discarded.
+func (ev *evaluator) measurePass(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	if !ev.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m) {
+		return false
+	}
+	if len(m.seeds) == 0 {
+		return true
+	}
+	ev.finalizeCandidateEvidence(ctx, evidence, m)
+	return ev.measureStressSeeds(ctx, s, evidence, id, candidateBinary)
 }
 
 func (ev *evaluator) measureSeedWorkloads(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
@@ -854,7 +874,7 @@ func (ev *evaluator) runPgoLane(ctx context.Context, s evalSettings, evidence *o
 		return
 	}
 	if measured == 0 {
-		ev.skipPgoLane(evidence, "no representative seed workloads available for measurement")
+		ev.skipPgoLane(evidence, "no acceptance-eligible seed workloads available for measurement")
 		return
 	}
 	evidence.PgoComparisons = comparisons
