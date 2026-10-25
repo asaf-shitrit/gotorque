@@ -93,7 +93,10 @@ campaign against the record stay unmeasured.
   many answers came from the record.
 - The report gains a `Shared` column in its Jev cache table and a header line
   naming the record path, so a reader can tell a campaign that asked Jev from
-  one that replayed earlier answers.
+  one that replayed earlier answers. A resume does not carry
+  `--jev-answers` with it, so it names the record again; a resume that turns
+  the record off clears the path the earlier run persisted, and the header
+  then claims nothing.
 - Reproducibility is per record, not per build: a machine that has never run a
   campaign on this source still gets whatever Jev answers the first time. The
   record is a file, so it can be copied or kept with the campaigns that judge

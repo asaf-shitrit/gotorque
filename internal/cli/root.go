@@ -286,6 +286,7 @@ func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, r
 func attachAnswerRecord(out io.Writer, engine *campaign.Engine, f optimizeFlags) (func() error, error) {
 	none := func() error { return nil }
 	if !f.runADK || answersDisabled(f.jevAnswers) {
+		engine.UseAnswerRecord(nil)
 		return none, nil
 	}
 	path, err := answerRecordPath(f.jevAnswers)
@@ -294,6 +295,7 @@ func attachAnswerRecord(out io.Writer, engine *campaign.Engine, f optimizeFlags)
 	}
 	record, err := campaign.OpenAnswerRecord(path)
 	if err != nil {
+		engine.UseAnswerRecord(nil)
 		if _, warnErr := fmt.Fprintf(out, "jev answers: recording disabled for this campaign: %v\n", err); warnErr != nil {
 			return nil, warnErr
 		}
@@ -318,7 +320,7 @@ func answerRecordPath(flag string) (string, error) {
 
 // answersDisabled reports whether --jev-answers turns the record off.
 func answersDisabled(flag string) bool {
-	return flag == "off" || flag == "none"
+	return flag == "off"
 }
 
 // announceTradeoff states the rules a campaign started with a trade-off is

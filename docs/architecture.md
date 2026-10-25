@@ -973,7 +973,9 @@ request the record answers is `(pinned build, state, question set)`: a change
 to the function's source, to the question set, or to `jev.Model` is a miss,
 which is why `cachingEvaluator` fills `req.Model` before digesting. A record
 that cannot be opened or read is not an error — the campaign warns and asks
-Jev, the same way it treats a failed cache write.
+Jev, the same way it treats a failed cache write. Attaching no record also
+clears `State.JevAnswersPath`, so a resume that turns the record off cannot
+leave the report naming a record it did not replay.
 
 ## Discovery benchmark profiling
 

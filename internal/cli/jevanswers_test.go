@@ -21,15 +21,31 @@ func TestAnswerRecordIsNotAttachedToAStubCampaign(t *testing.T) {
 }
 
 func TestAnswerRecordIsOffWhenTheOperatorSaysSo(t *testing.T) {
-	for _, flag := range []string{"off", "none"} {
-		var out bytes.Buffer
-		engine := &campaign.Engine{}
-		closeRecord, err := attachAnswerRecord(&out, engine, optimizeFlags{runADK: true, jevAnswers: flag})
-		require.NoError(t, err)
-		require.NoError(t, closeRecord())
-		require.Empty(t, out.String())
-		require.Empty(t, engine.State().JevAnswersPath)
-	}
+	var out bytes.Buffer
+	engine := &campaign.Engine{}
+	closeRecord, err := attachAnswerRecord(&out, engine, optimizeFlags{runADK: true, jevAnswers: "off"})
+	require.NoError(t, err)
+	require.NoError(t, closeRecord())
+	require.Empty(t, out.String())
+	require.Empty(t, engine.State().JevAnswersPath)
+}
+
+// A resumed campaign inherits the record path a previous run wrote into its
+// state, but not the flag that named it. Turning the record off must clear the
+// path, or the report says it replayed answers this run asked Jev for.
+func TestAnOffRecordClearsThePathAResumedCampaignInherited(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inherited.db")
+	record, err := campaign.OpenAnswerRecord(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, record.Close()) })
+	engine := &campaign.Engine{}
+	engine.UseAnswerRecord(record)
+	require.Equal(t, path, engine.State().JevAnswersPath)
+	var out bytes.Buffer
+	closeRecord, err := attachAnswerRecord(&out, engine, optimizeFlags{runADK: true, jevAnswers: "off"})
+	require.NoError(t, err)
+	require.NoError(t, closeRecord())
+	require.Empty(t, engine.State().JevAnswersPath)
 }
 
 func TestAnswerRecordIsAttachedFromTheOperatorPath(t *testing.T) {

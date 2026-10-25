@@ -146,9 +146,13 @@ func (e *Engine) recordAnswer(digest string, resp jev.Response) {
 // UseAnswerRecord makes this campaign consult and extend the cross-campaign
 // record of Jev answers (ADR 0042). It must be called before the campaign
 // runs; the evaluators read the record lazily, so it may follow the ADK
-// attach step. A nil record leaves the campaign on its own cache.
+// attach step. A nil record leaves the campaign on its own cache, and clears
+// the path a resumed campaign inherited, so the report cannot claim answers
+// this run did not replay.
 func (e *Engine) UseAnswerRecord(record *AnswerRecord) {
 	if record == nil {
+		e.answers = nil
+		e.state.JevAnswersPath = ""
 		return
 	}
 	e.answers = record
