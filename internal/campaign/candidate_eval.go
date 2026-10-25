@@ -365,10 +365,23 @@ func (ev *evaluator) measureAndFinalize(ctx context.Context, s evalSettings, evi
 	}
 	ev.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, &m) {
+	return ev.secondLook(ctx, s, evidence, id, candidateBinary, &m)
+}
+
+// secondLook runs the steps a candidate gets after its first series, in the
+// order that keeps a per-workload accept off a pooled reading. The two steps
+// that extend every seed run first, and the step that replaces one workload's
+// series runs last: an extending step adds its own pairs to the workload that
+// selected the accept, so a per-workload accept must be re-measured after it,
+// not before (ADR 0041, ADR 0021, ADR 0034).
+func (ev *evaluator) secondLook(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, m) {
 		return false
 	}
-	return ev.confirmImprovements(ctx, s, evidence, id, candidateBinary, &m)
+	if !ev.confirmImprovements(ctx, s, evidence, id, candidateBinary, m) {
+		return false
+	}
+	return ev.confirmSelection(ctx, s, evidence, id, candidateBinary, m)
 }
 
 // measureSeedsOnQuietMachine measures every representative seed, and
@@ -642,17 +655,7 @@ func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, prim
 // borderline improvement an accept would rest on (ADR 0034).
 func improvementsToConfirm(config policy.Config, pairs int, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, string) {
 	eligible := eligibleReadings(config, evidence.Comparisons)
-	preview := policy.Evaluate(config, policy.Evidence{
-		BehaviorMatches:        evidence.BehaviorMatches,
-		FailureSummary:         evidence.Summary,
-		SafetyChecksPassed:     evidence.SafetyChecksPassed,
-		RepresentativeEvidence: evidence.RepresentativeEvidence,
-		Comparisons:            evidence.Comparisons,
-		Primary:                eligible,
-		FreshGuardrails:        evidence.FreshGuardrails,
-		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
-	})
-	switch preview.Decision {
+	switch evaluateEvidence(config, evidence).Decision {
 	case domain.DecisionInconclusive:
 		unconfirmed := policy.UnconfirmedImprovements(config, eligible)
 		return unconfirmed, improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent, pairs)
@@ -663,6 +666,140 @@ func improvementsToConfirm(config policy.Config, pairs int, evidence *orchestrat
 		return nil, ""
 	}
 	return nil, ""
+}
+
+// evaluateEvidence judges a candidate's evidence exactly as the verdict will,
+// so a confirmation step can ask what the policy would decide before it spends
+// another series.
+func evaluateEvidence(config policy.Config, evidence *orchestrator.CandidateEvidence) policy.Result {
+	return policy.Evaluate(config, policy.Evidence{
+		BehaviorMatches:        evidence.BehaviorMatches,
+		FailureSummary:         evidence.Summary,
+		SafetyChecksPassed:     evidence.SafetyChecksPassed,
+		RepresentativeEvidence: evidence.RepresentativeEvidence,
+		Comparisons:            evidence.Comparisons,
+		Primary:                eligibleReadings(config, evidence.Comparisons),
+		FreshGuardrails:        evidence.FreshGuardrails,
+		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
+	})
+}
+
+// confirmSelection measures the workload an accept would rest on again from
+// scratch when that reading is one workload's rather than the pooled metric,
+// and lets the verdict rest on the fresh series alone (ADR 0041). A per-workload
+// accept is the best of several readings, so the reading that cleared the bar
+// may have cleared it on chance: on daily-2026-10-02-devB-miller attempt 4 the
+// campaign accepted a -6.51% reading on one of five workloads that `gotorque
+// verify` put at -3.04% over sixty fresh pairs. The series that selected the
+// workload is discarded, because pooling the two keeps part of that bias; every
+// comparison is derived again from the fresh runs, so the record holds the
+// series the verdict rests on.
+//
+// A candidate whose regression or unsupported-improvement confirmation already
+// ran is measured again here too: that confirmation extended every seed, so a
+// per-workload accept would rest on both series pooled, and the pairs that
+// selected the workload are still in them. The fresh series replaces the pooled
+// one for the workload that carries the accept, so it is as long as what it
+// replaces and the pooled reading keeps one length per seed.
+//
+// Each workload that would carry the accept is measured at most once more, so
+// a candidate whose fresh reading no longer clears the bar but whose second
+// workload's does is measured again there rather than accepted on the reading
+// that selected it. The campaign deadline bounds the cost, as it bounds every
+// series.
+func (ev *evaluator) confirmSelection(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	// The bias being corrected is choosing the best of several readings: a
+	// target with one representative workload offered no choice to inflate.
+	if len(m.seeds) < 2 {
+		return true
+	}
+	config := policyConfigFromManifest(ev.manifest)
+	remeasured := make(map[string]bool, len(m.seeds))
+	var notes []string
+	for {
+		selected := selectedWorkloadToRemeasure(config, evidence, remeasured)
+		if len(selected) == 0 {
+			break
+		}
+		seed := slices.IndexFunc(m.seeds, func(runs seedRuns) bool { return runs.seed.ID == selected[0].Workload })
+		if seed < 0 {
+			break
+		}
+		workload := selected[0].Workload
+		note, ok := ev.remeasureSelectedWorkload(ctx, s, evidence, id, candidateBinary, m, seed, selected[0])
+		if !ok {
+			return false
+		}
+		remeasured[workload] = true
+		notes = append(notes, note)
+	}
+	if len(notes) == 0 {
+		return true
+	}
+	note := strings.Join(notes, "; ")
+	evidence.Summary += "; " + note
+	if !slices.Contains(evidence.ValidationJobs, "interleaved-ab-confirmation") {
+		evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
+	}
+	_ = ev.journal.event("selection_confirmed", note, nil)
+	return true
+}
+
+// selectedWorkloadToRemeasure returns the per-workload reading an accept would
+// rest on when that workload has not been measured again yet, and nothing when
+// the verdict does not accept, rests on the pooled metric, or rests on a
+// workload that already got its fresh series.
+func selectedWorkloadToRemeasure(config policy.Config, evidence *orchestrator.CandidateEvidence, remeasured map[string]bool) []domain.MetricComparison {
+	if evaluateEvidence(config, evidence).Decision != domain.DecisionAccepted {
+		return nil
+	}
+	selected := policy.SelectedImprovements(config, eligibleReadings(config, evidence.Comparisons))
+	if len(selected) == 0 || remeasured[selected[0].Workload] {
+		return nil
+	}
+	return selected
+}
+
+// remeasureSelectedWorkload replaces one workload's runs with a fresh series of
+// the length the replaced one held, derives every comparison again from what is
+// now measured, and returns the note that records what the reading the verdict
+// rested on said and what the fresh series alone says.
+func (ev *evaluator) remeasureSelectedWorkload(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement, seed int, selected domain.MetricComparison) (string, bool) {
+	fresh := seedRuns{seed: m.seeds[seed].seed, deterministic: m.seeds[seed].deterministic}
+	// A regression confirmation has already extended every seed to twice the
+	// pair count. Re-measuring over one series of the campaign's count would
+	// leave this seed shorter than the others, and the pooled reading folds the
+	// seeds per repetition, so it would drop the other seeds' second series.
+	replaced := len(m.seeds[seed].ab.Baseline)
+	step := max(1, s.pairs)
+	for remaining := replaced; remaining > 0; remaining -= step {
+		series := s
+		series.pairs = min(step, remaining)
+		if !ev.runSeries(ctx, series, &fresh, id, candidateBinary, evidence, evidence.Comparisons) {
+			return "", false
+		}
+	}
+	m.seeds[seed] = fresh
+	ev.rederive(ctx, evidence, m)
+	judged := workloadReading(m.comparisons, m.seeds[seed].seed.ID, ev.manifest.Performance.PrimaryMetric)
+	return selectionNote(selected, judged, replaced), true
+}
+
+// workloadReading finds one per-workload reading by the seed id the comparison
+// is keyed by, or an unreadable reading when the workload has none.
+func workloadReading(comparisons []domain.MetricComparison, workload, metric string) domain.MetricComparison {
+	for _, comparison := range comparisons {
+		if comparison.Workload == workload && comparison.Metric == metric {
+			return comparison
+		}
+	}
+	return domain.MetricComparison{Workload: workload, Metric: metric, DeltaPercent: math.NaN()}
+}
+
+// selectionNote states the selection bias and both readings: what the best of
+// the workload readings claimed, and what the fresh series alone measured.
+func selectionNote(selecting, judged domain.MetricComparison, pairs int) string {
+	return fmt.Sprintf("workload %q read %+.2f%% as the best of the workload readings, so it alone was measured over %d fresh pairs and judged on those alone: %+.2f%%", selecting.Workload, selecting.DeltaPercent, pairs, judged.DeltaPercent)
 }
 
 func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum float64, pairs int) string {

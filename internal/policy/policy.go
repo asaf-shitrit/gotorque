@@ -280,6 +280,25 @@ func BorderlineImprovements(config Config, eligible []domain.MetricComparison) [
 	return []domain.MetricComparison{best}
 }
 
+// SelectedImprovements returns the reading an accept would rest on when that
+// reading is one workload's rather than the pooled metric, or nothing when the
+// verdict would rest on the aggregate, would not accept, or when the manifest
+// does not ask for statistical support. Such a reading is the best of several
+// and was chosen because it read best, so its point estimate is biased upward
+// (the winner's curse); the engine measures that workload again from scratch
+// and lets the verdict rest on the fresh series alone (ADR 0041).
+func SelectedImprovements(config Config, eligible []domain.MetricComparison) []domain.MetricComparison {
+	config = withDefaults(config)
+	if !config.StatisticalSupportRequired || len(eligible) == 0 {
+		return nil
+	}
+	best, supported := bestImprovement(comparisonResults(eligible))
+	if !supported || best.Workload == "" || !improvedAtLeastMinimum(config, best) {
+		return nil
+	}
+	return []domain.MetricComparison{best}
+}
+
 // improvedAtLeastMinimum reports whether a comparison's delta is an
 // improvement (a negative delta) at least as large in magnitude as the
 // manifest's minimum_improvement_percent.
