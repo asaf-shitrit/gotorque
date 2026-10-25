@@ -762,7 +762,18 @@ carries `context`: the declarations, from its own package, of the functions,
 methods and types its body refers to and its receiver's type, signatures
 without bodies and capped at twelve (`targetSignatures`), because the
 optimizer otherwise guessed them and lost attempts to build failures (on
-miller it treated a `string` return as `[]byte` twice). With function_source, deterministic code
+miller it treated a `string` return as `[]byte` twice). Names alone were not
+enough: a value's type can come from a call (`opts := parseArgs()`), from a
+parameter or from a first-party package's constructor, and the type name then
+never appears in the body. So the context also carries, for each first-party
+value the target reads through a selector, that value's declared type with its
+fields and the methods it calls on it, resolved from the packages' own
+AST declarations (no module load, so it stays offline and degrades to
+nothing). Resolution follows the shapes a value's type is written in: a call's
+first result, so `rec, err := types.New()` types `rec`; a parameter, a typed
+var or a composite literal spelling `types.Record`; `new`; and a conversion.
+On jj the target's whole context was `func parseArgs() args` and the
+candidate invented fields on `args`. With function_source, deterministic code
 finds the function by name in the base revision and builds the diff itself,
 which removes context-line and header mismatches as a way to lose a
 candidate. `patch` stays the transport when there is no target, and remains
