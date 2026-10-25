@@ -672,6 +672,45 @@ func TestASignificantPeakMemoryBreachNeedsAFreshSeries(t *testing.T) {
 	}
 }
 
+// TestAPeakMemoryBreachBothSeriesReproduceRejectsWhenThePooledReadingIsNotSignificant:
+// the fresh series decides a replicated breach, not the pooled reading. Two
+// series each reading +5% reproduce each other, but pooled they sit 10 MB
+// apart, and a Welch test over 50 pairs from two distributions 10 MB apart
+// with 50 KB of noise is not significant. Deciding on the pooled reading then
+// accepted a supported wall-time win over a memory regression both series saw
+// (issue #118).
+func TestAPeakMemoryBreachBothSeriesReproduceRejectsWhenThePooledReadingIsNotSignificant(t *testing.T) {
+	firstSeries := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 30000000, Candidate: 31500000, StatisticallyFit: true, Significant: true}
+	freshSeries := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 40000000, Candidate: 42000000, StatisticallyFit: true, Significant: true}
+	pooled := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 35000000, Candidate: 36750000, StatisticallyFit: true}
+
+	evidence := peakMemoryEvidence(pooled, freshSeries, true)
+	evidence.FirstSeriesGuardrails = []domain.MetricComparison{firstSeries}
+	result := Evaluate(DefaultConfig(), evidence)
+	if result.Decision != domain.DecisionRejected {
+		t.Fatalf("a breach both series reproduce rejects: decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+	reasons := strings.Join(result.Reasons, "; ")
+	if !strings.Contains(reasons, `guardrail "peak_memory_bytes" read +5.00% on the first series, over the 2.00% limit and significant, and a fresh series reproduced it at +5.00%`) {
+		t.Fatalf("the rejection does not quote the first series beside the fresh one: %v", result.Reasons)
+	}
+}
+
+// TestAPeakMemoryBreachTheFirstSeriesDidNotShowStaysAccepted: the fresh series
+// decides whether a breach reproduces, not whether there was one. A first
+// series under its limit leaves the fresh reading alone, however high it is.
+func TestAPeakMemoryBreachTheFirstSeriesDidNotShowStaysAccepted(t *testing.T) {
+	firstSeries := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 30000000, Candidate: 30150000, StatisticallyFit: true}
+	freshSeries := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 40000000, Candidate: 42000000, StatisticallyFit: true, Significant: true}
+	pooled := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 30000000, Candidate: 30150000, StatisticallyFit: true}
+
+	evidence := peakMemoryEvidence(pooled, freshSeries, true)
+	evidence.FirstSeriesGuardrails = []domain.MetricComparison{firstSeries}
+	if result := Evaluate(DefaultConfig(), evidence); result.Decision != domain.DecisionAccepted {
+		t.Fatalf("a breach only the fresh series saw must not reject the win: decision = %s, reasons = %v", result.Decision, result.Reasons)
+	}
+}
+
 // TestAnUnreplicatedBreachQuotesTheFirstSeries: once a fresh series has run,
 // the pooled comparisons hold one value for both series. The reason says "on
 // the first series", so it quotes Evidence.FirstSeriesGuardrails: here the
