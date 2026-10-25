@@ -41,10 +41,13 @@ that selected it. Each workload is measured at most once more, and the campaign
 deadline bounds the cost as it bounds every series. A target with one
 representative workload offered no choice among readings and is not re-measured.
 
-The re-measurement is not skipped when a regression or
-unsupported-improvement confirmation already ran. That confirmation extends
-every seed instead of replacing it, so a per-workload accept would still rest
-on the pairs that selected the workload. The fresh series is as long as the one
+The re-measurement runs after both steps that extend every seed
+(`confirmRegressions` and `confirmImprovements`), never before them. Each of
+those steps extends every seed instead of replacing it, so a selection
+re-measurement that ran first would be extended afterwards, and the verdict
+would rest on the pooled series that still holds the pairs which selected the
+workload. `secondLook` holds that order, and a test pins it. The fresh series is
+as long as the one
 it replaces, because the pooled reading folds the seeds per repetition: a seed
 left shorter than the others would drop part of their measurement from the
 pooled reading. A fresh reading that ends unsupported stays inconclusive rather
@@ -56,11 +59,11 @@ than earning yet another series.
   a confirmation had already doubled every seed, seconds for a short CLI. A
   clear single-workload win is now re-measured too, where ADR 0034 left it
   alone.
-- A per-workload accept that follows a regression confirmation is judged on
-  fresh pairs alone, so the 50 pooled pairs are replaced rather than the accept
-  being taken from them. The regression confirmation's runs for that workload
-  are discarded with the selecting series; every other workload keeps both of
-  its series.
+- A per-workload accept that follows a regression or unsupported-improvement
+  confirmation is judged on fresh pairs alone, so the pooled pairs are replaced
+  rather than the accept being taken from them. The confirmation's runs for that
+  workload are discarded with the selecting series; every other workload keeps
+  both of its series.
 - ADR 0034 still governs a pooled accept near the threshold; for a per-workload
   accept this ADR replaces its pooled second series, which was the case that
   motivated it (dyff was a single-workload accept).
