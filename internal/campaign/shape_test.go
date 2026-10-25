@@ -53,9 +53,16 @@ func buffered(withImport bool) string {
 // worktree, then checkShape.
 func shapeOf(t *testing.T, patched string, target *agents.Target) error {
 	t.Helper()
+	return shapeOfFrom(t, printerSource, patched, target)
+}
+
+// shapeOfFrom is shapeOf with the base revision's main.go given: a fixture
+// whose hot path is the string building the target's cause names.
+func shapeOfFrom(t *testing.T, base, patched string, target *agents.Target) error {
+	t.Helper()
 	repo := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module test.local/fixture\n\ngo 1.26\n"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(repo, "main.go"), []byte(printerSource), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "main.go"), []byte(base), 0o600))
 	git(t, repo, "init")
 	git(t, repo, "add", ".")
 	git(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial")
@@ -183,4 +190,113 @@ func TestShapeRejectsWritesThatBypassTheBuffer(t *testing.T) {
 	err := shapeOf(t, half, &printerTarget)
 	require.ErrorContains(t, err, "(*cli).printValues still writes to c.out directly after wrapping it in a bufio.Writer")
 	require.NoError(t, shapeOf(t, buffered(true), &printerTarget), "a complete patch passes")
+}
+
+// ycatScannerSource is #76's target, cut down: (*scanner).scanMapDelim
+// converts []rune buffers to strings on the hot path, and the error message
+// keeps its own conversion in the rare branch.
+const ycatScannerSource = `package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+type scanner struct {
+	buf  []rune
+	obuf []rune
+}
+
+func (s *scanner) scanMapDelim() error {
+	if strings.HasPrefix(strings.TrimPrefix(string(s.obuf), " "), "\t") && !strings.HasPrefix(string(s.buf), "\t") {
+		return nil
+	}
+	return fmt.Errorf("%s%s", string(s.obuf), string(s.buf))
+}
+`
+
+var ycatTarget = agents.Target{
+	Location: "main.go:13", Function: "(*scanner).scanMapDelim",
+	Cause: string(jev.CauseStringBuild), Remedy: "Check the runes instead of building strings.",
+}
+
+// TestShapeAcceptsAStringBuildPatchThatRemovesConversions is the recorded ycat
+// candidate from #76: it replaces three []rune to string conversions with
+// direct element checks and adds no builder, so the add-only rule threw it
+// away before the build.
+func TestShapeAcceptsAStringBuildPatchThatRemovesConversions(t *testing.T) {
+	replaced := `	if strings.HasPrefix(strings.TrimPrefix(string(s.obuf), " "), "\t") && !strings.HasPrefix(string(s.buf), "\t") {`
+	fixed := strings.Replace(ycatScannerSource, replaced,
+		`	if len(s.obuf) > 1 && s.obuf[0] == ' ' && s.obuf[1] == '\t' && (len(s.buf) == 0 || s.buf[0] != '\t') {`, 1)
+	require.NotEqual(t, ycatScannerSource, fixed, "the fixture line the ycat candidate replaced moved")
+	require.NoError(t, shapeOfFrom(t, ycatScannerSource, fixed, &ycatTarget))
+}
+
+// TestShapeWeighsStringBuildRemovalsAgainstAdditions: a string_build patch may
+// also fix the cost by taking a conversion, a concatenation or fmt formatting
+// away, and only a net removal counts. Anything else is still rejected, so the
+// rule gains acceptances and keeps its rejections.
+func TestShapeWeighsStringBuildRemovalsAgainstAdditions(t *testing.T) {
+	const rejected = "and the patch does neither"
+	cases := []struct {
+		name    string
+		removed string
+		added   string
+		want    string
+	}{
+		{name: "a conversion removed", removed: "\ts = string(b)\n\treturn s\n", added: "\ts = b\n\treturn s\n"},
+		{name: "a concatenation folded", removed: "\treturn \"a\" + \"b\"\n", added: "\treturn \"ab\"\n"},
+		{name: "a concatenation with a literal", removed: "\ts += \";\"\n", added: ""},
+		// An accumulation through two variables is not visibly a string, and
+		// the rule has no types: it keeps rejecting rather than reading every
+		// `+=` as concatenation, which would pass `n += 1` through as a remedy.
+		{name: "an accumulation of two variables", removed: "\ts += prefix\n", added: "", want: rejected},
+		{name: "fmt formatting replaced by a conversion", removed: "\treturn fmt.Sprint(n)\n", added: "\treturn string(rune(n))\n"},
+		{name: "a builder added and nothing removed", removed: "\ts += v\n", added: "\tvar b strings.Builder\n\tb.WriteString(v)\n"},
+		{name: "one conversion traded for another", removed: "\ts = string(b)\n", added: "\ts = string(c)\n", want: rejected},
+		{name: "arithmetic on a line with no string", removed: "\tn = n + 1\n", added: "\tn = n + 2\n", want: rejected},
+		{name: "an edit that touches no string", removed: "\treturn 1\n", added: "\treturn 2\n", want: rejected},
+	}
+	for _, c := range cases {
+		changes := map[string]*fileChange{"main.go": literalChange(c.removed, c.added)}
+		err := checkCauseShape(t.TempDir(), changes, &ycatTarget)
+		if c.want == "" {
+			require.NoError(t, err, c.name)
+			continue
+		}
+		require.ErrorContains(t, err, c.want, c.name)
+	}
+}
+
+// TestStringBuildShapeKeepsEveryRecordedAcceptance is #76's replay gate, the
+// condition ADR 0017 puts on a shape change: over every recorded campaign
+// patch, the widened rule must still pass each patch the add-only rule passed,
+// so the change only stops false rejections.
+func TestStringBuildShapeKeepsEveryRecordedAcceptance(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	patches, _ := filepath.Glob(filepath.Join(home, "projects", "gotorque-work", "campaigns", "*", "patches", "*.diff"))
+	if len(patches) == 0 {
+		t.Skip("no recorded campaigns at ~/projects/gotorque-work; skipping the replay gate")
+	}
+	shape := remedyShapes[jev.CauseStringBuild]
+	replayed, addOnly, widened := 0, 0, 0
+	for _, file := range patches {
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		changes := parseChanges(data)
+		replayed++
+		accepted := containsAny(addedText(changes), shape.anyOf...)
+		permits := shape.permits(addedText(changes), changes)
+		if !accepted {
+			if permits {
+				widened++
+			}
+			continue
+		}
+		addOnly++
+		require.True(t, permits, "%s: the widened rule no longer passes a patch the add-only rule accepted", file)
+	}
+	require.Positive(t, replayed, "the replay read no patch")
+	t.Logf("replayed %d recorded patches: %d passed the add-only rule, %d are new acceptances", replayed, addOnly, widened)
 }
