@@ -436,6 +436,27 @@ not recorded.
    large workload produced a pooled `t` of 1.06 against 10.69 measured on the
    affected workload alone, and the candidate was reported inconclusive.
 
+   Acceptance does not threshold on that mean. Every sample-derived
+   comparison also records a Hodges–Lehmann shift (`shift_percent`, ADR
+   0043): the median of every candidate-minus-baseline pairwise difference, as
+   a percentage of the baseline median (`campaign.hodgesLehmannShift`,
+   `robustShiftPercent`). `policy.ImprovementDelta` returns the shift when one
+   was measured and the mean otherwise, and acceptance, the accept reason and
+   both confirmation triggers (ADR 0021, ADR 0034) read it. The shift may only
+   size a win, not create one: `policy.estimatorsAgree` refuses a reading whose
+   mean delta points the other way, because support there came from
+   `metricSupport`'s equivalence branch, which rules out a regression rather
+   than showing a win. The regression
+   and guardrail checks deliberately keep the mean delta: in the recorded
+   replay a robust regression reading turned six A/A null candidates from
+   inconclusive into rejected, and a robust estimate can understate a real
+   regression as easily as a real win. The report prints both columns. The
+   replay gate is `TestRecordedVerdictsSurviveTheRobustShift`; its checked-in
+   fixtures (`internal/campaign/testdata/replay-campaigns`) run it in CI, and it
+   also replays `~/projects/gotorque-work/campaigns` (or
+   `GOTORQUE_REPLAY_CAMPAIGNS`) when they are present. It skips every campaign
+   on a held-out target.
+
 ### What a verdict rests on
 
 Acceptance is decided over the set of **acceptance-eligible readings**: the
@@ -443,9 +464,10 @@ pooled primary metric plus one comparison per representative-tier seed (only
 those seeds are measured, so every per-workload primary comparison is eligible
 by construction). A candidate passes when any member of that set improves by
 at least the manifest's `minimum_improvement_percent` with statistical
-support, and no member regresses significantly past
-`maximum_guardrail_regression_percent`;
-the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
+support — read from the Hodges–Lehmann shift (ADR 0043), with the mean delta
+agreeing that the reading improved — and no member
+regresses significantly past `maximum_guardrail_regression_percent`, read from
+the mean delta; the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as
 before. The reason names the workload the verdict rests on.
 
@@ -1534,8 +1556,9 @@ times can exceed it.
 report includes the environment and revision, repository inventory, baseline
 workload results, and one section per candidate experiment with the verdict
 (accepted, rejected, inconclusive), hypothesis, patch path, evidence summary,
-policy reasons, a metric comparison table (baseline, candidate, delta
-percent, statistical support), trimmed benchstat output when benchstat
+policy reasons, a metric comparison table (baseline, candidate, mean delta,
+Hodges–Lehmann shift when the samples supply one, statistical support), trimmed
+benchstat output when benchstat
 contributed, and a per-role token usage table.
 
 `gotorque scorecard DIR...` classifies every campaign's candidate records

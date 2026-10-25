@@ -211,6 +211,51 @@ func TestBehaviorGateNamesATargetWithoutTests(t *testing.T) {
 	require.NotContains(t, notRun.String(), "no tests of its own", "a baseline that never ran says nothing about tests")
 }
 
+// TestReportShowsTheRobustShiftBesideTheMean: the mean delta is what the
+// regression and guardrail checks read, the Hodges–Lehmann shift is what
+// acceptance reads (ADR 0043), and the report shows both so a number that
+// decided a verdict is never hidden behind one that did not.
+func TestReportShowsTheRobustShiftBesideTheMean(t *testing.T) {
+	state := State{
+		ID: "shifted",
+		CandidateRecords: []CandidateRecord{{
+			Attempt:  1,
+			Decision: domain.DecisionInconclusive,
+			Comparisons: []domain.MetricComparison{
+				{Metric: "wall_time_ns", Baseline: 100, Candidate: 94.84, DeltaPercent: -5.16, Shift: domain.ShiftHodgesLehmann, ShiftPercent: -2.56, StatisticallyFit: true},
+				{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, DeltaPercent: 0, StatisticallyFit: true},
+			},
+			Reasons: []string{"best acceptance-eligible measurement improved by 2.56% (Hodges–Lehmann shift), below the 3.00% threshold"},
+		}},
+	}
+	rendered := RenderMarkdown(state)
+	for _, want := range []string{
+		"| Comparison | Baseline | Candidate | Mean Δ | HL shift | Supported |",
+		"| `wall_time_ns` | 100 | 94.84 | -5.16% | -2.56% | yes |",
+		"| `peak_memory_bytes` | 100 | 100 | +0.00% | n/a | yes |",
+		"improved by 2.56% (Hodges–Lehmann shift)",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("report missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestCandidateEventSummaryShowsBothDeltasWhenTheShiftDecides(t *testing.T) {
+	record := CandidateRecord{
+		Attempt:  4,
+		Decision: domain.DecisionInconclusive,
+		Comparisons: []domain.MetricComparison{
+			{Metric: manifest.DefaultPrimaryMetric, Baseline: 100, Candidate: 94.84, DeltaPercent: -5.16, Shift: domain.ShiftHodgesLehmann, ShiftPercent: -2.56, StatisticallyFit: true},
+		},
+	}
+	got := candidateEventSummary(record, "")
+	want := "attempt 4: inconclusive — wall_time_ns -5.16% mean, -2.56% HL (supported)"
+	if got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
 // TestReportShowsTheFreshSeries: a verdict can rest on a peak-memory breach
 // not reproducing, so the report has to show the fresh readings the verdict
 // read rather than only the combined series.
@@ -222,7 +267,7 @@ func TestReportShowsTheFreshSeries(t *testing.T) {
 	})
 	rendered := b.String()
 	require.Contains(t, rendered, "Fresh series, measured to check whether a peak-memory breach reproduces")
-	require.Contains(t, rendered, "| `peak_memory_bytes` | 3.651e+07 | 3.651e+07 | +0.00% | no |")
+	require.Contains(t, rendered, "| `peak_memory_bytes` | 3.651e+07 | 3.651e+07 | +0.00% | n/a | no |")
 
 	var empty strings.Builder
 	writeCandidateComparisons(&empty, CandidateRecord{Comparisons: []domain.MetricComparison{{Metric: "peak_memory_bytes", Baseline: 1, Candidate: 1, StatisticallyFit: true}}})

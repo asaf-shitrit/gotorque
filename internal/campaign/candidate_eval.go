@@ -831,7 +831,7 @@ func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum fl
 	if c.Workload != "" {
 		name = c.Workload
 	}
-	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -c.DeltaPercent, minimum, pairs)
+	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -policy.ImprovementDelta(c), minimum, pairs)
 }
 
 func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum float64, pairs int) string {
@@ -841,7 +841,7 @@ func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum 
 		if c.Workload != "" {
 			name = c.Workload
 		}
-		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
+		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, policy.ImprovementDelta(c)))
 	}
 	return fmt.Sprintf("%s improved past the %.2f%% minimum without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), minimum, pairs, pairs)
 }
@@ -1270,6 +1270,7 @@ func compareMetric(workload, metric, unit string, limit float64, baseline, candi
 	}
 	result.StatisticallyFit = metricSupport(baseVals, candVals, result.Baseline, result.DeltaPercent, limit)
 	result.Significant = statisticallySupported(baseVals, candVals)
+	shiftFromSamples(&result, baseVals, candVals)
 	return []domain.MetricComparison{result}
 }
 
