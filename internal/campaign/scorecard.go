@@ -32,7 +32,12 @@ type ScorecardRow struct {
 	// started it first, without repeats. A campaign written before the build
 	// was recorded carries version.Unknown, so it groups with the other
 	// pre-record campaigns instead of posing as a build of its own.
-	Builds     []string
+	Builds []string
+	// DirtyBuild marks a campaign that ran at least one build from a checkout
+	// with uncommitted changes. Such a build names the revision it sat on, not
+	// the code it ran, so two of them read the same name above and can still
+	// reach different verdicts.
+	DirtyBuild bool
 	StopReason string
 	// NullCandidates is the campaign's persisted null-candidate bound. A
 	// positive value marks a campaign that measured code-generated patches
@@ -61,7 +66,7 @@ func Scorecard(dirs []string) ([]ScorecardRow, error) {
 }
 
 func scorecardRow(name string, state State) ScorecardRow {
-	row := ScorecardRow{Campaign: name, Target: state.Manifest.Name, StopReason: state.StopReason, NullCandidates: state.NullCandidates, Builds: campaignBuilds(state), Counts: map[string]int{}}
+	row := ScorecardRow{Campaign: name, Target: state.Manifest.Name, StopReason: state.StopReason, NullCandidates: state.NullCandidates, Builds: campaignBuilds(state), DirtyBuild: campaignRanDirtyBuild(state), Counts: map[string]int{}}
 	held := map[int]bool{}
 	for _, v := range state.Verifications {
 		held[v.Attempt] = v.Confirmed()
@@ -95,6 +100,15 @@ func campaignBuilds(state State) []string {
 	return names
 }
 
+// campaignRanDirtyBuild reports whether a build the campaign ran came from a
+// checkout with uncommitted changes.
+func campaignRanDirtyBuild(state State) bool {
+	if state.Build.Modified {
+		return true
+	}
+	return slices.ContainsFunc(state.LaterBuilds, func(run BuildRun) bool { return run.Build.Modified })
+}
+
 // buildCell is a row's builds as one cell. A row built without the field, as a
 // caller constructing rows directly can, still says Unknown rather than
 // leaving the column blank.
@@ -106,12 +120,21 @@ func buildCell(row ScorecardRow) string {
 }
 
 // writeBuildWarning says when the campaigns being grouped did not all run on
-// the same gotorque build. It only says so: the rates below are computed from
+// the same gotorque build, or when one of those builds came from a checkout
+// with uncommitted changes. It only says so: the rates below are computed from
 // the persisted records whatever build wrote them, because a verdict must not
 // depend on the reader (the build record is data, not policy). Grouping the
 // campaigns by build stays the caller's job, the same way held-out versus
 // development does.
 func writeBuildWarning(b *strings.Builder, rows []ScorecardRow) {
+	writeDifferingBuildWarning(b, buildNames(rows))
+	if slices.ContainsFunc(rows, func(row ScorecardRow) bool { return row.DirtyBuild }) {
+		b.WriteString("> Builds include a dirty checkout: a binary built from uncommitted changes names the revision it sat on, not the code it ran. Two dirty builds of one revision read the same here and can still reach different verdicts, so a rate below can mix verdicts that no build name separates.\n\n")
+	}
+}
+
+// buildNames lists every build the grouped campaigns ran on, without repeats.
+func buildNames(rows []ScorecardRow) []string {
 	names := []string{}
 	for _, row := range rows {
 		for _, name := range row.Builds {
@@ -120,6 +143,11 @@ func writeBuildWarning(b *strings.Builder, rows []ScorecardRow) {
 			}
 		}
 	}
+	return names
+}
+
+// writeDifferingBuildWarning names the builds a group mixed, when it mixed any.
+func writeDifferingBuildWarning(b *strings.Builder, names []string) {
 	if len(names) < 2 {
 		return
 	}

@@ -53,6 +53,7 @@ func TestCampaignRunsPersistsReportsAndResumes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resumed.Run(context.Background()))
 	require.Len(t, resumed.State().Runs, 1, "completed workload must not repeat")
+	require.Empty(t, resumed.State().LaterBuilds, "a completed campaign measures nothing, so its resume records no build")
 	require.NoError(t, resumed.Close())
 }
 

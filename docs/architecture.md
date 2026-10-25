@@ -1592,12 +1592,14 @@ contributed, and a per-role token usage table.
 The build is recorded and shown, never judged (ADR 0046). `State.Build` is the
 gotorque binary that created the campaign, from the release build's ldflags
 when it set a commit and from the Go VCS stamp (`vcs.revision`, `vcs.modified`)
-otherwise; `State.LaterBuilds` holds one entry per resume and verify run, both
-of which go through `campaign.Resume`, which appends and saves before it
-composes the engine. The report prints `Build:` beside the target's
-`Revision:`, and a `## Builds` table once a later run exists. The fields are
-additive and `ReportSchemaVersion` stays at 1, so a campaign written before the
-record loads, resumes and scores, and reports `unknown`. Nothing in
+otherwise; `State.LaterBuilds` holds one entry per resume and verify run, saved
+by `recordBuild` as the run starts its first measurement. Opening a campaign
+directory records nothing: `Resume` only arms the entry, so a resume the CLI
+refuses, a `verify` with nothing accepted and a resume of a completed campaign
+add no build that judged no verdict. The report prints `Build:` beside the
+target's `Revision:`, and a `## Builds` table once a later run exists. The
+fields are additive and `ReportSchemaVersion` stays at 1, so a campaign written
+before the record loads, resumes and scores, and reports `unknown`. Nothing in
 `internal/policy`, the evaluator or a bound reads them.
 
 `gotorque scorecard DIR...` classifies every campaign's candidate records
@@ -1609,9 +1611,12 @@ verdicts, which say nothing about the patch. An accept is a false accept; a
 guardrail, test or build rejection is a false reject, because the patch
 changed no code; an inconclusive verdict is the correct outcome for a null and
 counts in neither. Both tables carry a `build` column naming the gotorque
-build(s) the campaign ran on, and a set of campaigns that ran on more than one
-build is called out above the tables. The warning changes no count: grouping by
-build stays the caller's job, as splitting held-out from development does.
+build(s) the campaign ran on. Above the tables, a set of campaigns that ran on
+more than one build is called out, and so is a set with any build from a
+checkout with uncommitted changes: two dirty builds of one revision read the
+same name and can still run different code. Neither warning changes a count:
+grouping by build stays the caller's job, as splitting held-out from development
+does.
 Each rate is printed with its exact one-sided 95%
 Clopper-Pearson upper bound (`clopper.go`): the p at which the chance of
 seeing at most that many hits is 0.05, which for no hits in n runs is

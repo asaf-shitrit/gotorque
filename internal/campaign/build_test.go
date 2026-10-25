@@ -64,28 +64,51 @@ func TestReportListsEveryBuildThatResumedTheCampaign(t *testing.T) {
 	require.Contains(t, out, "| run 2 | 2026-10-25T11:30:00Z | `0.2.0 d72af7f` |")
 }
 
-func TestResumeRecordsTheBuildItRunsOn(t *testing.T) {
+// buildRecordedCampaign is a campaign whose later runs a test can name.
+func loadCampaignState(t *testing.T, dir string) State {
+	t.Helper()
+	store, err := OpenStore(filepath.Join(dir, DatabaseName))
+	require.NoError(t, err)
+	state, err := store.Load()
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+	return state
+}
+
+func TestResumeRecordsTheBuildOnceTheRunStartsWork(t *testing.T) {
 	// writePastCampaign writes the state a campaign from before build
 	// recording leaves behind: no Build, no LaterBuilds.
 	dir := writePastCampaign(t, "past", "rev", []CandidateRecord{{Attempt: 1, Decision: domain.DecisionInconclusive}})
 	resumed, err := Resume(dir, io.Discard)
 	require.NoError(t, err)
+	require.Empty(t, resumed.State().LaterBuilds, "opening the directory measures nothing, so it records no build")
+	require.NoError(t, resumed.recordBuild())
 	state := resumed.State()
 	require.Equal(t, version.Unknown, state.Build.Describe(), "an old campaign keeps its honest gap")
 	require.Len(t, state.LaterBuilds, 1)
 	require.Equal(t, version.CurrentBuild(), state.LaterBuilds[0].Build)
 	require.False(t, state.LaterBuilds[0].At.IsZero())
-	require.NoError(t, resumed.Close())
 
-	// Persisted before the campaign runs, so a resume that dies at once still
-	// records which build touched it.
-	store, err := OpenStore(filepath.Join(dir, DatabaseName))
-	require.NoError(t, err)
-	loaded, err := store.Load()
-	require.NoError(t, err)
-	require.NoError(t, store.Close())
+	// Persisted as the run starts, so a run that dies at once still records
+	// which build touched it. The engine holds the database lock until it is
+	// closed, so the record is read back afterwards.
+	require.NoError(t, resumed.Close())
+	loaded := loadCampaignState(t, dir)
 	require.Len(t, loaded.LaterBuilds, 1)
 	require.Equal(t, version.CurrentBuild(), loaded.LaterBuilds[0].Build)
+}
+
+func TestResumeRecordsOneBuildForAProcessWithSeveralAttempts(t *testing.T) {
+	dir := writePastCampaign(t, "past", "rev", nil)
+	resumed, err := Resume(dir, io.Discard)
+	require.NoError(t, err)
+	// A verify command runs one attempt per accepted candidate, and all of
+	// them are the same process: one run, one build entry.
+	require.NoError(t, resumed.recordBuild())
+	require.NoError(t, resumed.recordBuild())
+	require.Len(t, resumed.State().LaterBuilds, 1)
+	require.NoError(t, resumed.Close())
+	require.Len(t, loadCampaignState(t, dir).LaterBuilds, 1)
 }
 
 func TestResumeAppendsEachRunRatherThanReplacingTheLast(t *testing.T) {
@@ -93,14 +116,10 @@ func TestResumeAppendsEachRunRatherThanReplacingTheLast(t *testing.T) {
 	for range 2 {
 		resumed, err := Resume(dir, io.Discard)
 		require.NoError(t, err)
+		require.NoError(t, resumed.recordBuild())
 		require.NoError(t, resumed.Close())
 	}
-	store, err := OpenStore(filepath.Join(dir, DatabaseName))
-	require.NoError(t, err)
-	loaded, err := store.Load()
-	require.NoError(t, err)
-	require.NoError(t, store.Close())
-	require.Len(t, loaded.LaterBuilds, 2)
+	require.Len(t, loadCampaignState(t, dir).LaterBuilds, 2)
 }
 
 func TestScorecardNamesTheBuildEachCampaignRanOn(t *testing.T) {
@@ -137,6 +156,31 @@ func TestScorecardDoesNotWarnOnOneBuild(t *testing.T) {
 	state := State{ID: "one", Build: recordedBuild}
 	out := RenderScorecard([]ScorecardRow{scorecardRow("one", state)})
 	require.NotContains(t, out, "Builds differ")
+	require.NotContains(t, out, "dirty checkout")
+}
+
+func TestScorecardWarnsWhenAGroupedBuildIsDirty(t *testing.T) {
+	// Two dirty builds of one commit read the same name, so the differing
+	// builds warning cannot fire; the rate still mixes two engines.
+	dirty := recordedBuild
+	dirty.Modified = true
+	one := State{ID: "one", Build: dirty}
+	two := State{ID: "two", Build: dirty}
+	rows := []ScorecardRow{scorecardRow("one", one), scorecardRow("two", two)}
+
+	require.Equal(t, []string{"dev 9b1fea7-dirty"}, rows[0].Builds)
+	require.True(t, rows[0].DirtyBuild)
+	out := RenderScorecard(rows)
+	require.NotContains(t, out, "Builds differ")
+	require.Contains(t, out, "> Builds include a dirty checkout: a binary built from uncommitted changes names the revision it sat on, not the code it ran.")
+	require.Contains(t, out, "Two dirty builds of one revision read the same here")
+}
+
+func TestScorecardFindsADirtyBuildFromALaterRun(t *testing.T) {
+	dirty := recordedBuild
+	dirty.Modified = true
+	state := State{ID: "one", Build: recordedBuild, LaterBuilds: []BuildRun{{At: mustTime(t, "2026-10-25T11:30:00Z"), Build: dirty}}}
+	require.True(t, scorecardRow("one", state).DirtyBuild, "a resume from a dirty checkout marks the campaign too")
 }
 
 func TestScorecardGroupsCampaignsFromBeforeRecordingTogether(t *testing.T) {
