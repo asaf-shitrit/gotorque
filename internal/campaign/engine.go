@@ -30,6 +30,7 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/profile"
 	"github.com/asaf-shitrit/gotorque/internal/runner"
 	"github.com/asaf-shitrit/gotorque/internal/toolchain"
+	"github.com/asaf-shitrit/gotorque/internal/version"
 )
 
 const DatabaseName = "campaign.db"
@@ -49,6 +50,16 @@ const (
 	StatusCompleted   Status = "completed"
 	StatusFailed      Status = "failed"
 )
+
+// BuildRun records one gotorque build that worked on a campaign after the run
+// that started it, so a report can say when a resume or a verify measured on a
+// build other than the one that reached the campaign's earlier verdicts.
+// A verify measures its candidate again from this build, so its verdict can
+// differ from the campaign's own for reasons the patch does not explain.
+type BuildRun struct {
+	At    time.Time     `json:"at"`
+	Build version.Build `json:"build"`
+}
 
 type Environment struct {
 	Authority     string            `json:"authority"`
@@ -224,14 +235,24 @@ type State struct {
 	// cannot stand in for it: a campaign is idle between an interruption and
 	// its resume, and charging that idle time against max_duration would
 	// expire any campaign resumed the next day.
-	ElapsedRunTime        time.Duration `json:"elapsed_run_time,omitempty"`
-	Environment           Environment   `json:"environment"`
-	Inventory             Inventory     `json:"inventory"`
-	BuildID               string        `json:"build_id,omitempty"`
-	BinaryPath            string        `json:"binary_path,omitempty"`
-	DiscoveryBuildID      string        `json:"discovery_build_id,omitempty"`
-	DiscoveryBinaryPath   string        `json:"discovery_binary_path,omitempty"`
-	DiscoveryHotFunctions []string      `json:"discovery_hot_functions,omitempty"`
+	ElapsedRunTime time.Duration `json:"elapsed_run_time,omitempty"`
+	// Build is the gotorque binary that started this campaign. Verdicts depend
+	// on it -- nine engine pull requests merged between 2026-10-24 and
+	// 2026-10-25, and several of them change one -- yet a campaign directory
+	// otherwise names only the target's revision (Environment.Revision). State
+	// written before this was recorded carries no build and reports "unknown".
+	Build version.Build `json:"build,omitzero"`
+	// LaterBuilds are the builds of each resume and verify run after the one
+	// that started the campaign, in order. Both go through Resume, so one list
+	// covers both: a campaign continued on another build says so.
+	LaterBuilds           []BuildRun  `json:"later_builds,omitempty"`
+	Environment           Environment `json:"environment"`
+	Inventory             Inventory   `json:"inventory"`
+	BuildID               string      `json:"build_id,omitempty"`
+	BinaryPath            string      `json:"binary_path,omitempty"`
+	DiscoveryBuildID      string      `json:"discovery_build_id,omitempty"`
+	DiscoveryBinaryPath   string      `json:"discovery_binary_path,omitempty"`
+	DiscoveryHotFunctions []string    `json:"discovery_hot_functions,omitempty"`
 	// DiscoveryHotFunctionWeights is discovery's per-function profile
 	// hotness, keyed by pprof's package-qualified symbol name (the same names
 	// hotFunctionNames ranked, before the hotFunctionBudget cut and before
@@ -499,6 +520,7 @@ func openCampaignEngine(opts Options, dir, id, repo, manifestPath string, m mani
 	}
 	state := State{Version: 1, ID: id, Directory: dir, Repository: repo, ManifestPath: manifestPath, Manifest: m, Tradeoff: opts.Tradeoff,
 		Status: StatusPending, StartedAt: now, UpdatedAt: now, CompletedSteps: map[string]bool{}, LocalIsolation: !opts.TestingUnsafeDisableIsolation,
+		Build:       version.CurrentBuild(),
 		Environment: Environment{Authority: authority(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPU: cpuName(), GoVersion: goVersion, Revision: revision, BuildFlags: []string{"-mod=readonly", "-trimpath"}, CI: os.Getenv("CI") != "", CIEnvironment: ciEnvironment()},
 	}
 	state.DependencyDigests, err = dependencyDigests(repo, m.Target.Build.Directory)
@@ -570,6 +592,16 @@ func Resume(dir string, progress io.Writer) (*Engine, error) {
 	}
 	state, err := store.Load()
 	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	// Append before composing, so the run is recorded even when the campaign
+	// fails straight away, and save now rather than at the first event for the
+	// same reason. A campaign from before builds were recorded keeps its empty
+	// Build and reports it as unknown; the field is additive, so the report
+	// schema does not change.
+	state.LaterBuilds = append(state.LaterBuilds, BuildRun{At: time.Now().UTC(), Build: version.CurrentBuild()})
+	if err := store.Save(state); err != nil {
 		_ = store.Close()
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
 	"github.com/asaf-shitrit/gotorque/internal/discovery"
@@ -146,6 +147,7 @@ func WriteReports(dir string, state State) error {
 func RenderMarkdown(state State) string {
 	var b strings.Builder
 	writeReportHeader(&b, state)
+	writeBuilds(&b, state)
 	writeInventory(&b, state)
 	writeBehaviorGate(&b, state)
 	writeBaselineWorkloads(&b, state)
@@ -167,7 +169,7 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.ProviderFailure != "" {
 		fmt.Fprintf(b, "- Failed role: %s\n", state.ProviderFailure)
 	}
-	fmt.Fprintf(b, "- Repository: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n", state.Repository, state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
+	fmt.Fprintf(b, "- Repository: `%s`\n- Build: `%s`\n- Revision: `%s`\n- Go: `%s`\n- CPU: `%s`\n- Build flags: `%s`\n", state.Repository, state.Build.Describe(), state.Environment.Revision, state.Environment.GoVersion, state.Environment.CPU, strings.Join(state.Environment.BuildFlags, " "))
 	if state.Analyst == AnalystJev {
 		fmt.Fprintf(b, "- Analyst: Jev cause classification (`%s`), not a model role\n", jev.Model)
 	}
@@ -188,6 +190,26 @@ func writeReportHeader(b *strings.Builder, state State) {
 		fmt.Fprintf(b, "- Discovery seeds: %s\n", describeSeedSamples(state.DiscoverySeedSamples))
 	}
 	fmt.Fprintf(b, "\n- Report schema: `%d`\n\n", state.SchemaVersion)
+}
+
+// writeBuilds lists the gotorque build that started the campaign, then every
+// resume and verify run after it. The header already names the first one next
+// to the target's revision; this section exists because a campaign can be
+// continued and verified by other binaries, and a verdict belongs to the build
+// that measured it. It is written for the reader and changes no verdict, so a
+// campaign resumed on another build still finishes and still reports.
+func writeBuilds(b *strings.Builder, state State) {
+	if len(state.LaterBuilds) == 0 {
+		return
+	}
+	b.WriteString("## Builds\n\n")
+	b.WriteString("The gotorque binary that started this campaign, then each resume and verify run after it. A verify measures its candidate again, so a verdict can come from a later build than the campaign's first." +
+		"\n\n| Run | At | Build |\n|---|---|---|\n")
+	fmt.Fprintf(b, "| campaign | %s | `%s` |\n", state.StartedAt.UTC().Format(time.RFC3339), state.Build.Describe())
+	for i, run := range state.LaterBuilds {
+		fmt.Fprintf(b, "| run %d | %s | `%s` |\n", i+2, run.At.UTC().Format(time.RFC3339), run.Build.Describe())
+	}
+	b.WriteString("\n")
 }
 
 // describeSeedSamples names the workloads the hot list was merged from with

@@ -47,8 +47,8 @@ func TestScorecardCountsVerdictsAndVerifications(t *testing.T) {
 	require.Equal(t, 1, row.Held)
 
 	out := RenderScorecard([]ScorecardRow{row, row})
-	require.Contains(t, out, "| camp | tool CLI | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 2/1 | maximum candidate count reached |")
-	require.Contains(t, out, "| **total** | 2 campaigns | 4 | 2 | 0 | 0 | 0 | 0 | 0 | 4/2 |")
+	require.Contains(t, out, "| camp | tool CLI | unknown | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 2/1 | maximum candidate count reached |")
+	require.Contains(t, out, "| **total** | 2 campaigns |  | 4 | 2 | 0 | 0 | 0 | 0 | 0 | 4/2 |")
 	require.Equal(t, 5, strings.Count(out, "\n"), "header, separator, two rows and the total")
 }
 
@@ -84,12 +84,12 @@ func TestScorecardSeparatesNullCampaigns(t *testing.T) {
 	require.Contains(t, out, "## Agent campaigns")
 	// The agent totals hold the agent campaign only: the null accept and its
 	// contended harness verdict stay out of the accepted and verified columns.
-	require.Contains(t, out, "| **total** | 1 campaigns | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 1/1 |")
+	require.Contains(t, out, "| **total** | 1 campaigns |  | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 1/1 |")
 	require.Contains(t, out, "## Null candidates")
 	// Valid runs exclude the harness verdict, so 3 of the 4 records count; one
 	// accept and one build rejection give a 33.33% rate each.
-	require.Contains(t, out, "| null | tool CLI | 3 | 1 | 1 | 33.33% | 86.46% | 33.33% | 86.46% |")
-	require.Contains(t, out, "| **total** | 1 campaigns | 3 | 1 | 1 | 33.33% | 86.46% | 33.33% | 86.46% |")
+	require.Contains(t, out, "| null | tool CLI | unknown | 3 | 1 | 1 | 33.33% | 86.46% | 33.33% | 86.46% |")
+	require.Contains(t, out, "| **total** | 1 campaigns |  | 3 | 1 | 1 | 33.33% | 86.46% | 33.33% | 86.46% |")
 	require.Less(t, strings.Index(out, "## Agent campaigns"), strings.Index(out, "## Null candidates"))
 }
 
