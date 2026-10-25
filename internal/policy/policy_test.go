@@ -477,24 +477,32 @@ func TestEvaluateRegressionsKeepTheMeanDelta(t *testing.T) {
 // TestEvaluateRefusesAShiftTheMeanContradicts: support can arrive from
 // metricSupport's equivalence branch, which says the data rule out a material
 // regression, not that the candidate is faster. A shift that reads a win beside
-// a mean that reads a loss has no evidence of a win behind it, and accepting on
-// it is a false accept on average.
+// a mean that reads a loss, or an exact tie, has no evidence of a win behind it,
+// and accepting on it is a false accept on average.
 func TestEvaluateRefusesAShiftTheMeanContradicts(t *testing.T) {
-	wall := domain.MetricComparison{
-		Metric: "wall_time_ns", Baseline: 100, Candidate: 101.5,
-		StatisticallyFit: true,
-		Shift:            domain.ShiftHodgesLehmann, ShiftPercent: -4,
-	}
-	result := Evaluate(DefaultConfig(), Evidence{
-		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
-		Comparisons: append([]domain.MetricComparison{wall}, flatGuardrails()...),
-		Primary:     []domain.MetricComparison{wall},
-	})
-	if result.Decision != domain.DecisionInconclusive {
-		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
-	}
-	if !strings.Contains(result.Reasons[0], "reads 4.00% (Hodges–Lehmann shift) beside a mean delta of +1.50%, so the two estimators disagree") {
-		t.Fatalf("the reason should name both readings and the disagreement: %v", result.Reasons)
+	for name, tc := range map[string]struct {
+		candidate float64
+		want      string
+	}{
+		"mean reads a loss": {candidate: 101.5, want: "beside a mean delta of +1.50%"},
+		"mean reads a tie":  {candidate: 100, want: "beside a mean delta of +0.00%"},
+	} {
+		wall := domain.MetricComparison{
+			Metric: "wall_time_ns", Baseline: 100, Candidate: tc.candidate,
+			StatisticallyFit: true,
+			Shift:            domain.ShiftHodgesLehmann, ShiftPercent: -4,
+		}
+		result := Evaluate(DefaultConfig(), Evidence{
+			BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+			Comparisons: append([]domain.MetricComparison{wall}, flatGuardrails()...),
+			Primary:     []domain.MetricComparison{wall},
+		})
+		if result.Decision != domain.DecisionInconclusive {
+			t.Fatalf("%s: decision = %s, reasons = %v", name, result.Decision, result.Reasons)
+		}
+		if !strings.Contains(result.Reasons[0], "reads 4.00% (Hodges–Lehmann shift) "+tc.want+", so the two estimators disagree") {
+			t.Fatalf("%s: the reason should name both readings and the disagreement: %v", name, result.Reasons)
+		}
 	}
 }
 

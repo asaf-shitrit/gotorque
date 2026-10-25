@@ -269,12 +269,30 @@ func hasRobustShift(comparison domain.MetricComparison) bool {
 // behind it, and accepting on it is a false accept: a reading of +1.5% by the
 // mean beside a -4% shift was accepted as a 4.00% improvement (ADR 0040). A
 // comparison with no measured shift carries only the mean, so it agrees by
-// construction.
+// construction. A delta of exactly 0 points no way, so it agrees with neither a
+// win nor a loss: a flat mean beside a -4% shift was still accepted as a 4.00%
+// improvement while the comparison read `<= 0` as improving.
 func estimatorsAgree(comparison domain.MetricComparison) bool {
 	if !hasRobustShift(comparison) {
 		return true
 	}
-	return finite(comparison.DeltaPercent) && (comparison.DeltaPercent <= 0) == (comparison.ShiftPercent <= 0)
+	if !finite(comparison.DeltaPercent) {
+		return false
+	}
+	return deltaDirection(comparison.DeltaPercent) == deltaDirection(comparison.ShiftPercent)
+}
+
+// deltaDirection reports which way a delta points: -1 for an improvement, +1
+// for a regression, 0 for a tie.
+func deltaDirection(delta float64) int {
+	switch {
+	case delta < 0:
+		return -1
+	case delta > 0:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // BorderlineImprovements returns the reading an accept would rest on when it
