@@ -123,6 +123,11 @@ type CandidateRecord struct {
 	// the output-token cap above all -- otherwise reads exactly like an
 	// intended one. It never changes the recorded decision.
 	ProposalRepair string `json:"proposal_repair,omitempty"`
+	// ReaskedFor is the refusal that made the previous answer in this attempt
+	// unusable, so the optimizer was asked once more inside it (ADR 0045).
+	// Without it a record from a two-answer attempt reads like any other and
+	// the report cannot say why one attempt spent two model calls.
+	ReaskedFor string `json:"reasked_for,omitempty"`
 	// FailureDetail is the tail of the output behind a rejection before
 	// measurement: the compiler's stderr for a failed build, or the apply or
 	// shape error. Without it a build failure reads only "exit status 1".

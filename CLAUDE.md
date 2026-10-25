@@ -264,7 +264,17 @@ Package map:
   wins over `function_source` when both are set and it holds a hunk that
   changes a line (a blank, prose or no-op `patch` yields, `patchWins`); do not flip that precedence,
   it is the fallback that keeps a model ignoring the instruction from losing
-  the attempt outright. `findFuncDecl` matches by `funcName`'s format
+  the attempt outright. When that fallback does fail — `git apply --check`
+  and the fuzzy match both refuse the patch — the graph asks the optimizer
+  once more inside the same attempt for `function_source`, quoting the refusal
+  (ADR 0045, `reaskable`/`reask` in `internal/orchestrator`). The trigger is
+  the `candidate.ErrPatchDoesNotApply` sentinel on the evidence's
+  `ReaskCause`, one ask per cycle, and #77 widens that same trigger rather
+  than adding a second. Do not move the ask into evaluation: it takes no
+  model role (ADR 0035) and `DeterministicTimeout` bounds it. The second
+  answer's record carries the refusal as `ReaskedFor`, so the report says the
+  attempt took two optimizer calls; the refusal quoted to the model leaves out
+  the toolchain's command line, because it spells the campaign's patch path. `findFuncDecl` matches by `funcName`'s format
   (`causes.go`), not by line number, so a target's `location` line going
   stale between analysis and optimization does not break the match.
 

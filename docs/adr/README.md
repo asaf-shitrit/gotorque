@@ -51,6 +51,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0042](0042-jev-answers-are-recorded-across-campaigns.md) | Jev answers are recorded across campaigns, keyed by the exact question asked | accepted |
 | [0043](0043-acceptance-thresholds-on-a-robust-shift.md) | Acceptance thresholds on a Hodges–Lehmann shift, regressions keep the mean | accepted |
 | [0044](0044-discovery-samples-every-acceptance-eligible-seed.md) | Discovery samples every acceptance-eligible seed, weighted by its tier | accepted |
+| [0045](0045-a-refused-answer-is-asked-again-once.md) | An answer refused before it could be judged is asked again once, in the same attempt | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay

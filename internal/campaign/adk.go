@@ -257,6 +257,8 @@ func (s engineBench) Note(_ context.Context, n orchestrator.Note) error {
 		return s.engine.noteRoleDegraded(n.Role, n.Cause)
 	case orchestrator.NoteRepaired:
 		return s.engine.noteRoleRepaired(n.Role, n.Repair)
+	case orchestrator.NoteReasked:
+		return s.engine.noteRoleReasked(n.Role, n.Cause)
 	case orchestrator.NoteFinished:
 		_ = s.engine.saveEvent("adk_finalized", n.Result.StopReason, n.Result)
 		return nil
@@ -300,6 +302,24 @@ type RoleRepair struct {
 func (e *Engine) noteRoleRepaired(role string, repair agents.Repair) error {
 	message := fmt.Sprintf("%s output parsed only after the decoder %s", role, repair)
 	return e.saveEvent("role_repaired", message, RoleRepair{Role: role, Repair: string(repair)})
+}
+
+// noteRoleReasked records the one ask the optimizer was given again inside an
+// attempt, after its hand-written patch failed `git apply --check` on a target
+// that asked for function_source. The refused patch earns no candidate record:
+// nothing about it was measured, and the attempt it belonged to is still open.
+// Without this event the campaign's progress stream would show two optimizer
+// calls and one settlement, and nothing would say why.
+func (e *Engine) noteRoleReasked(role, cause string) error {
+	message := fmt.Sprintf("%s was asked again in the same attempt: %s", role, cause)
+	return e.saveEvent("role_reasked", message, RoleReask{Role: role, Cause: cause})
+}
+
+// RoleReask records one attempt's re-ask of a role, and the refusal that
+// caused it.
+type RoleReask struct {
+	Role  string `json:"role"`
+	Cause string `json:"cause"`
 }
 
 // Discovery is the baseline evidence the engine finished before the graph
@@ -481,6 +501,7 @@ func candidateRecord(attempt int, evidence orchestrator.CandidateEvidence, targe
 		PgoNote:          evidence.PgoNote,
 		FreshComparisons: evidence.FreshGuardrails,
 		ProposalRepair:   string(evidence.ProposalRepair),
+		ReaskedFor:       evidence.ReaskedFor,
 		FailureDetail:    evidence.FailureDetail,
 		LoadAverages:     evidence.LoadAverages,
 		LoadContended:    evidence.LoadContended,

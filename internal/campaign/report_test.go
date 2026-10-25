@@ -27,6 +27,19 @@ func TestRenderMarkdownStatesWhatTheBehaviorGateVerified(t *testing.T) {
 	require.NotContains(t, preExisting, "passes on the unpatched revision")
 }
 
+func TestRenderMarkdownSaysWhenAnAttemptCalledTheOptimizerTwice(t *testing.T) {
+	markdown := RenderMarkdown(State{CandidateRecords: []CandidateRecord{{
+		Attempt:    2,
+		Decision:   domain.DecisionRejected,
+		ReaskedFor: "the patch does not apply to the base revision: git apply check refused the diff: error: patch failed: main.go:7",
+	}}})
+	require.Contains(t, markdown, "- Re-asked: the previous answer in this attempt was refused")
+	require.Contains(t, markdown, "error: patch failed: main.go:7")
+
+	withoutReask := RenderMarkdown(State{CandidateRecords: []CandidateRecord{{Attempt: 1, Decision: domain.DecisionRejected}}})
+	require.NotContains(t, withoutReask, "Re-asked")
+}
+
 func TestCandidateEventSummaryNamesPrimaryMetricAndReason(t *testing.T) {
 	record := CandidateRecord{
 		Attempt:  3,
