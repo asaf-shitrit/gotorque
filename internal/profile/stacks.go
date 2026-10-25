@@ -14,8 +14,10 @@ type Stack struct {
 
 // A call-graph row: the count's column gives the frame's depth. Thread
 // headers sit at column 4 and every level indents two more columns, whatever
-// mix of `+ ! : |` markers fills the indentation.
-var macCallGraphRow = regexp.MustCompile(`^(\s*(?:[+!:|]\s*)*)(\d+)\s+(\S+)`)
+// mix of `+ ! : |` markers fills the indentation. The symbol runs to the
+// ` (in <binary>)` module marker, spaces included: a generic instantiation
+// spells out its whole shape there.
+var macCallGraphRow = regexp.MustCompile(`^(\s*(?:[+!:|]\s*)*)(\d+)\s+(\S.*)$`)
 
 type callNode struct {
 	frame           string
@@ -74,8 +76,37 @@ func parseCallGraphRow(line string) (int, callNode, bool) {
 	if column < 4 || (column-4)%2 != 0 {
 		return 0, callNode{}, false
 	}
+	text := macFrameText(line[match[6]:match[7]])
+	if !namesFrame(text) {
+		return 0, callNode{}, false
+	}
 	count := atoi(line[match[4]:match[5]])
-	return (column - 4) / 2, callNode{frame: macSampleSymbol(line[match[6]:match[7]]), count: count}, count > 0
+	return (column - 4) / 2, callNode{frame: macSampleSymbol(text), count: count}, count > 0
+}
+
+// macFrameText returns the frame's symbol from the rest of a call-graph row:
+// the text up to the ` (in <binary>)` module marker, without the offset and
+// address columns that may follow it.
+func macFrameText(rest string) string {
+	name := rest
+	if idx := strings.Index(name, " (in "); idx >= 0 {
+		name = name[:idx]
+	}
+	name = strings.TrimSpace(name)
+	for _, marker := range []string{" + ", " [0x"} {
+		if idx := strings.Index(name, marker); idx >= 0 {
+			name = strings.TrimSpace(name[:idx])
+		}
+	}
+	return name
+}
+
+// namesFrame reports whether a row names a frame at all. sample prints `???`
+// or a bare address when the frame could not be symbolized, and such a row is
+// not a node of the call tree; keeping it would attach its children to a
+// frame that does not exist.
+func namesFrame(text string) bool {
+	return text != "" && !strings.HasPrefix(text, "?") && !strings.HasPrefix(text, "0x")
 }
 
 // appendStack records the path, leaf first, dropping frames the symbol

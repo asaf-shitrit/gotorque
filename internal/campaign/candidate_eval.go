@@ -365,13 +365,23 @@ func (ev *evaluator) measureAndFinalize(ctx context.Context, s evalSettings, evi
 	}
 	ev.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, &m) {
+	return ev.secondLook(ctx, s, evidence, id, candidateBinary, &m)
+}
+
+// secondLook runs the steps a candidate gets after its first series, in the
+// order that keeps a per-workload accept off a pooled reading. The two steps
+// that extend every seed run first, and the step that replaces one workload's
+// series runs last: an extending step adds its own pairs to the workload that
+// selected the accept, so a per-workload accept must be re-measured after it,
+// not before (ADR 0041, ADR 0021, ADR 0034).
+func (ev *evaluator) secondLook(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, m) {
 		return false
 	}
-	if !ev.confirmSelection(ctx, s, evidence, id, candidateBinary, &m) {
+	if !ev.confirmImprovements(ctx, s, evidence, id, candidateBinary, m) {
 		return false
 	}
-	return ev.confirmImprovements(ctx, s, evidence, id, candidateBinary, &m)
+	return ev.confirmSelection(ctx, s, evidence, id, candidateBinary, m)
 }
 
 // measureSeedsOnQuietMachine measures every representative seed, and
@@ -498,20 +508,85 @@ func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evi
 	// series: the policy no longer rejects on its point estimate, so more
 	// samples are what lets a real regression become significant.
 	unconfirmed = append(unconfirmed, policy.UnconfirmedGuardrails(config, evidence.Comparisons)...)
-	if len(unconfirmed) == 0 {
+	// A peak-memory breach that is significant still gets a series of its own:
+	// the policy rejects on it only when a fresh series reproduces it, because
+	// one contended run or one GC step moves a high-water mark by megabytes
+	// without the candidate costing more memory (see policy.replicatedGuardrail).
+	replicate := policy.GuardrailsToReplicate(config, evidence.Comparisons)
+	if len(unconfirmed) == 0 && len(replicate) == 0 {
 		return true
 	}
+	// The readings the first series produced for the guardrails a fresh series
+	// re-measures, kept before both series are pooled into Comparisons: the
+	// verdict's reasons say what the first series read, and the pooled value is
+	// no longer that number.
+	firstSeries := policy.ReplicatedGuardrails(config, evidence.Comparisons)
+	starts := seriesStarts(m.seeds)
 	for i := range m.seeds {
 		if !ev.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
 	ev.rederive(ctx, evidence, m)
-	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs)
-	evidence.Summary += "; " + note
+	evidence.FirstSeriesGuardrails = firstSeries
+	notes := make([]string, 0, 2)
+	if len(unconfirmed) > 0 {
+		notes = append(notes, confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs))
+	}
+	if len(replicate) > 0 {
+		evidence.FreshGuardrails = ev.freshGuardrailComparisons(m.seeds, starts)
+		notes = append(notes, replicationNote(replicate, config.MaximumGuardrailRegressionPercent, s.pairs))
+	}
+	evidence.Summary += "; " + strings.Join(notes, "; ")
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
-	_ = ev.journal.event("measurement_confirmed", note, nil)
+	_ = ev.journal.event("measurement_confirmed", strings.Join(notes, "; "), nil)
 	return true
+}
+
+// seriesStarts records, per seed, how many runs each side already held when a
+// confirmation series was about to start, so the new series can be judged on
+// its own.
+func seriesStarts(seeds []seedRuns) []int {
+	starts := make([]int, len(seeds))
+	for i, runs := range seeds {
+		starts[i] = len(runs.ab.Baseline)
+	}
+	return starts
+}
+
+// freshGuardrailComparisons derives the pooled CPU-time and peak-memory
+// readings of one fresh series: every seed's runs after the offset it held
+// before the series started. Folding, not concatenation, is how the pooled
+// reading is derived everywhere else (pooledSamples).
+func (ev *evaluator) freshGuardrailComparisons(seeds []seedRuns, starts []int) []domain.MetricComparison {
+	var pooled pooledSamples
+	for i, runs := range seeds {
+		start := 0
+		if i < len(starts) {
+			start = min(starts[i], len(runs.ab.Baseline))
+		}
+		base, cand := runs.ab.Baseline[start:], runs.ab.Candidate[start:]
+		pooled.cpuBase = append(pooled.cpuBase, metricValues(base, cpuTime))
+		pooled.cpuCand = append(pooled.cpuCand, metricValues(cand, cpuTime))
+		pooled.memBase = append(pooled.memBase, metricValues(base, peakMemory))
+		pooled.memCand = append(pooled.memCand, metricValues(cand, peakMemory))
+	}
+	return []domain.MetricComparison{
+		compareMetric("", "cpu_time_ns", "ns", ev.regressionLimit("cpu_time_ns"),
+			pooledAsRuns(meanPerRepetition(pooled.cpuBase), "cpu_time_ns"), pooledAsRuns(meanPerRepetition(pooled.cpuCand), "cpu_time_ns"), cpuTime)[0],
+		compareMetric("", "peak_memory_bytes", "bytes", ev.regressionLimit("peak_memory_bytes"),
+			pooledAsRuns(maxPerRepetition(pooled.memBase), "peak_memory_bytes"), pooledAsRuns(maxPerRepetition(pooled.memCand), "peak_memory_bytes"), peakMemory)[0],
+	}
+}
+
+// replicationNote says which guardrail breaches a fresh series was measured
+// to check.
+func replicationNote(breaches []domain.MetricComparison, limit float64, pairs int) string {
+	readings := make([]string, 0, len(breaches))
+	for _, c := range breaches {
+		readings = append(readings, fmt.Sprintf("%s %+.2f%%", c.Metric, c.DeltaPercent))
+	}
+	return fmt.Sprintf("%s over the %.2f%% limit and significant after %d pairs, so a fresh series of %d pairs was measured to check it reproduces", strings.Join(readings, ", "), limit, pairs, pairs)
 }
 
 // confirmImprovements measures every representative seed again when the
@@ -604,6 +679,8 @@ func evaluateEvidence(config policy.Config, evidence *orchestrator.CandidateEvid
 		RepresentativeEvidence: evidence.RepresentativeEvidence,
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligibleReadings(config, evidence.Comparisons),
+		FreshGuardrails:        evidence.FreshGuardrails,
+		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
 	})
 }
 
