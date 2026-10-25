@@ -368,14 +368,19 @@ not recorded.
    high-water mark that steps with allocator and GC pacing, so it rejects only
    when the fresh series' own readings reproduce the breach, and those
    readings are kept in `Evidence.FreshGuardrails` for the policy and the
-   report. The first series' own readings of the re-measured guardrails go in
+   report. Every confirmation series records that reading, whichever step
+   asked for it: a peak-memory reading under the limit on the first series can
+   cross it only once the fresh series is pooled in, so a breach without
+   significance that runs the series as an unconfirmed guardrail, or a
+   borderline accept that runs it from `confirmImprovements`, would leave the
+   policy judging the pooled reading alone if the fresh one were not recorded.
+   The first series' own readings of the re-measured guardrails go in
    `Evidence.FirstSeriesGuardrails`, because the pooled comparisons hold one
    value for both series once the fresh one has run, and a reason that says
    what the first series read has to quote what it produced. All workloads
    are extended, not only the one that read high, because the pooled reading
    folds them per repetition. The second series has no budget of its own: it
-   costs what
-   the first did, and the campaign deadline bounds both. The same thing
+   costs what the first did, and the campaign deadline bounds both. The same thing
    happens on the acceptance side: when the candidate would otherwise end
    inconclusive only because an eligible reading improved by at least
    `minimum_improvement_percent` without statistical support, and nothing is
@@ -536,7 +541,10 @@ out.
    exception, because a high-water mark can read high with support from one
    contended run or one GC step: its breach rejects only when a fresh series'
    own readings breach too (ADR 0040, `policy.GuardrailsToReplicate`), and one
-   that does not reproduce is named in the reasons with both readings. A
+   that does not reproduce is named in the reasons with both readings. That
+   holds whether the breach was significant on the first series or only became
+   significant once the confirmation series was pooled in, and the reason says
+   which of the two it was. A
    guardrail within
    its limit never needs support: demanding proof of the absence of a
    regression from a jittery high-water mark once reported inconclusive for

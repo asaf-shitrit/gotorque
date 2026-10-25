@@ -204,11 +204,15 @@ Package map:
   kinds are read by `collectADKResult`, the report, scorecard and triage:
   rename neither.
 - Guardrail replication (`internal/policy`, ADR 0040): a `peak_memory_bytes`
-  breach rejects only when `Evidence.FreshGuardrails`, measured in
-  `confirmRegressions`, breaches too. Both policy call sites
-  (`policyVerdict` and `improvementsToConfirm`) must pass the field: a caller
-  that does not supply it keeps the old single-series rule, so a forgotten
-  field looks like a test failure rather than a silent policy change.
+  breach rejects only when `Evidence.FreshGuardrails`, measured in a
+  confirmation series, breaches too. Both policy call sites (`policyVerdict`
+  and `improvementsToConfirm`) must pass the field: a caller that does not
+  supply it keeps the old single-series rule, so a forgotten field looks like a
+  test failure rather than a silent policy change. Every confirmation series
+  records that field, in `confirmRegressions` and `confirmImprovements` alike:
+  a reading under the limit on the first series can cross it only once the
+  fresh series is pooled in, so record it from the step that ran the series,
+  not from the reading that asked for it.
 - Confirmation series (`internal/campaign/candidate_eval.go`, `secondLook`): the
   second look runs `confirmRegressions`, then `confirmImprovements`, then
   `confirmSelection`, and one `interleaved-ab-confirmation` job marks it, so a

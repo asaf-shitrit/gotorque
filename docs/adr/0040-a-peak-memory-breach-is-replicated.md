@@ -82,3 +82,25 @@ both fill the field from the same evaluation path.
   measurement above is what should choose it; recording GC cycle counts or
   GOGC pacing per side would explain a breach but not decide it, and the
   decision needs no more inputs than the two readings.
+
+## Amendment (2026-10-25, #117): an over-limit reading is re-measured before it rejects
+
+The decision above covers a breach that is significant on its first series. It missed the other
+way the policy could reject on one series: a `peak_memory_bytes` reading over its limit without
+significance already runs the confirmation series as an unconfirmed guardrail (ADR 0033), and
+pooling that second series in can be what makes the pooled reading significant. The engine
+recorded `Evidence.FreshGuardrails` only when `policy.GuardrailsToReplicate` selected a supported
+breach, so on that path the policy found no fresh reading and rejected on the pooled series
+alone — the single-series rule this ADR removed.
+
+The engine now records the fresh series' own readings on every confirmation series, in
+`confirmRegressions` and `confirmImprovements` alike, whether or not the first series was over the
+limit. Reviewing the first fix found it recorded them only from `confirmRegressions`, and only for a
+first series already over the limit: a reading that stayed under the limit and crossed it only once
+pooled — the series a borderline accept starts, or an unconfirmed primary regression — still
+rejected on the pooled series alone.
+The policy rejects only when those fresh readings breach too, as for any replicated breach, and
+the verdict's reason names a breach the fresh series did not reproduce either way: the first
+series' own reading when that series already breached, or the pooled reading when it became
+significant only once the fresh series was folded in. The extra series is the one the confirmation
+already runs; no candidate costs a series it did not cost before.

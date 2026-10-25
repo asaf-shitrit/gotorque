@@ -63,7 +63,9 @@ type Evidence struct {
 	// series of pairs, taken after the first one. A guardrail a single series
 	// can misreport (replicatedGuardrail) rejects only when this reading
 	// reproduces the breach; the engine runs that series when
-	// GuardrailsToReplicate names a breach, and records the readings here.
+	// GuardrailsToReplicate names a breach or when another reading asks for a
+	// confirmation series, and records the readings here for every such
+	// series.
 	FreshGuardrails []domain.MetricComparison
 	// FirstSeriesGuardrails are the pooled guardrail readings of the first
 	// series, for the guardrails a fresh series re-measures
@@ -124,7 +126,7 @@ func Evaluate(config Config, evidence Evidence) Result {
 		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", g.name, g.comparison.DeltaPercent, g.limit))
 	}
 	for _, g := range unreplicatedGuardrails(config, byName, evidence) {
-		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%% on the first series, over the %.2f%% limit and significant, but a fresh series read %+.2f%% and did not reproduce the breach", g.name, g.comparison.DeltaPercent, g.limit, g.fresh.DeltaPercent))
+		result.Reasons = append(result.Reasons, unreplicatedReason(g))
 	}
 	return result
 }
@@ -496,13 +498,25 @@ func freshGuardrail(evidence Evidence, name string) (domain.MetricComparison, bo
 }
 
 // unreplicatedBreach names a guardrail reading that was over its limit with
-// support on the first series and not on the fresh one, so the verdict neither
-// rejects on it nor hides it.
+// support and not on the fresh one, so the verdict neither rejects on it nor
+// hides it. pooled says the breach is the pooled reading rather than the first
+// series' own: the reading only became significant once the fresh series was
+// folded in.
 type unreplicatedBreach struct {
 	name       string
 	limit      float64
 	comparison domain.MetricComparison
 	fresh      domain.MetricComparison
+	pooled     bool
+}
+
+// unreplicatedReason says which reading breached, and what the fresh series
+// read instead, so a reader of the verdict can see why nothing rejected.
+func unreplicatedReason(g unreplicatedBreach) string {
+	if g.pooled {
+		return fmt.Sprintf("guardrail %q read %+.2f%% over the %.2f%% limit and significant only once the fresh series was pooled in, but that series read %+.2f%% and did not reproduce the breach", g.name, g.comparison.DeltaPercent, g.limit, g.fresh.DeltaPercent)
+	}
+	return fmt.Sprintf("guardrail %q read %+.2f%% on the first series, over the %.2f%% limit and significant, but a fresh series read %+.2f%% and did not reproduce the breach", g.name, g.comparison.DeltaPercent, g.limit, g.fresh.DeltaPercent)
 }
 
 // unreplicatedGuardrails returns the significant breaches a fresh series did
@@ -516,17 +530,32 @@ func unreplicatedGuardrails(config Config, byName map[string]domain.MetricCompar
 		if !replicatedGuardrail(guardrail.Name) {
 			continue
 		}
-		comparison, found := firstSeriesGuardrail(evidence, byName, guardrail.Name)
-		limit := guardrailLimit(config, guardrail)
-		if !found || !breached(config, comparison, limit) {
-			continue
-		}
-		fresh, measured := freshGuardrail(evidence, guardrail.Name)
-		if measured && !breached(config, fresh, limit) {
-			out = append(out, unreplicatedBreach{name: guardrail.Name, limit: limit, comparison: comparison, fresh: fresh})
+		if breach, ok := unreplicatedGuardrail(config, guardrail, byName, evidence); ok {
+			out = append(out, breach)
 		}
 	}
 	return out
+}
+
+// unreplicatedGuardrail judges one re-measured guardrail. The reading the
+// fresh series did not reproduce is the first series' own when that series
+// already breached, and the pooled one otherwise: a peak-memory reading over
+// its limit without significance is re-measured as an unconfirmed guardrail,
+// and folding the fresh series in can be what makes it significant.
+func unreplicatedGuardrail(config Config, guardrail Guardrail, byName map[string]domain.MetricComparison, evidence Evidence) (unreplicatedBreach, bool) {
+	limit := guardrailLimit(config, guardrail)
+	fresh, measured := freshGuardrail(evidence, guardrail.Name)
+	if !measured || breached(config, fresh, limit) {
+		return unreplicatedBreach{}, false
+	}
+	if first, found := firstSeriesGuardrail(evidence, byName, guardrail.Name); found && breached(config, first, limit) {
+		return unreplicatedBreach{name: guardrail.Name, limit: limit, comparison: first, fresh: fresh}, true
+	}
+	pooled, found := byName[guardrail.Name]
+	if !found || !breached(config, pooled, limit) {
+		return unreplicatedBreach{}, false
+	}
+	return unreplicatedBreach{name: guardrail.Name, limit: limit, comparison: pooled, fresh: fresh, pooled: true}, true
 }
 
 // firstSeriesGuardrail resolves the reading the first series produced for one
@@ -568,7 +597,8 @@ func ReplicatedGuardrails(config Config, comparisons []domain.MetricComparison) 
 // their limit with support, on a guardrail whose breach has to reproduce in a
 // fresh series (replicatedGuardrail) before Evaluate rejects on it. The engine
 // measures that series when there are any, as it does for an unconfirmed
-// reading, and records the readings in Evidence.FreshGuardrails.
+// reading. Every confirmation series records its own guardrail readings in
+// Evidence.FreshGuardrails, whatever asked for it.
 func GuardrailsToReplicate(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
 	config = withDefaults(config)
 	if !config.StatisticalSupportRequired {

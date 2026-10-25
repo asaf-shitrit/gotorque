@@ -516,31 +516,49 @@ func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evi
 	if len(unconfirmed) == 0 && len(replicate) == 0 {
 		return true
 	}
-	// The readings the first series produced for the guardrails a fresh series
-	// re-measures, kept before both series are pooled into Comparisons: the
-	// verdict's reasons say what the first series read, and the pooled value is
-	// no longer that number.
-	firstSeries := policy.ReplicatedGuardrails(config, evidence.Comparisons)
-	starts := seriesStarts(m.seeds)
+	firstSeries, starts := guardrailSeries(config, evidence, m)
 	for i := range m.seeds {
 		if !ev.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
 	ev.rederive(ctx, evidence, m)
-	evidence.FirstSeriesGuardrails = firstSeries
+	ev.recordGuardrailSeries(evidence, m, firstSeries, starts)
 	notes := make([]string, 0, 2)
 	if len(unconfirmed) > 0 {
 		notes = append(notes, confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs))
 	}
 	if len(replicate) > 0 {
-		evidence.FreshGuardrails = ev.freshGuardrailComparisons(m.seeds, starts)
 		notes = append(notes, replicationNote(replicate, config.MaximumGuardrailRegressionPercent, s.pairs))
 	}
 	evidence.Summary += "; " + strings.Join(notes, "; ")
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
 	_ = ev.journal.event("measurement_confirmed", strings.Join(notes, "; "), nil)
 	return true
+}
+
+// guardrailSeries captures, before a confirmation series runs, the readings
+// the first series produced for the guardrails a fresh series re-measures
+// (ADR 0040) and how many runs each seed already held. Both are taken before
+// the fresh series is folded in: the pooled comparisons then hold one value for
+// both series, and the verdict's reasons say what the first series read.
+func guardrailSeries(config policy.Config, evidence *orchestrator.CandidateEvidence, m *measurement) ([]domain.MetricComparison, []int) {
+	return policy.ReplicatedGuardrails(config, evidence.Comparisons), seriesStarts(m.seeds)
+}
+
+// recordGuardrailSeries writes both readings a confirmation series produced
+// for the guardrails the policy replicates: the first series' own, and the
+// fresh series' alone. Every confirmation series records them, whichever step
+// asked for it (confirmRegressions for an unconfirmed or significant breach,
+// confirmImprovements for a borderline or unsupported win): an over-limit
+// peak-memory reading without significance is what started that series, and
+// folding the fresh one in can be what makes the pooled reading significant.
+// The policy then needs the fresh reading to decide whether the breach
+// reproduces (ADR 0040); leaving it out lets the verdict reject on the pooled
+// series alone.
+func (ev *evaluator) recordGuardrailSeries(evidence *orchestrator.CandidateEvidence, m *measurement, firstSeries []domain.MetricComparison, starts []int) {
+	evidence.FirstSeriesGuardrails = firstSeries
+	evidence.FreshGuardrails = ev.freshGuardrailComparisons(m.seeds, starts)
 }
 
 // seriesStarts records, per seed, how many runs each side already held when a
@@ -612,12 +630,14 @@ func (ev *evaluator) confirmImprovements(ctx context.Context, s evalSettings, ev
 	if len(unconfirmed) == 0 {
 		return true
 	}
+	firstSeries, starts := guardrailSeries(config, evidence, m)
 	for i := range m.seeds {
 		if !ev.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
 	ev.rederive(ctx, evidence, m)
+	ev.recordGuardrailSeries(evidence, m, firstSeries, starts)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
 	_ = ev.journal.event("improvement_confirmed", note, nil)
