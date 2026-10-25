@@ -147,7 +147,9 @@ func TestCachedAnswerCarriesNoUsage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, jev.Usage{}, second.Usage)
 
-	digest, err := jev.Digest(req)
+	// The evaluator keys by the pinned build even when the caller left it
+	// empty, so a later campaign looks up the same entry (ADR 0042).
+	digest, err := jev.Digest(jev.Request{Model: jev.Model, State: req.State, Questions: req.Questions})
 	require.NoError(t, err)
 	stored, ok, err := engine.store.JevCacheGet(digest)
 	require.NoError(t, err)

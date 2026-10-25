@@ -303,6 +303,12 @@ type State struct {
 	// JevCache holds per-role Jev cache hit/miss counts across this campaign's
 	// requests (ADR 0028), keyed the same way as TokenUsage.
 	JevCache map[string]JevCacheSnapshot `json:"jev_cache,omitempty"`
+	// JevAnswersPath is the cross-campaign record of Jev answers this campaign
+	// consulted and extended (ADR 0042), empty when it ran with its own cache
+	// only. Written for the report, which otherwise cannot say whether a
+	// target it flagged was chosen from answers recorded by an earlier
+	// campaign on the same source.
+	JevAnswersPath string `json:"jev_answers_path,omitempty"`
 }
 
 type Event struct {
@@ -349,6 +355,9 @@ type Engine struct {
 	// causeJev, reviewJev and exploreJev serve the analyst, reviewer and
 	// explorer; attachJev derives them from adkAgents.Jev.
 	causeJev, reviewJev, exploreJev jev.Evaluator
+	// answers is the cross-campaign record of Jev answers this campaign
+	// consults and extends (ADR 0042); nil means its own cache only.
+	answers *AnswerRecord
 	// tokenUsageBaseline anchors this process's contribution to
 	// State.TokenUsage, the same way runStartedAt/elapsedBefore anchor its
 	// contribution to State.ElapsedRunTime. See recordTokenUsage in adk.go.

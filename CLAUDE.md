@@ -39,6 +39,7 @@ gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --a
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk
 gotorque optimize --repo /path/to/repo --manifest targets/go-jsonnet/manifest.json --adk --tradeoff speed --allow memory=5%
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --history <earlier-campaign-dir>
+gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --jev-answers off
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
 gotorque verify <campaign-dir> [--attempt N] [--pairs 60] [--json]
@@ -291,6 +292,12 @@ reasoning effort) and why each defaults as it does are in
   so an empty balance or a revoked key takes out every role at once; a code
   path that treats a Jev failure as independent of the optimizer's is wrong.
 - Credentials are never persisted into campaign state.
+- Jev's answers are stable across campaigns only because of the answer record
+  (`internal/campaign/jevanswers.go`, ADR 0042), not because of the campaign
+  cache: both are keyed by `jev.Digest`, so `cachingEvaluator` fills
+  `req.Model` before digesting, and only `--adk` attaches the record, because
+  a `--adk-stub` campaign would otherwise record `jev.Stub`'s answers under
+  the pinned build's key.
 
 ## Commit messages
 
