@@ -63,7 +63,9 @@ type Evidence struct {
 	// series of pairs, taken after the first one. A guardrail a single series
 	// can misreport (replicatedGuardrail) rejects only when this reading
 	// reproduces the breach; the engine runs that series when
-	// GuardrailsToReplicate names a breach, and records the readings here.
+	// GuardrailsToReplicate names a breach or when another reading asks for a
+	// confirmation series, and records the readings here for every such
+	// series.
 	FreshGuardrails []domain.MetricComparison
 	// FirstSeriesGuardrails are the pooled guardrail readings of the first
 	// series, for the guardrails a fresh series re-measures
@@ -591,39 +593,12 @@ func ReplicatedGuardrails(config Config, comparisons []domain.MetricComparison) 
 	return readings
 }
 
-// ReplicatedGuardrailsOverLimit returns the pooled readings of the guardrails
-// whose breach has to reproduce in a fresh series (replicatedGuardrail) and
-// that are over their limit, significant or not. It is what the engine records
-// Evidence.FreshGuardrails for once any series runs: a reading that was over
-// the limit without significance is re-measured as an unconfirmed guardrail,
-// and the pooled reading can turn significant, which the policy only judges
-// with the fresh series' own reading beside it. Without this, such a breach
-// would reject on the pooled series alone, the single-series rule ADR 0040
-// removed.
-func ReplicatedGuardrailsOverLimit(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
-	config = withDefaults(config)
-	if !config.StatisticalSupportRequired {
-		return nil
-	}
-	byName := indexComparisons(comparisonResults(comparisons))
-	var readings []domain.MetricComparison
-	for _, guardrail := range config.Guardrails {
-		if !replicatedGuardrail(guardrail.Name) {
-			continue
-		}
-		comparison, found := byName[guardrail.Name]
-		if found && comparison.DeltaPercent > guardrailLimit(config, guardrail) {
-			readings = append(readings, comparison)
-		}
-	}
-	return readings
-}
-
 // GuardrailsToReplicate returns the pooled guardrail readings that are over
 // their limit with support, on a guardrail whose breach has to reproduce in a
 // fresh series (replicatedGuardrail) before Evaluate rejects on it. The engine
 // measures that series when there are any, as it does for an unconfirmed
-// reading, and records the readings in Evidence.FreshGuardrails.
+// reading. Every confirmation series records its own guardrail readings in
+// Evidence.FreshGuardrails, whatever asked for it.
 func GuardrailsToReplicate(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
 	config = withDefaults(config)
 	if !config.StatisticalSupportRequired {

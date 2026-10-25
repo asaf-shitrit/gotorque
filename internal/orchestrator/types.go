@@ -158,10 +158,11 @@ type CandidateEvidence struct {
 	// it never changes accept/reject decisions.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
-	// FreshGuardrails are the pooled guardrail readings of a fresh series that
-	// ran to check whether a breach reproduces (see
-	// policy.GuardrailsToReplicate). Policy decides on them; the comparison
-	// list holds the readings of every series together.
+	// FreshGuardrails are the pooled guardrail readings of the confirmation
+	// series, taken after the first one: the series that runs when a breach is
+	// significant (see policy.GuardrailsToReplicate) or when another reading
+	// asks for more samples. Policy decides on them; the comparison list holds
+	// the readings of every series together.
 	FreshGuardrails []domain.MetricComparison `json:"fresh_guardrails,omitempty"`
 	// FirstSeriesGuardrails are the pooled guardrail readings the first series
 	// produced for the guardrails that fresh series re-measures

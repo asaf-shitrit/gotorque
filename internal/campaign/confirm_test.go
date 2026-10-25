@@ -548,6 +548,65 @@ func TestAnUnconfirmedPeakMemoryBreachRecordsItsFreshReading(t *testing.T) {
 	require.Equal(t, "measurement_confirmed", journal.events[len(journal.events)-1].kind)
 }
 
+// TestABorderlineConfirmationRecordsTheFreshGuardrailReading: peak memory can
+// stay under its limit on the first series and cross it only once the
+// confirmation series is pooled in, so the series a borderline accept starts
+// has to record the guardrails too. It is the same split from the test above:
+// the recording happens on whichever confirmation path asked for the series.
+func TestABorderlineConfirmationRecordsTheFreshGuardrailReading(t *testing.T) {
+	ev, evidence, m, candidate := measuredEvaluator(t)
+	underLimit := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 37164786, StatisticallyFit: true}
+	evidence.Comparisons = []domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 96.84, StatisticallyFit: true, Significant: true},
+		underLimit,
+		{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+	}
+
+	require.True(t, ev.confirmImprovements(context.Background(), campaignDefaults(), evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions, "the confirmation series ran")
+	require.Len(t, evidence.FirstSeriesGuardrails, 1, "the first series' peak-memory reading is recorded")
+	require.InDelta(t, underLimit.Candidate, evidence.FirstSeriesGuardrails[0].Candidate, 0.0)
+
+	metrics := make([]string, 0, len(evidence.FreshGuardrails))
+	for _, c := range evidence.FreshGuardrails {
+		metrics = append(metrics, c.Metric)
+		require.Empty(t, c.Workload, "the fresh readings are pooled ones")
+		require.Positive(t, c.Baseline)
+	}
+	require.ElementsMatch(t, []string{"cpu_time_ns", "peak_memory_bytes"}, metrics, "the policy needs the fresh series' own peak-memory reading")
+}
+
+// TestAnUnconfirmedRegressionRecordsTheFreshGuardrailReading is the other
+// trigger for a series with peak memory under its limit: a primary reading over
+// its limit without significance runs the confirmation from confirmRegressions,
+// and the pooled peak-memory reading can cross the limit only once that series
+// is folded in.
+func TestAnUnconfirmedRegressionRecordsTheFreshGuardrailReading(t *testing.T) {
+	ev, evidence, m, candidate := measuredEvaluator(t)
+	underLimit := domain.MetricComparison{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 37164786, StatisticallyFit: true}
+	evidence.Comparisons = []domain.MetricComparison{
+		{Metric: "wall_time_ns", Baseline: 100, Candidate: 104},
+		underLimit,
+		{Metric: "cpu_time_ns", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+	}
+
+	require.True(t, ev.confirmRegressions(context.Background(), campaignDefaults(), evidence, "candidate", candidate, m))
+	require.Len(t, evidence.RepSamples[0].BaselineNs, 2*measurementRepetitions, "the confirmation series ran")
+	require.Len(t, evidence.FirstSeriesGuardrails, 1, "the first series' peak-memory reading is recorded")
+	require.InDelta(t, underLimit.Candidate, evidence.FirstSeriesGuardrails[0].Candidate, 0.0)
+
+	metrics := make([]string, 0, len(evidence.FreshGuardrails))
+	for _, c := range evidence.FreshGuardrails {
+		metrics = append(metrics, c.Metric)
+		require.Empty(t, c.Workload, "the fresh readings are pooled ones")
+		require.Positive(t, c.Baseline)
+	}
+	require.ElementsMatch(t, []string{"cpu_time_ns", "peak_memory_bytes"}, metrics, "the policy needs the fresh series' own peak-memory reading")
+	require.NotContains(t, evidence.Summary, "so a fresh series of", "nothing was significant, so no replication note claims a fresh series checked it")
+}
+
 // TestAVerdictQuotesTheFirstSeriesReading: the reason a breach did not
 // reproduce says what the first series read, and the engine records that
 // reading before the fresh one is folded in. The pooled comparisons hold one

@@ -93,8 +93,12 @@ recorded `Evidence.FreshGuardrails` only when `policy.GuardrailsToReplicate` sel
 breach, so on that path the policy found no fresh reading and rejected on the pooled series
 alone — the single-series rule this ADR removed.
 
-The engine now records the fresh readings for every over-limit reading of a re-measured guardrail
-(`policy.ReplicatedGuardrailsOverLimit`), whether or not it was significant on the first series.
+The engine now records the fresh series' own readings on every confirmation series, in
+`confirmRegressions` and `confirmImprovements` alike, whether or not the first series was over the
+limit. Reviewing the first fix found it recorded them only from `confirmRegressions`, and only for a
+first series already over the limit: a reading that stayed under the limit and crossed it only once
+pooled — the series a borderline accept starts, or an unconfirmed primary regression — still
+rejected on the pooled series alone.
 The policy rejects only when those fresh readings breach too, as for any replicated breach, and
 the verdict's reason names a breach the fresh series did not reproduce either way: the first
 series' own reading when that series already breached, or the pooled reading when it became
