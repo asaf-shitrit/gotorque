@@ -8,21 +8,32 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/profile"
 )
 
+// weightedSample is one sampled workload and the weight its tier gives it in
+// the merged hot list. Seed names the workload for the campaign's record of
+// what the hot list was merged from.
+type weightedSample struct {
+	Result profile.SampleResult
+	Seed   string
+	Weight float64
+}
+
 // mergeAttributed sums each sample's attributed weights as fractions of that
-// sample's total, so every sampled workload counts equally whatever its length.
-func mergeAttributed(results []profile.SampleResult, own func(string) bool) []profile.Function {
+// sample's total, scaled by the sample's tier weight, so every sampled
+// workload contributes the shape of its own time whatever its length, and a
+// workload whose tier the manifest weights higher counts for more. When no
+// sample carries a weight (a manifest that weights every tier at zero, or a
+// caller with no tier policy), every sample counts equally: an all-zero merge
+// would rank the hot list by name.
+func mergeAttributed(samples []weightedSample, own func(string) bool) []profile.Function {
 	weights := map[string]float64{}
-	for _, result := range results {
-		attributed := profile.AttributeToOwn(result.Stacks, own)
-		total := 0.0
-		for _, fn := range attributed {
-			total += float64(atoiOrZero(fn.Flat))
+	equal := weightless(samples)
+	for _, sample := range samples {
+		share := sample.Weight
+		if equal {
+			share = 1
 		}
-		if total == 0 {
-			continue
-		}
-		for _, fn := range attributed {
-			weights[fn.Name] += float64(atoiOrZero(fn.Flat)) / total
+		for name, fraction := range attributedShares(sample.Result, own) {
+			weights[name] += share * fraction
 		}
 	}
 	names := make([]string, 0, len(weights))
@@ -40,6 +51,34 @@ func mergeAttributed(results []profile.SampleResult, own func(string) bool) []pr
 		merged = append(merged, profile.Function{Name: name, Flat: strconv.Itoa(int(weights[name] * 10000))})
 	}
 	return merged
+}
+
+// weightless reports whether no sample carries a tier weight.
+func weightless(samples []weightedSample) bool {
+	for _, sample := range samples {
+		if sample.Weight > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// attributedShares turns one sample's attributed self weights into fractions
+// of that sample's total, so a longer sample is not a louder one.
+func attributedShares(result profile.SampleResult, own func(string) bool) map[string]float64 {
+	attributed := profile.AttributeToOwn(result.Stacks, own)
+	total := 0.0
+	for _, fn := range attributed {
+		total += float64(atoiOrZero(fn.Flat))
+	}
+	if total == 0 {
+		return nil
+	}
+	shares := make(map[string]float64, len(attributed))
+	for _, fn := range attributed {
+		shares[fn.Name] += float64(atoiOrZero(fn.Flat)) / total
+	}
+	return shares
 }
 
 func atoiOrZero(s string) int {

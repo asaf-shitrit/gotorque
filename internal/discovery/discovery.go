@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 	"github.com/asaf-shitrit/gotorque/internal/profile"
@@ -38,8 +39,16 @@ type Inputs struct {
 	// Command is the target's command prefix, placed before each seed's args.
 	Command []string
 	// Seeds are the manifest's seed workloads, in order; the first is the
-	// representative one discovery samples.
+	// representative one discovery samples. Every other seed whose tier the
+	// manifest marks acceptance-eligible is sampled next to it.
 	Seeds []manifest.SeedWorkload
+	// Tiers is the manifest's per-tier workload policy. A seed of an
+	// acceptance-eligible tier is sampled, because only those tiers' readings
+	// can accept a candidate; a seed's tier weight scales the share its sample
+	// carries in the merged hot list. Nil (no declared policy) samples the
+	// first seed alone and weighs every sample equally, which is the behavior
+	// before tier weighting.
+	Tiers map[domain.WorkloadTier]manifest.TierPolicy
 	// Explore returns option variants of the sampled seed to sample next to
 	// it (the explorer, ADR 0015, which stays in the campaign because it
 	// asks Jev). Nil samples the seed alone.
@@ -87,11 +96,24 @@ type Evidence struct {
 	// Source names which profile(s) chose HotFunctions (the Source constants,
 	// plus a suffix for the allocation profile).
 	Source string
+	// SeedSamples names the workload samples the target-sample hot list was
+	// merged from, with the tier weight each carried, so the record says which
+	// seeds a function could have ranked from.
+	SeedSamples []SeedSample
 	// IsolationNotes are what the sandbox policy could not enforce on sampled
 	// runs, for the campaign's deduplicated set.
 	IsolationNotes []string
 	// Events are what discovery has to say, in the order it happened.
 	Events []Event
+}
+
+// SeedSample is one workload sample the target-sample hot list was merged
+// from: which seed ran and the tier weight its contribution carried.
+// Without it the record cannot tell a function that ranked because another
+// acceptance-eligible seed reached it from one the first seed found alone.
+type SeedSample struct {
+	Seed   string  `json:"seed"`
+	Weight float64 `json:"weight"`
 }
 
 // Run gathers the evidence. It is best-effort throughout: a profile that
@@ -192,22 +214,42 @@ func (r *run) sampleTarget(ctx context.Context) error {
 	if len(r.in.Seeds) == 0 {
 		return errors.New("manifest defines no seed workloads to sample")
 	}
-	results, err := r.sampleSeeds(ctx)
+	samples, err := r.sampleSeeds(ctx)
 	if err != nil {
 		return err
 	}
-	names, weights := sampledHotNamesAndWeights(results, r.own)
+	names, weights := sampledHotNamesAndWeights(samples, r.own)
 	hot := r.loc.resolve(ctx, "", names)
 	r.ev.HotFunctions = hot
 	r.ev.Weights = MergeWeights(r.ev.Weights, weights)
-	r.ev.UnbufferedWrites = unbufferedWrites(ctx, r.loc, hot, r.own, results)
-	r.ev.ProfileSummaryPath = results[0].RawReport
+	r.ev.UnbufferedWrites = unbufferedWrites(ctx, r.loc, hot, r.own, samples)
+	r.ev.SeedSamples = seedSamples(samples)
+	r.ev.ProfileSummaryPath = samples[0].Result.RawReport
 	return nil
 }
 
-// sampleSeeds samples the first seed that can be sampled, then the explorer's
-// variants of it. The first result is the seed's.
-func (r *run) sampleSeeds(ctx context.Context) ([]profile.SampleResult, error) {
+// seedSamples names the workloads the hot list was merged from, in the order
+// they were sampled, so the persisted state and the report can say which seeds
+// a function could have ranked from.
+func seedSamples(samples []weightedSample) []SeedSample {
+	out := make([]SeedSample, len(samples))
+	for i, sample := range samples {
+		out[i] = SeedSample{Seed: sample.Seed, Weight: sample.Weight}
+	}
+	return out
+}
+
+// sampleSeeds samples the first seed that can be sampled, every other
+// acceptance-eligible seed, and the explorer's variants of the first.
+//
+// Sampling only the first seed hid whole code paths. actionlint declares two
+// representative seeds, and its JSON template reads the source snippet of
+// every error, so its quadratic (*Error).getLine was the real cost of
+// `-format '{{json .}}'`; discovery sampled `lint-oneline` alone, the hot list
+// never named it, and all four attempts went at the oneline path instead. A
+// seed whose tier the manifest does not mark acceptance-eligible reaches no
+// campaign measurement, so its code is not where the hot list should point.
+func (r *run) sampleSeeds(ctx context.Context) ([]weightedSample, error) {
 	ladder := NewLadder(r.in, r.sampler)
 	defer func() {
 		r.ev.IsolationNotes = append(r.ev.IsolationNotes, ladder.Notes()...)
@@ -217,11 +259,49 @@ func (r *run) sampleSeeds(ctx context.Context) ([]profile.SampleResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The ladder may have sampled a stress seed because the first seed could
+	// not be sampled at all. That sample stands in for the first seed, and
+	// carries its weight, so a target that can only be sampled on a larger
+	// input still produces the hot list its first seed would have.
+	first := weightedSample{Result: result, Seed: seed.ID, Weight: tierWeight(r.in.Tiers, r.in.Seeds[0].Tier)}
+	samples := append([]weightedSample{first}, r.sampleAcceptanceSeeds(ctx, ladder, seed)...)
 	var variants []manifest.SeedWorkload
 	if r.in.Explore != nil {
 		variants = r.in.Explore(ctx, seed)
 	}
-	return append([]profile.SampleResult{result}, ladder.Variants(ctx, variants)...), nil
+	for _, variant := range ladder.Variants(ctx, variants) {
+		// A variant runs the seed's own input in another mode, so it carries
+		// the seed's weight rather than one of its own.
+		samples = append(samples, weightedSample{Result: variant.Result, Seed: variant.Seed.ID, Weight: first.Weight})
+	}
+	return samples, nil
+}
+
+// sampleAcceptanceSeeds samples every remaining seed whose tier policy marks
+// it acceptance-eligible, in manifest order, and records each one that could
+// not be sampled. One seed that fails is left out rather than failing
+// discovery: the samples that did run still make a hot list.
+func (r *run) sampleAcceptanceSeeds(ctx context.Context, ladder *Ladder, sampled manifest.SeedWorkload) []weightedSample {
+	var samples []weightedSample
+	for i, seed := range r.in.Seeds {
+		if i == 0 || seed.ID == sampled.ID || !r.in.Tiers[seed.Tier].AcceptanceEligible {
+			continue
+		}
+		result, err := ladder.seed(ctx, seed, fmt.Sprintf("sample-report-seed-%d.txt", i+1))
+		if err != nil {
+			ladder.event("workload_sample_skipped", fmt.Sprintf("acceptance-eligible seed %s could not be sampled: %v", seed.ID, err), nil)
+			continue
+		}
+		samples = append(samples, weightedSample{Result: result, Seed: seed.ID, Weight: tierWeight(r.in.Tiers, seed.Tier)})
+	}
+	return samples
+}
+
+// tierWeight is the share a sample of this tier carries in the merged hot
+// list. A tier the manifest does not declare weighs nothing, and
+// mergeAttributed then counts every sample equally.
+func tierWeight(tiers map[domain.WorkloadTier]manifest.TierPolicy, tier domain.WorkloadTier) float64 {
+	return tiers[tier].Weight
 }
 
 func (r *run) own(symbol string) bool { return ownSymbol(r.in.Packages, symbol) }

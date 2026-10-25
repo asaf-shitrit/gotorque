@@ -156,6 +156,21 @@ type CandidateEvidence struct {
 	// Unmeasured is set when the candidate was rejected before measurement:
 	// its patch did not apply, failed the shape check, or did not build.
 	Unmeasured bool `json:"unmeasured,omitempty"`
+	// ReaskCause is the pre-build failure that makes this attempt worth one
+	// more ask, or empty when there is none: the error `git apply --check` and
+	// its fuzzy fallback gave for a patch git refused to apply. It is quoted
+	// back to the optimizer, which is asked for function_source instead. A
+	// re-ask is a transport question, not a judgment: policy never reads this,
+	// and the second answer is judged by the same gates as the first. #77
+	// widens the same trigger to a function_source that does not parse and an
+	// answer carrying no code at all.
+	ReaskCause string `json:"reask_cause,omitempty"`
+	// ReaskedFor names the refusal the previous answer in this attempt earned,
+	// set only on the answer that answered a re-ask: the attempt then took two
+	// optimizer calls, and the record of the answer that survived has nothing
+	// else saying so (ADR 0045). Like ReaskCause it is a transport note, and
+	// policy never reads it.
+	ReaskedFor string `json:"reasked_for,omitempty"`
 	// PgoComparisons and PgoNote record the informational PGO lane: one extra
 	// interleaved A/B series in which baseline and candidate were both built
 	// with the same discovery-derived pprof CPU profile. The lane attributes
@@ -163,6 +178,18 @@ type CandidateEvidence struct {
 	// it never changes accept/reject decisions.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
+	// FreshGuardrails are the pooled guardrail readings of the confirmation
+	// series, taken after the first one: the series that runs when a breach is
+	// significant (see policy.GuardrailsToReplicate) or when another reading
+	// asks for more samples. Policy decides on them; the comparison list holds
+	// the readings of every series together.
+	FreshGuardrails []domain.MetricComparison `json:"fresh_guardrails,omitempty"`
+	// FirstSeriesGuardrails are the pooled guardrail readings the first series
+	// produced for the guardrails that fresh series re-measures
+	// (policy.ReplicatedGuardrails), recorded before the two series were folded
+	// together. The verdict's reasons quote them, because the comparison list
+	// holds one pooled number for both series once the fresh one has run.
+	FirstSeriesGuardrails []domain.MetricComparison `json:"first_series_guardrails,omitempty"`
 	// ProposalRepair names the rewrite the optimizer's output needed before it
 	// parsed, or is empty when it parsed as sent. A patch cut off at the
 	// output-token cap is closed by the decoder and has its hunk counts
@@ -264,6 +291,13 @@ type CampaignState struct {
 	// needs no persistence: a resumed campaign starts a fresh count.
 	OutageCycles int `json:"outage_cycles,omitempty"`
 
+	// ReaskCause holds the cause of the one re-ask this cycle has spent, or is
+	// empty when the cycle may still spend it. The evaluate node sets it to the
+	// failure it was handed and sends the optimizer a brief carrying it; the
+	// cycle's next evaluation clears it. Like CycleFailures it never outlives a
+	// cycle, so it needs no persistence of its own.
+	ReaskCause string `json:"reask_cause,omitempty"`
+
 	// SourceExcerpts is best-effort enrichment: real code around hot paths
 	// so the optimizer can write patch context lines that git apply accepts.
 	SourceExcerpts []SourceExcerpt `json:"source_excerpts,omitempty"`
@@ -296,6 +330,12 @@ const (
 	// exactly like an intended one. It is advisory and changes no decision.
 	// Role and Repair are set.
 	NoteRepaired NoteKind = "repaired"
+	// NoteReasked reports the one ask the optimizer was given again within an
+	// attempt because the answer before it was a patch git refused to apply.
+	// The refused patch was never measured and earns no verdict of its own, so
+	// without the note the campaign would show two optimizer calls and one
+	// settlement with nothing saying why. Role and Cause are set.
+	NoteReasked NoteKind = "reasked"
 	// NoteFinished reports the campaign's result; Result is set.
 	NoteFinished NoteKind = "finished"
 )

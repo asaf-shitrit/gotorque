@@ -88,19 +88,26 @@ func (l *Ladder) FirstLiving(ctx context.Context) (manifest.SeedWorkload, profil
 	return manifest.SeedWorkload{}, profile.SampleResult{}, errors.New(strings.Join(failures, "; "))
 }
 
+// Sampled is a workload that produced a usable sample.
+type Sampled struct {
+	Seed   manifest.SeedWorkload
+	Result profile.SampleResult
+}
+
 // Variants samples each explored variant. One that cannot be sampled is
-// recorded and left out; discovery still has the seed's sample.
-func (l *Ladder) Variants(ctx context.Context, variants []manifest.SeedWorkload) []profile.SampleResult {
-	var results []profile.SampleResult
+// recorded and left out; discovery still has the seed's sample. Each result
+// names the variant it came from, so discovery can weight and record it.
+func (l *Ladder) Variants(ctx context.Context, variants []manifest.SeedWorkload) []Sampled {
+	var sampled []Sampled
 	for i, variant := range variants {
 		result, err := l.variant(ctx, variant, fmt.Sprintf("sample-report-%d.txt", i+1))
 		if err != nil {
 			l.event("workload_sample_skipped", fmt.Sprintf("%s could not be sampled: %v", variant.ID, err), nil)
 			continue
 		}
-		results = append(results, result)
+		sampled = append(sampled, Sampled{Seed: variant, Result: result})
 	}
-	return results
+	return sampled
 }
 
 // seed samples one workload under the platform sampler, with its input

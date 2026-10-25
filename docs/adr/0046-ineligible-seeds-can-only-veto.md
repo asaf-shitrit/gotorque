@@ -1,4 +1,4 @@
-# 0040. Seeds that cannot accept are measured, and can only veto
+# 0046. Seeds that cannot accept are measured, and can only veto
 
 - Status: accepted
 - Date: 2026-10-24

@@ -209,7 +209,7 @@ func TestReportRendersPgoLaneSection(t *testing.T) {
 	for _, want := range []string{
 		"PGO lane",
 		"never changes accept/reject decisions",
-		"| `wl/wall_time_ns` | 100 | 90 | -10.00% | yes |",
+		"| `wl/wall_time_ns` | 100 | 90 | -10.00% | n/a | yes |",
 		"informational PGO comparison over 1 representative workload(s)",
 	} {
 		if !strings.Contains(rendered, want) {

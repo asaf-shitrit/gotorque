@@ -30,16 +30,19 @@ const DefaultVerifyPairs = 60
 // Verification is one accepted candidate evaluated again from its recorded
 // patch.
 type Verification struct {
-	Attempt       int                       `json:"attempt"`
-	CandidateID   string                    `json:"candidate_id"`
-	Pairs         int                       `json:"pairs"`
-	Original      domain.Decision           `json:"original"`
-	Decision      domain.Decision           `json:"decision"`
-	Reasons       []string                  `json:"reasons,omitempty"`
-	Comparisons   []domain.MetricComparison `json:"comparisons,omitempty"`
-	LoadAverages  []float64                 `json:"load_averages,omitempty"`
-	LoadContended bool                      `json:"load_contended,omitempty"`
-	Summary       string                    `json:"summary,omitempty"`
+	Attempt     int                       `json:"attempt"`
+	CandidateID string                    `json:"candidate_id"`
+	Pairs       int                       `json:"pairs"`
+	Original    domain.Decision           `json:"original"`
+	Decision    domain.Decision           `json:"decision"`
+	Reasons     []string                  `json:"reasons,omitempty"`
+	Comparisons []domain.MetricComparison `json:"comparisons,omitempty"`
+	// FreshComparisons are the pooled guardrail readings of the fresh series
+	// that checked whether a peak-memory breach reproduces (ADR 0040).
+	FreshComparisons []domain.MetricComparison `json:"fresh_comparisons,omitempty"`
+	LoadAverages     []float64                 `json:"load_averages,omitempty"`
+	LoadContended    bool                      `json:"load_contended,omitempty"`
+	Summary          string                    `json:"summary,omitempty"`
 	// OutputChecks names the input variants the candidate and baseline were
 	// both run on, and OutputMismatches the ones whose exit code or stdout
 	// differed (verifyOutputs).
@@ -82,7 +85,8 @@ func (e *Engine) Verify(ctx context.Context, attempt, pairs int) (Verification, 
 	v := Verification{
 		Attempt: attempt, CandidateID: evidence.Candidate.ID, Pairs: pairs,
 		Original: record.Decision, Decision: result.Decision, Reasons: result.Reasons, Comparisons: result.Comparisons,
-		LoadAverages: evidence.LoadAverages, LoadContended: evidence.LoadContended, Summary: evidence.Summary,
+		FreshComparisons: evidence.FreshGuardrails,
+		LoadAverages:     evidence.LoadAverages, LoadContended: evidence.LoadContended, Summary: evidence.Summary,
 	}
 	if binary := candidateBinaryOf(evidence); binary != "" && v.Decision == domain.DecisionAccepted {
 		v.OutputChecks, v.OutputMismatches = e.verifyOutputs(ctx, binary, evidence.Candidate.ID)
@@ -127,6 +131,8 @@ func (e *Engine) policyVerdict(evidence orchestrator.CandidateEvidence) policy.R
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligibleReadings(config, evidence.Comparisons),
 		StressComparisons:      evidence.StressComparisons,
+		FreshGuardrails:        evidence.FreshGuardrails,
+		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
 	})
 }
 
@@ -153,7 +159,7 @@ func candidateBinaryOf(evidence orchestrator.CandidateEvidence) string {
 // baseline itself does not answer deterministically is skipped rather than
 // compared. The variants already have no acceptance-eligible parent in the
 // campaign's measurement, so they are not the place to start with the seeds the
-// manifest keeps out of acceptance (ADR 0040).
+// manifest keeps out of acceptance (ADR 0046).
 func (e *Engine) verifyOutputs(ctx context.Context, candidateBinary, candidateID string) (checks, mismatches []string) {
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
 		if !e.state.Manifest.AcceptanceEligible(seed.Tier) {

@@ -151,11 +151,21 @@ regresses past `maximum_guardrail_regression_percent` with statistical
 support. Neither can carry an acceptance: `wall_time_ns` on such a workload is
 never compared. Issue #101 found that no loop ran the candidate on these
 seeds at all, so a patch that changed output only on an input larger than any
-representative seed was accepted on representative timings (ADR 0040).
+representative seed was accepted on representative timings (ADR 0046).
 
 `tiers.<tier>.weight` is required by the schema and is not read by the engine:
 no measurement is weighted, and a tier's weight changes nothing. It is kept so
 that a manifest written against version one still loads.
+
+`acceptance_eligible` decides both whether a reading of that tier can establish
+an acceptance and whether discovery samples that seed: discovery samples every
+acceptance-eligible seed, then merges their samples into one hot list (ADR
+0044). A seed's sample carries its tier's `weight` into that merge, so a lower
+weighted tier still contributes its own share of the profile. A verdict never
+reads `weight`; it reads eligibility alone. A seed that is not
+acceptance-eligible is sampled only as the fallback ladder's stand-in when the
+first seed cannot be sampled at all, and then it carries the first seed's
+weight.
 
 The agent chooses bounded exploration goals. Deterministic generators create
 the concrete mutations, size sweeps, and fixtures using the manifest seed.

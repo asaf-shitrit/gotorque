@@ -68,3 +68,24 @@ tried targets from its records (`internal/orchestrator/ledger.go`). So a target 
 attempt keeps its one more attempt across a resume. Records written before the field existed
 read as measured and keep their targets closed, as before. Targets carried in by `--history`
 (ADR 0031) stay closed whatever became of them.
+
+## Amendment (2026-10-25): the string-building remedy has a second direction
+
+The decision named one shape for a string-building target: the added lines must carry a builder,
+`strconv`, `append` or `Grow`. That is only one way to fix the cost. The ycat campaign
+(`daily-2026-10-02-devB-ycat`, attempt 2) made the other one and was rejected before the build: the
+target was `(*Scanner).scanMapDelim`, cause `string_build`, and the patch replaced three
+`[]rune`-to-`string` conversions with direct element checks on the buffers. It removed the
+allocations the cause names and never reached the build or the test gate.
+
+So the rule now also passes a `string_build` patch that nets out at least one of: a `string(...)`
+conversion, a string concatenation, or a `fmt.Sprint*` call. Removed lines count for it and added
+lines against it, so a rewrite that trades one conversion for another nets zero and is still
+rejected. The counts are textual, like the added-line checks: a `+` counts only on a line that also
+shows something string-like, and an accumulation through two variables is not seen, because the
+check has no types. What it lets through the build, the test gate and the measurement judge as
+before.
+
+The rule only gains acceptances; a patch the added-line check passed still passes. Replayed over
+the 11 recorded candidate patches on the development machine, four passed the added-line check
+before and all four still pass, and none of the other seven became an acceptance.

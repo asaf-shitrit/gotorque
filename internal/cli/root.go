@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
@@ -34,7 +35,7 @@ func New(deps Dependencies) *cobra.Command {
 	root.AddCommand(newManifestCommand(deps.Stdout))
 	root.AddCommand(newOptimizeCommand(deps.Stdout))
 	root.AddCommand(newReportCommand(deps.Stdout))
-	root.AddCommand(newVerifyCommand(deps.Stdout))
+	root.AddCommand(newVerifyCommand(deps.Stdout, deps.Stderr))
 	root.AddCommand(newScorecardCommand(deps.Stdout))
 	root.AddCommand(newVersionCommand(deps.Stdout))
 	return root
@@ -46,6 +47,7 @@ type optimizeFlags struct {
 	tradeoffName                            string
 	allow                                   []string
 	history                                 []string
+	jevAnswers                              string
 	freeChoice                              bool
 	nullCandidates                          int
 	tradeoff                                manifest.Tradeoff
@@ -70,6 +72,7 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&f.tradeoffName, "tradeoff", "", "what the campaign may give up for its improvement: balanced (the manifest as written), speed (improve wall time; memory may regress 10%, CPU 5%) or lean (improve peak memory; wall and CPU time may regress 3%)")
 	cmd.Flags().BoolVar(&f.freeChoice, "free-choice", false, "keep going after every target the analysis flagged has been tried and let the optimizer choose its own site, instead of finishing")
 	cmd.Flags().IntVar(&f.nullCandidates, "null-candidates", 0, "evaluate this many code-generated candidates that change nothing (a comment line each) instead of running agents, to measure the harness's false-acceptance and false-rejection rates")
+	cmd.Flags().StringVar(&f.jevAnswers, "jev-answers", "", "reuse answers an earlier campaign recorded for the same source from this path, so a near-threshold flag cannot flip between campaigns (default: the user cache; \"off\" asks Jev in every campaign)")
 	cmd.Flags().StringArrayVar(&f.history, "history", nil, "an earlier campaign directory of the same repository revision; targets its candidates measured count as already tried, so this campaign moves on to new ones (repeatable)")
 	cmd.Flags().StringArrayVar(&f.allow, "allow", nil, "largest regression one metric may show, as metric=percent (wall, cpu, memory, size, or a full metric name), e.g. --allow memory=5%; repeatable, and applied over --tradeoff")
 	return cmd
@@ -142,6 +145,11 @@ func resumeOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet
 		return err
 	}
 	defer func() { err = errors.Join(err, engine.Close()) }()
+	closeAnswers, err := attachAnswerRecord(out, engine, f)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, closeAnswers()) }()
 	if err := attachResumeADK(ctx, out, engine, f, roleSet, adkConfig); err != nil {
 		return err
 	}
@@ -251,6 +259,11 @@ func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, r
 		return err
 	}
 	defer func() { err = errors.Join(err, engine.Close()) }()
+	closeAnswers, err := attachAnswerRecord(out, engine, f)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, closeAnswers()) }()
 	if err := announceTradeoff(out, f.tradeoff, engine.State().Manifest.Performance); err != nil {
 		return err
 	}
@@ -258,6 +271,56 @@ func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, r
 		return err
 	}
 	return printCampaignComplete(out, engine)
+}
+
+// attachAnswerRecord gives a live campaign the cross-campaign record of Jev
+// answers (ADR 0042) and returns the function that closes it. Without one a
+// campaign only memoizes answers for its own life, so a question Jev answers
+// just over a gate in one campaign can be answered just under it in the next.
+//
+// Only --adk takes a record. Under --adk-stub the "answers" come from
+// jev.Stub, and recording them would hand a later live campaign a stub's
+// opinion under the pinned build's key. The record is never required: a path
+// that cannot be opened warns and leaves the campaign on its own cache, the
+// same way a cache write failure does.
+func attachAnswerRecord(out io.Writer, engine *campaign.Engine, f optimizeFlags) (func() error, error) {
+	none := func() error { return nil }
+	if !f.runADK || answersDisabled(f.jevAnswers) {
+		engine.UseAnswerRecord(nil)
+		return none, nil
+	}
+	path, err := answerRecordPath(f.jevAnswers)
+	if err != nil {
+		return nil, err
+	}
+	record, err := campaign.OpenAnswerRecord(path)
+	if err != nil {
+		engine.UseAnswerRecord(nil)
+		if _, warnErr := fmt.Fprintf(out, "jev answers: recording disabled for this campaign: %v\n", err); warnErr != nil {
+			return nil, warnErr
+		}
+		return none, nil
+	}
+	engine.UseAnswerRecord(record)
+	if _, err := fmt.Fprintf(out, "jev answers: reusing and extending the record at %s\n", record.Path()); err != nil {
+		_ = record.Close()
+		return nil, err
+	}
+	return record.Close, nil
+}
+
+// answerRecordPath resolves where the record lives: the operator's path when
+// one is given, the user cache otherwise.
+func answerRecordPath(flag string) (string, error) {
+	if flag == "" {
+		return campaign.AnswerRecordPath()
+	}
+	return filepath.Abs(flag)
+}
+
+// answersDisabled reports whether --jev-answers turns the record off.
+func answersDisabled(flag string) bool {
+	return flag == "off"
 }
 
 // announceTradeoff states the rules a campaign started with a trade-off is
@@ -407,23 +470,39 @@ func newVersionCommand(out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func newVerifyCommand(out io.Writer) *cobra.Command {
+func newVerifyCommand(out, errOut io.Writer) *cobra.Command {
 	var attempt, pairs int
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "verify CAMPAIGN_DIR",
 		Short: "Evaluate a campaign's accepted candidates again from their recorded patches",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runVerify(cmd.Context(), out, args[0], attempt, pairs)
+			return runVerify(cmd.Context(), out, verifyProgress(out, errOut, asJSON), args[0], attempt, pairs, asJSON)
 		},
 	}
 	cmd.Flags().IntVar(&attempt, "attempt", 0, "verify only this attempt (default: every accepted attempt)")
 	cmd.Flags().IntVar(&pairs, "pairs", campaign.DefaultVerifyPairs, "interleaved A/B pairs per workload")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
 	return cmd
 }
 
-func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs int) (err error) {
-	engine, err := campaign.Resume(dir, out)
+// verifyProgress picks where the resumed engine reports its events: the
+// stream the text output uses, or stderr when --json owns stdout.
+func verifyProgress(out, errOut io.Writer, asJSON bool) io.Writer {
+	if asJSON {
+		return errOut
+	}
+	return out
+}
+
+// runVerify prints the verdict line and then what decided it, from the same
+// renderer the report uses, so an operator can read why an accept did not hold
+// without opening the campaign database. With --json the verifications are the
+// only output, as report --json does, so the engine's progress goes to progress
+// rather than to out.
+func runVerify(ctx context.Context, out, progress io.Writer, dir string, attempt, pairs int, asJSON bool) (err error) {
+	engine, err := campaign.Resume(dir, progress)
 	if err != nil {
 		return err
 	}
@@ -435,16 +514,45 @@ func runVerify(ctx context.Context, out io.Writer, dir string, attempt, pairs in
 	if len(attempts) == 0 {
 		return campaign.ErrNothingAccepted
 	}
+	return printVerifications(ctx, out, engine, attempts, pairs, asJSON)
+}
+
+func printVerifications(ctx context.Context, out io.Writer, engine verifier, attempts []int, pairs int, asJSON bool) error {
+	verified := make([]campaign.Verification, 0, len(attempts))
 	for _, a := range attempts {
-		v, verr := engine.Verify(ctx, a, pairs)
-		if verr != nil {
-			return verr
+		v, err := engine.Verify(ctx, a, pairs)
+		if err != nil {
+			return err
 		}
-		if _, err := fmt.Fprintf(out, "attempt %d: %s on verification over %d pairs (originally %s); held: %t\n", v.Attempt, v.Decision, v.Pairs, v.Original, v.Confirmed()); err != nil {
+		if asJSON {
+			verified = append(verified, v)
+			continue
+		}
+		if err := writeVerification(out, v); err != nil {
 			return err
 		}
 	}
-	return nil
+	if !asJSON {
+		return nil
+	}
+	return json.NewEncoder(out).Encode(verified)
+}
+
+// verifier is the one engine method verify needs, so the output path can be
+// tested without building a campaign that measures anything.
+type verifier interface {
+	Verify(ctx context.Context, attempt, pairs int) (campaign.Verification, error)
+}
+
+// writeVerification prints one verdict line and, under it, the reasons, the
+// per-metric deltas with significance and the output mismatches that decided
+// it.
+func writeVerification(out io.Writer, v campaign.Verification) error {
+	if _, err := fmt.Fprintf(out, "attempt %d: %s on verification over %d pairs (originally %s); held: %t\n", v.Attempt, v.Decision, v.Pairs, v.Original, v.Confirmed()); err != nil {
+		return err
+	}
+	_, err := io.WriteString(out, campaign.RenderVerificationEvidence(v))
+	return err
 }
 
 func newScorecardCommand(out io.Writer) *cobra.Command {

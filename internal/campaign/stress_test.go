@@ -14,9 +14,9 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
 )
 
-// fixtureSeed is one seed of the stress fixture manifest: the same tiny input
+// tieredSeed is one seed of the stress fixture manifest: the same tiny input
 // in every tier, so a tier's policy is the only thing that differs.
-func fixtureSeed(id, tier string) map[string]any {
+func tieredSeed(id, tier string) map[string]any {
 	return map[string]any{"id": id, "name": id, "tier": tier, "args": []string{}, "files": []any{map[string]any{"path": "fixture.txt", "content": "hello\n"}}, "provenance": "test"}
 }
 
@@ -26,9 +26,9 @@ func fixtureSeed(id, tier string) map[string]any {
 func stressEvaluator(t *testing.T) (*evaluator, *Engine, string) {
 	t.Helper()
 	manifestPath := writeManifestWithSeeds(t, t.TempDir(), []any{
-		fixtureSeed("fixture", "representative"),
-		fixtureSeed("plausible-wide", "plausible"),
-		fixtureSeed("stress-deep", "stress"),
+		tieredSeed("fixture", "representative"),
+		tieredSeed("plausible-wide", "plausible"),
+		tieredSeed("stress-deep", "stress"),
 	})
 	engine, err := Create(context.Background(), Options{Repository: makeRepository(t), ManifestPath: manifestPath, CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true})
 	require.NoError(t, err)

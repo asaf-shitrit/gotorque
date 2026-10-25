@@ -406,12 +406,19 @@ func makeRepository(t *testing.T) string {
 
 func writeManifest(t *testing.T, dir string) string {
 	t.Helper()
-	return writeManifestWithSeeds(t, dir, []any{map[string]any{"id": "fixture", "name": "fixture", "tier": "representative", "args": []string{}, "files": []any{map[string]any{"path": "fixture.txt", "content": "hello\n"}}, "provenance": "test"}})
+	return writeManifestWithSeeds(t, dir, []any{fixtureSeed("fixture", []string{})})
 }
 
-// writeManifestWithSeeds writes the fixture manifest with the seeds a caller
-// names, so a test can add a plausible or stress-tier seed beside the
-// representative one every other test uses.
+// fixtureSeed is one representative workload: the fixture program, which reads
+// fixture.txt and prints it, so a workload's args do not change what it prints.
+func fixtureSeed(id string, args []string) map[string]any {
+	return map[string]any{"id": id, "name": id, "tier": "representative", "args": args, "files": []any{map[string]any{"path": "fixture.txt", "content": "hello\n"}}, "provenance": "test"}
+}
+
+// writeManifestWithSeeds writes the fixture target's manifest with the seeds a
+// caller names: the given representative workloads for the tests that need
+// more than one reading to choose between, or a plausible and stress-tier seed
+// beside the representative one.
 func writeManifestWithSeeds(t *testing.T, dir string, seeds []any) string {
 	t.Helper()
 	accept := true

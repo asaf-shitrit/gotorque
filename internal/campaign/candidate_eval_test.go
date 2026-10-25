@@ -722,6 +722,7 @@ func TestEvaluateCandidateRefusesATestFileEditBeforeBuild(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, evidence.Summary, "candidate rejected before build")
 	require.Contains(t, evidence.FailureDetail, `test file "main_test.go" is off-limits`)
+	require.Empty(t, evidence.ReaskCause, "a protected-path rejection is not the one the graph re-asks")
 	require.Len(t, evidence.ArtifactURIs, 1, "nothing was built")
 }
 

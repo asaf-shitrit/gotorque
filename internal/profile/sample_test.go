@@ -323,6 +323,115 @@ func TestParseMacOSSampleOnRealReport(t *testing.T) {
 	}
 }
 
+// TestParseMacOSSampleKeepsGenericMethodsWhole parses a verbatim excerpt of the
+// ivy campaign's recorded report (issue 80): its header and its top-of-stack
+// section. The hottest Go frames there are
+// generic methods instantiated over an interface shape, so their symbols carry
+// spaces; cutting a symbol at its first space merged Set, Append and Resize
+// into one truncated name that resolved to no declaration.
+func TestParseMacOSSampleKeepsGenericMethodsWhole(t *testing.T) {
+	report, err := os.ReadFile(filepath.Join("testdata", "macos-sample-ivy-generic.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	weights := map[string]int{}
+	for _, fn := range ParseMacOSSample(string(report)) {
+		weights[fn.Name] = mustInt(t, fn.Flat)
+	}
+	for name, want := range map[string]int{
+		"robpike.io/ivy/value/persist.(*Slice[...]).At":             154,
+		"robpike.io/ivy/value/persist.(*TransientSlice[...]).wnode": 96,
+		"robpike.io/ivy/value/persist.(*TransientSlice[...]).Set":   77,
+		"robpike.io/ivy/value/persist.(*TransientSlice[...]).wleaf": 45,
+		"robpike.io/ivy/value/persist.(*TransientSlice[...]).copy":  8,
+	} {
+		if weights[name] != want {
+			t.Errorf("weights[%q] = %d, want %d", name, weights[name], want)
+		}
+	}
+	for name := range weights {
+		if strings.ContainsAny(name, " {}") || strings.Contains(name, "go.shape") {
+			t.Errorf("symbol %q kept type-argument text; want the shape shortened to [...]", name)
+		}
+	}
+}
+
+// TestParsedGenericMethodResolvesToItsDeclaration follows the parsed symbol all
+// the way to the source: the hot list is only worth reporting if the optimizer
+// can then read the declaration of the function it names.
+func TestParsedGenericMethodResolvesToItsDeclaration(t *testing.T) {
+	root := tree(t, map[string]string{
+		"go.mod": "module robpike.io/ivy\n",
+		"value/persist/slice.go": strings.Join([]string{
+			"package persist",
+			"",
+			"type TransientSlice[T any] struct{}",
+			"",
+			"func (s *TransientSlice[T]) Set(i int, v T) {}",
+			"",
+		}, "\n"),
+	})
+	report, err := os.ReadFile(filepath.Join("testdata", "macos-sample-ivy-generic.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range hotNames(ParseMacOSSample(string(report))) {
+		sym := ParseSymbol(name)
+		if sym.Receiver != "TransientSlice" || sym.Func != "Set" {
+			continue
+		}
+		path, line, ok := FindDeclaration(root, sym)
+		if !ok || path != "value/persist/slice.go" || line != 5 {
+			t.Fatalf("%s resolved to %q:%d ok=%v, want value/persist/slice.go:5", name, path, line, ok)
+		}
+		return
+	}
+	t.Fatal("the parsed hot list names no TransientSlice.Set")
+}
+
+// TestParsePerfScriptKeepsGenericMethodsWhole covers the Linux path: perf
+// script prints the same generic symbols, followed by the offset and module
+// columns that a bare field split used to keep.
+func TestParsePerfScriptKeepsGenericMethodsWhole(t *testing.T) {
+	const output = `ivy 6902/6902 [000] 12345.678901: cpu-clock:
+	102d7b37c robpike.io/ivy/value/persist.(*TransientSlice[go.shape.interface { Eval(robpike.io/ivy/value.Context) robpike.io/ivy/value.Value }]).Set+0x2c (/tmp/ivy)
+	102d7b9a0 robpike.io/ivy/run.main (+0x12ab) (/tmp/ivy)
+	ffffffffffffffff [unknown] ([unknown])
+	7f3a2b1c [unknown] (/usr/lib/libc.so.6)
+	ffffffff8100 do_syscall_64+0x5b ([kernel.kallsyms])
+
+`
+	functions := ParsePerfScript(output)
+	weights := map[string]int{}
+	for _, fn := range functions {
+		weights[fn.Name] = mustInt(t, fn.Flat)
+	}
+	want := "robpike.io/ivy/value/persist.(*TransientSlice[...]).Set"
+	if weights[want] != 1 {
+		t.Fatalf("weights = %v, want %q once", weights, want)
+	}
+	if weights["robpike.io/ivy/run.main"] != 1 {
+		t.Fatalf("weights = %v, want the frame's module and offset trimmed", weights)
+	}
+	if weights["do_syscall_64"] != 1 {
+		t.Fatalf("weights = %v, want the kernel frame's module and offset trimmed", weights)
+	}
+	for name := range weights {
+		if strings.Contains(name, "unknown") {
+			t.Fatalf("weights = %v, want no unsymbolized frame; it names no hot function", weights)
+		}
+	}
+}
+
+// hotNames lists the names of a parsed hot list.
+func hotNames(functions []Function) []string {
+	names := make([]string, 0, len(functions))
+	for _, fn := range functions {
+		names = append(names, fn.Name)
+	}
+	return names
+}
+
 func TestParseMacOSSamplePrefersTopOfStack(t *testing.T) {
 	functions := ParseMacOSSample(macSampleReport)
 	want := []struct {
