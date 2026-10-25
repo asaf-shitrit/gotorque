@@ -381,10 +381,22 @@ not recorded.
    win, the best supported improvement clearing the minimum by less than a
    factor of two (`policy.BorderlineImprovements`), is measured again the
    same way before the verdict (ADR 0034): held-out dyff was accepted on a
-   supported -3.16% against 3% and verified at -2.17%. At most one extra
-   series runs per candidate in total — if the regression confirmation
-   already extended every seed, the improvement check reuses that series
-   instead of running a third.
+   supported -3.16% against 3% and verified at -2.17%. That covers a pooled
+   accept. An accept that rests on one workload's reading chose it because it
+   read best of several, so the winner's curse sits in the reading itself: that
+   workload alone is measured over a fresh series and the verdict rests on it
+   alone, the selecting series replaced rather than extended (`confirmSelection`,
+   `policy.SelectedImprovements`, ADR 0041). The rule repeats while the verdict
+   still rests on a per-workload reading, measuring each such workload at most
+   once more, so a fresh reading that no longer clears the bar cannot hand the
+   accept to the reading that selected it. The regression and improvement
+   confirmations run at most one series per candidate between them: if the
+   regression confirmation already extended every seed, the improvement check
+   runs no series of its own. Selection is the exception, and runs its fresh
+   series even then: an extended seed is not a replaced one, so the pairs that
+   selected the workload would still be in a pooled reading. That fresh series
+   is as long as the one it replaces, because the pooled reading folds the
+   seeds per repetition.
 6. **Statistics.** Each metric gets a two-sample Welch t-test against a
    conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
    sample sizes); support is never reported from fewer than four samples per
@@ -481,7 +493,11 @@ reject it, the engine measures every representative workload again the same
 way it does for a regression (`confirmImprovements`, ADR 0021), using
 `policy.UnconfirmedImprovements` as the mirrored predicate. At most one extra
 series runs per candidate: if the regression confirmation already extended
-every seed, the improvement check does not run a second.
+every seed, the improvement check does not run a second. An accept resting on a
+per-workload reading takes the same second look the other way (ADR 0041): that
+workload alone is measured again from scratch and judged on the fresh series
+alone, because a reading chosen as the best of k noisy estimates is biased
+upward and pooling the fresh pairs with the selecting ones keeps the bias.
 
 The pooled figure alone was the wrong instrument. A seed whose measured run is
 mostly process startup cannot be improved by any patch, so pooling it dilutes
