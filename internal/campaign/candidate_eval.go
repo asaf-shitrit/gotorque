@@ -373,10 +373,23 @@ func (ev *evaluator) measureAndFinalize(ctx context.Context, s evalSettings, evi
 	}
 	ev.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
-	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, &m) {
+	return ev.secondLook(ctx, s, evidence, id, candidateBinary, &m)
+}
+
+// secondLook runs the steps a candidate gets after its first series, in the
+// order that keeps a per-workload accept off a pooled reading. The two steps
+// that extend every seed run first, and the step that replaces one workload's
+// series runs last: an extending step adds its own pairs to the workload that
+// selected the accept, so a per-workload accept must be re-measured after it,
+// not before (ADR 0041, ADR 0021, ADR 0034).
+func (ev *evaluator) secondLook(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	if !ev.confirmRegressions(ctx, s, evidence, id, candidateBinary, m) {
 		return false
 	}
-	return ev.confirmImprovements(ctx, s, evidence, id, candidateBinary, &m)
+	if !ev.confirmImprovements(ctx, s, evidence, id, candidateBinary, m) {
+		return false
+	}
+	return ev.confirmSelection(ctx, s, evidence, id, candidateBinary, m)
 }
 
 // measureSeedsOnQuietMachine measures every representative seed, and
@@ -503,20 +516,103 @@ func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evi
 	// series: the policy no longer rejects on its point estimate, so more
 	// samples are what lets a real regression become significant.
 	unconfirmed = append(unconfirmed, policy.UnconfirmedGuardrails(config, evidence.Comparisons)...)
-	if len(unconfirmed) == 0 {
+	// A peak-memory breach that is significant still gets a series of its own:
+	// the policy rejects on it only when a fresh series reproduces it, because
+	// one contended run or one GC step moves a high-water mark by megabytes
+	// without the candidate costing more memory (see policy.replicatedGuardrail).
+	replicate := policy.GuardrailsToReplicate(config, evidence.Comparisons)
+	if len(unconfirmed) == 0 && len(replicate) == 0 {
 		return true
 	}
+	firstSeries, starts := guardrailSeries(config, evidence, m)
 	for i := range m.seeds {
 		if !ev.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
 	ev.rederive(ctx, evidence, m)
-	note := confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs)
-	evidence.Summary += "; " + note
+	ev.recordGuardrailSeries(evidence, m, firstSeries, starts)
+	notes := make([]string, 0, 2)
+	if len(unconfirmed) > 0 {
+		notes = append(notes, confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs))
+	}
+	if len(replicate) > 0 {
+		notes = append(notes, replicationNote(replicate, config.MaximumGuardrailRegressionPercent, s.pairs))
+	}
+	evidence.Summary += "; " + strings.Join(notes, "; ")
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
-	_ = ev.journal.event("measurement_confirmed", note, nil)
+	_ = ev.journal.event("measurement_confirmed", strings.Join(notes, "; "), nil)
 	return true
+}
+
+// guardrailSeries captures, before a confirmation series runs, the readings
+// the first series produced for the guardrails a fresh series re-measures
+// (ADR 0040) and how many runs each seed already held. Both are taken before
+// the fresh series is folded in: the pooled comparisons then hold one value for
+// both series, and the verdict's reasons say what the first series read.
+func guardrailSeries(config policy.Config, evidence *orchestrator.CandidateEvidence, m *measurement) ([]domain.MetricComparison, []int) {
+	return policy.ReplicatedGuardrails(config, evidence.Comparisons), seriesStarts(m.seeds)
+}
+
+// recordGuardrailSeries writes both readings a confirmation series produced
+// for the guardrails the policy replicates: the first series' own, and the
+// fresh series' alone. Every confirmation series records them, whichever step
+// asked for it (confirmRegressions for an unconfirmed or significant breach,
+// confirmImprovements for a borderline or unsupported win): an over-limit
+// peak-memory reading without significance is what started that series, and
+// folding the fresh one in can be what makes the pooled reading significant.
+// The policy then needs the fresh reading to decide whether the breach
+// reproduces (ADR 0040); leaving it out lets the verdict reject on the pooled
+// series alone.
+func (ev *evaluator) recordGuardrailSeries(evidence *orchestrator.CandidateEvidence, m *measurement, firstSeries []domain.MetricComparison, starts []int) {
+	evidence.FirstSeriesGuardrails = firstSeries
+	evidence.FreshGuardrails = ev.freshGuardrailComparisons(m.seeds, starts)
+}
+
+// seriesStarts records, per seed, how many runs each side already held when a
+// confirmation series was about to start, so the new series can be judged on
+// its own.
+func seriesStarts(seeds []seedRuns) []int {
+	starts := make([]int, len(seeds))
+	for i, runs := range seeds {
+		starts[i] = len(runs.ab.Baseline)
+	}
+	return starts
+}
+
+// freshGuardrailComparisons derives the pooled CPU-time and peak-memory
+// readings of one fresh series: every seed's runs after the offset it held
+// before the series started. Folding, not concatenation, is how the pooled
+// reading is derived everywhere else (pooledSamples).
+func (ev *evaluator) freshGuardrailComparisons(seeds []seedRuns, starts []int) []domain.MetricComparison {
+	var pooled pooledSamples
+	for i, runs := range seeds {
+		start := 0
+		if i < len(starts) {
+			start = min(starts[i], len(runs.ab.Baseline))
+		}
+		base, cand := runs.ab.Baseline[start:], runs.ab.Candidate[start:]
+		pooled.cpuBase = append(pooled.cpuBase, metricValues(base, cpuTime))
+		pooled.cpuCand = append(pooled.cpuCand, metricValues(cand, cpuTime))
+		pooled.memBase = append(pooled.memBase, metricValues(base, peakMemory))
+		pooled.memCand = append(pooled.memCand, metricValues(cand, peakMemory))
+	}
+	return []domain.MetricComparison{
+		compareMetric("", "cpu_time_ns", "ns", ev.regressionLimit("cpu_time_ns"),
+			pooledAsRuns(meanPerRepetition(pooled.cpuBase), "cpu_time_ns"), pooledAsRuns(meanPerRepetition(pooled.cpuCand), "cpu_time_ns"), cpuTime)[0],
+		compareMetric("", "peak_memory_bytes", "bytes", ev.regressionLimit("peak_memory_bytes"),
+			pooledAsRuns(maxPerRepetition(pooled.memBase), "peak_memory_bytes"), pooledAsRuns(maxPerRepetition(pooled.memCand), "peak_memory_bytes"), peakMemory)[0],
+	}
+}
+
+// replicationNote says which guardrail breaches a fresh series was measured
+// to check.
+func replicationNote(breaches []domain.MetricComparison, limit float64, pairs int) string {
+	readings := make([]string, 0, len(breaches))
+	for _, c := range breaches {
+		readings = append(readings, fmt.Sprintf("%s %+.2f%%", c.Metric, c.DeltaPercent))
+	}
+	return fmt.Sprintf("%s over the %.2f%% limit and significant after %d pairs, so a fresh series of %d pairs was measured to check it reproduces", strings.Join(readings, ", "), limit, pairs, pairs)
 }
 
 // confirmImprovements measures every representative seed again when the
@@ -542,12 +638,14 @@ func (ev *evaluator) confirmImprovements(ctx context.Context, s evalSettings, ev
 	if len(unconfirmed) == 0 {
 		return true
 	}
+	firstSeries, starts := guardrailSeries(config, evidence, m)
 	for i := range m.seeds {
 		if !ev.runSeries(ctx, s, &m.seeds[i], id, candidateBinary, evidence, evidence.Comparisons) {
 			return false
 		}
 	}
 	ev.rederive(ctx, evidence, m)
+	ev.recordGuardrailSeries(evidence, m, firstSeries, starts)
 	evidence.Summary += "; " + note
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
 	_ = ev.journal.event("improvement_confirmed", note, nil)
@@ -585,15 +683,7 @@ func confirmationNote(unconfirmed []domain.MetricComparison, limit float64, prim
 // borderline improvement an accept would rest on (ADR 0034).
 func improvementsToConfirm(config policy.Config, pairs int, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, string) {
 	eligible := eligibleReadings(config, evidence.Comparisons)
-	preview := policy.Evaluate(config, policy.Evidence{
-		BehaviorMatches:        evidence.BehaviorMatches,
-		FailureSummary:         evidence.Summary,
-		SafetyChecksPassed:     evidence.SafetyChecksPassed,
-		RepresentativeEvidence: evidence.RepresentativeEvidence,
-		Comparisons:            evidence.Comparisons,
-		Primary:                eligible,
-	})
-	switch preview.Decision {
+	switch evaluateEvidence(config, evidence).Decision {
 	case domain.DecisionInconclusive:
 		unconfirmed := policy.UnconfirmedImprovements(config, eligible)
 		return unconfirmed, improvementConfirmationNote(unconfirmed, config.MinimumImprovementPercent, pairs)
@@ -606,6 +696,140 @@ func improvementsToConfirm(config policy.Config, pairs int, evidence *orchestrat
 	return nil, ""
 }
 
+// evaluateEvidence judges a candidate's evidence exactly as the verdict will,
+// so a confirmation step can ask what the policy would decide before it spends
+// another series.
+func evaluateEvidence(config policy.Config, evidence *orchestrator.CandidateEvidence) policy.Result {
+	return policy.Evaluate(config, policy.Evidence{
+		BehaviorMatches:        evidence.BehaviorMatches,
+		FailureSummary:         evidence.Summary,
+		SafetyChecksPassed:     evidence.SafetyChecksPassed,
+		RepresentativeEvidence: evidence.RepresentativeEvidence,
+		Comparisons:            evidence.Comparisons,
+		Primary:                eligibleReadings(config, evidence.Comparisons),
+		FreshGuardrails:        evidence.FreshGuardrails,
+		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
+	})
+}
+
+// confirmSelection measures the workload an accept would rest on again from
+// scratch when that reading is one workload's rather than the pooled metric,
+// and lets the verdict rest on the fresh series alone (ADR 0041). A per-workload
+// accept is the best of several readings, so the reading that cleared the bar
+// may have cleared it on chance: on daily-2026-10-02-devB-miller attempt 4 the
+// campaign accepted a -6.51% reading on one of five workloads that `gotorque
+// verify` put at -3.04% over sixty fresh pairs. The series that selected the
+// workload is discarded, because pooling the two keeps part of that bias; every
+// comparison is derived again from the fresh runs, so the record holds the
+// series the verdict rests on.
+//
+// A candidate whose regression or unsupported-improvement confirmation already
+// ran is measured again here too: that confirmation extended every seed, so a
+// per-workload accept would rest on both series pooled, and the pairs that
+// selected the workload are still in them. The fresh series replaces the pooled
+// one for the workload that carries the accept, so it is as long as what it
+// replaces and the pooled reading keeps one length per seed.
+//
+// Each workload that would carry the accept is measured at most once more, so
+// a candidate whose fresh reading no longer clears the bar but whose second
+// workload's does is measured again there rather than accepted on the reading
+// that selected it. The campaign deadline bounds the cost, as it bounds every
+// series.
+func (ev *evaluator) confirmSelection(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	// The bias being corrected is choosing the best of several readings: a
+	// target with one representative workload offered no choice to inflate.
+	if len(m.seeds) < 2 {
+		return true
+	}
+	config := policyConfigFromManifest(ev.manifest)
+	remeasured := make(map[string]bool, len(m.seeds))
+	var notes []string
+	for {
+		selected := selectedWorkloadToRemeasure(config, evidence, remeasured)
+		if len(selected) == 0 {
+			break
+		}
+		seed := slices.IndexFunc(m.seeds, func(runs seedRuns) bool { return runs.seed.ID == selected[0].Workload })
+		if seed < 0 {
+			break
+		}
+		workload := selected[0].Workload
+		note, ok := ev.remeasureSelectedWorkload(ctx, s, evidence, id, candidateBinary, m, seed, selected[0])
+		if !ok {
+			return false
+		}
+		remeasured[workload] = true
+		notes = append(notes, note)
+	}
+	if len(notes) == 0 {
+		return true
+	}
+	note := strings.Join(notes, "; ")
+	evidence.Summary += "; " + note
+	if !slices.Contains(evidence.ValidationJobs, "interleaved-ab-confirmation") {
+		evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
+	}
+	_ = ev.journal.event("selection_confirmed", note, nil)
+	return true
+}
+
+// selectedWorkloadToRemeasure returns the per-workload reading an accept would
+// rest on when that workload has not been measured again yet, and nothing when
+// the verdict does not accept, rests on the pooled metric, or rests on a
+// workload that already got its fresh series.
+func selectedWorkloadToRemeasure(config policy.Config, evidence *orchestrator.CandidateEvidence, remeasured map[string]bool) []domain.MetricComparison {
+	if evaluateEvidence(config, evidence).Decision != domain.DecisionAccepted {
+		return nil
+	}
+	selected := policy.SelectedImprovements(config, eligibleReadings(config, evidence.Comparisons))
+	if len(selected) == 0 || remeasured[selected[0].Workload] {
+		return nil
+	}
+	return selected
+}
+
+// remeasureSelectedWorkload replaces one workload's runs with a fresh series of
+// the length the replaced one held, derives every comparison again from what is
+// now measured, and returns the note that records what the reading the verdict
+// rested on said and what the fresh series alone says.
+func (ev *evaluator) remeasureSelectedWorkload(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement, seed int, selected domain.MetricComparison) (string, bool) {
+	fresh := seedRuns{seed: m.seeds[seed].seed, deterministic: m.seeds[seed].deterministic}
+	// A regression confirmation has already extended every seed to twice the
+	// pair count. Re-measuring over one series of the campaign's count would
+	// leave this seed shorter than the others, and the pooled reading folds the
+	// seeds per repetition, so it would drop the other seeds' second series.
+	replaced := len(m.seeds[seed].ab.Baseline)
+	step := max(1, s.pairs)
+	for remaining := replaced; remaining > 0; remaining -= step {
+		series := s
+		series.pairs = min(step, remaining)
+		if !ev.runSeries(ctx, series, &fresh, id, candidateBinary, evidence, evidence.Comparisons) {
+			return "", false
+		}
+	}
+	m.seeds[seed] = fresh
+	ev.rederive(ctx, evidence, m)
+	judged := workloadReading(m.comparisons, m.seeds[seed].seed.ID, ev.manifest.Performance.PrimaryMetric)
+	return selectionNote(selected, judged, replaced), true
+}
+
+// workloadReading finds one per-workload reading by the seed id the comparison
+// is keyed by, or an unreadable reading when the workload has none.
+func workloadReading(comparisons []domain.MetricComparison, workload, metric string) domain.MetricComparison {
+	for _, comparison := range comparisons {
+		if comparison.Workload == workload && comparison.Metric == metric {
+			return comparison
+		}
+	}
+	return domain.MetricComparison{Workload: workload, Metric: metric, DeltaPercent: math.NaN()}
+}
+
+// selectionNote states the selection bias and both readings: what the best of
+// the workload readings claimed, and what the fresh series alone measured.
+func selectionNote(selecting, judged domain.MetricComparison, pairs int) string {
+	return fmt.Sprintf("workload %q read %+.2f%% as the best of the workload readings, so it alone was measured over %d fresh pairs and judged on those alone: %+.2f%%", selecting.Workload, selecting.DeltaPercent, pairs, judged.DeltaPercent)
+}
+
 func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum float64, pairs int) string {
 	if len(borderline) == 0 {
 		return ""
@@ -615,7 +839,7 @@ func borderlineConfirmationNote(borderline []domain.MetricComparison, minimum fl
 	if c.Workload != "" {
 		name = c.Workload
 	}
-	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -c.DeltaPercent, minimum, pairs)
+	return fmt.Sprintf("%s improved by %.2f%%, less than twice the %.2f%% minimum, so every workload was measured over %d more before the verdict", name, -policy.ImprovementDelta(c), minimum, pairs)
 }
 
 func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum float64, pairs int) string {
@@ -625,7 +849,7 @@ func improvementConfirmationNote(unconfirmed []domain.MetricComparison, minimum 
 		if c.Workload != "" {
 			name = c.Workload
 		}
-		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, c.DeltaPercent))
+		readings = append(readings, fmt.Sprintf("%s %+.2f%%", name, policy.ImprovementDelta(c)))
 	}
 	return fmt.Sprintf("%s improved past the %.2f%% minimum without significance after %d pairs, so every workload was measured over %d more", strings.Join(readings, ", "), minimum, pairs, pairs)
 }
@@ -1054,6 +1278,7 @@ func compareMetric(workload, metric, unit string, limit float64, baseline, candi
 	}
 	result.StatisticallyFit = metricSupport(baseVals, candVals, result.Baseline, result.DeltaPercent, limit)
 	result.Significant = statisticallySupported(baseVals, candVals)
+	shiftFromSamples(&result, baseVals, candVals)
 	return []domain.MetricComparison{result}
 }
 

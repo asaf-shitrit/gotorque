@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
@@ -46,6 +47,7 @@ type optimizeFlags struct {
 	tradeoffName                            string
 	allow                                   []string
 	history                                 []string
+	jevAnswers                              string
 	freeChoice                              bool
 	nullCandidates                          int
 	tradeoff                                manifest.Tradeoff
@@ -70,6 +72,7 @@ func newOptimizeCommand(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&f.tradeoffName, "tradeoff", "", "what the campaign may give up for its improvement: balanced (the manifest as written), speed (improve wall time; memory may regress 10%, CPU 5%) or lean (improve peak memory; wall and CPU time may regress 3%)")
 	cmd.Flags().BoolVar(&f.freeChoice, "free-choice", false, "keep going after every target the analysis flagged has been tried and let the optimizer choose its own site, instead of finishing")
 	cmd.Flags().IntVar(&f.nullCandidates, "null-candidates", 0, "evaluate this many code-generated candidates that change nothing (a comment line each) instead of running agents, to measure the harness's false-acceptance and false-rejection rates")
+	cmd.Flags().StringVar(&f.jevAnswers, "jev-answers", "", "reuse answers an earlier campaign recorded for the same source from this path, so a near-threshold flag cannot flip between campaigns (default: the user cache; \"off\" asks Jev in every campaign)")
 	cmd.Flags().StringArrayVar(&f.history, "history", nil, "an earlier campaign directory of the same repository revision; targets its candidates measured count as already tried, so this campaign moves on to new ones (repeatable)")
 	cmd.Flags().StringArrayVar(&f.allow, "allow", nil, "largest regression one metric may show, as metric=percent (wall, cpu, memory, size, or a full metric name), e.g. --allow memory=5%; repeatable, and applied over --tradeoff")
 	return cmd
@@ -142,6 +145,11 @@ func resumeOptimize(ctx context.Context, out io.Writer, f optimizeFlags, roleSet
 		return err
 	}
 	defer func() { err = errors.Join(err, engine.Close()) }()
+	closeAnswers, err := attachAnswerRecord(out, engine, f)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, closeAnswers()) }()
 	if err := attachResumeADK(ctx, out, engine, f, roleSet, adkConfig); err != nil {
 		return err
 	}
@@ -251,6 +259,11 @@ func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, r
 		return err
 	}
 	defer func() { err = errors.Join(err, engine.Close()) }()
+	closeAnswers, err := attachAnswerRecord(out, engine, f)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, closeAnswers()) }()
 	if err := announceTradeoff(out, f.tradeoff, engine.State().Manifest.Performance); err != nil {
 		return err
 	}
@@ -258,6 +271,56 @@ func createAndRunOptimize(ctx context.Context, out io.Writer, f optimizeFlags, r
 		return err
 	}
 	return printCampaignComplete(out, engine)
+}
+
+// attachAnswerRecord gives a live campaign the cross-campaign record of Jev
+// answers (ADR 0042) and returns the function that closes it. Without one a
+// campaign only memoizes answers for its own life, so a question Jev answers
+// just over a gate in one campaign can be answered just under it in the next.
+//
+// Only --adk takes a record. Under --adk-stub the "answers" come from
+// jev.Stub, and recording them would hand a later live campaign a stub's
+// opinion under the pinned build's key. The record is never required: a path
+// that cannot be opened warns and leaves the campaign on its own cache, the
+// same way a cache write failure does.
+func attachAnswerRecord(out io.Writer, engine *campaign.Engine, f optimizeFlags) (func() error, error) {
+	none := func() error { return nil }
+	if !f.runADK || answersDisabled(f.jevAnswers) {
+		engine.UseAnswerRecord(nil)
+		return none, nil
+	}
+	path, err := answerRecordPath(f.jevAnswers)
+	if err != nil {
+		return nil, err
+	}
+	record, err := campaign.OpenAnswerRecord(path)
+	if err != nil {
+		engine.UseAnswerRecord(nil)
+		if _, warnErr := fmt.Fprintf(out, "jev answers: recording disabled for this campaign: %v\n", err); warnErr != nil {
+			return nil, warnErr
+		}
+		return none, nil
+	}
+	engine.UseAnswerRecord(record)
+	if _, err := fmt.Fprintf(out, "jev answers: reusing and extending the record at %s\n", record.Path()); err != nil {
+		_ = record.Close()
+		return nil, err
+	}
+	return record.Close, nil
+}
+
+// answerRecordPath resolves where the record lives: the operator's path when
+// one is given, the user cache otherwise.
+func answerRecordPath(flag string) (string, error) {
+	if flag == "" {
+		return campaign.AnswerRecordPath()
+	}
+	return filepath.Abs(flag)
+}
+
+// answersDisabled reports whether --jev-answers turns the record off.
+func answersDisabled(flag string) bool {
+	return flag == "off"
 }
 
 // announceTradeoff states the rules a campaign started with a trade-off is

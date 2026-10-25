@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
@@ -71,6 +72,9 @@ func primaryComparisonSummary(comparisons []domain.MetricComparison, primaryMetr
 	support := "unsupported"
 	if c.StatisticallyFit {
 		support = "supported"
+	}
+	if c.Shift != "" {
+		return fmt.Sprintf("%s %+.2f%% mean, %s HL (%s)", comparisonLabel(c), c.DeltaPercent, formatDelta(c.ShiftPercent), support)
 	}
 	return fmt.Sprintf("%s %+.2f%% (%s)", comparisonLabel(c), c.DeltaPercent, support)
 }
@@ -173,11 +177,28 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.Explorer == ExplorerJev {
 		fmt.Fprintf(b, "- Explorer: the target's own options, judged by Jev (`%s`); discovery also sampled: %s\n", jev.Model, orNone(strings.Join(state.DiscoveryWorkloads, "; ")))
 	}
+	if state.JevAnswersPath != "" {
+		fmt.Fprintf(b, "- Jev answers: reused across campaigns from the record at `%s` (ADR 0042)\n", state.JevAnswersPath)
+	}
 	fmt.Fprintf(b, "- Judged under: %s: %s\n", tradeoffName(state.Tradeoff), manifest.Describe(state.Manifest.Performance))
 	if state.DiscoveryProfileSource != "" {
 		fmt.Fprintf(b, "- Discovery profile: targets chosen from %s\n", state.DiscoveryProfileSource)
 	}
+	if len(state.DiscoverySeedSamples) > 0 {
+		fmt.Fprintf(b, "- Discovery seeds: %s\n", describeSeedSamples(state.DiscoverySeedSamples))
+	}
 	fmt.Fprintf(b, "\n- Report schema: `%d`\n\n", state.SchemaVersion)
+}
+
+// describeSeedSamples names the workloads the hot list was merged from with
+// the tier weight each carried, so a reader can see that more than the first
+// seed was sampled and how much each one counted.
+func describeSeedSamples(samples []discovery.SeedSample) string {
+	parts := make([]string, len(samples))
+	for i, sample := range samples {
+		parts[i] = fmt.Sprintf("`%s` (weight %g)", sample.Seed, sample.Weight)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // tradeoffName names the trade-off a campaign's verdicts were judged under.
@@ -362,7 +383,7 @@ func writeCandidateMeta(b *strings.Builder, record CandidateRecord) {
 // writeCandidateTransportNotes says how the diff under judgement was produced
 // and what the answer needed on the way in: a salvaged output, or a second ask
 // after a refusal. None of it changes a verdict; without it, an attempt with
-// two optimizer calls reads like any other (ADR 0041).
+// two optimizer calls reads like any other (ADR 0045).
 func writeCandidateTransportNotes(b *strings.Builder, record CandidateRecord) {
 	switch record.Transport {
 	case FunctionSourceTransport:
@@ -402,11 +423,23 @@ func writeCandidateSamples(b *strings.Builder, record CandidateRecord) {
 
 func writeCandidateComparisons(b *strings.Builder, record CandidateRecord) {
 	if len(record.Comparisons) > 0 {
-		writeMetricTable(b, "\n| Comparison | Baseline | Candidate | Δ | Supported |\n|---|---:|---:|---:|---|\n", record.Comparisons)
+		writeMetricTable(b, "\n| Comparison | Baseline | Candidate | Mean Δ | HL shift | Supported |\n|---|---:|---:|---:|---:|---|\n", record.Comparisons)
 	}
+	writeCandidateFreshSeries(b, record)
 	if record.BenchstatOutput != "" {
 		fmt.Fprintf(b, "\nBenchstat comparison:\n\n```text\n%s\n```\n", record.BenchstatOutput)
 	}
+}
+
+// writeCandidateFreshSeries shows the readings of the fresh series measured to
+// check a peak-memory breach, because a verdict that did not rest on a breach
+// names both readings and a reader needs to see where they came from.
+func writeCandidateFreshSeries(b *strings.Builder, record CandidateRecord) {
+	if len(record.FreshComparisons) == 0 {
+		return
+	}
+	b.WriteString("\nFresh series, measured to check whether a peak-memory breach reproduces:\n")
+	writeMetricTable(b, "\n| Fresh comparison | Baseline | Candidate | Mean Δ | HL shift | Supported |\n|---|---:|---:|---:|---:|---|\n", record.FreshComparisons)
 }
 
 func writeCandidatePGO(b *strings.Builder, record CandidateRecord) {
@@ -421,16 +454,26 @@ func writeCandidatePGO(b *strings.Builder, record CandidateRecord) {
 		fmt.Fprintf(b, "%s\n\n", record.PgoNote)
 	}
 	if len(record.PgoComparisons) > 0 {
-		writeMetricTable(b, "| PGO comparison | Baseline-pgo | Candidate-pgo | Δ | Supported |\n|---|---:|---:|---:|---|\n", record.PgoComparisons)
+		writeMetricTable(b, "| PGO comparison | Baseline-pgo | Candidate-pgo | Mean Δ | HL shift | Supported |\n|---|---:|---:|---:|---:|---|\n", record.PgoComparisons)
 	}
 }
 
 func writeMetricTable(b *strings.Builder, header string, comparisons []domain.MetricComparison) {
 	b.WriteString(header)
 	for _, c := range comparisons {
-		fmt.Fprintf(b, "| `%s` | %.4g | %.4g | %s | %s |\n", tableLabel(c), c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), fitLabel(c.StatisticallyFit))
+		fmt.Fprintf(b, "| `%s` | %.4g | %.4g | %s | %s | %s |\n", tableLabel(c), c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), formatShift(c), fitLabel(c.StatisticallyFit))
 	}
 	b.WriteString("\n")
+}
+
+// formatShift renders the outlier-robust shift beside the mean delta. A
+// comparison without one (a metric with no samples, or too few) says so
+// rather than showing a zero that would read as "no effect".
+func formatShift(comparison domain.MetricComparison) string {
+	if comparison.Shift == "" {
+		return "n/a"
+	}
+	return formatDelta(comparison.ShiftPercent)
 }
 
 func fitLabel(fit bool) string {
@@ -465,14 +508,15 @@ func writeTokenUsage(b *strings.Builder, state State) {
 }
 
 // writeJevCache reports how many of this campaign's Jev requests were
-// answered from the cache rather than the network (ADR 0028): a role missing
-// from the map ran without a Jev evaluator, or cached nothing because none of
-// its requests repeated.
+// answered from its own cache rather than the network (ADR 0028), and how many
+// came from the cross-campaign record instead (ADR 0042): a role missing from
+// the map ran without a Jev evaluator, or cached nothing because none of its
+// requests repeated.
 func writeJevCache(b *strings.Builder, state State) {
 	if len(state.JevCache) == 0 {
 		return
 	}
-	b.WriteString("## Jev cache\n\n| Role | Hits | Misses |\n|---|---:|---:|\n")
+	b.WriteString("## Jev cache\n\n| Role | Hits | Shared | Misses |\n|---|---:|---:|---:|\n")
 	roles := make([]string, 0, len(state.JevCache))
 	for role := range state.JevCache {
 		roles = append(roles, role)
@@ -480,7 +524,7 @@ func writeJevCache(b *strings.Builder, state State) {
 	sort.Strings(roles)
 	for _, role := range roles {
 		snapshot := state.JevCache[role]
-		fmt.Fprintf(b, "| `%s` | %d | %d |\n", role, snapshot.Hits, snapshot.Misses)
+		fmt.Fprintf(b, "| `%s` | %d | %d | %d |\n", role, snapshot.Hits, snapshot.Shared, snapshot.Misses)
 	}
 	b.WriteString("\n")
 }

@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "id": "replay-dev-order-report",
+  "repository": "/work/go-jsonnet",
+  "manifest_path": "/work/campaigns/go-jsonnet.json",
+  "schema_version": 1,
+  "status": "completed",
+  "manifest": {
+    "version": "v1",
+    "name": "go-jsonnet fixture",
+    "target": {"repository": "https://github.com/google/go-jsonnet"},
+    "performance": {
+      "primary_metric": "wall_time_ns",
+      "minimum_improvement_percent": 3,
+      "maximum_guardrail_regression_percent": 2,
+      "statistical_support_required": true,
+      "guardrails": [
+        {"name": "peak_memory_bytes", "maximum_regression_percent": 2, "required": true},
+        {"name": "cpu_time_ns", "maximum_regression_percent": 2, "required": true},
+        {"name": "binary_size_bytes", "maximum_regression_percent": 5, "required": false}
+      ]
+    }
+  },
+  "candidate_records": [
+    {
+      "attempt": 3,
+      "candidate_id": "candidate-3",
+      "decision": "accepted",
+      "reasons": ["workload \"order-report\" improved by 5.16% with required evidence and no guardrail regression"],
+      "comparisons": [
+        {"metric": "wall_time_ns", "unit": "ns", "baseline": 100, "candidate": 94.84, "delta_percent": -5.16, "statistically_supported": true, "significant": true},
+        {"metric": "wall_time_ns", "workload": "order-report", "unit": "ns", "baseline": 100, "candidate": 94.84, "delta_percent": -5.16, "statistically_supported": true, "significant": true},
+        {"metric": "peak_memory_bytes", "unit": "bytes", "baseline": 1000, "candidate": 1000, "delta_percent": 0, "statistically_supported": true},
+        {"metric": "cpu_time_ns", "unit": "ns", "baseline": 80, "candidate": 80, "delta_percent": 0, "statistically_supported": true},
+        {"metric": "binary_size_bytes", "unit": "bytes", "baseline": 5000, "candidate": 5000, "delta_percent": 0, "statistically_supported": true}
+      ],
+      "samples": [
+        {
+          "workload": "order-report",
+          "baseline_ns": [100000000, 100000000, 100000000, 100000000, 100000000],
+          "candidate_ns": [97440000, 97440000, 97440000, 97440000, 84440000]
+        }
+      ]
+    }
+  ]
+}

@@ -145,7 +145,7 @@ func (m *WorktreeManager) applyPreparedPatch(ctx context.Context, prepared *Prep
 		if _, fuzzyErr := m.Toolchain.ApplyPatchFuzzy(ctx, path, patchPath); fuzzyErr != nil {
 			_ = prepared.Close(context.WithoutCancel(ctx))
 			// The refusal is quoted back to the optimizer when the graph asks
-			// again over the other transport (ADR 0041), so it names what git
+			// again over the other transport (ADR 0045), so it names what git
 			// refused and why. The toolchain's own error is left out: it spells
 			// the command line, and that carries the campaign's absolute patch
 			// path, which tells the model nothing about the change.

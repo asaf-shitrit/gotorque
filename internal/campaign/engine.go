@@ -113,13 +113,18 @@ type CandidateRecord struct {
 	// the recorded decision; see runPgoLane.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
+	// FreshComparisons are the pooled guardrail readings of the fresh series
+	// that checked whether a peak-memory breach reproduces. Comparisons holds
+	// every series together, so this is the record of what one independent
+	// series said on its own.
+	FreshComparisons []domain.MetricComparison `json:"fresh_comparisons,omitempty"`
 	// ProposalRepair names the rewrite the optimizer's output needed before it
 	// parsed, empty when it parsed as sent. A salvaged patch -- one cut off at
 	// the output-token cap above all -- otherwise reads exactly like an
 	// intended one. It never changes the recorded decision.
 	ProposalRepair string `json:"proposal_repair,omitempty"`
 	// ReaskedFor is the refusal that made the previous answer in this attempt
-	// unusable, so the optimizer was asked once more inside it (ADR 0041).
+	// unusable, so the optimizer was asked once more inside it (ADR 0045).
 	// Without it a record from a two-answer attempt reads like any other and
 	// the report cannot say why one attempt spent two model calls.
 	ReaskedFor string `json:"reasked_for,omitempty"`
@@ -244,6 +249,12 @@ type State struct {
 	// the first seed, with Jev's processing-mode judgment of each.
 	DiscoveryWorkloads          []string `json:"discovery_workloads,omitempty"`
 	DiscoveryProfileSummaryPath string   `json:"discovery_profile_summary_path,omitempty"`
+	// DiscoverySeedSamples names the workload samples DiscoveryHotFunctions
+	// was merged from, in sampling order, with the tier weight each carried
+	// (ADR 0044). A hot function can rank because another acceptance-eligible
+	// seed reached it, and this is the only place that says so: the variants
+	// keep their own field above.
+	DiscoverySeedSamples []discovery.SeedSample `json:"discovery_seed_samples,omitempty"`
 	// DiscoveryProfileSource names which profile(s) chose
 	// DiscoveryHotFunctions: a target sample, target benchmarks, or a target
 	// sample/benchmark plus a benchmark alloc_space profile when the campaign's
@@ -303,6 +314,12 @@ type State struct {
 	// JevCache holds per-role Jev cache hit/miss counts across this campaign's
 	// requests (ADR 0028), keyed the same way as TokenUsage.
 	JevCache map[string]JevCacheSnapshot `json:"jev_cache,omitempty"`
+	// JevAnswersPath is the cross-campaign record of Jev answers this campaign
+	// consulted and extended (ADR 0042), empty when it ran with its own cache
+	// only. Written for the report, which otherwise cannot say whether a
+	// target it flagged was chosen from answers recorded by an earlier
+	// campaign on the same source.
+	JevAnswersPath string `json:"jev_answers_path,omitempty"`
 }
 
 type Event struct {
@@ -349,6 +366,9 @@ type Engine struct {
 	// causeJev, reviewJev and exploreJev serve the analyst, reviewer and
 	// explorer; attachJev derives them from adkAgents.Jev.
 	causeJev, reviewJev, exploreJev jev.Evaluator
+	// answers is the cross-campaign record of Jev answers this campaign
+	// consults and extends (ADR 0042); nil means its own cache only.
+	answers *AnswerRecord
 	// tokenUsageBaseline anchors this process's contribution to
 	// State.TokenUsage, the same way runStartedAt/elapsedBefore anchor its
 	// contribution to State.ElapsedRunTime. See recordTokenUsage in adk.go.
@@ -834,6 +854,7 @@ func (e *Engine) applyDiscovery(evidence discovery.Evidence) {
 	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, evidence.Weights)
 	e.state.DiscoveryUnbufferedWrites = evidence.UnbufferedWrites
 	e.state.DiscoveryProfileSummaryPath = evidence.ProfileSummaryPath
+	e.state.DiscoverySeedSamples = evidence.SeedSamples
 	e.state.DiscoveryAllocProfileSummaryPath = evidence.AllocProfileSummaryPath
 	e.state.PGOProfilePath = evidence.PGOProfilePath
 	e.state.DiscoveryProfileSource = evidence.Source
@@ -846,6 +867,7 @@ func (e *Engine) discoveryInputs() discovery.Inputs {
 		BinaryPath:      e.state.BinaryPath,
 		Command:         e.state.Manifest.Target.Command,
 		Seeds:           e.state.Manifest.Workloads.Seeds,
+		Tiers:           e.state.Manifest.Workloads.Tiers,
 		Explore:         e.exploreVariants,
 		Sandbox:         sandboxPolicy(e.state.Manifest.Sandbox),
 		Repository:      e.state.Repository,

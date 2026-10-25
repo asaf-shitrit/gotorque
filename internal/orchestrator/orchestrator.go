@@ -616,7 +616,7 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 	// it: the note rides to the candidate's record and nowhere else.
 	assessment.Evidence.ProposalRepair = repair
 	// The answer before this one was refused before it could be judged, and the
-	// cycle spent its one re-ask on it (ADR 0041). Stamped here so the record of
+	// cycle spent its one re-ask on it (ADR 0045). Stamped here so the record of
 	// the answer that survived says the attempt took two optimizer calls.
 	assessment.Evidence.ReaskedFor = state.ReaskCause
 	state.Candidate, state.Verdict = assessment.Evidence, assessment.Verdict
@@ -640,7 +640,7 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 // record of 151 campaigns this is four attempts, cue's 2 and 3 and one each on
 // s2c and otto, every one a hand-written patch with no function_source beside
 // it. One ask per cycle, never more: the rejection still ends the attempt when
-// the second answer fails too. ADR 0041.
+// the second answer fails too. ADR 0045.
 func reaskable(state CampaignState, evidence CandidateEvidence) bool {
 	if state.Target == nil || state.ReaskCause != "" || evidence.ReaskCause == "" {
 		return false

@@ -1,4 +1,4 @@
-# 0041. An answer refused before it could be judged is asked again once, in the same attempt
+# 0045. An answer refused before it could be judged is asked again once, in the same attempt
 
 - Status: accepted
 - Date: 2026-10-24

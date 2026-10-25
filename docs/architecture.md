@@ -48,7 +48,7 @@ initialize_campaign
                            policy judges the evidence here, so the verdict exists
                            before the reviewer runs)
                              reask -> back to optimizer, once per attempt, carrying a
-                               pre-build refusal (ADR 0041)
+                               pre-build refusal (ADR 0045)
                              continue -> reviewer (Jev behaviour-hazard checks, advisory only)
                         -> apply_policy (deterministic; counts the verdict and settles
                            it: the record, the accepted patch, the tallies)
@@ -179,7 +179,7 @@ not recorded.
    One of those rejections is answered instead of recorded: with a
    code-chosen target, an answer that hand-wrote a patch, sent no
    `function_source`, and had it refused by git is asked once more inside the
-   same attempt, for `function_source`, with the refusal quoted (ADR 0041,
+   same attempt, for `function_source`, with the refusal quoted (ADR 0045,
    `reaskable` in `internal/orchestrator`). The trigger is the
    `candidate.ErrPatchDoesNotApply` sentinel reaching the evidence as
    `ReaskCause`, the second answer is judged by every gate the first would
@@ -237,7 +237,10 @@ not recorded.
    mechanism, the added lines must carry it: a `bufio.` reader or writer
    (flushed, when it is a writer) for unbuffered I/O, a `strings.Builder`,
    `bytes.Buffer`, `strconv.`, `append(` or `Grow(` for string building, a
-   `make(` or `Grow(` for preallocation. A failure rejects before build with
+   `make(` or `Grow(` for preallocation. A string-building patch may also
+   take the cost away instead of adding a mechanism: a net removal of a
+   `string(...)` conversion, a string concatenation or a `fmt.Sprint*` call
+   passes the same rule (issue #76). A failure rejects before build with
    the reason as failure detail. A target function that wraps a writer in a
    `bufio.Writer` must also route every write through it: a direct write left
    on the wrapped writer lands before the buffered output and reorders it,
@@ -372,10 +375,25 @@ not recorded.
    regresses past the limit without significance, every representative
    workload is measured over a second series of twenty-five pairs, held to
    the same behavior check, and every comparison is derived again from both
-   series (`confirmRegressions`, ADR 0016). All workloads are extended, not
-   only the one that read high, because the pooled reading folds them per
-   repetition. The second series has no budget of its own: it costs what
-   the first did, and the campaign deadline bounds both. The same thing
+   series (`confirmRegressions`, ADR 0016). A `peak_memory_bytes` breach that
+   is already significant gets the same series for a different reason
+   (`policy.GuardrailsToReplicate`, ADR 0040): peak RSS is a per-run
+   high-water mark that steps with allocator and GC pacing, so it rejects only
+   when the fresh series' own readings reproduce the breach, and those
+   readings are kept in `Evidence.FreshGuardrails` for the policy and the
+   report. Every confirmation series records that reading, whichever step
+   asked for it: a peak-memory reading under the limit on the first series can
+   cross it only once the fresh series is pooled in, so a breach without
+   significance that runs the series as an unconfirmed guardrail, or a
+   borderline accept that runs it from `confirmImprovements`, would leave the
+   policy judging the pooled reading alone if the fresh one were not recorded.
+   The first series' own readings of the re-measured guardrails go in
+   `Evidence.FirstSeriesGuardrails`, because the pooled comparisons hold one
+   value for both series once the fresh one has run, and a reason that says
+   what the first series read has to quote what it produced. All workloads
+   are extended, not only the one that read high, because the pooled reading
+   folds them per repetition. The second series has no budget of its own: it
+   costs what the first did, and the campaign deadline bounds both. The same thing
    happens on the acceptance side: when the candidate would otherwise end
    inconclusive only because an eligible reading improved by at least
    `minimum_improvement_percent` without statistical support, and nothing is
@@ -384,10 +402,22 @@ not recorded.
    win, the best supported improvement clearing the minimum by less than a
    factor of two (`policy.BorderlineImprovements`), is measured again the
    same way before the verdict (ADR 0034): held-out dyff was accepted on a
-   supported -3.16% against 3% and verified at -2.17%. At most one extra
-   series runs per candidate in total — if the regression confirmation
-   already extended every seed, the improvement check reuses that series
-   instead of running a third.
+   supported -3.16% against 3% and verified at -2.17%. That covers a pooled
+   accept. An accept that rests on one workload's reading chose it because it
+   read best of several, so the winner's curse sits in the reading itself: that
+   workload alone is measured over a fresh series and the verdict rests on it
+   alone, the selecting series replaced rather than extended (`confirmSelection`,
+   `policy.SelectedImprovements`, ADR 0041). The rule repeats while the verdict
+   still rests on a per-workload reading, measuring each such workload at most
+   once more, so a fresh reading that no longer clears the bar cannot hand the
+   accept to the reading that selected it. The regression and improvement
+   confirmations run at most one series per candidate between them: if the
+   regression confirmation already extended every seed, the improvement check
+   runs no series of its own. Selection is the exception, and runs its fresh
+   series even then: an extended seed is not a replaced one, so the pairs that
+   selected the workload would still be in a pooled reading. That fresh series
+   is as long as the one it replaces, because the pooled reading folds the
+   seeds per repetition.
 6. **Statistics.** Each metric gets a two-sample Welch t-test against a
    conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
    sample sizes); support is never reported from fewer than four samples per
@@ -419,6 +449,27 @@ not recorded.
    large workload produced a pooled `t` of 1.06 against 10.69 measured on the
    affected workload alone, and the candidate was reported inconclusive.
 
+   Acceptance does not threshold on that mean. Every sample-derived
+   comparison also records a Hodges–Lehmann shift (`shift_percent`, ADR
+   0043): the median of every candidate-minus-baseline pairwise difference, as
+   a percentage of the baseline median (`campaign.hodgesLehmannShift`,
+   `robustShiftPercent`). `policy.ImprovementDelta` returns the shift when one
+   was measured and the mean otherwise, and acceptance, the accept reason and
+   both confirmation triggers (ADR 0021, ADR 0034) read it. The shift may only
+   size a win, not create one: `policy.estimatorsAgree` refuses a reading whose
+   mean delta points the other way, because support there came from
+   `metricSupport`'s equivalence branch, which rules out a regression rather
+   than showing a win. The regression
+   and guardrail checks deliberately keep the mean delta: in the recorded
+   replay a robust regression reading turned six A/A null candidates from
+   inconclusive into rejected, and a robust estimate can understate a real
+   regression as easily as a real win. The report prints both columns. The
+   replay gate is `TestRecordedVerdictsSurviveTheRobustShift`; its checked-in
+   fixtures (`internal/campaign/testdata/replay-campaigns`) run it in CI, and it
+   also replays `~/projects/gotorque-work/campaigns` (or
+   `GOTORQUE_REPLAY_CAMPAIGNS`) when they are present. It skips every campaign
+   on a held-out target.
+
 ### What a verdict rests on
 
 Acceptance is decided over the set of **acceptance-eligible readings**: the
@@ -426,9 +477,10 @@ pooled primary metric plus one comparison per representative-tier seed (only
 those seeds are measured, so every per-workload primary comparison is eligible
 by construction). A candidate passes when any member of that set improves by
 at least the manifest's `minimum_improvement_percent` with statistical
-support, and no member regresses significantly past
-`maximum_guardrail_regression_percent`;
-the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
+support — read from the Hodges–Lehmann shift (ADR 0043), with the mean delta
+agreeing that the reading improved — and no member
+regresses significantly past `maximum_guardrail_regression_percent`, read from
+the mean delta; the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as
 before. The reason names the workload the verdict rests on.
 
@@ -484,7 +536,11 @@ reject it, the engine measures every representative workload again the same
 way it does for a regression (`confirmImprovements`, ADR 0021), using
 `policy.UnconfirmedImprovements` as the mirrored predicate. At most one extra
 series runs per candidate: if the regression confirmation already extended
-every seed, the improvement check does not run a second.
+every seed, the improvement check does not run a second. An accept resting on a
+per-workload reading takes the same second look the other way (ADR 0041): that
+workload alone is measured again from scratch and judged on the fresh series
+alone, because a reading chosen as the best of k noisy estimates is biased
+upward and pooling the fresh pairs with the selecting ones keeps the bias.
 
 The pooled figure alone was the wrong instrument. A seed whose measured run is
 mostly process startup cannot be improved by any patch, so pooling it dilutes
@@ -514,9 +570,17 @@ out.
    first gets a second series of pairs (`confirmRegressions`); if it stays
    insignificant it is named in the reasons and neither rejects nor makes the
    candidate inconclusive. A consistent regression is significant even with
-   no spread, and binary size compares exact sizes, so a real regression
-   still rejects: on the point estimate, 20 comment-only null candidates on
-   gron lost 2 to `cpu_time_ns` noise (+2.16%, +3.06%). A guardrail within
+   no spread, and binary size compares exact sizes, so a real regression still
+   rejects: on the point estimate, 20 comment-only null candidates on gron lost
+   2 to `cpu_time_ns` noise (+2.16%, +3.06%). Peak memory is the one
+   exception, because a high-water mark can read high with support from one
+   contended run or one GC step: its breach rejects only when a fresh series'
+   own readings breach too (ADR 0040, `policy.GuardrailsToReplicate`), and one
+   that does not reproduce is named in the reasons with both readings. That
+   holds whether the breach was significant on the first series or only became
+   significant once the confirmation series was pooled in, and the reason says
+   which of the two it was. A
+   guardrail within
    its limit never needs support: demanding proof of the absence of a
    regression from a jittery high-water mark once reported inconclusive for
    a candidate that moved it by a fraction of the limit. Every verdict is persisted with
@@ -849,9 +913,10 @@ assessed (`evaluate_candidate`), before the reviewer node runs, and
 
 ## Jev explorer
 
-The explorer is always Jev (ADR 0015). Without it discovery would only sample
-the manifest's first seed, and a CLI's other modes would be invisible to it:
-gron's `--stream` runs `gronStream`, which the seed never reaches. The variants
+The explorer is always Jev (ADR 0015). Without it discovery would sample each
+representative seed only in its default mode, and a CLI's other modes would be
+invisible to it: gron's `--stream` runs `gronStream`, which the seed never
+reaches. The variants
 are chosen before discovery samples anything (`internal/campaign/explore.go`,
 passed to discovery as `Inputs.Explore`, since asking Jev stays in the
 campaign), and the graph has no explorer node. `run_discovery` validates no proposals, and `internal/workload` only reads the
@@ -891,7 +956,11 @@ target's boolean options (`flags.go`):
 6. The samples are merged by share (`discovery.mergeAttributed`): each sample's
    attributed weights become fractions of that sample before they are summed,
    so a mode only one variant reaches ranks by its share of that variant's time
-   instead of disappearing behind the seed's.
+   instead of disappearing behind the seed's. Each sample's fractions are then
+   scaled by its seed's tier weight, so a seed whose readings can accept a
+   candidate counts for more than a lower tier's (ADR 0044). A variant carries
+   the weight of the seed it runs, and when no sample carries a weight every
+   sample counts equally.
 
 On gron the variants were `--stream` (0.97), `--json` (0.95) and `--no-sort`
 (0.93). `gronStream` entered the hot list third and the `--json` path
@@ -937,6 +1006,28 @@ next `saveEvent`, so a killed process still leaves its counts in bbolt. The
 report's "Jev cache" table (`writeJevCache` in `report.go`) reads them back,
 mirroring the "Model usage" table's shape.
 
+### The answer record
+
+The per-campaign cache settles one campaign; it does not make two campaigns
+agree. Jev's near-threshold answers move faster than the gates do (0.13 on the
+recorded campaigns, which was enough to flip 26 cause flags on development
+targets), so a second campaign on the same revision can flag a different set of
+targets. `AnswerRecord` (`jevanswers.go`, ADR 0042) closes that gap: a bbolt
+file at `<user cache>/gotorque/jev-answers.db`, keyed by the same
+`jev.Digest(req)`, holding every answer Jev has given on this machine.
+`cachingEvaluator` checks it after the campaign cache and before Jev, counts a
+hit as `Shared`, and writes every live answer to both. `--jev-answers <path>`
+names another file and `--jev-answers off` asks Jev in every campaign; the CLI
+(`attachAnswerRecord` in `internal/cli/root.go`) is what opens it, only under
+`--adk`, so stub answers never enter a record a live campaign reads. The exact
+request the record answers is `(pinned build, state, question set)`: a change
+to the function's source, to the question set, or to `jev.Model` is a miss,
+which is why `cachingEvaluator` fills `req.Model` before digesting. A record
+that cannot be opened or read is not an error — the campaign warns and asks
+Jev, the same way it treats a failed cache write. Attaching no record also
+clears `State.JevAnswersPath`, so a resume that turns the record off cannot
+leave the report naming a record it did not replay.
+
 ## Discovery benchmark profiling
 
 Before the model phase, the engine runs one best-effort profiling pass
@@ -954,10 +1045,18 @@ classification before reaching the real cost. The completed event names the
 source it used (`measured N hot functions from a target sample`, `… from
 target benchmarks`, or `… from no source`).
 
-Sampling (`run.sampleTarget`) runs the first representative seed workload against the
-release baseline binary under the platform sampler (macOS `sample`, Linux
-`perf`), records the hottest frames as discovery evidence, and preserves the
-raw report under `profile-sample/` in the campaign directory. It needs a
+Sampling (`run.sampleSeeds`) runs every acceptance-eligible seed workload
+against the release baseline binary under the platform sampler (macOS
+`sample`, Linux `perf`) and merges the samples into one hot list (ADR 0044).
+A seed whose tier the manifest does not mark `acceptance_eligible` reaches no
+campaign reading, so it is sampled only as the ladder's stress stand-in. The
+first seed's report stays the recorded summary, the extra seeds' reports are
+kept next to it as `profile-sample/sample-report-seed-<n>.txt`, and the seeds
+that fed the merge are persisted in `DiscoverySeedSamples` and printed as the
+report's `Discovery seeds:` line. Sampling only the first seed hid whole code
+paths: actionlint's second representative seed, `-format '{{json .}}'`,
+exposes `(*Error).getLine`, which rescans the source from line one for every
+error, and the first campaign's hot list named none of it. Each sample needs a
 target that outlives the sampling window, so the workload input is amplified
 first: `amplifyStdin` replicates the elements of the largest JSON array,
 which keeps the document valid and multiplies the work it describes, and
@@ -994,13 +1093,15 @@ resolves to one declaration.
 
 Discovery lives in `internal/discovery` (ADR 0037) and takes no `*Engine`.
 `discovery.Run(ctx, Inputs, profile.Sampler, *toolchain.Toolchain)` gets plain
-data: the baseline binary, the command, the seeds, a function that returns the
-explorer's variants, the sandbox policy, the repository, the build package,
-the module's package paths and `TargetImports`, whether the objective is
-memory, and the campaign directory. It returns an `Evidence`: the hot list,
-its weights, the unbuffered writes, the summary, allocation-summary and PGO
-profile paths, the profile source, the isolation notes, and the events to
-save. `Engine.runDiscoveryStep` applies that to the unchanged persisted State
+data: the baseline binary, the command, the seeds, the manifest's tier policy
+(which seeds to sample and how heavily each sample counts, ADR 0044), a
+function that returns the explorer's variants, the sandbox policy, the
+repository, the build package, the module's package paths and `TargetImports`,
+whether the objective is memory, and the campaign directory. It returns an
+`Evidence`: the hot list, its weights, the workload samples the hot list was
+merged from (`SeedSamples`), the unbuffered writes, the summary,
+allocation-summary and PGO profile paths, the profile source, the isolation
+notes, and the events to save. `Engine.runDiscoveryStep` applies that to the unchanged persisted State
 fields (so a campaign saved before this seam resumes) and saves the events;
 nothing is written to state until discovery has finished. The unbuffered-write
 evidence takes the hot list as an argument, because it is only kept for sites
@@ -1483,8 +1584,9 @@ times can exceed it.
 report includes the environment and revision, repository inventory, baseline
 workload results, and one section per candidate experiment with the verdict
 (accepted, rejected, inconclusive), hypothesis, patch path, evidence summary,
-policy reasons, a metric comparison table (baseline, candidate, delta
-percent, statistical support), trimmed benchstat output when benchstat
+policy reasons, a metric comparison table (baseline, candidate, mean delta,
+Hodges–Lehmann shift when the samples supply one, statistical support), trimmed
+benchstat output when benchstat
 contributed, and a per-role token usage table.
 
 `gotorque scorecard DIR...` classifies every campaign's candidate records

@@ -18,4 +18,5 @@ Domain terms with a fixed meaning in gotorque's code, docs and ADRs. Add a term 
 - **Transcript**: what one sampler run produced (report, sampler exit and output, whether the target was alive at attach), recorded as is.
 - **Classification**: `Classify(Transcript)`, the pure mapping of a transcript to a sample or a typed failure (exited early, no frames, idle, unavailable, failed).
 - **Idle sample**: a sample whose frames all come from outside the program and its dependencies: the target was caught waiting. It is retried like an empty one.
+- **Hodges–Lehmann shift**: the outlier-robust estimate of a candidate's effect: the median of every candidate-minus-baseline pairwise difference, as a percentage of the baseline median (`shift_percent`). Acceptance thresholds on it, but only when the mean delta points the same way; the regression and guardrail checks keep the sample-mean delta (ADR 0043).
 - **Ladder**: discovery's ordered fallbacks for turning a seed into a sample: same size, larger input, line-repeated variant, next stress seed, then benchmarks (`internal/discovery`).

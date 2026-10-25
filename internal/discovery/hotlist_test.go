@@ -55,10 +55,44 @@ func TestHotFunctionNamesSkipsRuntimeAndDeduplicates(t *testing.T) {
 func TestMergedSamplesWeighEachWorkloadEqually(t *testing.T) {
 	seedSample := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.sort"}, Weight: 900}, {Frames: []string{"main.print"}, Weight: 100}}}
 	variantSample := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.stream"}, Weight: 40}}}
-	merged := mergeAttributed([]profile.SampleResult{seedSample, variantSample}, func(s string) bool { return strings.HasPrefix(s, "main.") })
+	merged := mergeAttributed([]weightedSample{{Result: seedSample, Weight: 1}, {Result: variantSample, Weight: 1}}, func(s string) bool { return strings.HasPrefix(s, "main.") })
 	names := make([]string, 0, len(merged))
 	for _, fn := range merged {
 		names = append(names, fn.Name)
 	}
 	require.Equal(t, []string{"main.stream", "main.sort", "main.print"}, names)
+}
+
+// TestMergedSamplesWeighASeedByItsTierWeight: a representative seed's reading
+// can accept a candidate and a plausible seed's cannot, so the manifest's tier
+// weight decides how much of the merged hot list each sample's shape owns. A
+// function carrying half of the representative sample outranks one carrying
+// half of the plausible sample; equal weighting ties them and ranks by name.
+func TestMergedSamplesWeighASeedByItsTierWeight(t *testing.T) {
+	representative := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.eval"}, Weight: 50}, {Frames: []string{"main.walk"}, Weight: 50}}}
+	plausible := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.jit"}, Weight: 50}, {Frames: []string{"main.eval"}, Weight: 50}}}
+	own := func(s string) bool { return strings.HasPrefix(s, "main.") }
+	weighted := mergeAttributed([]weightedSample{{Result: representative, Weight: 1}, {Result: plausible, Weight: 0.5}}, own)
+	require.Equal(t, []string{"main.eval", "main.walk", "main.jit"}, namesOf(weighted))
+
+	equal := mergeAttributed([]weightedSample{{Result: representative, Weight: 1}, {Result: plausible, Weight: 1}}, own)
+	require.Equal(t, []string{"main.eval", "main.jit", "main.walk"}, namesOf(equal), "equal weights tie these three, ranked by name")
+}
+
+// TestMergedSamplesCountEquallyWhenNoTierCarriesAWeight: a manifest that
+// weights every tier at zero (or an Inputs with no tier policy) must still
+// rank by sampled time, not fall back to ranking by name.
+func TestMergedSamplesCountEquallyWhenNoTierCarriesAWeight(t *testing.T) {
+	heavy := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.zloop"}, Weight: 900}, {Frames: []string{"main.asort"}, Weight: 100}}}
+	light := profile.SampleResult{Stacks: []profile.Stack{{Frames: []string{"main.mcheck"}, Weight: 30}}}
+	merged := mergeAttributed([]weightedSample{{Result: heavy}, {Result: light}}, func(s string) bool { return strings.HasPrefix(s, "main.") })
+	require.Equal(t, []string{"main.mcheck", "main.zloop", "main.asort"}, namesOf(merged), "the short sample counts as one workload, not by its sample count")
+}
+
+func namesOf(functions []profile.Function) []string {
+	names := make([]string, 0, len(functions))
+	for _, fn := range functions {
+		names = append(names, fn.Name)
+	}
+	return names
 }

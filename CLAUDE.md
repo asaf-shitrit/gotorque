@@ -39,6 +39,7 @@ gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --a
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk
 gotorque optimize --repo /path/to/repo --manifest targets/go-jsonnet/manifest.json --adk --tradeoff speed --allow memory=5%
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --history <earlier-campaign-dir>
+gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --jev-answers off
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
 gotorque verify <campaign-dir> [--attempt N] [--pairs 60] [--json]
@@ -152,7 +153,10 @@ Package map:
   which the explorer (`internal/campaign/explore.go`) turns into discovery
   variants.
 - `internal/policy`: pure acceptance decision. No filesystem, process, or
-  network access; keep it that way.
+  network access; keep it that way. Improvements are thresholded on the
+  Hodges–Lehmann shift, regressions on the mean delta (ADR 0043), and the shift
+  may only size a win: a reading whose mean delta points the other way never
+  accepts.
 - `internal/candidate`: unified-diff normalization, validation, worktrees.
 - `internal/toolchain`: allowlisted wrappers for `go`, `git`, `pprof`,
   `benchstat`. It deliberately exposes no general shell API; add a typed method
@@ -160,10 +164,12 @@ Package map:
 - `internal/runner`: sandboxed workload execution (bubblewrap / `sandbox-exec`).
 - `internal/discovery`: hot-path discovery, with no `*Engine` (ADR 0037):
   `Run(ctx, Inputs, profile.Sampler, toolchain)` samples the baseline binary
-  through the fallback ladder, falls back to benchmark profiles, and returns an
-  `Evidence` (hot list, weights, unbuffered writes, PGO profile, events) that
-  `runDiscoveryStep` applies to state. The explorer stays in `campaign` and is
-  passed in as a function.
+  through the fallback ladder on every acceptance-eligible seed and the
+  explorer's option variants, merges the samples weighted by each seed's tier
+  weight (ADR 0044), falls back to benchmark profiles, and returns an
+  `Evidence` (hot list, weights, the seed samples it came from, unbuffered
+  writes, PGO profile, events) that `runDiscoveryStep` applies to state. The
+  explorer stays in `campaign` and is passed in as a function.
 - `internal/profile`: benchmark/CPU profiling, symbol filtering, source
   position annotation, and the sampler seam: `Sampler` adapters return a
   `Transcript`, `Classify` judges it, `Replay` scripts it for tests.
@@ -202,6 +208,24 @@ Package map:
   `apply_policy`, the role names the degrade wrappers report under) and event
   kinds are read by `collectADKResult`, the report, scorecard and triage:
   rename neither.
+- Guardrail replication (`internal/policy`, ADR 0040): a `peak_memory_bytes`
+  breach rejects only when `Evidence.FreshGuardrails`, measured in a
+  confirmation series, breaches too. Both policy call sites (`policyVerdict`
+  and `improvementsToConfirm`) must pass the field: a caller that does not
+  supply it keeps the old single-series rule, so a forgotten field looks like a
+  test failure rather than a silent policy change. Every confirmation series
+  records that field, in `confirmRegressions` and `confirmImprovements` alike:
+  a reading under the limit on the first series can cross it only once the
+  fresh series is pooled in, so record it from the step that ran the series,
+  not from the reading that asked for it.
+- Confirmation series (`internal/campaign/candidate_eval.go`, `secondLook`): the
+  second look runs `confirmRegressions`, then `confirmImprovements`, then
+  `confirmSelection`, and one `interleaved-ab-confirmation` job marks it, so a
+  candidate never gets two. The two steps that extend every seed run first: a
+  selection re-measurement (ADR 0041) *replaces* the workload's runs instead of
+  extending them, because the series that selected the workload is where the
+  winner's-curse bias lives. Run it after an extending step, or an accept rests
+  on the pooled series that still holds the selecting pairs.
 - Model streams (`internal/agents/sse.go`): openai-go fails on SSE comment
   keepalives and accepts a stream cut before `response.completed`. Both are
   handled by the body filter, so model calls must keep going through
@@ -243,7 +267,7 @@ Package map:
   the attempt outright. When that fallback does fail — `git apply --check`
   and the fuzzy match both refuse the patch — the graph asks the optimizer
   once more inside the same attempt for `function_source`, quoting the refusal
-  (ADR 0041, `reaskable`/`reask` in `internal/orchestrator`). The trigger is
+  (ADR 0045, `reaskable`/`reask` in `internal/orchestrator`). The trigger is
   the `candidate.ErrPatchDoesNotApply` sentinel on the evidence's
   `ReaskCause`, one ask per cycle, and #77 widens that same trigger rather
   than adding a second. Do not move the ask into evaluation: it takes no
@@ -287,6 +311,12 @@ reasoning effort) and why each defaults as it does are in
   so an empty balance or a revoked key takes out every role at once; a code
   path that treats a Jev failure as independent of the optimizer's is wrong.
 - Credentials are never persisted into campaign state.
+- Jev's answers are stable across campaigns only because of the answer record
+  (`internal/campaign/jevanswers.go`, ADR 0042), not because of the campaign
+  cache: both are keyed by `jev.Digest`, so `cachingEvaluator` fills
+  `req.Model` before digesting, and only `--adk` attaches the record, because
+  a `--adk-stub` campaign would otherwise record `jev.Stub`'s answers under
+  the pinned build's key.
 
 ## Commit messages
 

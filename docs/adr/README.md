@@ -46,7 +46,12 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0037](0037-discovery-is-its-own-module.md) | Discovery is its own module behind a sampler seam | accepted |
 | [0038](0038-the-engine-bridge-is-one-port.md) | The engine bridge is one port, `Bench` | accepted |
 | [0039](0039-an-improvement-needs-significance.md) | An improvement is supported only when it is significant | accepted |
-| [0041](0041-a-refused-answer-is-asked-again-once.md) | An answer refused before it could be judged is asked again once, in the same attempt | accepted |
+| [0040](0040-a-peak-memory-breach-is-replicated.md) | A peak-memory breach is replicated in a fresh series before it rejects | accepted |
+| [0041](0041-a-selected-workload-reading-is-measured-again.md) | An accept that picks the best workload reading is measured again | accepted |
+| [0042](0042-jev-answers-are-recorded-across-campaigns.md) | Jev answers are recorded across campaigns, keyed by the exact question asked | accepted |
+| [0043](0043-acceptance-thresholds-on-a-robust-shift.md) | Acceptance thresholds on a Hodges–Lehmann shift, regressions keep the mean | accepted |
+| [0044](0044-discovery-samples-every-acceptance-eligible-seed.md) | Discovery samples every acceptance-eligible seed, weighted by its tier | accepted |
+| [0045](0045-a-refused-answer-is-asked-again-once.md) | An answer refused before it could be judged is asked again once, in the same attempt | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay
