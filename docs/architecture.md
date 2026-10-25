@@ -939,6 +939,26 @@ next `saveEvent`, so a killed process still leaves its counts in bbolt. The
 report's "Jev cache" table (`writeJevCache` in `report.go`) reads them back,
 mirroring the "Model usage" table's shape.
 
+### The answer record
+
+The per-campaign cache settles one campaign; it does not make two campaigns
+agree. Jev's near-threshold answers move faster than the gates do (0.13 on the
+recorded campaigns, which was enough to flip 26 cause flags on development
+targets), so a second campaign on the same revision can flag a different set of
+targets. `AnswerRecord` (`jevanswers.go`, ADR 0042) closes that gap: a bbolt
+file at `<user cache>/gotorque/jev-answers.db`, keyed by the same
+`jev.Digest(req)`, holding every answer Jev has given on this machine.
+`cachingEvaluator` checks it after the campaign cache and before Jev, counts a
+hit as `Shared`, and writes every live answer to both. `--jev-answers <path>`
+names another file and `--jev-answers off` asks Jev in every campaign; the CLI
+(`attachAnswerRecord` in `internal/cli/root.go`) is what opens it, only under
+`--adk`, so stub answers never enter a record a live campaign reads. The exact
+request the record answers is `(pinned build, state, question set)`: a change
+to the function's source, to the question set, or to `jev.Model` is a miss,
+which is why `cachingEvaluator` fills `req.Model` before digesting. A record
+that cannot be opened or read is not an error — the campaign warns and asks
+Jev, the same way it treats a failed cache write.
+
 ## Discovery benchmark profiling
 
 Before the model phase, the engine runs one best-effort profiling pass

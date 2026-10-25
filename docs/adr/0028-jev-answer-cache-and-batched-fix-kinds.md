@@ -1,6 +1,6 @@
 # 0028. Jev answers are cached per campaign, and fix-kind questions are batched into the cause request
 
-- Status: accepted
+- Status: accepted, amended by 0042
 - Date: 2026-09-26
 
 ## Context
@@ -96,7 +96,9 @@ pairwise gap is far larger than anything observed.
 - The cache is only ever a memo of what an identical request already
   answered; it does not change what gets asked, what gets flagged, or what
   the baselines mean. A campaign run without the cache (or with it flushed by
-  deleting the campaign directory) gets the same answers, just more slowly.
+  deleting the campaign directory) asks Jev the same questions again. It does
+  not get the same answers: within one campaign the cache is what makes the
+  answers stable, and across campaigns only the answer record does (ADR 0042).
 - Digest-keying by the full question set (not by role or by a fixed id) means
   the analyst's combined request and, hypothetically, any other Jev caller
   asking the identical state and questions would share a cache entry. Today

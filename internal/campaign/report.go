@@ -173,6 +173,9 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.Explorer == ExplorerJev {
 		fmt.Fprintf(b, "- Explorer: the target's own options, judged by Jev (`%s`); discovery also sampled: %s\n", jev.Model, orNone(strings.Join(state.DiscoveryWorkloads, "; ")))
 	}
+	if state.JevAnswersPath != "" {
+		fmt.Fprintf(b, "- Jev answers: reused across campaigns from the record at `%s` (ADR 0042)\n", state.JevAnswersPath)
+	}
 	fmt.Fprintf(b, "- Judged under: %s: %s\n", tradeoffName(state.Tradeoff), manifest.Describe(state.Manifest.Performance))
 	if state.DiscoveryProfileSource != "" {
 		fmt.Fprintf(b, "- Discovery profile: targets chosen from %s\n", state.DiscoveryProfileSource)
@@ -466,14 +469,15 @@ func writeTokenUsage(b *strings.Builder, state State) {
 }
 
 // writeJevCache reports how many of this campaign's Jev requests were
-// answered from the cache rather than the network (ADR 0028): a role missing
-// from the map ran without a Jev evaluator, or cached nothing because none of
-// its requests repeated.
+// answered from its own cache rather than the network (ADR 0028), and how many
+// came from the cross-campaign record instead (ADR 0042): a role missing from
+// the map ran without a Jev evaluator, or cached nothing because none of its
+// requests repeated.
 func writeJevCache(b *strings.Builder, state State) {
 	if len(state.JevCache) == 0 {
 		return
 	}
-	b.WriteString("## Jev cache\n\n| Role | Hits | Misses |\n|---|---:|---:|\n")
+	b.WriteString("## Jev cache\n\n| Role | Hits | Shared | Misses |\n|---|---:|---:|---:|\n")
 	roles := make([]string, 0, len(state.JevCache))
 	for role := range state.JevCache {
 		roles = append(roles, role)
@@ -481,7 +485,7 @@ func writeJevCache(b *strings.Builder, state State) {
 	sort.Strings(roles)
 	for _, role := range roles {
 		snapshot := state.JevCache[role]
-		fmt.Fprintf(b, "| `%s` | %d | %d |\n", role, snapshot.Hits, snapshot.Misses)
+		fmt.Fprintf(b, "| `%s` | %d | %d | %d |\n", role, snapshot.Hits, snapshot.Shared, snapshot.Misses)
 	}
 	b.WriteString("\n")
 }
