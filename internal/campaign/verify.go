@@ -30,16 +30,19 @@ const DefaultVerifyPairs = 60
 // Verification is one accepted candidate evaluated again from its recorded
 // patch.
 type Verification struct {
-	Attempt       int                       `json:"attempt"`
-	CandidateID   string                    `json:"candidate_id"`
-	Pairs         int                       `json:"pairs"`
-	Original      domain.Decision           `json:"original"`
-	Decision      domain.Decision           `json:"decision"`
-	Reasons       []string                  `json:"reasons,omitempty"`
-	Comparisons   []domain.MetricComparison `json:"comparisons,omitempty"`
-	LoadAverages  []float64                 `json:"load_averages,omitempty"`
-	LoadContended bool                      `json:"load_contended,omitempty"`
-	Summary       string                    `json:"summary,omitempty"`
+	Attempt     int                       `json:"attempt"`
+	CandidateID string                    `json:"candidate_id"`
+	Pairs       int                       `json:"pairs"`
+	Original    domain.Decision           `json:"original"`
+	Decision    domain.Decision           `json:"decision"`
+	Reasons     []string                  `json:"reasons,omitempty"`
+	Comparisons []domain.MetricComparison `json:"comparisons,omitempty"`
+	// FreshComparisons are the pooled guardrail readings of the fresh series
+	// that checked whether a peak-memory breach reproduces (ADR 0040).
+	FreshComparisons []domain.MetricComparison `json:"fresh_comparisons,omitempty"`
+	LoadAverages     []float64                 `json:"load_averages,omitempty"`
+	LoadContended    bool                      `json:"load_contended,omitempty"`
+	Summary          string                    `json:"summary,omitempty"`
 	// OutputChecks names the input variants the candidate and baseline were
 	// both run on, and OutputMismatches the ones whose exit code or stdout
 	// differed (verifyOutputs).
@@ -82,7 +85,8 @@ func (e *Engine) Verify(ctx context.Context, attempt, pairs int) (Verification, 
 	v := Verification{
 		Attempt: attempt, CandidateID: evidence.Candidate.ID, Pairs: pairs,
 		Original: record.Decision, Decision: result.Decision, Reasons: result.Reasons, Comparisons: result.Comparisons,
-		LoadAverages: evidence.LoadAverages, LoadContended: evidence.LoadContended, Summary: evidence.Summary,
+		FreshComparisons: evidence.FreshGuardrails,
+		LoadAverages:     evidence.LoadAverages, LoadContended: evidence.LoadContended, Summary: evidence.Summary,
 	}
 	if binary := candidateBinaryOf(evidence); binary != "" && v.Decision == domain.DecisionAccepted {
 		v.OutputChecks, v.OutputMismatches = e.verifyOutputs(ctx, binary, evidence.Candidate.ID)
@@ -126,6 +130,8 @@ func (e *Engine) policyVerdict(evidence orchestrator.CandidateEvidence) policy.R
 		RepresentativeEvidence: evidence.RepresentativeEvidence,
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligibleReadings(config, evidence.Comparisons),
+		FreshGuardrails:        evidence.FreshGuardrails,
+		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
 	})
 }
 

@@ -393,9 +393,21 @@ func writeCandidateComparisons(b *strings.Builder, record CandidateRecord) {
 	if len(record.Comparisons) > 0 {
 		writeMetricTable(b, "\n| Comparison | Baseline | Candidate | Δ | Supported |\n|---|---:|---:|---:|---|\n", record.Comparisons)
 	}
+	writeCandidateFreshSeries(b, record)
 	if record.BenchstatOutput != "" {
 		fmt.Fprintf(b, "\nBenchstat comparison:\n\n```text\n%s\n```\n", record.BenchstatOutput)
 	}
+}
+
+// writeCandidateFreshSeries shows the readings of the fresh series measured to
+// check a peak-memory breach, because a verdict that did not rest on a breach
+// names both readings and a reader needs to see where they came from.
+func writeCandidateFreshSeries(b *strings.Builder, record CandidateRecord) {
+	if len(record.FreshComparisons) == 0 {
+		return
+	}
+	b.WriteString("\nFresh series, measured to check whether a peak-memory breach reproduces:\n")
+	writeMetricTable(b, "\n| Fresh comparison | Baseline | Candidate | Δ | Supported |\n|---|---:|---:|---:|---|\n", record.FreshComparisons)
 }
 
 func writeCandidatePGO(b *strings.Builder, record CandidateRecord) {

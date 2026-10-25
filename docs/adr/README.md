@@ -46,6 +46,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0037](0037-discovery-is-its-own-module.md) | Discovery is its own module behind a sampler seam | accepted |
 | [0038](0038-the-engine-bridge-is-one-port.md) | The engine bridge is one port, `Bench` | accepted |
 | [0039](0039-an-improvement-needs-significance.md) | An improvement is supported only when it is significant | accepted |
+| [0040](0040-a-peak-memory-breach-is-replicated.md) | A peak-memory breach is replicated in a fresh series before it rejects | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay
