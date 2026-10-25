@@ -24,11 +24,11 @@ const maxWriteCallers = 3
 // targets and is not a reason to look at code discovery did not measure. The
 // hot list is a parameter, not read from a shared field, so it cannot be asked
 // before it exists.
-func unbufferedWrites(ctx context.Context, loc locator, hot []string, own func(string) bool, results []profile.SampleResult) []orchestrator.UnbufferedWrite {
+func unbufferedWrites(ctx context.Context, loc locator, hot []string, own func(string) bool, samples []weightedSample) []orchestrator.UnbufferedWrite {
 	best := map[string]profile.WriteSite{}
 	var order []string
-	for _, result := range results {
-		for _, site := range profile.UnbufferedWrites(result.Stacks, own, unbufferedWriteShare) {
+	for _, sample := range samples {
+		for _, site := range profile.UnbufferedWrites(sample.Result.Stacks, own, unbufferedWriteShare) {
 			prior, seen := best[site.Function]
 			if !seen {
 				order = append(order, site.Function)

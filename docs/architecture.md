@@ -900,9 +900,10 @@ assessed (`evaluate_candidate`), before the reviewer node runs, and
 
 ## Jev explorer
 
-The explorer is always Jev (ADR 0015). Without it discovery would only sample
-the manifest's first seed, and a CLI's other modes would be invisible to it:
-gron's `--stream` runs `gronStream`, which the seed never reaches. The variants
+The explorer is always Jev (ADR 0015). Without it discovery would sample each
+representative seed only in its default mode, and a CLI's other modes would be
+invisible to it: gron's `--stream` runs `gronStream`, which the seed never
+reaches. The variants
 are chosen before discovery samples anything (`internal/campaign/explore.go`,
 passed to discovery as `Inputs.Explore`, since asking Jev stays in the
 campaign), and the graph has no explorer node. `run_discovery` validates no proposals, and `internal/workload` only reads the
@@ -942,7 +943,11 @@ target's boolean options (`flags.go`):
 6. The samples are merged by share (`discovery.mergeAttributed`): each sample's
    attributed weights become fractions of that sample before they are summed,
    so a mode only one variant reaches ranks by its share of that variant's time
-   instead of disappearing behind the seed's.
+   instead of disappearing behind the seed's. Each sample's fractions are then
+   scaled by its seed's tier weight, so a seed whose readings can accept a
+   candidate counts for more than a lower tier's (ADR 0044). A variant carries
+   the weight of the seed it runs, and when no sample carries a weight every
+   sample counts equally.
 
 On gron the variants were `--stream` (0.97), `--json` (0.95) and `--no-sort`
 (0.93). `gronStream` entered the hot list third and the `--json` path
@@ -1027,10 +1032,18 @@ classification before reaching the real cost. The completed event names the
 source it used (`measured N hot functions from a target sample`, `… from
 target benchmarks`, or `… from no source`).
 
-Sampling (`run.sampleTarget`) runs the first representative seed workload against the
-release baseline binary under the platform sampler (macOS `sample`, Linux
-`perf`), records the hottest frames as discovery evidence, and preserves the
-raw report under `profile-sample/` in the campaign directory. It needs a
+Sampling (`run.sampleSeeds`) runs every acceptance-eligible seed workload
+against the release baseline binary under the platform sampler (macOS
+`sample`, Linux `perf`) and merges the samples into one hot list (ADR 0044).
+A seed whose tier the manifest does not mark `acceptance_eligible` reaches no
+campaign reading, so it is sampled only as the ladder's stress stand-in. The
+first seed's report stays the recorded summary, the extra seeds' reports are
+kept next to it as `profile-sample/sample-report-seed-<n>.txt`, and the seeds
+that fed the merge are persisted in `DiscoverySeedSamples` and printed as the
+report's `Discovery seeds:` line. Sampling only the first seed hid whole code
+paths: actionlint's second representative seed, `-format '{{json .}}'`,
+exposes `(*Error).getLine`, which rescans the source from line one for every
+error, and the first campaign's hot list named none of it. Each sample needs a
 target that outlives the sampling window, so the workload input is amplified
 first: `amplifyStdin` replicates the elements of the largest JSON array,
 which keeps the document valid and multiplies the work it describes, and
@@ -1067,13 +1080,15 @@ resolves to one declaration.
 
 Discovery lives in `internal/discovery` (ADR 0037) and takes no `*Engine`.
 `discovery.Run(ctx, Inputs, profile.Sampler, *toolchain.Toolchain)` gets plain
-data: the baseline binary, the command, the seeds, a function that returns the
-explorer's variants, the sandbox policy, the repository, the build package,
-the module's package paths and `TargetImports`, whether the objective is
-memory, and the campaign directory. It returns an `Evidence`: the hot list,
-its weights, the unbuffered writes, the summary, allocation-summary and PGO
-profile paths, the profile source, the isolation notes, and the events to
-save. `Engine.runDiscoveryStep` applies that to the unchanged persisted State
+data: the baseline binary, the command, the seeds, the manifest's tier policy
+(which seeds to sample and how heavily each sample counts, ADR 0044), a
+function that returns the explorer's variants, the sandbox policy, the
+repository, the build package, the module's package paths and `TargetImports`,
+whether the objective is memory, and the campaign directory. It returns an
+`Evidence`: the hot list, its weights, the workload samples the hot list was
+merged from (`SeedSamples`), the unbuffered writes, the summary,
+allocation-summary and PGO profile paths, the profile source, the isolation
+notes, and the events to save. `Engine.runDiscoveryStep` applies that to the unchanged persisted State
 fields (so a campaign saved before this seam resumes) and saves the events;
 nothing is written to state until discovery has finished. The unbuffered-write
 evidence takes the hot list as an argument, because it is only kept for sites

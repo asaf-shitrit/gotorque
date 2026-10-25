@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/asaf-shitrit/gotorque/internal/agents"
+	"github.com/asaf-shitrit/gotorque/internal/discovery"
 	"github.com/asaf-shitrit/gotorque/internal/domain"
 	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
@@ -183,7 +184,21 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.DiscoveryProfileSource != "" {
 		fmt.Fprintf(b, "- Discovery profile: targets chosen from %s\n", state.DiscoveryProfileSource)
 	}
+	if len(state.DiscoverySeedSamples) > 0 {
+		fmt.Fprintf(b, "- Discovery seeds: %s\n", describeSeedSamples(state.DiscoverySeedSamples))
+	}
 	fmt.Fprintf(b, "\n- Report schema: `%d`\n\n", state.SchemaVersion)
+}
+
+// describeSeedSamples names the workloads the hot list was merged from with
+// the tier weight each carried, so a reader can see that more than the first
+// seed was sampled and how much each one counted.
+func describeSeedSamples(samples []discovery.SeedSample) string {
+	parts := make([]string, len(samples))
+	for i, sample := range samples {
+		parts[i] = fmt.Sprintf("`%s` (weight %g)", sample.Seed, sample.Weight)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // tradeoffName names the trade-off a campaign's verdicts were judged under.

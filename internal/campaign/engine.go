@@ -244,6 +244,12 @@ type State struct {
 	// the first seed, with Jev's processing-mode judgment of each.
 	DiscoveryWorkloads          []string `json:"discovery_workloads,omitempty"`
 	DiscoveryProfileSummaryPath string   `json:"discovery_profile_summary_path,omitempty"`
+	// DiscoverySeedSamples names the workload samples DiscoveryHotFunctions
+	// was merged from, in sampling order, with the tier weight each carried
+	// (ADR 0044). A hot function can rank because another acceptance-eligible
+	// seed reached it, and this is the only place that says so: the variants
+	// keep their own field above.
+	DiscoverySeedSamples []discovery.SeedSample `json:"discovery_seed_samples,omitempty"`
 	// DiscoveryProfileSource names which profile(s) chose
 	// DiscoveryHotFunctions: a target sample, target benchmarks, or a target
 	// sample/benchmark plus a benchmark alloc_space profile when the campaign's
@@ -843,6 +849,7 @@ func (e *Engine) applyDiscovery(evidence discovery.Evidence) {
 	e.state.DiscoveryHotFunctionWeights = discovery.MergeWeights(e.state.DiscoveryHotFunctionWeights, evidence.Weights)
 	e.state.DiscoveryUnbufferedWrites = evidence.UnbufferedWrites
 	e.state.DiscoveryProfileSummaryPath = evidence.ProfileSummaryPath
+	e.state.DiscoverySeedSamples = evidence.SeedSamples
 	e.state.DiscoveryAllocProfileSummaryPath = evidence.AllocProfileSummaryPath
 	e.state.PGOProfilePath = evidence.PGOProfilePath
 	e.state.DiscoveryProfileSource = evidence.Source
@@ -855,6 +862,7 @@ func (e *Engine) discoveryInputs() discovery.Inputs {
 		BinaryPath:      e.state.BinaryPath,
 		Command:         e.state.Manifest.Target.Command,
 		Seeds:           e.state.Manifest.Workloads.Seeds,
+		Tiers:           e.state.Manifest.Workloads.Tiers,
 		Explore:         e.exploreVariants,
 		Sandbox:         sandboxPolicy(e.state.Manifest.Sandbox),
 		Repository:      e.state.Repository,

@@ -50,6 +50,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0041](0041-a-selected-workload-reading-is-measured-again.md) | An accept that picks the best workload reading is measured again | accepted |
 | [0042](0042-jev-answers-are-recorded-across-campaigns.md) | Jev answers are recorded across campaigns, keyed by the exact question asked | accepted |
 | [0043](0043-acceptance-thresholds-on-a-robust-shift.md) | Acceptance thresholds on a Hodges–Lehmann shift, regressions keep the mean | accepted |
+| [0044](0044-discovery-samples-every-acceptance-eligible-seed.md) | Discovery samples every acceptance-eligible seed, weighted by its tier | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay

@@ -24,14 +24,14 @@ func TestSampledHotNamesRanksOwnFunctionsByAttributedSamples(t *testing.T) {
 			{Frames: []string{"strings.Join", "example.com/lib.Render", "main.gron"}, Weight: 41},
 		},
 	}
-	require.Equal(t, []string{"main.gron", "main.statements.Less", "example.com/lib.Render", "strings.Join"}, sampledHotNames([]profile.SampleResult{result}, gronOwn))
+	require.Equal(t, []string{"main.gron", "main.statements.Less", "example.com/lib.Render", "strings.Join"}, sampledHotNames([]weightedSample{{Result: result}}, gronOwn))
 }
 
 // TestSampledHotNamesFallsBackToTopOfStack keeps the old list when the report
 // carries no usable call paths, so attribution can only add evidence.
 func TestSampledHotNamesFallsBackToTopOfStack(t *testing.T) {
 	result := profile.SampleResult{Functions: []profile.Function{{Name: "main.statements.Less", Flat: "236"}, {Name: "strings.Join", Flat: "41"}}}
-	require.Equal(t, []string{"main.statements.Less", "strings.Join"}, sampledHotNames([]profile.SampleResult{result}, gronOwn))
+	require.Equal(t, []string{"main.statements.Less", "strings.Join"}, sampledHotNames([]weightedSample{{Result: result}}, gronOwn))
 }
 
 func TestSampledHotNamesAndWeightsKeepsEveryActionableFunctionsWeight(t *testing.T) {
@@ -39,7 +39,7 @@ func TestSampledHotNamesAndWeightsKeepsEveryActionableFunctionsWeight(t *testing
 		Functions: []profile.Function{{Name: "main.statements.Less", Flat: "236"}},
 		Stacks:    []profile.Stack{{Frames: []string{"main.statements.Less", "main.gron"}, Weight: 236}},
 	}
-	names, weights := sampledHotNamesAndWeights([]profile.SampleResult{result}, gronOwn)
+	names, weights := sampledHotNamesAndWeights([]weightedSample{{Result: result}}, gronOwn)
 	require.Equal(t, []string{"main.statements.Less"}, names)
 	require.Contains(t, weights, "main.statements.Less")
 	require.NotContains(t, weights, "write")
