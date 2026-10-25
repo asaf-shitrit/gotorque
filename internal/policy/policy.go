@@ -59,6 +59,20 @@ type Evidence struct {
 	// at -0.81% unsupported and pulled the pooled figure to -2.53% against a
 	// 3% bar. An empty set means "judge the pooled primary metric alone".
 	Primary []domain.MetricComparison
+	// FreshGuardrails are the pooled guardrail readings measured on a fresh
+	// series of pairs, taken after the first one. A guardrail a single series
+	// can misreport (replicatedGuardrail) rejects only when this reading
+	// reproduces the breach; the engine runs that series when
+	// GuardrailsToReplicate names a breach, and records the readings here.
+	FreshGuardrails []domain.MetricComparison
+	// FirstSeriesGuardrails are the pooled guardrail readings of the first
+	// series, for the guardrails a fresh series re-measures
+	// (ReplicatedGuardrails), taken before that series was folded in. They are
+	// recorded because Comparisons then hold one pooled value for both series:
+	// a reason that says what the first series read cannot quote that value.
+	// An empty set means no fresh series ran, so Comparisons still hold the
+	// first series' own readings.
+	FirstSeriesGuardrails []domain.MetricComparison
 }
 
 type Result struct {
@@ -96,7 +110,7 @@ func Evaluate(config Config, evidence Evidence) Result {
 	if !ok {
 		return result
 	}
-	if early, done := checkGuardrails(config, byName, result); done {
+	if early, done := checkGuardrails(config, byName, evidence, result); done {
 		return early
 	}
 	if early, done := checkEligibleRegressions(config, eligible, result); done {
@@ -108,6 +122,9 @@ func Evaluate(config Config, evidence Evidence) Result {
 	}
 	for _, g := range unconfirmedGuardrails(config, byName) {
 		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", g.name, g.comparison.DeltaPercent, g.limit))
+	}
+	for _, g := range unreplicatedGuardrails(config, byName, evidence) {
+		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%% on the first series, over the %.2f%% limit and significant, but a fresh series read %+.2f%% and did not reproduce the breach", g.name, g.comparison.DeltaPercent, g.limit, g.fresh.DeltaPercent))
 	}
 	return result
 }
@@ -243,7 +260,7 @@ func UnconfirmedImprovements(config Config, eligible []domain.MetricComparison) 
 // ImprovementDelta returns the delta acceptance thresholds on: the
 // Hodges–Lehmann shift when the engine measured one, the sample-mean delta
 // otherwise. The regression and guardrail comparisons deliberately keep
-// DeltaPercent (ADR 0040): replaying the recorded campaigns showed a robust
+// DeltaPercent (ADR 0043): replaying the recorded campaigns showed a robust
 // regression reading turning six A/A null candidates from inconclusive into
 // rejected, while this asymmetric rule changed one verdict in the recorded
 // replay (306 measured candidates) and only made an accept stricter. A
@@ -267,7 +284,7 @@ func hasRobustShift(comparison domain.MetricComparison) bool {
 // regression, so support there says "no regression", not "faster". Reading a
 // win off the shift while the mean says otherwise therefore has no evidence
 // behind it, and accepting on it is a false accept: a reading of +1.5% by the
-// mean beside a -4% shift was accepted as a 4.00% improvement (ADR 0040). A
+// mean beside a -4% shift was accepted as a 4.00% improvement (ADR 0043). A
 // comparison with no measured shift carries only the mean, so it agrees by
 // construction. A delta of exactly 0 points no way, so it agrees with neither a
 // win nor a loss: a flat mean beside a -4% shift was still accepted as a 4.00%
@@ -318,10 +335,31 @@ func BorderlineImprovements(config Config, eligible []domain.MetricComparison) [
 // that cleared the minimum by less than this factor.
 const borderlineFactor = 2.0
 
-// improvedAtLeastMinimum reports whether a comparison's improving delta is at
-// least as large in magnitude as the manifest's minimum_improvement_percent.
-// It reads the same delta acceptance does, so the confirmation trigger and the
-// verdict cannot disagree about which win is borderline.
+// SelectedImprovements returns the reading an accept would rest on when that
+// reading is one workload's rather than the pooled metric, or nothing when the
+// verdict would rest on the aggregate, would not accept, or when the manifest
+// does not ask for statistical support. Such a reading is the best of several
+// and was chosen because it read best, so its point estimate is biased upward
+// (the winner's curse); the engine measures that workload again from scratch
+// and lets the verdict rest on the fresh series alone (ADR 0041).
+func SelectedImprovements(config Config, eligible []domain.MetricComparison) []domain.MetricComparison {
+	config = withDefaults(config)
+	if !config.StatisticalSupportRequired || len(eligible) == 0 {
+		return nil
+	}
+	best, supported := bestImprovement(comparisonResults(eligible))
+	if !supported || best.Workload == "" || !improvedAtLeastMinimum(config, best) {
+		return nil
+	}
+	return []domain.MetricComparison{best}
+}
+
+// improvedAtLeastMinimum reports whether a comparison's improving delta —
+// the robust shift when one was measured, the mean otherwise — is at least as
+// large in magnitude as the manifest's minimum_improvement_percent, and the two
+// estimators agree it is an improvement. It reads the same delta and the same
+// agreement rule acceptance does, so the confirmation triggers and the verdict
+// cannot disagree about which win is borderline.
 func improvedAtLeastMinimum(config Config, comparison domain.MetricComparison) bool {
 	delta := ImprovementDelta(comparison)
 	return estimatorsAgree(comparison) && finite(delta) && -delta >= config.MinimumImprovementPercent
@@ -453,16 +491,16 @@ func lookupPrimary(config Config, byName map[string]domain.MetricComparison, res
 	return primary, result, true
 }
 
-func checkGuardrails(config Config, byName map[string]domain.MetricComparison, result Result) (Result, bool) {
+func checkGuardrails(config Config, byName map[string]domain.MetricComparison, evidence Evidence, result Result) (Result, bool) {
 	for _, guardrail := range config.Guardrails {
-		if early, done := checkOneGuardrail(config, guardrail, byName, result); done {
+		if early, done := checkOneGuardrail(config, guardrail, byName, evidence, result); done {
 			return early, true
 		}
 	}
 	return result, false
 }
 
-func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]domain.MetricComparison, result Result) (Result, bool) {
+func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]domain.MetricComparison, evidence Evidence, result Result) (Result, bool) {
 	comparison, found := byName[guardrail.Name]
 	if !found {
 		if guardrail.Required {
@@ -484,10 +522,157 @@ func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]dom
 	// which is what once blocked a supported -14.38% win over a +0.16% memory
 	// reading. The engine measures again first (UnconfirmedGuardrails).
 	limit := guardrailLimit(config, guardrail)
-	if comparison.DeltaPercent > limit && (comparison.Significant || !config.StatisticalSupportRequired) {
-		return reject(result, fmt.Sprintf("guardrail %q regressed by %.2f%%, over the %.2f%% limit", guardrail.Name, comparison.DeltaPercent, limit)), true
+	if !breached(config, comparison, limit) {
+		return result, false
 	}
-	return result, false
+	// Peak memory is the one guardrail whose reading a single series can get
+	// wrong even with support: it is a per-run high-water mark, so one
+	// contended run or one GC-pacing step moves it in megabytes. Such a
+	// breach rejects only when a fresh, independent series reproduces it. A
+	// caller that ran no fresh series keeps the old rule, so the leniency
+	// cannot be reached by forgetting to measure.
+	if replicatedGuardrail(guardrail.Name) && config.StatisticalSupportRequired {
+		return checkBreachAgainstFreshSeries(config, comparison, evidence, limit, result)
+	}
+	return reject(result, breachReason(comparison, limit)), true
+}
+
+// checkBreachAgainstFreshSeries decides a peak-memory breach with the fresh
+// series' own readings. A breach the fresh series does not reproduce does not
+// reject, and the verdict continues to the next guardrail.
+func checkBreachAgainstFreshSeries(config Config, comparison domain.MetricComparison, evidence Evidence, limit float64, result Result) (Result, bool) {
+	fresh, measured := freshGuardrail(evidence, comparison.Metric)
+	if !measured {
+		return reject(result, breachReason(comparison, limit)), true
+	}
+	if !breached(config, fresh, limit) {
+		return result, false
+	}
+	return reject(result, fmt.Sprintf("%s, and a fresh series reproduced it at %+.2f%%", breachReason(comparison, limit), fresh.DeltaPercent)), true
+}
+
+func breachReason(comparison domain.MetricComparison, limit float64) string {
+	return fmt.Sprintf("guardrail %q regressed by %.2f%%, over the %.2f%% limit", comparison.Metric, comparison.DeltaPercent, limit)
+}
+
+// breached reports whether one guardrail reading is past its limit with the
+// support the manifest asks for.
+func breached(config Config, comparison domain.MetricComparison, limit float64) bool {
+	return comparison.DeltaPercent > limit && (comparison.Significant || !config.StatisticalSupportRequired)
+}
+
+// replicatedGuardrail reports whether a guardrail's breach has to reproduce
+// in a fresh series before it rejects.
+//
+// Peak memory is a high-water mark rather than a steady rate: it steps with
+// allocator and GC pacing, so the same two binaries can read +5.58% in one
+// 60-pair verification and -0.68% in the next, and a candidate that only
+// removed garbage lost a supported -3.4% wall-time win to a +2.78% reading.
+// CPU time and binary size are left on the single-series rule: CPU time's
+// noise is per-run spread that more pairs average out (ADR 0033), and binary
+// size compares exact sizes.
+func replicatedGuardrail(name string) bool { return name == "peak_memory_bytes" }
+
+// freshGuardrail finds the pooled reading a fresh series produced for one
+// guardrail, and whether one was measured at all.
+func freshGuardrail(evidence Evidence, name string) (domain.MetricComparison, bool) {
+	fresh := indexComparisons(comparisonResults(evidence.FreshGuardrails))
+	comparison, found := fresh[name]
+	return comparison, found
+}
+
+// unreplicatedBreach names a guardrail reading that was over its limit with
+// support on the first series and not on the fresh one, so the verdict neither
+// rejects on it nor hides it.
+type unreplicatedBreach struct {
+	name       string
+	limit      float64
+	comparison domain.MetricComparison
+	fresh      domain.MetricComparison
+}
+
+// unreplicatedGuardrails returns the significant breaches a fresh series did
+// not reproduce, for the verdict's reasons.
+func unreplicatedGuardrails(config Config, byName map[string]domain.MetricComparison, evidence Evidence) []unreplicatedBreach {
+	if !config.StatisticalSupportRequired {
+		return nil
+	}
+	var out []unreplicatedBreach
+	for _, guardrail := range config.Guardrails {
+		if !replicatedGuardrail(guardrail.Name) {
+			continue
+		}
+		comparison, found := firstSeriesGuardrail(evidence, byName, guardrail.Name)
+		limit := guardrailLimit(config, guardrail)
+		if !found || !breached(config, comparison, limit) {
+			continue
+		}
+		fresh, measured := freshGuardrail(evidence, guardrail.Name)
+		if measured && !breached(config, fresh, limit) {
+			out = append(out, unreplicatedBreach{name: guardrail.Name, limit: limit, comparison: comparison, fresh: fresh})
+		}
+	}
+	return out
+}
+
+// firstSeriesGuardrail resolves the reading the first series produced for one
+// guardrail. Evidence.FirstSeriesGuardrails is authoritative when it is there:
+// a fresh series was measured, so the pooled Comparisons no longer hold the
+// first series' value, and a reason quoting it must not read them. Without it
+// no fresh series ran, and the pooled reading is the first series' own.
+func firstSeriesGuardrail(evidence Evidence, byName map[string]domain.MetricComparison, name string) (domain.MetricComparison, bool) {
+	if len(evidence.FirstSeriesGuardrails) > 0 {
+		comparison, found := indexComparisons(comparisonResults(evidence.FirstSeriesGuardrails))[name]
+		return comparison, found
+	}
+	comparison, found := byName[name]
+	return comparison, found
+}
+
+// ReplicatedGuardrails returns the pooled readings of the guardrails whose
+// breach has to reproduce in a fresh series (replicatedGuardrail), breach or
+// not. The engine records them on the evidence before it measures that series:
+// once the fresh readings are folded in, Comparisons hold one value for both
+// series, and a reason that says what the first series read has to quote what
+// that series produced.
+func ReplicatedGuardrails(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
+	config = withDefaults(config)
+	byName := indexComparisons(comparisonResults(comparisons))
+	var readings []domain.MetricComparison
+	for _, guardrail := range config.Guardrails {
+		if !replicatedGuardrail(guardrail.Name) {
+			continue
+		}
+		if comparison, found := byName[guardrail.Name]; found {
+			readings = append(readings, comparison)
+		}
+	}
+	return readings
+}
+
+// GuardrailsToReplicate returns the pooled guardrail readings that are over
+// their limit with support, on a guardrail whose breach has to reproduce in a
+// fresh series (replicatedGuardrail) before Evaluate rejects on it. The engine
+// measures that series when there are any, as it does for an unconfirmed
+// reading, and records the readings in Evidence.FreshGuardrails.
+func GuardrailsToReplicate(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
+	config = withDefaults(config)
+	if !config.StatisticalSupportRequired {
+		return nil
+	}
+	byName := indexComparisons(comparisonResults(comparisons))
+	var readings []domain.MetricComparison
+	for _, guardrail := range config.Guardrails {
+		if !replicatedGuardrail(guardrail.Name) {
+			continue
+		}
+		comparison, found := byName[guardrail.Name]
+		limit := guardrailLimit(config, guardrail)
+		if found && comparison.DeltaPercent > limit && comparison.Significant {
+			readings = append(readings, comparison)
+		}
+	}
+	return readings
 }
 
 func withDefaults(config Config) Config {

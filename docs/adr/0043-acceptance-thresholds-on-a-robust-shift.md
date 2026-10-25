@@ -1,4 +1,4 @@
-# 0040. Acceptance thresholds on a Hodges–Lehmann shift, regressions keep the mean
+# 0043. Acceptance thresholds on a Hodges–Lehmann shift, regressions keep the mean
 
 - Status: accepted
 - Date: 2026-10-24
@@ -40,6 +40,11 @@ out a material regression, so a bimodal candidate with a flat-to-slower mean (75
 at 112 against a baseline of 100; mean +0.36%, shift -3.60%) accepted as a 3.60% win. Support there
 says "no regression", and no reading of it says "faster".
 
+A delta of exactly 0 points no way. `estimatorsAgree` compares the direction of the two deltas, so a
+mean of exactly 0% beside a winning shift disagrees like any other non-improving mean. Reading
+`<= 0` as improving on both sides made that tie agree, and a flat mean beside a -4% shift accepted as
+a 4.00% win (QA round 2 on #110).
+
 Regression and guardrail checks keep `DeltaPercent`. The report shows both columns, and the event
 summary shows both numbers when they differ.
 
@@ -76,8 +81,8 @@ that the unpaired one did not.
   shift, with the mean beside it.
 - A win the mean understates is still accepted when the shift clears the minimum, which the small
   replay counts show happens less often than the reverse.
-- A reading whose mean delta contradicts its shift never accepts, however large the shift, and the
-  verdict's reason names both numbers.
+- A reading whose mean delta contradicts its shift, or exactly ties it, never accepts, however
+  large the shift, and the verdict's reason names both numbers.
 - A comparison with fewer than two samples per side, or a non-positive baseline median, keeps the
   mean delta and accepts on it, as before.
 - The regression ceiling is still a mean threshold. A guardrail regression that only the mean shows

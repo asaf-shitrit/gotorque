@@ -322,7 +322,13 @@ not recorded.
    after the fact: it evaluates each accepted candidate again from its
    recorded patch through the same evaluation and policy, with 60 pairs per
    workload by default instead of 25 and with the duplicate and accepted-fix
-   refusals and the PGO lane off, and records whether the acceptance held. Its
+   refusals and the PGO lane off, and records whether the acceptance held. It
+   prints the policy's reasons, every metric comparison with its delta and
+   significance, and the output variants that differed under the verdict line
+   (`--json` emits the verifications alone on stdout, with the engine's
+   progress on stderr), and the report's Verification
+   section carries the same detail, so reading why an accept did not hold never
+   means opening the campaign database. Its
    test gate narrows a scratch copy of the baseline, never the campaign's. It automates the
    re-measurement that exposed overnight-miller-1's false acceptance. `--null-candidates N` measures the other
    side: instead of running agents, the campaign evaluates N code-generated
@@ -353,9 +359,19 @@ not recorded.
    regresses past the limit without significance, every representative
    workload is measured over a second series of twenty-five pairs, held to
    the same behavior check, and every comparison is derived again from both
-   series (`confirmRegressions`, ADR 0016). All workloads are extended, not
-   only the one that read high, because the pooled reading folds them per
-   repetition. The second series has no budget of its own: it costs what
+   series (`confirmRegressions`, ADR 0016). A `peak_memory_bytes` breach that
+   is already significant gets the same series for a different reason
+   (`policy.GuardrailsToReplicate`, ADR 0040): peak RSS is a per-run
+   high-water mark that steps with allocator and GC pacing, so it rejects only
+   when the fresh series' own readings reproduce the breach, and those
+   readings are kept in `Evidence.FreshGuardrails` for the policy and the
+   report. The first series' own readings of the re-measured guardrails go in
+   `Evidence.FirstSeriesGuardrails`, because the pooled comparisons hold one
+   value for both series once the fresh one has run, and a reason that says
+   what the first series read has to quote what it produced. All workloads
+   are extended, not only the one that read high, because the pooled reading
+   folds them per repetition. The second series has no budget of its own: it
+   costs what
    the first did, and the campaign deadline bounds both. The same thing
    happens on the acceptance side: when the candidate would otherwise end
    inconclusive only because an eligible reading improved by at least
@@ -365,10 +381,22 @@ not recorded.
    win, the best supported improvement clearing the minimum by less than a
    factor of two (`policy.BorderlineImprovements`), is measured again the
    same way before the verdict (ADR 0034): held-out dyff was accepted on a
-   supported -3.16% against 3% and verified at -2.17%. At most one extra
-   series runs per candidate in total — if the regression confirmation
-   already extended every seed, the improvement check reuses that series
-   instead of running a third.
+   supported -3.16% against 3% and verified at -2.17%. That covers a pooled
+   accept. An accept that rests on one workload's reading chose it because it
+   read best of several, so the winner's curse sits in the reading itself: that
+   workload alone is measured over a fresh series and the verdict rests on it
+   alone, the selecting series replaced rather than extended (`confirmSelection`,
+   `policy.SelectedImprovements`, ADR 0041). The rule repeats while the verdict
+   still rests on a per-workload reading, measuring each such workload at most
+   once more, so a fresh reading that no longer clears the bar cannot hand the
+   accept to the reading that selected it. The regression and improvement
+   confirmations run at most one series per candidate between them: if the
+   regression confirmation already extended every seed, the improvement check
+   runs no series of its own. Selection is the exception, and runs its fresh
+   series even then: an extended seed is not a replaced one, so the pairs that
+   selected the workload would still be in a pooled reading. That fresh series
+   is as long as the one it replaces, because the pooled reading folds the
+   seeds per repetition.
 6. **Statistics.** Each metric gets a two-sample Welch t-test against a
    conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
    sample sizes); support is never reported from fewer than four samples per
@@ -402,7 +430,7 @@ not recorded.
 
    Acceptance does not threshold on that mean. Every sample-derived
    comparison also records a Hodges–Lehmann shift (`shift_percent`, ADR
-   0040): the median of every candidate-minus-baseline pairwise difference, as
+   0043): the median of every candidate-minus-baseline pairwise difference, as
    a percentage of the baseline median (`campaign.hodgesLehmannShift`,
    `robustShiftPercent`). `policy.ImprovementDelta` returns the shift when one
    was measured and the mean otherwise, and acceptance, the accept reason and
@@ -428,7 +456,7 @@ pooled primary metric plus one comparison per representative-tier seed (only
 those seeds are measured, so every per-workload primary comparison is eligible
 by construction). A candidate passes when any member of that set improves by
 at least the manifest's `minimum_improvement_percent` with statistical
-support — read from the Hodges–Lehmann shift (ADR 0040), with the mean delta
+support — read from the Hodges–Lehmann shift (ADR 0043), with the mean delta
 agreeing that the reading improved — and no member
 regresses significantly past `maximum_guardrail_regression_percent`, read from
 the mean delta; the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
@@ -487,7 +515,11 @@ reject it, the engine measures every representative workload again the same
 way it does for a regression (`confirmImprovements`, ADR 0021), using
 `policy.UnconfirmedImprovements` as the mirrored predicate. At most one extra
 series runs per candidate: if the regression confirmation already extended
-every seed, the improvement check does not run a second.
+every seed, the improvement check does not run a second. An accept resting on a
+per-workload reading takes the same second look the other way (ADR 0041): that
+workload alone is measured again from scratch and judged on the fresh series
+alone, because a reading chosen as the best of k noisy estimates is biased
+upward and pooling the fresh pairs with the selecting ones keeps the bias.
 
 The pooled figure alone was the wrong instrument. A seed whose measured run is
 mostly process startup cannot be improved by any patch, so pooling it dilutes
@@ -517,9 +549,14 @@ out.
    first gets a second series of pairs (`confirmRegressions`); if it stays
    insignificant it is named in the reasons and neither rejects nor makes the
    candidate inconclusive. A consistent regression is significant even with
-   no spread, and binary size compares exact sizes, so a real regression
-   still rejects: on the point estimate, 20 comment-only null candidates on
-   gron lost 2 to `cpu_time_ns` noise (+2.16%, +3.06%). A guardrail within
+   no spread, and binary size compares exact sizes, so a real regression still
+   rejects: on the point estimate, 20 comment-only null candidates on gron lost
+   2 to `cpu_time_ns` noise (+2.16%, +3.06%). Peak memory is the one
+   exception, because a high-water mark can read high with support from one
+   contended run or one GC step: its breach rejects only when a fresh series'
+   own readings breach too (ADR 0040, `policy.GuardrailsToReplicate`), and one
+   that does not reproduce is named in the reasons with both readings. A
+   guardrail within
    its limit never needs support: demanding proof of the absence of a
    regression from a jittery high-water mark once reported inconclusive for
    a candidate that moved it by a fraction of the limit. Every verdict is persisted with
@@ -940,6 +977,28 @@ next `saveEvent`, so a killed process still leaves its counts in bbolt. The
 report's "Jev cache" table (`writeJevCache` in `report.go`) reads them back,
 mirroring the "Model usage" table's shape.
 
+### The answer record
+
+The per-campaign cache settles one campaign; it does not make two campaigns
+agree. Jev's near-threshold answers move faster than the gates do (0.13 on the
+recorded campaigns, which was enough to flip 26 cause flags on development
+targets), so a second campaign on the same revision can flag a different set of
+targets. `AnswerRecord` (`jevanswers.go`, ADR 0042) closes that gap: a bbolt
+file at `<user cache>/gotorque/jev-answers.db`, keyed by the same
+`jev.Digest(req)`, holding every answer Jev has given on this machine.
+`cachingEvaluator` checks it after the campaign cache and before Jev, counts a
+hit as `Shared`, and writes every live answer to both. `--jev-answers <path>`
+names another file and `--jev-answers off` asks Jev in every campaign; the CLI
+(`attachAnswerRecord` in `internal/cli/root.go`) is what opens it, only under
+`--adk`, so stub answers never enter a record a live campaign reads. The exact
+request the record answers is `(pinned build, state, question set)`: a change
+to the function's source, to the question set, or to `jev.Model` is a miss,
+which is why `cachingEvaluator` fills `req.Model` before digesting. A record
+that cannot be opened or read is not an error — the campaign warns and asks
+Jev, the same way it treats a failed cache write. Attaching no record also
+clears `State.JevAnswersPath`, so a resume that turns the record off cannot
+leave the report naming a record it did not replay.
+
 ## Discovery benchmark profiling
 
 Before the model phase, the engine runs one best-effort profiling pass
@@ -979,6 +1038,19 @@ is left alone, so its manifest needs a stress seed that runs past the
 sampler's half-second liveness check. Sampler frames are
 annotated with source positions through the same repository search the
 benchmark path uses, because sampler frames name a symbol but no position.
+
+A frame's symbol runs to the ` (in <binary>)` module marker, not to its first
+space, on every sampler path (macOS top-of-stack rows, macOS call-graph rows
+and Linux `perf script` frames). A generic method instantiated over an
+interface shape prints its whole instantiation
+(`persist.(*TransientSlice[go.shape.interface { Eval(…) … }]).Set`), and
+cutting at the first space merged every method of that instantiation into one
+truncated name that resolved to no declaration: in the ivy campaign the two
+hottest entries were `(*TransientSlice[go.shape.interface` and
+`(*Slice[go.shape.interface`, and no attempt could target them. A
+`[go.shape.…]` type argument is then rewritten to `[...]` the way pprof does,
+so every instantiation of one generic function reports as one symbol and
+resolves to one declaration.
 
 ### The discovery module and its sampler seam
 

@@ -479,6 +479,7 @@ func candidateRecord(attempt int, evidence orchestrator.CandidateEvidence, targe
 		Samples:          evidence.RepSamples,
 		PgoComparisons:   evidence.PgoComparisons,
 		PgoNote:          evidence.PgoNote,
+		FreshComparisons: evidence.FreshGuardrails,
 		ProposalRepair:   string(evidence.ProposalRepair),
 		FailureDetail:    evidence.FailureDetail,
 		LoadAverages:     evidence.LoadAverages,

@@ -140,7 +140,7 @@ type MetricComparison struct {
 	// ShiftPercent is the outlier-robust estimate of the same effect: a
 	// Hodges–Lehmann shift, the median of every candidate-minus-baseline
 	// pairwise difference, as a percentage of the baseline median. Acceptance
-	// and its borderline re-measurement threshold on it (ADR 0040), while
+	// and its borderline re-measurement threshold on it (ADR 0043), while
 	// DeltaPercent stays the sample-mean delta that the regression and
 	// guardrail checks use: in the recorded-campaign replay a robust regression
 	// reading turned six A/A null candidates from inconclusive into rejected.
@@ -160,7 +160,7 @@ type MetricComparison struct {
 
 // ShiftHodgesLehmann names the estimator in MetricComparison.Shift: the
 // Hodges–Lehmann shift, the median of all candidate-minus-baseline pairwise
-// differences (ADR 0040).
+// differences (ADR 0043).
 const ShiftHodgesLehmann = "hodges_lehmann"
 
 type Evaluation struct {

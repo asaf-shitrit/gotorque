@@ -158,6 +158,17 @@ type CandidateEvidence struct {
 	// it never changes accept/reject decisions.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
+	// FreshGuardrails are the pooled guardrail readings of a fresh series that
+	// ran to check whether a breach reproduces (see
+	// policy.GuardrailsToReplicate). Policy decides on them; the comparison
+	// list holds the readings of every series together.
+	FreshGuardrails []domain.MetricComparison `json:"fresh_guardrails,omitempty"`
+	// FirstSeriesGuardrails are the pooled guardrail readings the first series
+	// produced for the guardrails that fresh series re-measures
+	// (policy.ReplicatedGuardrails), recorded before the two series were folded
+	// together. The verdict's reasons quote them, because the comparison list
+	// holds one pooled number for both series once the fresh one has run.
+	FirstSeriesGuardrails []domain.MetricComparison `json:"first_series_guardrails,omitempty"`
 	// ProposalRepair names the rewrite the optimizer's output needed before it
 	// parsed, or is empty when it parsed as sent. A patch cut off at the
 	// output-token cap is closed by the decoder and has its hunk counts

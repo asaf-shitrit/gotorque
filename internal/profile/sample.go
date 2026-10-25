@@ -84,7 +84,14 @@ func ParseMacOSSample(report string) []Function {
 // report ever prints: the shipped fixture was hand-written in a shape
 // /usr/bin/sample does not emit, so every macOS campaign parsed zero hot
 // functions, fell back to zero excerpts, and optimized blind.
-var macSampleTOSLine = regexp.MustCompile(`^\s*(\S+)\s+\(in [^)]*\)\s+(\d+)\s*$`)
+//
+// The symbol is everything before ` (in <binary>)`, not the first run of
+// non-space characters. A generic method instantiated over an interface shape
+// prints its whole type argument, spaces included
+// (`persist.(*TransientSlice[go.shape.interface { Eval(…) … }]).Set`). Taking
+// the first space merged Set, Append and Resize into one truncated name that
+// resolved to no declaration, so ivy's hottest frames were never offered.
+var macSampleTOSLine = regexp.MustCompile(`^\s*(.+?)\s+\(in [^()]*\)\s+(\d+)\s*$`)
 
 const macSampleTOSSection = "Sort by top of stack"
 
@@ -118,21 +125,24 @@ func parseMacOSSampleTopOfStack(report string) []Function {
 // Call-graph rows are indented one level per frame and prefixed with `+` for
 // the sampled frame and `!` for a truncated branch, so the count never starts
 // the line. The old pattern required it to, which left only thread headers
-// matching and made this fallback useless on a real report.
-var macSampleFrameLine = regexp.MustCompile(`^\s*(?:[+!|]\s*)*(\d+)\s+([A-Za-z_~][^\s(+]*)(?:\s|$)`)
-
+// matching and made this fallback useless on a real report. Rows are read by
+// parseCallGraphRow so this fallback accepts the same frame text the stacks
+// parser does, generic instantiations included.
+//
+// That shared reader is stricter than the pattern this fallback used to own:
+// it drops a row whose count does not sit in the column its depth implies
+// (four, then two per level). Every row in the recorded reports meets the
+// rule; a row that does not names no frame this parser can place, so dropping
+// it is intended rather than a lost sample.
 func parseMacOSSampleCallGraph(report string) []Function {
 	weights := map[string]int{}
 	for _, line := range strings.Split(report, "\n") {
-		match := macSampleFrameLine.FindStringSubmatch(line)
-		if match == nil {
+		_, node, ok := parseCallGraphRow(line)
+		if !ok {
 			continue
 		}
-		count, err := strconv.Atoi(match[1])
-		if err != nil || count <= 0 {
-			continue
-		}
-		name := macSampleSymbol(match[2])
+		count := node.count
+		name := node.frame
 		if name == "" {
 			continue
 		}
@@ -150,11 +160,15 @@ func parseMacOSSampleCallGraph(report string) []Function {
 // (`github.com/itchyny/gojq.(*env).Next`), not to an argument list, so cutting
 // there reduced every Go method frame to its package prefix and left the hot
 // list naming functions that do not exist.
+// A parenthesis inside a generic instantiation's type arguments belongs to the
+// instantiation, not to an argument list, so only a parenthesis at bracket
+// depth zero ends the symbol.
 func macSampleSymbol(raw string) string {
 	name := raw
-	if idx := strings.Index(name, "("); idx > 0 && name[idx-1] != '.' && !strings.HasPrefix(name, "_Z") {
+	if idx := macArgListStart(name); idx > 0 {
 		name = name[:idx]
 	}
+	name = normalizeShapeArgs(name)
 	name = strings.TrimPrefix(name, "0x")
 	switch name {
 	case "", "start", "thread_start", "_start", "main_thread", "_pthread_start":
@@ -167,6 +181,79 @@ func macSampleSymbol(raw string) string {
 		return "" // Thread ids and hex addresses are not symbols.
 	}
 	return name
+}
+
+// macArgListStart returns where a C-style argument list opens the symbol, or
+// -1 when the symbol carries none. Brackets and braces are tracked because a
+// generic method's symbol spells out the whole shape it was instantiated over
+// (`[go.shape.interface { Eval(…) …, String() string }]`), and those
+// parentheses name the shape's methods rather than an argument list.
+func macArgListStart(name string) int {
+	if strings.HasPrefix(name, "_Z") {
+		return -1 // An Itanium C++ mangled name keeps its parentheses.
+	}
+	depth := 0
+	for i := 0; i < len(name); i++ {
+		switch name[i] {
+		case '[', '{':
+			depth++
+		case ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case '(':
+			if depth > 0 || (i > 0 && name[i-1] == '.') {
+				continue
+			}
+			return i
+		}
+	}
+	return -1
+}
+
+// normalizeShapeArgs rewrites a generic instantiation over an interface shape
+// to pprof's `[...]`, so every instantiation of one generic function reports
+// as one symbol and resolves to one declaration.
+func normalizeShapeArgs(name string) string {
+	const shape = "[go.shape."
+	if !strings.Contains(name, shape) {
+		return name
+	}
+	var b strings.Builder
+	for {
+		idx := strings.Index(name, shape)
+		if idx < 0 {
+			b.WriteString(name)
+			return b.String()
+		}
+		end := closingBracket(name, idx)
+		if end < 0 {
+			b.WriteString(name)
+			return b.String()
+		}
+		b.WriteString(name[:idx])
+		b.WriteString("[...]")
+		name = name[end+1:]
+	}
+}
+
+// closingBracket returns the index of the `]` closing the `[` at start, or -1.
+// A shape argument embeds a whole interface or struct type, whose method set
+// and field list may hold brackets of their own.
+func closingBracket(s string, start int) int {
+	depth := 0
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // ParsePerfScript extracts hot functions from `perf script` output. Every
@@ -205,13 +292,27 @@ func ParsePerfScript(output string) []Function {
 }
 
 // perfScriptFrame parses one indented frame like
-// `7ff6a1 main (/path/to/binary)` and returns the bare symbol name.
+// `7ff6a1 main (/path/to/binary)` and returns the bare symbol name. The symbol
+// runs from after the address to the offset and module columns that follow it,
+// so a generic instantiation keeps the spaces in its type argument; taking the
+// second whitespace-separated field cut it at the first of them, the same
+// truncation the macOS parser had.
+//
+// The module column is what ends the symbol, and it is found by shape rather
+// than by matching ` (/` and ` (+0x`: perf prints a frame it could not
+// symbolize as `address [unknown] ([unknown])`, whose module is a bare
+// `([unknown])`. Both are cut by perfScriptModuleStart, so the `[unknown]`
+// rejection sees the symbol alone and such a frame never becomes a hot-list
+// entry or a stack node.
 func perfScriptFrame(frame string) string {
-	fields := strings.Fields(frame)
-	if len(fields) < 2 {
+	_, rest, ok := strings.Cut(strings.TrimLeft(frame, " \t"), " ")
+	if !ok {
 		return ""
 	}
-	name := fields[1]
+	name := strings.TrimSpace(rest)
+	if idx := perfScriptModuleStart(name); idx > 0 {
+		name = name[:idx]
+	}
 	if idx := strings.Index(name, "+0x"); idx > 0 {
 		name = name[:idx]
 	}
@@ -219,7 +320,32 @@ func perfScriptFrame(frame string) string {
 	case "", "[unknown]", "unknown":
 		return ""
 	}
-	return name
+	return normalizeShapeArgs(name)
+}
+
+// perfScriptModuleStart returns where perf's module column opens, the ` (` that
+// follows the symbol and its offset, or -1 when the frame has no module.
+// Brackets and braces are tracked because a generic instantiation's type
+// argument holds spaces and parentheses of its own (`[go.shape.interface {
+// Eval(value.Context) value.Value }]`); treating the first ` (` as the module
+// column would cut the symbol there instead.
+func perfScriptModuleStart(name string) int {
+	depth := 0
+	for i := 0; i+1 < len(name); i++ {
+		switch name[i] {
+		case '[', '{':
+			depth++
+		case ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ' ':
+			if depth == 0 && name[i+1] == '(' {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // rankWeights converts a name->weight map into the Function summary shape,

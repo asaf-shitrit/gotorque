@@ -39,9 +39,10 @@ gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --a
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk
 gotorque optimize --repo /path/to/repo --manifest targets/go-jsonnet/manifest.json --adk --tradeoff speed --allow memory=5%
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --history <earlier-campaign-dir>
+gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --adk --jev-answers off
 gotorque optimize --resume <campaign-dir> --adk
 gotorque report <campaign-dir> [--json]
-gotorque verify <campaign-dir> [--attempt N] [--pairs 60]
+gotorque verify <campaign-dir> [--attempt N] [--pairs 60] [--json]
 gotorque optimize --repo /path/to/repo --manifest targets/gojq/manifest.json --null-candidates 50
 gotorque scorecard <campaign-dir>...
 ```
@@ -153,7 +154,7 @@ Package map:
   variants.
 - `internal/policy`: pure acceptance decision. No filesystem, process, or
   network access; keep it that way. Improvements are thresholded on the
-  Hodges–Lehmann shift, regressions on the mean delta (ADR 0040), and the shift
+  Hodges–Lehmann shift, regressions on the mean delta (ADR 0043), and the shift
   may only size a win: a reading whose mean delta points the other way never
   accepts.
 - `internal/candidate`: unified-diff normalization, validation, worktrees.
@@ -205,6 +206,20 @@ Package map:
   `apply_policy`, the role names the degrade wrappers report under) and event
   kinds are read by `collectADKResult`, the report, scorecard and triage:
   rename neither.
+- Guardrail replication (`internal/policy`, ADR 0040): a `peak_memory_bytes`
+  breach rejects only when `Evidence.FreshGuardrails`, measured in
+  `confirmRegressions`, breaches too. Both policy call sites
+  (`policyVerdict` and `improvementsToConfirm`) must pass the field: a caller
+  that does not supply it keeps the old single-series rule, so a forgotten
+  field looks like a test failure rather than a silent policy change.
+- Confirmation series (`internal/campaign/candidate_eval.go`, `secondLook`): the
+  second look runs `confirmRegressions`, then `confirmImprovements`, then
+  `confirmSelection`, and one `interleaved-ab-confirmation` job marks it, so a
+  candidate never gets two. The two steps that extend every seed run first: a
+  selection re-measurement (ADR 0041) *replaces* the workload's runs instead of
+  extending them, because the series that selected the workload is where the
+  winner's-curse bias lives. Run it after an extending step, or an accept rests
+  on the pooled series that still holds the selecting pairs.
 - Model streams (`internal/agents/sse.go`): openai-go fails on SSE comment
   keepalives and accepts a stream cut before `response.completed`. Both are
   handled by the body filter, so model calls must keep going through
@@ -280,6 +295,12 @@ reasoning effort) and why each defaults as it does are in
   so an empty balance or a revoked key takes out every role at once; a code
   path that treats a Jev failure as independent of the optimizer's is wrong.
 - Credentials are never persisted into campaign state.
+- Jev's answers are stable across campaigns only because of the answer record
+  (`internal/campaign/jevanswers.go`, ADR 0042), not because of the campaign
+  cache: both are keyed by `jev.Digest`, so `cachingEvaluator` fills
+  `req.Model` before digesting, and only `--adk` attaches the record, because
+  a `--adk-stub` campaign would otherwise record `jev.Stub`'s answers under
+  the pinned build's key.
 
 ## Commit messages
 

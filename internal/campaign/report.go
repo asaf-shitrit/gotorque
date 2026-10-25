@@ -176,6 +176,9 @@ func writeReportHeader(b *strings.Builder, state State) {
 	if state.Explorer == ExplorerJev {
 		fmt.Fprintf(b, "- Explorer: the target's own options, judged by Jev (`%s`); discovery also sampled: %s\n", jev.Model, orNone(strings.Join(state.DiscoveryWorkloads, "; ")))
 	}
+	if state.JevAnswersPath != "" {
+		fmt.Fprintf(b, "- Jev answers: reused across campaigns from the record at `%s` (ADR 0042)\n", state.JevAnswersPath)
+	}
 	fmt.Fprintf(b, "- Judged under: %s: %s\n", tradeoffName(state.Tradeoff), manifest.Describe(state.Manifest.Performance))
 	if state.DiscoveryProfileSource != "" {
 		fmt.Fprintf(b, "- Discovery profile: targets chosen from %s\n", state.DiscoveryProfileSource)
@@ -396,9 +399,21 @@ func writeCandidateComparisons(b *strings.Builder, record CandidateRecord) {
 	if len(record.Comparisons) > 0 {
 		writeMetricTable(b, "\n| Comparison | Baseline | Candidate | Mean Δ | HL shift | Supported |\n|---|---:|---:|---:|---:|---|\n", record.Comparisons)
 	}
+	writeCandidateFreshSeries(b, record)
 	if record.BenchstatOutput != "" {
 		fmt.Fprintf(b, "\nBenchstat comparison:\n\n```text\n%s\n```\n", record.BenchstatOutput)
 	}
+}
+
+// writeCandidateFreshSeries shows the readings of the fresh series measured to
+// check a peak-memory breach, because a verdict that did not rest on a breach
+// names both readings and a reader needs to see where they came from.
+func writeCandidateFreshSeries(b *strings.Builder, record CandidateRecord) {
+	if len(record.FreshComparisons) == 0 {
+		return
+	}
+	b.WriteString("\nFresh series, measured to check whether a peak-memory breach reproduces:\n")
+	writeMetricTable(b, "\n| Fresh comparison | Baseline | Candidate | Mean Δ | HL shift | Supported |\n|---|---:|---:|---:|---:|---|\n", record.FreshComparisons)
 }
 
 func writeCandidatePGO(b *strings.Builder, record CandidateRecord) {
@@ -467,14 +482,15 @@ func writeTokenUsage(b *strings.Builder, state State) {
 }
 
 // writeJevCache reports how many of this campaign's Jev requests were
-// answered from the cache rather than the network (ADR 0028): a role missing
-// from the map ran without a Jev evaluator, or cached nothing because none of
-// its requests repeated.
+// answered from its own cache rather than the network (ADR 0028), and how many
+// came from the cross-campaign record instead (ADR 0042): a role missing from
+// the map ran without a Jev evaluator, or cached nothing because none of its
+// requests repeated.
 func writeJevCache(b *strings.Builder, state State) {
 	if len(state.JevCache) == 0 {
 		return
 	}
-	b.WriteString("## Jev cache\n\n| Role | Hits | Misses |\n|---|---:|---:|\n")
+	b.WriteString("## Jev cache\n\n| Role | Hits | Shared | Misses |\n|---|---:|---:|---:|\n")
 	roles := make([]string, 0, len(state.JevCache))
 	for role := range state.JevCache {
 		roles = append(roles, role)
@@ -482,7 +498,7 @@ func writeJevCache(b *strings.Builder, state State) {
 	sort.Strings(roles)
 	for _, role := range roles {
 		snapshot := state.JevCache[role]
-		fmt.Fprintf(b, "| `%s` | %d | %d |\n", role, snapshot.Hits, snapshot.Misses)
+		fmt.Fprintf(b, "| `%s` | %d | %d | %d |\n", role, snapshot.Hits, snapshot.Shared, snapshot.Misses)
 	}
 	b.WriteString("\n")
 }
@@ -647,6 +663,52 @@ func writeVerifications(b *strings.Builder, state State) {
 			outputs += ", differ: " + strings.Join(v.OutputMismatches, ", ")
 		}
 		fmt.Fprintf(b, "| %d | %d | %s | %s | %s | %s | %s |\n", v.Attempt, v.Pairs, v.Original, v.Decision, orNone(load), outputs, held)
+	}
+	b.WriteString("\n")
+	for _, v := range state.Verifications {
+		fmt.Fprintf(b, "### Verification of attempt %d\n\n", v.Attempt)
+		b.WriteString(RenderVerificationEvidence(v))
+	}
+}
+
+// RenderVerificationEvidence renders what decided a verification: the policy's
+// reasons, every metric comparison with its delta and significance, and the
+// output variants that differed. The report prints it under the summary table
+// and `gotorque verify` prints it under the verdict line, from this one
+// renderer, so both say the same thing about the same verdict.
+//
+// It exists because those fields used to reach only a `candidate_verified`
+// event in the campaign database, so reading why an accepted candidate did not
+// hold meant opening bbolt by hand; the daily gap hunt verifies every accept
+// and paid that detour every time.
+func RenderVerificationEvidence(v Verification) string {
+	var b strings.Builder
+	if v.Summary != "" {
+		fmt.Fprintf(&b, "- Evidence: %s\n", v.Summary)
+	}
+	if len(v.Reasons) == 0 {
+		b.WriteString("- Policy: no reason recorded\n")
+	}
+	for _, reason := range v.Reasons {
+		fmt.Fprintf(&b, "- Policy: %s\n", reason)
+	}
+	if len(v.Comparisons) > 0 {
+		writeVerificationComparisons(&b, v.Comparisons)
+	}
+	if len(v.OutputMismatches) > 0 {
+		fmt.Fprintf(&b, "- Output mismatches: %s\n", strings.Join(v.OutputMismatches, ", "))
+	}
+	return b.String()
+}
+
+// writeVerificationComparisons is the metric table with the significance
+// column as well as support, because a verification's reasons turn on whether
+// a guardrail regression was significant (ADR 0033, ADR 0039) and support
+// alone does not say that.
+func writeVerificationComparisons(b *strings.Builder, comparisons []domain.MetricComparison) {
+	b.WriteString("\n| Comparison | Baseline | Candidate | Δ | Supported | Significant |\n|---|---:|---:|---:|---|---|\n")
+	for _, c := range comparisons {
+		fmt.Fprintf(b, "| `%s` | %.4g | %.4g | %s | %s | %s |\n", tableLabel(c), c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), fitLabel(c.StatisticallyFit), fitLabel(c.Significant))
 	}
 	b.WriteString("\n")
 }

@@ -213,7 +213,7 @@ func TestBehaviorGateNamesATargetWithoutTests(t *testing.T) {
 
 // TestReportShowsTheRobustShiftBesideTheMean: the mean delta is what the
 // regression and guardrail checks read, the Hodges–Lehmann shift is what
-// acceptance reads (ADR 0040), and the report shows both so a number that
+// acceptance reads (ADR 0043), and the report shows both so a number that
 // decided a verdict is never hidden behind one that did not.
 func TestReportShowsTheRobustShiftBesideTheMean(t *testing.T) {
 	state := State{
@@ -254,4 +254,22 @@ func TestCandidateEventSummaryShowsBothDeltasWhenTheShiftDecides(t *testing.T) {
 	if got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
+}
+
+// TestReportShowsTheFreshSeries: a verdict can rest on a peak-memory breach
+// not reproducing, so the report has to show the fresh readings the verdict
+// read rather than only the combined series.
+func TestReportShowsTheFreshSeries(t *testing.T) {
+	var b strings.Builder
+	writeCandidateComparisons(&b, CandidateRecord{
+		Comparisons:      []domain.MetricComparison{{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 37500000, DeltaPercent: 2.72, StatisticallyFit: true}},
+		FreshComparisons: []domain.MetricComparison{{Metric: "peak_memory_bytes", Baseline: 36507648, Candidate: 36507648, DeltaPercent: 0}},
+	})
+	rendered := b.String()
+	require.Contains(t, rendered, "Fresh series, measured to check whether a peak-memory breach reproduces")
+	require.Contains(t, rendered, "| `peak_memory_bytes` | 3.651e+07 | 3.651e+07 | +0.00% | n/a | no |")
+
+	var empty strings.Builder
+	writeCandidateComparisons(&empty, CandidateRecord{Comparisons: []domain.MetricComparison{{Metric: "peak_memory_bytes", Baseline: 1, Candidate: 1, StatisticallyFit: true}}})
+	require.NotContains(t, empty.String(), "Fresh series")
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/policy"
 )
 
-// TestRecordedVerdictsSurviveTheRobustShift is the ADR 0040 replay gate. It
+// TestRecordedVerdictsSurviveTheRobustShift is the ADR 0043 replay gate. It
 // gives every measured candidate's wall-time comparisons the Hodges–Lehmann
 // shift those samples produce and re-evaluates the verdict. The robust shift
 // may only make an accept stricter: a new accept would be a false accept the

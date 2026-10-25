@@ -10,7 +10,7 @@ import (
 // shiftFromSamples fills in the outlier-robust shift of one comparison from
 // the raw baseline and candidate samples behind it. The mean delta stays in
 // DeltaPercent for the regression and guardrail checks; the shift is what
-// acceptance thresholds on (ADR 0040).
+// acceptance thresholds on (ADR 0043).
 func shiftFromSamples(comparison *domain.MetricComparison, baseline, candidate []float64) {
 	percent, ok := robustShiftPercent(baseline, candidate)
 	if !ok {
