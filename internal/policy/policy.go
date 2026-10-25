@@ -524,9 +524,6 @@ func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]dom
 	// which is what once blocked a supported -14.38% win over a +0.16% memory
 	// reading. The engine measures again first (UnconfirmedGuardrails).
 	limit := guardrailLimit(config, guardrail)
-	if !breached(config, comparison, limit) {
-		return result, false
-	}
 	// Peak memory is the one guardrail whose reading a single series can get
 	// wrong even with support: it is a per-run high-water mark, so one
 	// contended run or one GC-pacing step moves it in megabytes. Such a
@@ -534,23 +531,48 @@ func checkOneGuardrail(config Config, guardrail Guardrail, byName map[string]dom
 	// caller that ran no fresh series keeps the old rule, so the leniency
 	// cannot be reached by forgetting to measure.
 	if replicatedGuardrail(guardrail.Name) && config.StatisticalSupportRequired {
-		return checkBreachAgainstFreshSeries(config, comparison, evidence, limit, result)
+		return checkReplicatedGuardrail(config, guardrail.Name, byName, evidence, limit, result)
+	}
+	if !breached(config, comparison, limit) {
+		return result, false
 	}
 	return reject(result, breachReason(comparison, limit)), true
 }
 
-// checkBreachAgainstFreshSeries decides a peak-memory breach with the fresh
-// series' own readings. A breach the fresh series does not reproduce does not
-// reject, and the verdict continues to the next guardrail.
-func checkBreachAgainstFreshSeries(config Config, comparison domain.MetricComparison, evidence Evidence, limit float64, result Result) (Result, bool) {
-	fresh, measured := freshGuardrail(evidence, comparison.Metric)
+// checkReplicatedGuardrail decides a peak-memory breach from the fresh series'
+// own readings when one was measured, and from the first series when none was.
+//
+// The breach has to be on a reading the first series produced — its own pooled
+// reading, or the pooled one once the fresh series was folded in — but the
+// decision is the fresh reading's. Deciding on the pooled reading alone would
+// accept a regression both series reproduce: two series each reading +5%, at
+// 30 MB and 40 MB, are a |t| above 100 on their own and about 1.7 pooled, so
+// the pooled reading is not significant and, under this function's earlier
+// order, the verdict never read the fresh series at all. A breach the fresh
+// series does not reproduce does not reject, and the verdict continues to the
+// next guardrail.
+func checkReplicatedGuardrail(config Config, name string, byName map[string]domain.MetricComparison, evidence Evidence, limit float64, result Result) (Result, bool) {
+	first, found := firstSeriesGuardrail(evidence, byName, name)
+	breach := first
+	onFirstSeries := found && breached(config, first, limit)
+	if !onFirstSeries {
+		pooled, ok := byName[name]
+		if !ok || !breached(config, pooled, limit) {
+			return result, false
+		}
+		breach = pooled
+	}
+	fresh, measured := freshGuardrail(evidence, name)
 	if !measured {
-		return reject(result, breachReason(comparison, limit)), true
+		return reject(result, breachReason(breach, limit)), true
 	}
 	if !breached(config, fresh, limit) {
 		return result, false
 	}
-	return reject(result, fmt.Sprintf("%s, and a fresh series reproduced it at %+.2f%%", breachReason(comparison, limit), fresh.DeltaPercent)), true
+	if onFirstSeries {
+		return reject(result, fmt.Sprintf("guardrail %q read %+.2f%% on the first series, over the %.2f%% limit and significant, and a fresh series reproduced it at %+.2f%%", name, breach.DeltaPercent, limit, fresh.DeltaPercent)), true
+	}
+	return reject(result, fmt.Sprintf("%s, and a fresh series reproduced it at %+.2f%%", breachReason(breach, limit), fresh.DeltaPercent)), true
 }
 
 func breachReason(comparison domain.MetricComparison, limit float64) string {
