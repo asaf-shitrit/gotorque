@@ -405,16 +405,77 @@ func acceptedOnRepresentative(stress []domain.MetricComparison) Evidence {
 // found that no loop ever ran the candidate on one. A guardrail that regresses
 // significantly on a workload the manifest keeps out of acceptance rejects the
 // candidate, with a reason naming the workload and the metric.
+//
+// Peak memory is the one guardrail a single series can misreport on those
+// workloads as well, so such a breach rejects only when a fresh series of the
+// same seed reproduces it (ADR 0040, ADR 0046).
 func TestEvaluateRejectsASignificantStressGuardrail(t *testing.T) {
-	result := Evaluate(DefaultConfig(), acceptedOnRepresentative([]domain.MetricComparison{
-		{Metric: "peak_memory_bytes", Workload: "large-array", Baseline: 100, Candidate: 140, Significant: true},
-		{Metric: "cpu_time_ns", Workload: "large-array", Baseline: 100, Candidate: 101},
-	}))
+	stress := func() []domain.MetricComparison {
+		return []domain.MetricComparison{
+			{Metric: "peak_memory_bytes", Workload: "large-array", Baseline: 100, Candidate: 140, Significant: true},
+			{Metric: "cpu_time_ns", Workload: "large-array", Baseline: 100, Candidate: 101},
+		}
+	}
+
+	unmeasured := Evaluate(DefaultConfig(), acceptedOnRepresentative(stress()))
+	if unmeasured.Decision != domain.DecisionRejected {
+		t.Fatalf("with no fresh series the single-series rule holds: decision = %s, reasons = %v", unmeasured.Decision, unmeasured.Reasons)
+	}
+	if !strings.Contains(unmeasured.Reasons[0], `guardrail "peak_memory_bytes" regressed by 40.00% on workload "large-array"`) {
+		t.Fatalf("reason = %v", unmeasured.Reasons)
+	}
+
+	reproduced := acceptedOnRepresentative(stress())
+	reproduced.FreshGuardrails = []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Workload: "large-array", Baseline: 100, Candidate: 141, Significant: true},
+	}
+	result := Evaluate(DefaultConfig(), reproduced)
 	if result.Decision != domain.DecisionRejected {
 		t.Fatalf("decision = %s, reasons = %v", result.Decision, result.Reasons)
 	}
 	if !strings.Contains(result.Reasons[0], `guardrail "peak_memory_bytes" regressed by 40.00% on workload "large-array"`) {
 		t.Fatalf("reason = %v", result.Reasons)
+	}
+	if !strings.Contains(result.Reasons[0], "and a fresh series reproduced it at +41.00%") {
+		t.Fatalf("the rejection does not say the fresh series reproduced the breach: %v", result.Reasons)
+	}
+
+	quiet := acceptedOnRepresentative(stress())
+	quiet.FreshGuardrails = []domain.MetricComparison{
+		{Metric: "peak_memory_bytes", Workload: "large-array", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+	}
+	accepted := Evaluate(DefaultConfig(), quiet)
+	if accepted.Decision != domain.DecisionAccepted {
+		t.Fatalf("a breach a fresh series did not reproduce must not veto the win: decision = %s, reasons = %v", accepted.Decision, accepted.Reasons)
+	}
+	if !strings.Contains(strings.Join(accepted.Reasons, " "), `guardrail "peak_memory_bytes" regressed by 40.00% on workload "large-array", over the 2.00% limit and significant, but a fresh series read +0.00% and did not reproduce the breach; the manifest keeps that workload out of acceptance`) {
+		t.Fatalf("the unreplicated breach is not named: %v", accepted.Reasons)
+	}
+}
+
+// TestStressGuardrailsToReplicateSelectsOnlyASupportedPeakMemoryBreach: the
+// engine measures a fresh series on a stress seed only for the reading the
+// policy will decide on that series: a peak-memory breach with support. An
+// insignificant reading is named instead, and CPU time and binary size keep
+// the single-series rule, so no series is spent on them.
+func TestStressGuardrailsToReplicateSelectsOnlyASupportedPeakMemoryBreach(t *testing.T) {
+	breach := domain.MetricComparison{Metric: "peak_memory_bytes", Workload: "large-array", Baseline: 100, Candidate: 140, Significant: true}
+	if got := StressGuardrailsToReplicate(DefaultConfig(), []domain.MetricComparison{breach}); len(got) != 1 || got[0].Workload != "large-array" {
+		t.Fatalf("a supported peak-memory breach is replicated: %+v", got)
+	}
+	for name, reading := range map[string]domain.MetricComparison{
+		"insignificant": {Metric: "peak_memory_bytes", Workload: "large-array", Baseline: 100, Candidate: 140},
+		"cpu time":      {Metric: "cpu_time_ns", Workload: "large-array", Baseline: 100, Candidate: 140, Significant: true},
+		"under limit":   {Metric: "peak_memory_bytes", Workload: "large-array", Baseline: 100, Candidate: 101, Significant: true},
+	} {
+		if got := StressGuardrailsToReplicate(DefaultConfig(), []domain.MetricComparison{reading}); len(got) != 0 {
+			t.Fatalf("%s: got %+v, want nothing", name, got)
+		}
+	}
+	noSupport := DefaultConfig()
+	noSupport.StatisticalSupportRequired = false
+	if got := StressGuardrailsToReplicate(noSupport, []domain.MetricComparison{breach}); len(got) != 0 {
+		t.Fatalf("without required support the point estimate decides: %+v", got)
 	}
 }
 

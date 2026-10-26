@@ -148,10 +148,14 @@ acceptance-eligible seed's are, and its `cpu_time_ns` and
 `peak_memory_bytes` guardrails, read the way the pooled guardrails are. A
 behavior mismatch there rejects the candidate, and so does a guardrail that
 regresses past `maximum_guardrail_regression_percent` with statistical
-support. Neither can carry an acceptance: `wall_time_ns` on such a workload is
-never compared. Issue #101 found that no loop ran the candidate on these
-seeds at all, so a patch that changed output only on an input larger than any
-representative seed was accepted on representative timings (ADR 0046).
+support. A `peak_memory_bytes` reading past its limit is measured again in a
+fresh series of the same seed before it can veto, and it vetoes only when the
+fresh reading reproduces the breach, the rule ADR 0040 sets for every
+peak-memory breach. Neither gate can carry an acceptance: `wall_time_ns` on
+such a workload is never compared. Issue #101 found that no loop ran the
+candidate on these seeds at all, so a patch that changed output only on an
+input larger than any representative seed was accepted on representative
+timings (ADR 0046).
 
 `tiers.<tier>.weight` is required by the schema and is not read by the engine:
 no measurement is weighted, and a tier's weight changes nothing. It is kept so

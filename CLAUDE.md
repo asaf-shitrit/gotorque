@@ -227,7 +227,13 @@ Package map:
   records that field, in `confirmRegressions` and `confirmImprovements` alike:
   a reading under the limit on the first series can cross it only once the
   fresh series is pooled in, so record it from the step that ran the series,
-  not from the reading that asked for it.
+  not from the reading that asked for it. The same rule covers a stress seed's
+  peak memory (`replicateStressBreach`, ADR 0046): its fresh reading is recorded
+  under the seed id, and `recordGuardrailSeries` keeps those workload-keyed
+  entries when it replaces the pooled ones — overwriting them puts that breach
+  back on the single-series rule. A stress seed's fresh series is the only one
+  that runs after `measurePass` returns and that a confirmation series does not
+  re-measure.
 - Confirmation series (`internal/campaign/candidate_eval.go`, `secondLook`): the
   second look runs `confirmRegressions`, then `confirmImprovements`, then
   `confirmSelection`, and one `interleaved-ab-confirmation` job marks it, so a

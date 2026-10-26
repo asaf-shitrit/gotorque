@@ -496,7 +496,12 @@ mismatch, compared exactly as an eligible seed's is, and a regression of
 The candidate's `wall_time_ns` on those seeds is never compared, so nothing
 measured there can carry an acceptance. This is the stress veto the target
 manifest has documented since it described its tiers; before ADR 0046 the
-candidate was never run on those seeds at all.
+candidate was never run on those seeds at all. A `peak_memory_bytes` breach
+there follows the same replication rule as the pooled one (ADR 0040): the
+engine measures one fresh series on that seed, and the veto stands only when
+the fresh reading breaches too (`replicateStressBreach`). The fresh reading is
+recorded in `Evidence.FreshGuardrails` under the seed id, because a stress
+reading is never pooled with the series it is checked against.
 
 The guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as

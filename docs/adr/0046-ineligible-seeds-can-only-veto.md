@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-10-24
-- Relates to: [0002](0002-verdicts-may-rest-on-any-eligible-reading.md) (which readings a verdict may rest on), [0016](0016-regressions-reject-on-significance.md) (a regression rejects on significance), [0036](0036-candidate-evaluation-is-its-own-module.md) (where the measurement lives)
+- Relates to: [0002](0002-verdicts-may-rest-on-any-eligible-reading.md) (which readings a verdict may rest on), [0016](0016-regressions-reject-on-significance.md) (a regression rejects on significance), [0036](0036-candidate-evaluation-is-its-own-module.md) (where the measurement lives), [0040](0040-a-peak-memory-breach-is-replicated.md) (a peak-memory breach is replicated before it rejects)
 
 ## Context
 
@@ -58,10 +58,18 @@ ADR recorded a decision to keep it that way.
    reading that stays insignificant is named in the verdict's reasons instead,
    because these workloads have no confirmation series of their own: a second
    series on every stress seed would double the cost of the pass for a reading
-   the policy will not act on.
+   the policy will not act on. `peak_memory_bytes` is the exception, because
+   ADR 0040 already holds that one series can misread a high-water mark: a
+   supported breach there is measured again on the same seed
+   (`policy.StressGuardrailsToReplicate`), the fresh reading is recorded under
+   the seed id in `Evidence.FreshGuardrails`, and the breach rejects only when
+   the fresh series breaches too (the rule `policy.decideReplicatedBreach`
+   applies to the pooled guardrails as well). A breach the fresh series does not
+   reproduce is named in the reasons and vetoes nothing.
 5. The readings are persisted on the candidate record and rendered in the
    report, so a veto and a named reason can be audited from the files a campaign
-   leaves behind.
+   leaves behind. A stress seed's fresh reading lands in the same
+   `fresh_comparisons` table, labelled by workload.
 
 ## Consequences
 
@@ -69,7 +77,9 @@ ADR recorded a decision to keep it that way.
   pays one more interleaved series per non-acceptance-eligible seed. Stress
   inputs are larger than representative ones by construction; on the checked-in
   manifests that is one to four extra series per candidate, and the campaign's
-  `max_duration` bounds them as it bounds everything else.
+  `max_duration` bounds them as it bounds everything else. A stress seed whose
+  peak memory breaches costs one more series on that seed, and only then: a
+  candidate can pay it at most once per breaching stress seed.
 - The stress veto is real, and the manifest documents it truthfully again. A
   behavior break that only a large input reaches now costs a rejection rather
   than an accepted false positive, which is the direction goal 1 asks for.
@@ -101,4 +111,6 @@ ADR recorded a decision to keep it that way.
 - **Give the stress series a confirmation pass.** It would make an insignificant
   guardrail reading actionable at twice the cost, for a reading that only ever
   rejects. Naming it in the reasons keeps it auditable until the evidence
-  supports acting on it.
+  supports acting on it. A supported `peak_memory_bytes` breach does get one
+  series, because ADR 0040 says a single series can misreport a high-water mark;
+  that is a false-veto guard, not a way to act on a weak reading.

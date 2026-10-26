@@ -143,9 +143,9 @@ func TestAnAcceptanceEligibleTierIsMeasuredOnce(t *testing.T) {
 }
 
 // TestTheVerdictReadsStressGuardrails: the readings the stress pass records
-// reach the policy that draws the verdict, so a candidate whose guardrail
-// regressed on a stress workload is rejected even though it won on its
-// representative ones.
+// reach the policy that draws the verdict, so a reading that regressed on a
+// stress workload is judged even though the candidate won on its representative
+// ones.
 func TestTheVerdictReadsStressGuardrails(t *testing.T) {
 	ev, engine, _ := stressEvaluator(t)
 	evidence := orchestrator.CandidateEvidence{
@@ -167,6 +167,93 @@ func TestTheVerdictReadsStressGuardrails(t *testing.T) {
 	evidence.StressComparisons[0].Candidate = 101
 	require.Equal(t, domain.DecisionAccepted, engine.policyVerdict(evidence).Decision)
 	require.NotEmpty(t, ev.manifest.Workloads.Seeds)
+}
+
+// stressSeedNamed is one seed of the fixture manifest by id.
+func stressSeedNamed(t *testing.T, ev *evaluator, id string) manifest.SeedWorkload {
+	t.Helper()
+	for _, seed := range ev.manifest.Workloads.Seeds {
+		if seed.ID == id {
+			return seed
+		}
+	}
+	t.Fatalf("the fixture manifest has no seed %q", id)
+	return manifest.SeedWorkload{}
+}
+
+// TestAStressMemoryBreachIsMeasuredAgainBeforeItVetoes: peak memory is a
+// per-run high-water mark on a seed that can only veto as well, so such a
+// breach needs a fresh series before it may reject (ADR 0040, ADR 0046). The
+// engine measures that series on the breaching seed alone, records its own
+// reading under the seed id, and the verdict lets the candidate through when
+// the fresh series reads the breach away.
+func TestAStressMemoryBreachIsMeasuredAgainBeforeItVetoes(t *testing.T) {
+	ev, engine, candidate := stressEvaluator(t)
+	runs, reset := countingCandidate(t, ev, candidate)
+	seed := stressSeedNamed(t, ev, "stress-deep")
+	breach := []domain.MetricComparison{{Metric: "peak_memory_bytes", Workload: seed.ID, Baseline: 100, Candidate: 140, Significant: true}}
+
+	evidence := &orchestrator.CandidateEvidence{}
+	reset()
+	require.True(t, ev.replicateStressBreach(context.Background(), campaignDefaults(), seed, "candidate", candidate, evidence, &seedRuns{seed: seed, deterministic: true}, breach), evidence.Summary)
+	require.Positive(t, runs(), "the seed whose peak memory breached was measured again")
+	require.Len(t, evidence.FreshGuardrails, 1, "the fresh series' own reading is recorded")
+	require.Equal(t, "stress-deep", evidence.FreshGuardrails[0].Workload)
+	require.Equal(t, "peak_memory_bytes", evidence.FreshGuardrails[0].Metric)
+	require.Contains(t, evidence.Summary, `workload "stress-deep"'s peak_memory_bytes read +40.00% over its limit`)
+
+	verdict := engine.policyVerdict(orchestrator.CandidateEvidence{
+		BehaviorMatches: true, SafetyChecksPassed: true, RepresentativeEvidence: true,
+		Comparisons: []domain.MetricComparison{
+			{Metric: "wall_time_ns", Baseline: 100, Candidate: 95, StatisticallyFit: true},
+			{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+			{Metric: "cpu_time_ns", Baseline: 100, Candidate: 95, StatisticallyFit: true},
+			{Metric: "binary_size_bytes", Baseline: 100, Candidate: 100, StatisticallyFit: true},
+		},
+		StressComparisons: breach,
+		FreshGuardrails:   evidence.FreshGuardrails,
+	})
+	require.Equal(t, domain.DecisionAccepted, verdict.Decision, verdict.Reasons)
+	require.Contains(t, strings.Join(verdict.Reasons, " "), "did not reproduce the breach")
+}
+
+// TestOnlyAStressMemoryBreachAsksForAFreshSeries: a reading inside its limit
+// costs no series, because no reading on such a workload can carry an
+// acceptance and a real regression is caught by the limit itself.
+func TestOnlyAStressMemoryBreachAsksForAFreshSeries(t *testing.T) {
+	ev, _, candidate := stressEvaluator(t)
+	runs, reset := countingCandidate(t, ev, candidate)
+	seed := stressSeedNamed(t, ev, "stress-deep")
+	underLimit := []domain.MetricComparison{{Metric: "peak_memory_bytes", Workload: seed.ID, Baseline: 100, Candidate: 101, Significant: true}}
+
+	evidence := &orchestrator.CandidateEvidence{}
+	reset()
+	require.True(t, ev.replicateStressBreach(context.Background(), campaignDefaults(), seed, "candidate", candidate, evidence, &seedRuns{seed: seed, deterministic: true}, underLimit))
+	require.Zero(t, runs(), "a reading inside its limit is not measured again")
+	require.Empty(t, evidence.FreshGuardrails)
+	require.Empty(t, evidence.Summary)
+}
+
+// TestAConfirmationSeriesKeepsTheStressFreshReadings: the stress replication
+// reading is keyed by workload, and a confirmation series replaces only the
+// pooled readings. Overwriting the whole field would leave the policy with no
+// fresh reading for a stress breach, which is the single-series rule ADR 0040
+// removed and the false veto the stress pass must not produce.
+func TestAConfirmationSeriesKeepsTheStressFreshReadings(t *testing.T) {
+	ev, _, _ := stressEvaluator(t)
+	stress := domain.MetricComparison{Metric: "peak_memory_bytes", Workload: "stress-deep", Baseline: 100, Candidate: 140, Significant: true}
+	evidence := &orchestrator.CandidateEvidence{FreshGuardrails: []domain.MetricComparison{stress}}
+	m := &measurement{seeds: []seedRuns{{seed: stressSeedNamed(t, ev, "fixture"), deterministic: true}}}
+
+	ev.recordGuardrailSeries(evidence, m, nil, []int{0})
+
+	require.Contains(t, evidence.FreshGuardrails, stress, "the stress seed's fresh reading survived the confirmation series")
+	for _, comparison := range evidence.FreshGuardrails {
+		if comparison.Metric == "peak_memory_bytes" && comparison.Workload == "" {
+			return // the pooled reading was recorded beside it
+		}
+	}
+	t.Fatalf("the pooled reading was not recorded: %+v", evidence.FreshGuardrails)
 }
 
 // TestTheReportShowsStressReadings: a veto names a workload in one sentence, so

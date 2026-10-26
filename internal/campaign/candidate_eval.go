@@ -495,14 +495,63 @@ func (ev *evaluator) measureStressSeeds(ctx context.Context, s evalSettings, evi
 // measureStressSeed runs one non-acceptance-eligible seed and returns its
 // guardrail readings, named by the seed id so a report and a verdict's reason
 // point at the workload an operator wrote in the manifest.
+//
+// A peak-memory reading past its limit with support asks for one more series on
+// this seed before it may veto (replicateStressBreach). The readings it returns
+// stay the first series' own: no stress reading is ever folded with another
+// series, because none of them can carry an acceptance (ADR 0046).
 func (ev *evaluator) measureStressSeed(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, bool) {
 	baseReq, _ := ev.abRequests(seed, id, candidateBinary)
 	runs := seedRuns{seed: seed, deterministic: outputIsDeterministic(ctx, ev.runner, baseReq)}
 	if !ev.runSeries(ctx, s, &runs, id, candidateBinary, evidence, evidence.Comparisons) {
 		return nil, false
 	}
-	readings := compareMetric(seed.ID, "cpu_time_ns", "ns", ev.regressionLimit("cpu_time_ns"), runs.ab.Baseline, runs.ab.Candidate, cpuTime)
-	return append(readings, compareMetric(seed.ID, "peak_memory_bytes", "bytes", ev.regressionLimit("peak_memory_bytes"), runs.ab.Baseline, runs.ab.Candidate, peakMemory)...), true
+	readings := ev.stressSeriesReadings(seed, runs.ab)
+	if !ev.replicateStressBreach(ctx, s, seed, id, candidateBinary, evidence, &runs, readings) {
+		return nil, false
+	}
+	return readings, true
+}
+
+// stressSeriesReadings derives one stress seed's CPU-time and peak-memory
+// readings from one series of its runs. Wall time is absent by construction: a
+// workload the manifest keeps out of acceptance must not be able to argue for
+// one.
+func (ev *evaluator) stressSeriesReadings(seed manifest.SeedWorkload, ab runner.ABResult) []domain.MetricComparison {
+	readings := compareMetric(seed.ID, "cpu_time_ns", "ns", ev.regressionLimit("cpu_time_ns"), ab.Baseline, ab.Candidate, cpuTime)
+	return append(readings, compareMetric(seed.ID, "peak_memory_bytes", "bytes", ev.regressionLimit("peak_memory_bytes"), ab.Baseline, ab.Candidate, peakMemory)...)
+}
+
+// replicateStressBreach measures a fresh series on a stress seed whose peak
+// memory breached, and records that series' own reading, because such a breach
+// vetoes only when a fresh series reproduces it (policy.decideReplicatedBreach,
+// ADR 0040). The reading is recorded under the seed id, so the policy can tell
+// it apart from the pooled readings the confirmation series produces.
+//
+// One breach costs one series on the seed it was read on. A stress workload can
+// only veto, so a second series on every one of them would double the cost of
+// the pass for readings the policy will not act on (ADR 0046).
+func (ev *evaluator) replicateStressBreach(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, runs *seedRuns, readings []domain.MetricComparison) bool {
+	breaches := policy.StressGuardrailsToReplicate(policyConfigFromManifest(ev.manifest), readings)
+	if len(breaches) == 0 {
+		return true
+	}
+	start := len(runs.ab.Baseline)
+	if !ev.runSeries(ctx, s, runs, id, candidateBinary, evidence, evidence.Comparisons) {
+		return false
+	}
+	fresh := ev.stressSeriesReadings(seed, runner.ABResult{Baseline: runs.ab.Baseline[start:], Candidate: runs.ab.Candidate[start:]})
+	for _, breach := range breaches {
+		for _, reading := range fresh {
+			if reading.Metric != breach.Metric {
+				continue
+			}
+			evidence.FreshGuardrails = append(evidence.FreshGuardrails, reading)
+			evidence.Summary += fmt.Sprintf("; workload %q's %s read %+.2f%% over its limit, so a fresh series of %d pairs was measured to check it reproduces", seed.ID, breach.Metric, breach.DeltaPercent, s.pairs)
+			break
+		}
+	}
+	return true
 }
 
 func (ev *evaluator) measureOneSeed(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, m *measurement) bool {
@@ -638,7 +687,24 @@ func guardrailSeries(config policy.Config, evidence *orchestrator.CandidateEvide
 // series alone.
 func (ev *evaluator) recordGuardrailSeries(evidence *orchestrator.CandidateEvidence, m *measurement, firstSeries []domain.MetricComparison, starts []int) {
 	evidence.FirstSeriesGuardrails = firstSeries
-	evidence.FreshGuardrails = ev.freshGuardrailComparisons(m.seeds, starts)
+	// The stress pass records its own fresh readings by workload, and a
+	// confirmation series does not re-measure a stress seed: overwriting them
+	// would leave the policy with no fresh reading for a stress breach, which
+	// keeps the single-series rule that ADR 0040 removed.
+	evidence.FreshGuardrails = append(stressFreshGuardrails(evidence.FreshGuardrails), ev.freshGuardrailComparisons(m.seeds, starts)...)
+}
+
+// stressFreshGuardrails keeps the fresh readings a stress seed's replication
+// series produced (replicateStressBreach): they are keyed by workload, the
+// pooled readings a confirmation series replaces are not.
+func stressFreshGuardrails(fresh []domain.MetricComparison) []domain.MetricComparison {
+	kept := make([]domain.MetricComparison, 0, len(fresh))
+	for _, comparison := range fresh {
+		if comparison.Workload != "" {
+			kept = append(kept, comparison)
+		}
+	}
+	return kept
 }
 
 // seriesStarts records, per seed, how many runs each side already held when a
