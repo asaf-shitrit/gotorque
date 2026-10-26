@@ -1610,7 +1610,7 @@ For a null campaign the valid runs are its records minus harness-class
 verdicts, which say nothing about the patch. An accept is a false accept; a
 guardrail, test or build rejection is a false reject, because the patch
 changed no code; an inconclusive verdict is the correct outcome for a null and
-counts in neither. Both tables carry a `build` column naming the gotorque
+counts in neither. Both tables carry a `gotorque build` column naming the
 build(s) the campaign ran on. Above the tables, a set of campaigns that ran on
 more than one build is called out, and so is a set with any build from a
 checkout with uncommitted changes: two dirty builds of one revision read the

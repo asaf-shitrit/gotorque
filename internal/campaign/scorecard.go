@@ -182,6 +182,12 @@ func verdictClass(r CandidateRecord) string {
 
 var scorecardColumns = []string{classAccepted, classInconclusive, classGuardrail, classTests, classBuild, classHarness, classOther}
 
+// buildColumn names the column holding the gotorque build(s) a campaign ran
+// on. It cannot be just "build": the agent table already has a verdict class
+// column called that, and the two would read the same in a header a person or
+// a tool parses by name.
+const buildColumn = "gotorque build"
+
 // splitScorecardRows separates the agent campaigns from the null-candidate
 // campaigns. Only the latter's counts measure a false accept or a false
 // reject, so the two never share a totals row.
@@ -217,7 +223,7 @@ func RenderScorecard(rows []ScorecardRow) string {
 }
 
 func writeAgentScorecard(b *strings.Builder, rows []ScorecardRow) {
-	b.WriteString("| Campaign | Target | build | " + strings.Join(scorecardColumns, " | ") + " | verified/held | stop |\n")
+	b.WriteString("| Campaign | Target | " + buildColumn + " | " + strings.Join(scorecardColumns, " | ") + " | verified/held | stop |\n")
 	b.WriteString("|---|---|---|" + strings.Repeat("---:|", len(scorecardColumns)) + "---|---|\n")
 	total := ScorecardRow{Counts: map[string]int{}}
 	for _, r := range rows {
@@ -273,7 +279,7 @@ func (s nullScore) add(o nullScore) nullScore {
 func writeNullScorecard(b *strings.Builder, rows []ScorecardRow) {
 	b.WriteString("## Null candidates\n\n")
 	b.WriteString("Code-generated patches that change nothing. An accept is a false accept of the harness, and a guardrail, test or build rejection is a false reject; inconclusive is the right answer. Harness-class verdicts are left out of the valid runs. The bounds are exact one-sided 95% Clopper-Pearson limits.\n\n")
-	b.WriteString("| Campaign | Target | build | " + strings.Join(nullTableColumns, " | ") + " | stop |\n")
+	b.WriteString("| Campaign | Target | " + buildColumn + " | " + strings.Join(nullTableColumns, " | ") + " | stop |\n")
 	b.WriteString("|---|---|---|" + strings.Repeat("---:|", len(nullTableColumns)) + "---|\n")
 	total := nullScore{}
 	for _, r := range rows {

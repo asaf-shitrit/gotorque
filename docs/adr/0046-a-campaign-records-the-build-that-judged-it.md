@@ -55,7 +55,7 @@ it. Show them; never act on them.**
   explain.
 - `report` prints `- Build:` next to the target's `- Revision:`, and a
   `## Builds` table when later runs exist.
-- `scorecard` adds a `build` column to both tables and prints
+- `scorecard` adds a `gotorque build` column to both tables and prints
   `> Builds differ: ...` above them when the grouped campaigns ran on more than
   one build. A `-dirty` build names the revision it sat on, not the code it ran,
   and two dirty builds of one revision describe themselves identically, so the

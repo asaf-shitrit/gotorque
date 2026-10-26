@@ -93,6 +93,20 @@ func TestScorecardSeparatesNullCampaigns(t *testing.T) {
 	require.Less(t, strings.Index(out, "## Agent campaigns"), strings.Index(out, "## Null candidates"))
 }
 
+// Both tables carry a gotorque build column and the agent table also carries a
+// build verdict class. Header cells that name them the same leave a reader, or
+// a tool that parses the table by column name, unable to tell a build
+// rejection from the build that rejected it.
+func TestScorecardNamesTheBuildColumnApartFromTheBuildVerdict(t *testing.T) {
+	agent := scorecardRow("agent", State{ID: "agent", CandidateRecords: []CandidateRecord{{Attempt: 1, Decision: domain.DecisionInconclusive}}})
+	null := scorecardRow("null", State{ID: "null", NullCandidates: 1, CandidateRecords: []CandidateRecord{{Attempt: 1, Decision: domain.DecisionInconclusive}}})
+
+	out := RenderScorecard([]ScorecardRow{agent, null})
+	require.Contains(t, out, "| Campaign | Target | gotorque build | accepted | inconclusive | guardrail | tests | build | harness | other | verified/held | stop |")
+	require.Contains(t, out, "| Campaign | Target | gotorque build | valid runs | false accepts | false rejects | false-accept rate | 95% upper | false-reject rate | 95% upper | stop |")
+	require.NotContains(t, out, "| Target | build |", "the column cannot be named after the verdict class it sits beside")
+}
+
 func TestScorecardHasNoNullSectionWithoutNullCampaigns(t *testing.T) {
 	state := State{ID: "agent", CandidateRecords: []CandidateRecord{{Attempt: 1, Decision: domain.DecisionInconclusive}}}
 	state.Manifest.Name = "tool CLI"
