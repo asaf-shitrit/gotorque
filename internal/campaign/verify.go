@@ -37,8 +37,9 @@ type Verification struct {
 	Decision    domain.Decision           `json:"decision"`
 	Reasons     []string                  `json:"reasons,omitempty"`
 	Comparisons []domain.MetricComparison `json:"comparisons,omitempty"`
-	// FreshComparisons are the pooled guardrail readings of the fresh series
-	// that checked whether a peak-memory breach reproduces (ADR 0040).
+	// FreshComparisons are the guardrail readings of the fresh series that
+	// checked whether a peak-memory breach reproduces: pooled, and one per
+	// stress seed whose breach was measured again (ADR 0040, ADR 0046).
 	FreshComparisons []domain.MetricComparison `json:"fresh_comparisons,omitempty"`
 	LoadAverages     []float64                 `json:"load_averages,omitempty"`
 	LoadContended    bool                      `json:"load_contended,omitempty"`

@@ -90,7 +90,8 @@ ADR recorded a decision to keep it that way.
 - `tiers.<tier>.weight` is still unread. It stays in the schema so a version-one
   manifest keeps loading, and `docs/target-manifest.md` now says it does
   nothing. Weighting measurements would change the pooled comparison itself, and
-  nothing in this change needs it.
+  nothing in this change needs it. Superseded by the amendment below: discovery
+  reads the weight, and no verdict does.
 - `verifyOutputs` and the informational PGO lane still run on
   acceptance-eligible seeds only. `verifyOutputs` compares input variants of a
   seed rather than the seed's own tier role; the PGO lane attributes a compiler
@@ -114,3 +115,16 @@ ADR recorded a decision to keep it that way.
   supports acting on it. A supported `peak_memory_bytes` breach does get one
   series, because ADR 0040 says a single series can misreport a high-water mark;
   that is a false-veto guard, not a way to act on a weak reading.
+
+## Amendment (2026-10-25, #121): discovery reads the tier weight
+
+ADR 0044 made discovery sample every acceptance-eligible seed and merge the
+samples into one hot list, each sample scaled by its tier's `weight` (#121).
+The consequence above was true when this ADR was written and is false since
+that merge: `internal/discovery`'s `tierWeight` reads the field, and a seed's
+sample carries its tier's weight into the merge.
+
+What stays true is the part this ADR decided: no verdict reads `weight`. A
+verdict reads `acceptance_eligible` alone (decision 1), so the weight shapes
+which functions are hot, never whether a reading may reject or accept.
+`docs/target-manifest.md` says both facts in one place.
