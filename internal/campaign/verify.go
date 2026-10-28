@@ -37,8 +37,9 @@ type Verification struct {
 	Decision    domain.Decision           `json:"decision"`
 	Reasons     []string                  `json:"reasons,omitempty"`
 	Comparisons []domain.MetricComparison `json:"comparisons,omitempty"`
-	// FreshComparisons are the pooled guardrail readings of the fresh series
-	// that checked whether a peak-memory breach reproduces (ADR 0040).
+	// FreshComparisons are the guardrail readings of the fresh series that
+	// checked whether a peak-memory breach reproduces: pooled, and one per
+	// stress seed whose breach was measured again (ADR 0040, ADR 0046).
 	FreshComparisons []domain.MetricComparison `json:"fresh_comparisons,omitempty"`
 	LoadAverages     []float64                 `json:"load_averages,omitempty"`
 	LoadContended    bool                      `json:"load_contended,omitempty"`
@@ -130,6 +131,7 @@ func (e *Engine) policyVerdict(evidence orchestrator.CandidateEvidence) policy.R
 		RepresentativeEvidence: evidence.RepresentativeEvidence,
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligibleReadings(config, evidence.Comparisons),
+		StressComparisons:      evidence.StressComparisons,
 		FreshGuardrails:        evidence.FreshGuardrails,
 		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
 	})
@@ -153,12 +155,15 @@ func candidateBinaryOf(evidence orchestrator.CandidateEvidence) string {
 // measured on its seed workloads, and the behavior gate holds it to the
 // target's own tests, but an optimization can still change output only on an
 // input neither exercises: empty, cut short, or longer than any seed. For
-// every representative seed, each variant of its input (see inputVariants)
-// is run once on each binary; a variant the baseline itself does not answer
-// deterministically is skipped rather than compared.
+// every seed whose tier the manifest makes acceptance-eligible, each variant of
+// its input (see inputVariants) is run once on each binary; a variant the
+// baseline itself does not answer deterministically is skipped rather than
+// compared. The variants already have no acceptance-eligible parent in the
+// campaign's measurement, so they are not the place to start with the seeds the
+// manifest keeps out of acceptance (ADR 0046).
 func (e *Engine) verifyOutputs(ctx context.Context, candidateBinary, candidateID string) (checks, mismatches []string) {
 	for _, seed := range e.state.Manifest.Workloads.Seeds {
-		if seed.Tier != domain.TierRepresentative {
+		if !e.state.Manifest.AcceptanceEligible(seed.Tier) {
 			continue
 		}
 		for name, variant := range inputVariants(seed) {

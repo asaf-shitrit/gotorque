@@ -367,11 +367,10 @@ func (ev *evaluator) measureAndFinalize(ctx context.Context, s evalSettings, evi
 		return false
 	}
 	if len(m.seeds) == 0 {
-		evidence.Summary = "no representative seed workloads available for measurement"
+		evidence.Summary = "no acceptance-eligible seed workloads available for measurement"
 		evidence.Comparisons = m.comparisons
 		return false
 	}
-	ev.finalizeCandidateEvidence(ctx, evidence, &m)
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "build", "test-suite", "interleaved-ab")
 	return ev.secondLook(ctx, s, evidence, id, candidateBinary, &m)
 }
@@ -392,7 +391,7 @@ func (ev *evaluator) secondLook(ctx context.Context, s evalSettings, evidence *o
 	return ev.confirmSelection(ctx, s, evidence, id, candidateBinary, m)
 }
 
-// measureSeedsOnQuietMachine measures every representative seed, and
+// measureSeedsOnQuietMachine measures every seed a verdict can rest on, and
 // measures them all again from scratch, once, when the machine was contended
 // by the time the first pass ended. The wait before measuring only protects
 // the start: on overnight-miller-4 the load went from 6.4 to 16.6 during a
@@ -402,10 +401,19 @@ func (ev *evaluator) secondLook(ctx context.Context, s evalSettings, evidence *o
 // second pass reaches the verdict; its load is what the record reports, with
 // the discarded pass's load kept beside it. A second contended pass is kept
 // as it is, flagged.
+//
+// One pass is all of measurePass, so the seeds that can only veto a candidate
+// are measured under the same protection: a burst during a stress series can
+// push a guardrail reading past its limit, and without statistical support
+// that reading alone rejects (lead review on #109). Measuring them outside
+// this retry left them the one set of readings no re-measurement covered.
 func (ev *evaluator) measureSeedsOnQuietMachine(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	before, fresh := *evidence, *m
-	if !ev.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m) {
+	if !ev.measurePass(ctx, s, evidence, id, candidateBinary, m) {
 		return false
+	}
+	if len(m.seeds) == 0 {
+		return true
 	}
 	host := ev.machine
 	mid := host.load()
@@ -418,16 +426,129 @@ func (ev *evaluator) measureSeedsOnQuietMachine(ctx context.Context, s evalSetti
 	evidence.QuietWaitExpired = expired
 	evidence.DiscardedLoad = slices.Concat(before.LoadAverages, mid)
 	evidence.LoadAverages = host.load()
-	return ev.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m)
+	return ev.measurePass(ctx, s, evidence, id, candidateBinary, m)
+}
+
+// measurePass measures one pass of the workloads and folds its comparisons,
+// and it is what the contention re-measurement repeats. Anything a verdict may
+// rest on, or be vetoed by, has to live inside it: a reading measured outside
+// keeps a load burst's noise when the other readings are discarded.
+func (ev *evaluator) measurePass(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
+	if !ev.measureSeedWorkloads(ctx, s, evidence, id, candidateBinary, m) {
+		return false
+	}
+	if len(m.seeds) == 0 {
+		return true
+	}
+	ev.finalizeCandidateEvidence(ctx, evidence, m)
+	return ev.measureStressSeeds(ctx, s, evidence, id, candidateBinary)
 }
 
 func (ev *evaluator) measureSeedWorkloads(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string, m *measurement) bool {
 	for _, seed := range ev.manifest.Workloads.Seeds {
-		if seed.Tier != domain.TierRepresentative {
+		if !ev.manifest.AcceptanceEligible(seed.Tier) {
 			continue
 		}
 		if !ev.measureOneSeed(ctx, s, seed, id, candidateBinary, evidence, m) {
 			return false
+		}
+	}
+	return true
+}
+
+// measureStressSeeds runs one interleaved series on every seed whose tier the
+// manifest keeps out of acceptance, and keeps its guardrail readings. The
+// target manifest has promised since it documented its tiers that a stress
+// seed "can veto a candidate" and a plausible one "adds evidence", but no loop
+// ever ran the candidate on either: every measurement loop skipped a seed that
+// was not representative-tier. A patch that changed output, or blew up memory,
+// only on an input larger than any representative seed was therefore accepted
+// on representative timings alone (issue #101, ADR 0046).
+//
+// These seeds can only veto. Behavior is judged exactly as everywhere else
+// (runSeries, recordBehaviorMatch), so a changed exit code or output rejects
+// the candidate; wall time is not compared, because a workload that cannot
+// carry an acceptance must not be able to argue for one. The failure path
+// keeps the representative comparisons already on the evidence, which are what
+// a report shows.
+func (ev *evaluator) measureStressSeeds(ctx context.Context, s evalSettings, evidence *orchestrator.CandidateEvidence, id, candidateBinary string) bool {
+	readings := make([]domain.MetricComparison, 0, 2*len(ev.manifest.Workloads.Seeds))
+	measured := 0
+	for _, seed := range ev.manifest.Workloads.Seeds {
+		if ev.manifest.AcceptanceEligible(seed.Tier) {
+			continue
+		}
+		got, ok := ev.measureStressSeed(ctx, s, seed, id, candidateBinary, evidence)
+		if !ok {
+			return false
+		}
+		readings = append(readings, got...)
+		measured++
+	}
+	evidence.StressComparisons = readings
+	if measured > 0 {
+		evidence.Summary += fmt.Sprintf("; the candidate also ran on %d workload(s) the manifest keeps out of acceptance, which can veto it and cannot carry it", measured)
+	}
+	return true
+}
+
+// measureStressSeed runs one non-acceptance-eligible seed and returns its
+// guardrail readings, named by the seed id so a report and a verdict's reason
+// point at the workload an operator wrote in the manifest.
+//
+// A peak-memory reading past its limit with support asks for one more series on
+// this seed before it may veto (replicateStressBreach). The readings it returns
+// stay the first series' own: no stress reading is ever folded with another
+// series, because none of them can carry an acceptance (ADR 0046).
+func (ev *evaluator) measureStressSeed(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, bool) {
+	baseReq, _ := ev.abRequests(seed, id, candidateBinary)
+	runs := seedRuns{seed: seed, deterministic: outputIsDeterministic(ctx, ev.runner, baseReq)}
+	if !ev.runSeries(ctx, s, &runs, id, candidateBinary, evidence, evidence.Comparisons) {
+		return nil, false
+	}
+	readings := ev.stressSeriesReadings(seed, runs.ab)
+	if !ev.replicateStressBreach(ctx, s, seed, id, candidateBinary, evidence, &runs, readings) {
+		return nil, false
+	}
+	return readings, true
+}
+
+// stressSeriesReadings derives one stress seed's CPU-time and peak-memory
+// readings from one series of its runs. Wall time is absent by construction: a
+// workload the manifest keeps out of acceptance must not be able to argue for
+// one.
+func (ev *evaluator) stressSeriesReadings(seed manifest.SeedWorkload, ab runner.ABResult) []domain.MetricComparison {
+	readings := compareMetric(seed.ID, "cpu_time_ns", "ns", ev.regressionLimit("cpu_time_ns"), ab.Baseline, ab.Candidate, cpuTime)
+	return append(readings, compareMetric(seed.ID, "peak_memory_bytes", "bytes", ev.regressionLimit("peak_memory_bytes"), ab.Baseline, ab.Candidate, peakMemory)...)
+}
+
+// replicateStressBreach measures a fresh series on a stress seed whose peak
+// memory breached, and records that series' own reading, because such a breach
+// vetoes only when a fresh series reproduces it (policy.decideReplicatedBreach,
+// ADR 0040). The reading is recorded under the seed id, so the policy can tell
+// it apart from the pooled readings the confirmation series produces.
+//
+// One breach costs one series on the seed it was read on. A stress workload can
+// only veto, so a second series on every one of them would double the cost of
+// the pass for readings the policy will not act on (ADR 0046).
+func (ev *evaluator) replicateStressBreach(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, runs *seedRuns, readings []domain.MetricComparison) bool {
+	breaches := policy.StressGuardrailsToReplicate(policyConfigFromManifest(ev.manifest), readings)
+	if len(breaches) == 0 {
+		return true
+	}
+	start := len(runs.ab.Baseline)
+	if !ev.runSeries(ctx, s, runs, id, candidateBinary, evidence, evidence.Comparisons) {
+		return false
+	}
+	fresh := ev.stressSeriesReadings(seed, runner.ABResult{Baseline: runs.ab.Baseline[start:], Candidate: runs.ab.Candidate[start:]})
+	for _, breach := range breaches {
+		for _, reading := range fresh {
+			if reading.Metric != breach.Metric {
+				continue
+			}
+			evidence.FreshGuardrails = append(evidence.FreshGuardrails, reading)
+			evidence.Summary += fmt.Sprintf("; workload %q's %s read %+.2f%% over its limit, so a fresh series of %d pairs was measured to check it reproduces", seed.ID, breach.Metric, breach.DeltaPercent, s.pairs)
+			break
 		}
 	}
 	return true
@@ -566,7 +687,24 @@ func guardrailSeries(config policy.Config, evidence *orchestrator.CandidateEvide
 // series alone.
 func (ev *evaluator) recordGuardrailSeries(evidence *orchestrator.CandidateEvidence, m *measurement, firstSeries []domain.MetricComparison, starts []int) {
 	evidence.FirstSeriesGuardrails = firstSeries
-	evidence.FreshGuardrails = ev.freshGuardrailComparisons(m.seeds, starts)
+	// The stress pass records its own fresh readings by workload, and a
+	// confirmation series does not re-measure a stress seed: overwriting them
+	// would leave the policy with no fresh reading for a stress breach, which
+	// keeps the single-series rule that ADR 0040 removed.
+	evidence.FreshGuardrails = append(stressFreshGuardrails(evidence.FreshGuardrails), ev.freshGuardrailComparisons(m.seeds, starts)...)
+}
+
+// stressFreshGuardrails keeps the fresh readings a stress seed's replication
+// series produced (replicateStressBreach): they are keyed by workload, the
+// pooled readings a confirmation series replaces are not.
+func stressFreshGuardrails(fresh []domain.MetricComparison) []domain.MetricComparison {
+	kept := make([]domain.MetricComparison, 0, len(fresh))
+	for _, comparison := range fresh {
+		if comparison.Workload != "" {
+			kept = append(kept, comparison)
+		}
+	}
+	return kept
 }
 
 // seriesStarts records, per seed, how many runs each side already held when a
@@ -707,6 +845,7 @@ func evaluateEvidence(config policy.Config, evidence *orchestrator.CandidateEvid
 		RepresentativeEvidence: evidence.RepresentativeEvidence,
 		Comparisons:            evidence.Comparisons,
 		Primary:                eligibleReadings(config, evidence.Comparisons),
+		StressComparisons:      evidence.StressComparisons,
 		FreshGuardrails:        evidence.FreshGuardrails,
 		FirstSeriesGuardrails:  evidence.FirstSeriesGuardrails,
 	})
@@ -965,7 +1104,7 @@ func (ev *evaluator) finalizeCandidateEvidence(ctx context.Context, evidence *or
 	evidence.SafetyChecksPassed = true
 	evidence.RepresentativeEvidence = len(m.seeds) > 0
 	evidence.Comparisons = comparisons
-	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d representative workload(s) measured over %d A/B pairs each", len(m.seeds), len(m.seeds[0].ab.Baseline))
+	evidence.Summary = fmt.Sprintf("patched tree built; tests passed; %d acceptance-eligible workload(s) measured over %d A/B pairs each", len(m.seeds), len(m.seeds[0].ab.Baseline))
 }
 
 // seedMeasurementRequest builds the measurement runner request for one seed
@@ -1033,7 +1172,7 @@ func (ev *evaluator) runPgoLane(ctx context.Context, s evalSettings, evidence *o
 		return
 	}
 	if measured == 0 {
-		ev.skipPgoLane(evidence, "no representative seed workloads available for measurement")
+		ev.skipPgoLane(evidence, "no acceptance-eligible seed workloads available for measurement")
 		return
 	}
 	evidence.PgoComparisons = comparisons

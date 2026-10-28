@@ -313,8 +313,9 @@ not recorded.
    most two such re-runs (`maxBaselineRechecks`). The baseline suite, like
    every candidate's, runs in a fresh worktree at the base revision, never
    in the canonical checkout: miller's tests rewrite tracked fixtures.
-5. **Interleaved A/B measurement.** For each representative-tier seed
-   workload, baseline and candidate binaries are measured in serialized
+5. **Interleaved A/B measurement.** For each seed whose tier the manifest
+   makes acceptance-eligible (its `tiers.<tier>.acceptance_eligible`, ADR
+   0046), baseline and candidate binaries are measured in serialized
    alternating pairs (twenty-five pairs per workload, the side that runs first
    alternating pair by pair) so CPU
    contention affects both sides equally. The pair count is sized against the
@@ -333,7 +334,9 @@ not recorded.
    pairs is contended the engine discards them, waits again and measures
    every seed once more from scratch (`measureSeedsOnQuietMachine`); only the
    second pass reaches the verdict, and the report names the discarded
-   pass's load.
+   pass's load. A pass is the eligible seeds plus, per ADR 0046, the seeds
+   that can only veto, so a burst during a stress series is discarded with
+   the rest instead of reaching the verdict.
    Tests, which disable local isolation, never wait. `gotorque verify DIR` checks an accepted verdict
    after the fact: it evaluates each accepted candidate again from its
    recorded patch through the same evaluation and policy, with 60 pairs per
@@ -372,7 +375,7 @@ not recorded.
    same switch is made whenever the baseline's own repetitions in the A/B
    series printed different stdout (`sameStdout`).
    Exit codes must match in all cases. When an eligible reading (below)
-   regresses past the limit without significance, every representative
+   regresses past the limit without significance, every acceptance-eligible
    workload is measured over a second series of twenty-five pairs, held to
    the same behavior check, and every comparison is derived again from both
    series (`confirmRegressions`, ADR 0016). A `peak_memory_bytes` breach that
@@ -473,16 +476,37 @@ not recorded.
 ### What a verdict rests on
 
 Acceptance is decided over the set of **acceptance-eligible readings**: the
-pooled primary metric plus one comparison per representative-tier seed (only
-those seeds are measured, so every per-workload primary comparison is eligible
-by construction). A candidate passes when any member of that set improves by
+pooled primary metric plus one comparison per seed whose tier the manifest
+makes acceptance-eligible (`measureSeedWorkloads` skips the rest, so every
+per-workload primary comparison is eligible by construction). A checked-in
+manifest makes `representative` eligible and `plausible`/`stress` not. A
+candidate passes when any member of that set improves by
 at least the manifest's `minimum_improvement_percent` with statistical
 support — read from the Hodges–Lehmann shift (ADR 0043), with the mean delta
 agreeing that the reading improved — and no member
 regresses significantly past `maximum_guardrail_regression_percent`, read from
-the mean delta; the guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
+the mean delta.
+
+Two further gates come from workloads that cannot carry an acceptance. Every
+seed whose tier is not eligible is measured too, in the same pass as the
+eligible seeds (`measureStressSeeds`, from `measurePass`), so a contended pass
+re-measures them with the rest, and two things there can reject: a behavior
+mismatch, compared exactly as an eligible seed's is, and a regression of
+`cpu_time_ns` or `peak_memory_bytes` past its limit with statistical support.
+The candidate's `wall_time_ns` on those seeds is never compared, so nothing
+measured there can carry an acceptance. This is the stress veto the target
+manifest has documented since it described its tiers; before ADR 0046 the
+candidate was never run on those seeds at all. A `peak_memory_bytes` breach
+there follows the same replication rule as the pooled one (ADR 0040): the
+engine measures one fresh series on that seed, and the veto stands only when
+the fresh reading breaches too (`replicateStressBreach`). The fresh reading is
+recorded in `Evidence.FreshGuardrails` under the seed id, because a stress
+reading is never pooled with the series it is checked against.
+
+The guardrails themselves (`peak_memory_bytes`, `cpu_time_ns`,
 `binary_size_bytes` by default) are checked on the pooled comparisons as
-before. The reason names the workload the verdict rests on.
+before. The reason names the workload the verdict rests on, and the candidate
+record keeps the out-of-acceptance readings so the report can show them.
 
 Those limits come from the manifest's performance block unless the campaign
 was started with a trade-off (`--tradeoff speed|balanced|lean`, `--allow

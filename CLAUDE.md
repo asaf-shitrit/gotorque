@@ -192,6 +192,16 @@ Package map:
   bbolt; in-graph `CampaignState` is rebuilt on every entry. A campaign that
   ran model roles (`ADKMode` set, analyst not `jev`) is refused: it ran model
   roles this build no longer has; start a new campaign.
+- Tier eligibility (`manifest.Manifest.AcceptanceEligible`, ADR 0046): whether a
+  seed can carry an acceptance is the manifest's `tiers.<tier>.acceptance_eligible`
+  and nothing else. `measureSeedWorkloads` measures the eligible seeds for the
+  verdict; `measureStressSeeds` measures every other seed and keeps only
+  behavior plus the `cpu_time_ns`/`peak_memory_bytes` guardrails, which can veto
+  and never carry. Both run inside `measurePass`, which is what the contention
+  re-measurement repeats, so a stress reading never survives a pass that was
+  thrown away. Adding a loop that picks seeds by tier name re-opens issue
+  #101, where three loops kept `stress` seeds out of the candidate's run
+  entirely while the docs promised they could veto.
 - Test gate (`internal/candidate/patch.go`, `worktree.go`,
   `internal/campaign/testgate.go`): a patch must never be able to edit what
   judges it. Protected paths (tests, `testdata/`, dependency files) are
@@ -217,7 +227,12 @@ Package map:
   records that field, in `confirmRegressions` and `confirmImprovements` alike:
   a reading under the limit on the first series can cross it only once the
   fresh series is pooled in, so record it from the step that ran the series,
-  not from the reading that asked for it.
+  not from the reading that asked for it. The same rule covers a stress seed's
+  peak memory (`replicateStressBreach`, ADR 0046): its fresh reading is recorded
+  under the seed id, and `recordGuardrailSeries` keeps those workload-keyed
+  entries when it replaces the pooled ones — overwriting them puts that breach
+  back on the single-series rule. A stress seed's fresh series runs inside
+  `measurePass`, before `secondLook`, and no confirmation series re-measures it.
 - Confirmation series (`internal/campaign/candidate_eval.go`, `secondLook`): the
   second look runs `confirmRegressions`, then `confirmImprovements`, then
   `confirmSelection`, and one `interleaved-ab-confirmation` job marks it, so a

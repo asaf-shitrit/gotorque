@@ -415,9 +415,10 @@ func fixtureSeed(id string, args []string) map[string]any {
 	return map[string]any{"id": id, "name": id, "tier": "representative", "args": args, "files": []any{map[string]any{"path": "fixture.txt", "content": "hello\n"}}, "provenance": "test"}
 }
 
-// writeManifestWithSeeds writes the fixture target's manifest with the given
-// representative workloads, for the tests that need more than one reading to
-// choose between.
+// writeManifestWithSeeds writes the fixture target's manifest with the seeds a
+// caller names: the given representative workloads for the tests that need
+// more than one reading to choose between, or a plausible and stress-tier seed
+// beside the representative one.
 func writeManifestWithSeeds(t *testing.T, dir string, seeds []any) string {
 	t.Helper()
 	accept := true

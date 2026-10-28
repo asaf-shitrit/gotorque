@@ -48,9 +48,9 @@ type Evidence struct {
 	Comparisons []domain.MetricComparison
 	// Primary lists the comparisons a verdict may rest on: every reading of the
 	// primary metric — the pooled one (Workload empty) and one per
-	// acceptance-eligible workload. The engine measures only representative-tier
-	// seeds, so every per-workload entry it supplies is eligible by
-	// construction.
+	// acceptance-eligible workload. The engine measures only the workloads whose
+	// tier the manifest makes acceptance-eligible, so every per-workload entry it
+	// supplies is eligible by construction.
 	//
 	// The set exists because pooling is a poor fit for a seed whose run is
 	// dominated by process startup: on gron a candidate improved its
@@ -59,13 +59,22 @@ type Evidence struct {
 	// at -0.81% unsupported and pulled the pooled figure to -2.53% against a
 	// 3% bar. An empty set means "judge the pooled primary metric alone".
 	Primary []domain.MetricComparison
-	// FreshGuardrails are the pooled guardrail readings measured on a fresh
-	// series of pairs, taken after the first one. A guardrail a single series
-	// can misreport (replicatedGuardrail) rejects only when this reading
+	// StressComparisons are the guardrail readings of workloads the manifest
+	// keeps out of acceptance: its plausible and stress tiers. They can only
+	// veto, never carry, which is what the target manifest has always promised
+	// a stress seed does (ADR 0046). An entry naming a metric that is not a
+	// configured guardrail is ignored, so a caller cannot slip a wall-time win
+	// from an ineligible workload into a verdict.
+	StressComparisons []domain.MetricComparison
+	// FreshGuardrails are the guardrail readings measured on a fresh series of
+	// pairs, taken after the first one. A guardrail a single series can
+	// misreport (replicatedGuardrail) rejects only when this reading
 	// reproduces the breach; the engine runs that series when
-	// GuardrailsToReplicate names a breach or when another reading asks for a
-	// confirmation series, and records the readings here for every such
-	// series.
+	// GuardrailsToReplicate or StressGuardrailsToReplicate names a breach, or
+	// when another reading asks for a confirmation series, and records the
+	// readings here for every such series. A pooled reading carries no
+	// workload; a stress seed's carries its id, because the series that checks
+	// one of those breaches runs on that seed alone.
 	FreshGuardrails []domain.MetricComparison
 	// FirstSeriesGuardrails are the pooled guardrail readings of the first
 	// series, for the guardrails a fresh series re-measures
@@ -118,17 +127,165 @@ func Evaluate(config Config, evidence Evidence) Result {
 	if early, done := checkEligibleRegressions(config, eligible, result); done {
 		return early
 	}
+	if early, done := checkStressComparisons(config, evidence, result); done {
+		return early
+	}
 	result = decideOnImprovement(config, eligible, result)
+	return noteUnactedReadings(config, evidence, byName, eligible, result)
+}
+
+// noteUnactedReadings appends the reasons for every reading that was over its
+// limit and did not reject: an insignificant regression, an insignificant
+// pooled guardrail, an insignificant stress reading, and a breach a fresh
+// series did not reproduce. None of them may hide the verdict's improvement,
+// so they are named rather than acted on (ADR 0016, ADR 0040).
+func noteUnactedReadings(config Config, evidence Evidence, byName map[string]domain.MetricComparison, eligible []domain.MetricComparison, result Result) Result {
 	for _, comparison := range unconfirmed(config, eligible) {
 		result.Reasons = append(result.Reasons, fmt.Sprintf("%s read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", readingSubject(comparison), comparison.DeltaPercent, config.MaximumGuardrailRegressionPercent))
 	}
 	for _, g := range unconfirmedGuardrails(config, byName) {
 		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%%, over the %.2f%% limit, but the difference is not statistically significant", g.name, g.comparison.DeltaPercent, g.limit))
 	}
+	for _, reading := range unconfirmedStress(config, evidence.StressComparisons) {
+		result.Reasons = append(result.Reasons, fmt.Sprintf("guardrail %q read %+.2f%% on workload %q, over the %.2f%% limit, but the difference is not statistically significant; that workload cannot carry a verdict", reading.name, reading.comparison.DeltaPercent, reading.comparison.Workload, reading.limit))
+	}
+	for _, reading := range unreplicatedStress(config, evidence) {
+		result.Reasons = append(result.Reasons, unreplicatedReason(reading))
+	}
 	for _, g := range unreplicatedGuardrails(config, byName, evidence) {
 		result.Reasons = append(result.Reasons, unreplicatedReason(g))
 	}
 	return result
+}
+
+// checkStressComparisons refuses a candidate that regressed a configured
+// guardrail on a workload the manifest keeps out of acceptance. The workloads
+// are measured, but their wall time is never compared: a seed that cannot
+// carry an acceptance must not be able to argue for one, while its behavior
+// (judged before this policy runs) and its guardrails can still reject.
+//
+// The rule is the one the representative guardrails use: over the limit and
+// significant, or over the limit alone when the manifest does not ask for
+// statistical support. Peak memory is an exception on these seeds for the same
+// reason it is on the pooled readings: it is a per-run high-water mark, so one
+// series can read it high without the candidate costing more memory, and a
+// stress seed's only power is to veto. Such a breach is decided by a fresh
+// series of the same seed (decideReplicatedBreach, ADR 0040). These readings
+// get no other confirmation series, so an insignificant one is named in the
+// reasons instead of rejecting (unconfirmedStress), the way an insignificant
+// pooled guardrail is.
+func checkStressComparisons(config Config, evidence Evidence, result Result) (Result, bool) {
+	for _, comparison := range comparisonResults(evidence.StressComparisons) {
+		guardrail, ok := guardrailNamed(config, comparison.Metric)
+		if !ok || !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
+			continue
+		}
+		limit := guardrailLimit(config, guardrail)
+		if replicatedGuardrail(guardrail.Name) && config.StatisticalSupportRequired {
+			if early, done := checkReplicatedStressGuardrail(config, comparison, limit, evidence, result); done {
+				return early, true
+			}
+			continue
+		}
+		if breached(config, comparison, limit) {
+			return reject(result, stressBreachReason(comparison, limit)+stressBreachNote), true
+		}
+	}
+	return result, false
+}
+
+// checkReplicatedStressGuardrail decides one stress seed's peak-memory breach
+// from the fresh series measured on that seed, by the rule ADR 0040 sets for
+// every peak-memory breach.
+func checkReplicatedStressGuardrail(config Config, breach domain.MetricComparison, limit float64, evidence Evidence, result Result) (Result, bool) {
+	if !breached(config, breach, limit) {
+		return result, false
+	}
+	fresh, measured := freshStressGuardrail(evidence, breach)
+	return decideReplicatedBreach(config, replicatedBreach{
+		name: breach.Metric, workload: breach.Workload, limit: limit,
+		reading: breach, fresh: fresh, measured: measured,
+	}, result)
+}
+
+// stressBreachReason names a guardrail reading on a workload the manifest
+// keeps out of acceptance, and stressBreachNote closes the reason with why a
+// rejection may rest on it at all.
+func stressBreachReason(comparison domain.MetricComparison, limit float64) string {
+	return fmt.Sprintf("guardrail %q regressed by %.2f%% on workload %q, over the %.2f%% limit", comparison.Metric, comparison.DeltaPercent, comparison.Workload, limit)
+}
+
+const stressBreachNote = "; the manifest keeps that workload out of acceptance, so it can veto a candidate but never carry one"
+
+// unreplicatedStress returns the stress-workload peak-memory breaches a fresh
+// series did not reproduce, for the verdict's reasons.
+func unreplicatedStress(config Config, evidence Evidence) []unreplicatedBreach {
+	if !config.StatisticalSupportRequired {
+		return nil
+	}
+	var out []unreplicatedBreach
+	for _, comparison := range comparisonResults(evidence.StressComparisons) {
+		guardrail, ok := guardrailNamed(config, comparison.Metric)
+		if !ok || !replicatedGuardrail(guardrail.Name) {
+			continue
+		}
+		limit := guardrailLimit(config, guardrail)
+		if !breached(config, comparison, limit) {
+			continue
+		}
+		fresh, measured := freshStressGuardrail(evidence, comparison)
+		if !measured || breached(config, fresh, limit) {
+			continue
+		}
+		out = append(out, unreplicatedBreach{name: guardrail.Name, limit: limit, comparison: comparison, fresh: fresh})
+	}
+	return out
+}
+
+// freshStressGuardrail finds the fresh series' own reading of one stress seed's
+// guardrail, and whether one was measured. The reading is keyed by workload as
+// well as metric: the pooled readings a confirmation series produces carry no
+// workload, and both kinds live in Evidence.FreshGuardrails.
+func freshStressGuardrail(evidence Evidence, breach domain.MetricComparison) (domain.MetricComparison, bool) {
+	for _, comparison := range comparisonResults(evidence.FreshGuardrails) {
+		if comparison.Metric == breach.Metric && comparison.Workload == breach.Workload {
+			return comparison, true
+		}
+	}
+	return domain.MetricComparison{}, false
+}
+
+// unconfirmedStress returns the stress-workload guardrail readings over their
+// limit that are not statistically significant: the ones Evaluate names in the
+// reasons instead of rejecting on. An insignificant reading is not evidence of
+// a regression, and these workloads have no confirmation series to turn one
+// into evidence; naming it keeps the reading auditable without letting noise
+// reject a good candidate, the rule ADR 0016 set for every other reading. The
+// reading carries the limit it was judged by, so the reason states the bound
+// the check applied: an --allow or a manifest's own ceiling, not the shared one.
+func unconfirmedStress(config Config, comparisons []domain.MetricComparison) []guardrailReading {
+	var readings []guardrailReading
+	for _, comparison := range comparisonResults(comparisons) {
+		guardrail, ok := guardrailNamed(config, comparison.Metric)
+		if !ok || !finitePositive(comparison.Baseline) || !finite(comparison.Candidate) {
+			continue
+		}
+		limit := guardrailLimit(config, guardrail)
+		if config.StatisticalSupportRequired && comparison.DeltaPercent > limit && !comparison.Significant {
+			readings = append(readings, guardrailReading{name: guardrail.Name, limit: limit, comparison: comparison})
+		}
+	}
+	return readings
+}
+
+// guardrailNamed resolves a metric name against the configured guardrails.
+func guardrailNamed(config Config, name string) (Guardrail, bool) {
+	for _, guardrail := range config.Guardrails {
+		if guardrail.Name == name {
+			return guardrail, true
+		}
+	}
+	return Guardrail{}, false
 }
 
 // eligiblePrimary resolves the comparisons that may carry acceptance. A caller
@@ -563,16 +720,62 @@ func checkReplicatedGuardrail(config Config, name string, byName map[string]doma
 		breach = pooled
 	}
 	fresh, measured := freshGuardrail(evidence, name)
-	if !measured {
-		return reject(result, breachReason(breach, limit)), true
+	return decideReplicatedBreach(config, replicatedBreach{
+		name: name, limit: limit, reading: breach, onFirstSeries: onFirstSeries,
+		fresh: fresh, measured: measured,
+	}, result)
+}
+
+// replicatedBreach is one peak-memory breach resolved to the readings that
+// decide it: the reading that breached, and the fresh series' own reading of
+// the same measurement when one was measured. workload is the stress seed the
+// readings belong to, and empty for the pooled guardrails.
+type replicatedBreach struct {
+	name          string
+	workload      string
+	limit         float64
+	reading       domain.MetricComparison
+	onFirstSeries bool
+	fresh         domain.MetricComparison
+	measured      bool
+}
+
+// decideReplicatedBreach applies ADR 0040 to one peak-memory breach: a reading
+// over its limit with support rejects only when a fresh series of the same
+// measurement breaches too. A caller that supplied no fresh reading keeps the
+// single-series rule, so the leniency cannot be reached by forgetting to
+// measure. Pooled guardrails and a stress seed's share this decision; only the
+// reason differs.
+func decideReplicatedBreach(config Config, breach replicatedBreach, result Result) (Result, bool) {
+	if !breach.measured {
+		return reject(result, breach.reason()+breach.note()), true
 	}
-	if !breached(config, fresh, limit) {
+	if !breached(config, breach.fresh, breach.limit) {
 		return result, false
 	}
-	if onFirstSeries {
-		return reject(result, fmt.Sprintf("guardrail %q read %+.2f%% on the first series, over the %.2f%% limit and significant, and a fresh series reproduced it at %+.2f%%", name, breach.DeltaPercent, limit, fresh.DeltaPercent)), true
+	return reject(result, fmt.Sprintf("%s, and a fresh series reproduced it at %+.2f%%%s", breach.reason(), breach.fresh.DeltaPercent, breach.note())), true
+}
+
+// reason says which reading breached: the first series' own, the pooled one
+// that became significant only once the fresh series was folded in, or one
+// stress workload's.
+func (b replicatedBreach) reason() string {
+	if b.workload != "" {
+		return stressBreachReason(b.reading, b.limit)
 	}
-	return reject(result, fmt.Sprintf("%s, and a fresh series reproduced it at %+.2f%%", breachReason(breach, limit), fresh.DeltaPercent)), true
+	if b.onFirstSeries && b.measured {
+		return fmt.Sprintf("guardrail %q read %+.2f%% on the first series, over the %.2f%% limit and significant", b.name, b.reading.DeltaPercent, b.limit)
+	}
+	return breachReason(b.reading, b.limit)
+}
+
+// note closes the reason for a reading on a workload the manifest keeps out of
+// acceptance, and is empty for the pooled guardrails.
+func (b replicatedBreach) note() string {
+	if b.workload != "" {
+		return stressBreachNote
+	}
+	return ""
 }
 
 func breachReason(comparison domain.MetricComparison, limit float64) string {
@@ -623,6 +826,9 @@ type unreplicatedBreach struct {
 func unreplicatedReason(g unreplicatedBreach) string {
 	if g.pooled {
 		return fmt.Sprintf("guardrail %q read %+.2f%% over the %.2f%% limit and significant only once the fresh series was pooled in, but that series read %+.2f%% and did not reproduce the breach", g.name, g.comparison.DeltaPercent, g.limit, g.fresh.DeltaPercent)
+	}
+	if g.comparison.Workload != "" {
+		return fmt.Sprintf("guardrail %q regressed by %.2f%% on workload %q, over the %.2f%% limit and significant, but a fresh series read %+.2f%% and did not reproduce the breach%s", g.name, g.comparison.DeltaPercent, g.comparison.Workload, g.limit, g.fresh.DeltaPercent, stressBreachNote)
 	}
 	return fmt.Sprintf("guardrail %q read %+.2f%% on the first series, over the %.2f%% limit and significant, but a fresh series read %+.2f%% and did not reproduce the breach", g.name, g.comparison.DeltaPercent, g.limit, g.fresh.DeltaPercent)
 }
@@ -721,6 +927,30 @@ func GuardrailsToReplicate(config Config, comparisons []domain.MetricComparison)
 		comparison, found := byName[guardrail.Name]
 		limit := guardrailLimit(config, guardrail)
 		if found && comparison.DeltaPercent > limit && comparison.Significant {
+			readings = append(readings, comparison)
+		}
+	}
+	return readings
+}
+
+// StressGuardrailsToReplicate returns the stress-workload readings that are
+// over their limit with support, on a guardrail whose breach has to reproduce
+// in a fresh series before Evaluate rejects on it (replicatedGuardrail). The
+// engine measures that series on the same seed, as GuardrailsToReplicate does
+// for the pooled readings. A reading without support returns nothing: the
+// policy names it in the reasons instead, so no series is spent on it.
+func StressGuardrailsToReplicate(config Config, comparisons []domain.MetricComparison) []domain.MetricComparison {
+	config = withDefaults(config)
+	if !config.StatisticalSupportRequired {
+		return nil
+	}
+	var readings []domain.MetricComparison
+	for _, comparison := range comparisonResults(comparisons) {
+		guardrail, ok := guardrailNamed(config, comparison.Metric)
+		if !ok || !replicatedGuardrail(guardrail.Name) {
+			continue
+		}
+		if breached(config, comparison, guardrailLimit(config, guardrail)) {
 			readings = append(readings, comparison)
 		}
 	}

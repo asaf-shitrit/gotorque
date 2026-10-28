@@ -160,6 +160,21 @@ type TierPolicy struct {
 	AcceptanceEligible bool    `json:"acceptance_eligible"`
 }
 
+// AcceptanceEligible reports whether the manifest lets a workload of this
+// tier carry a performance acceptance. Validation requires every tier to be
+// declared, so a tier the map does not hold is a manifest this package already
+// refused; it reads as ineligible rather than as an accept.
+//
+// The tiers were documented from the start and this field was validated from
+// the start, but nothing read it: the engine hardcoded representative-tier
+// seeds, so a manifest could not say `acceptance_eligible: false` on a
+// representative tier or `true` on a plausible one and see any difference
+// (ADR 0046).
+func (m Manifest) AcceptanceEligible(tier domain.WorkloadTier) bool {
+	tierPolicy, ok := m.Workloads.Tiers[tier]
+	return ok && tierPolicy.AcceptanceEligible
+}
+
 type Sandbox struct {
 	Network        string             `json:"network"`
 	Filesystem     FilesystemSandbox  `json:"filesystem"`

@@ -104,3 +104,24 @@ the verdict's reason names a breach the fresh series did not reproduce either wa
 series' own reading when that series already breached, or the pooled reading when it became
 significant only once the fresh series was folded in. The extra series is the one the confirmation
 already runs; no candidate costs a series it did not cost before.
+
+## Amendment (2026-10-25, #109): a stress seed's peak-memory breach is replicated too
+
+ADR 0046 gave the seeds the manifest keeps out of acceptance a veto, and first gave them the
+single-series rule ADR 0016 sets for every other reading. That rule is wrong for peak memory there
+for the reason it is wrong on the pooled readings: one series of a high-water mark can read a
+breach the candidate did not cause, and a stress seed's only power is to veto, so a false veto is
+the only harm it can do. The review of #109 named the case: a supported peak-memory regression that
+the same binaries read back inside the limit one series later, which is what ADR 0040 exists to
+prevent.
+
+The engine now measures one fresh series on the stress seed whose peak memory breached
+(`policy.StressGuardrailsToReplicate` selects it), records that series' own reading in
+`Evidence.FreshGuardrails` under the seed id, and `policy.decideReplicatedBreach` — the one rule
+both paths call — rejects only when the fresh reading breaches too. A pooled reading carries no
+workload, so the two kinds share the field without ambiguity. A stress reading is never folded
+with the fresh series: these workloads can veto and cannot carry, and their readings are recorded
+one per series.
+
+The cost is one series per breaching stress seed, paid only when a breach exists. It is not a
+confirmation series in the sense of ADR 0021 and ADR 0033: it settles a veto, never an acceptance.

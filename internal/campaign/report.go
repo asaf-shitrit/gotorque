@@ -425,6 +425,9 @@ func writeCandidateComparisons(b *strings.Builder, record CandidateRecord) {
 	if len(record.Comparisons) > 0 {
 		writeMetricTable(b, "\n| Comparison | Baseline | Candidate | Mean Δ | HL shift | Supported |\n|---|---:|---:|---:|---:|---|\n", record.Comparisons)
 	}
+	if len(record.StressComparisons) > 0 {
+		writeStressTable(b, record.StressComparisons)
+	}
 	writeCandidateFreshSeries(b, record)
 	if record.BenchstatOutput != "" {
 		fmt.Fprintf(b, "\nBenchstat comparison:\n\n```text\n%s\n```\n", record.BenchstatOutput)
@@ -474,6 +477,17 @@ func formatShift(comparison domain.MetricComparison) string {
 		return "n/a"
 	}
 	return formatDelta(comparison.ShiftPercent)
+}
+
+// writeStressTable renders the guardrail readings of the workloads the
+// manifest keeps out of acceptance, so the reading behind a veto, or behind a
+// named reason, is in the report and not only in the verdict's sentence.
+func writeStressTable(b *strings.Builder, comparisons []domain.MetricComparison) {
+	b.WriteString("\nGuardrails on the workloads the manifest keeps out of acceptance (they can veto a candidate, never carry one):\n\n| Workload | Metric | Baseline | Candidate | Δ | Significant |\n|---|---|---:|---:|---:|---|\n")
+	for _, c := range comparisons {
+		fmt.Fprintf(b, "| `%s` | `%s` | %.4g | %.4g | %s | %s |\n", c.Workload, c.Metric, c.Baseline, c.Candidate, formatDelta(c.DeltaPercent), fitLabel(c.Significant))
+	}
+	b.WriteString("\n")
 }
 
 func fitLabel(fit bool) string {
