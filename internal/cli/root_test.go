@@ -149,6 +149,62 @@ func TestResumeCompletedCampaign(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 	require.Contains(t, stdout.String(), "campaign campaign-test complete")
 	require.Empty(t, stderr.String())
+	require.Empty(t, campaignBuildRuns(t, dir), "a completed campaign measures nothing, so the resume records no build")
+}
+
+// campaignBuildRuns reads back the builds a campaign recorded for its later
+// runs, so a test can assert which ones did no work and left no entry.
+func campaignBuildRuns(t *testing.T, dir string) []campaign.BuildRun {
+	t.Helper()
+	store, err := campaign.OpenStore(filepath.Join(dir, campaign.DatabaseName))
+	require.NoError(t, err)
+	state, err := store.Load()
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+	return state.LaterBuilds
+}
+
+func TestRefusedResumeRecordsNoBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state campaign.State
+		extra []string
+		want  string
+	}{
+		{
+			name:  "a model campaign resumed without --adk",
+			state: campaign.State{ID: "c", ADKMode: "live", Analyst: campaign.AnalystJev},
+			want:  "pass --adk or --adk-stub",
+		},
+		{
+			name:  "a campaign whose model roles this build lacks",
+			state: campaign.State{ID: "c", ADKMode: "live", Analyst: "llm"},
+			extra: []string{"--adk-stub"},
+			want:  "ran model roles this build no longer has",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeCampaignDir(t, tc.state)
+			var stdout, stderr bytes.Buffer
+			cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+			cmd.SetArgs(append([]string{"optimize", "--resume", dir}, tc.extra...))
+
+			require.ErrorContains(t, cmd.Execute(), tc.want)
+			// The build that refused measures nothing, so a scorecard must not
+			// report it beside the builds that judged the campaign.
+			require.Empty(t, campaignBuildRuns(t, dir))
+		})
+	}
+}
+
+func TestVerifyWithNothingAcceptedRecordsNoBuild(t *testing.T) {
+	dir := writeCampaignDir(t, campaign.State{ID: "c", Status: campaign.StatusCompleted})
+	var stdout, stderr bytes.Buffer
+	cmd := New(Dependencies{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"verify", dir})
+
+	require.ErrorIs(t, cmd.Execute(), campaign.ErrNothingAccepted)
+	require.Empty(t, campaignBuildRuns(t, dir), "a verify with nothing to measure records no build")
 }
 
 func TestAttachResumeADKRequiresFlagForModelCampaign(t *testing.T) {

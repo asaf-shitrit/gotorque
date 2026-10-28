@@ -17,6 +17,7 @@ import (
 	"github.com/asaf-shitrit/gotorque/internal/jev"
 	"github.com/asaf-shitrit/gotorque/internal/manifest"
 	"github.com/asaf-shitrit/gotorque/internal/orchestrator"
+	"github.com/asaf-shitrit/gotorque/internal/version"
 	"github.com/stretchr/testify/require"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
@@ -36,6 +37,8 @@ func TestCampaignRunsPersistsReportsAndResumes(t *testing.T) {
 	require.NoError(t, engine.Run(context.Background()))
 	state := engine.State()
 	require.Equal(t, StatusCompleted, state.Status)
+	require.Equal(t, version.CurrentBuild(), state.Build, "a campaign names the gotorque build that started it")
+	require.Empty(t, state.LaterBuilds, "no other build has worked on it yet")
 	require.Len(t, state.Runs, 1)
 	require.NoError(t, engine.Close())
 
@@ -50,6 +53,7 @@ func TestCampaignRunsPersistsReportsAndResumes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resumed.Run(context.Background()))
 	require.Len(t, resumed.State().Runs, 1, "completed workload must not repeat")
+	require.Empty(t, resumed.State().LaterBuilds, "a completed campaign measures nothing, so its resume records no build")
 	require.NoError(t, resumed.Close())
 }
 

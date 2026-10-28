@@ -69,6 +69,11 @@ func (e *Engine) Verify(ctx context.Context, attempt, pairs int) (Verification, 
 	if err != nil {
 		return Verification{}, fmt.Errorf("read attempt %d's patch: %w", attempt, err)
 	}
+	// Recorded from here on, this build is one that measured: an attempt that
+	// does not exist or has no patch refused above, before any work.
+	if err := e.recordBuild(); err != nil {
+		return Verification{}, err
+	}
 	if err := e.runBuildStep(ctx); err != nil {
 		return Verification{}, err
 	}
