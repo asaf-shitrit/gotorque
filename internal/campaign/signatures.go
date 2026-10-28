@@ -36,7 +36,8 @@ func targetSignatures(repo string, target agents.Target) []string {
 		return nil
 	}
 	fset := token.NewFileSet()
-	files := packageFiles(fset, filepath.Join(repo, filepath.Dir(filepath.FromSlash(rel))))
+	dir := filepath.Join(repo, filepath.Dir(filepath.FromSlash(rel)))
+	files := packageFiles(fset, dir)
 	var fd *ast.FuncDecl
 	var home *ast.File
 	for _, f := range files {
@@ -48,9 +49,332 @@ func targetSignatures(repo string, target agents.Target) []string {
 	if fd == nil || fd.Body == nil {
 		return nil
 	}
-	out := declarationsFor(fset, files, fd)
-	dir := filepath.Join(repo, filepath.Dir(filepath.FromSlash(rel)))
-	return append(out, firstPartyDeclarations(fset, dir, home, fd, maxSignatures-len(out))...)
+	ctx := contextBuilder{fset: fset, seen: map[string]bool{}, budget: maxSignatures}
+	own := indexPackage(files, fd)
+	pkgs := newFirstPartyPackages(fset, dir, home)
+	declarationsFor(&ctx, own, fd)
+	targetValueTypes(&ctx, typeResolver{own: own, pkgs: pkgs}, fd)
+	firstPartyDeclarations(&ctx, pkgs, fd)
+	return ctx.out
+}
+
+// contextBuilder collects the declarations a target carries, in order, with
+// one shared budget and one shared dedupe set: three passes feed it, and a
+// declaration any two of them reach belongs in the context once.
+type contextBuilder struct {
+	fset   *token.FileSet
+	seen   map[string]bool
+	out    []string
+	budget int
+}
+
+// add appends text unless it is empty, already there, or the budget is full.
+func (b *contextBuilder) add(text string) {
+	if text == "" || b.seen[text] || len(b.out) >= b.budget {
+		return
+	}
+	b.seen[text] = true
+	b.out = append(b.out, text)
+}
+
+// full reports whether the budget is spent, which stops a pass early.
+func (b *contextBuilder) full() bool { return len(b.out) >= b.budget }
+
+// addDecl appends a function or type declaration, gofmt-formatted and cut at
+// the same bounds wherever it came from.
+func (b *contextBuilder) addDecl(node ast.Node, prefix string) {
+	b.add(prefix + renderDecl(b.fset, node))
+}
+
+// packageIndex indexes one package's declarations by name, and its methods by
+// receiver base type: a value's type name is what both a declaration and a
+// method call resolve through.
+type packageIndex struct {
+	decls   map[string][]ast.Node
+	methods map[string]map[string]*ast.FuncDecl
+}
+
+func indexPackage(files []*ast.File, skip *ast.FuncDecl) packageIndex {
+	return packageIndex{decls: packageDecls(files, skip), methods: methodIndex(files, skip)}
+}
+
+// typeSpec returns the type declaration of that name, or nil.
+func (p packageIndex) typeSpec(name string) *ast.TypeSpec {
+	for _, node := range p.decls[name] {
+		if ts, ok := node.(*ast.TypeSpec); ok {
+			return ts
+		}
+	}
+	return nil
+}
+
+// method returns the method of that name on the receiver base type, or nil.
+func (p packageIndex) method(base, name string) *ast.FuncDecl {
+	return p.methods[base][name]
+}
+
+// methodIndex indexes a package's methods by receiver base type and name.
+func methodIndex(files []*ast.File, skip *ast.FuncDecl) map[string]map[string]*ast.FuncDecl {
+	methods := map[string]map[string]*ast.FuncDecl{}
+	for _, f := range files {
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd == skip || fd.Recv == nil || len(fd.Recv.List) == 0 {
+				continue
+			}
+			base := baseTypeName(fd.Recv.List[0].Type)
+			if base == "" {
+				continue
+			}
+			if methods[base] == nil {
+				methods[base] = map[string]*ast.FuncDecl{}
+			}
+			methods[base][fd.Name.Name] = fd
+		}
+	}
+	return methods
+}
+
+// baseTypeName is the declared type name a type expression names: T, *T, and
+// the T of a generic T[P] receiver.
+func baseTypeName(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name
+	case *ast.StarExpr:
+		return baseTypeName(e.X)
+	case *ast.IndexExpr:
+		return baseTypeName(e.X)
+	case *ast.IndexListExpr:
+		return baseTypeName(e.X)
+	}
+	return ""
+}
+
+// valueType is a named type a target's value holds, with the package that
+// declares it: resolving a value's type is what tells the optimizer the
+// fields and methods it actually has.
+type valueType struct {
+	index packageIndex
+	name  string
+	label string
+}
+
+// typeResolver resolves an expression to the named type it holds, in the
+// target's own package or in a first-party package it imports. Resolution is
+// AST-based, over the packages' own declarations: go/types would mean loading
+// the target's module, which the context collector cannot do offline, and
+// this only ever adds advice to a prompt.
+type typeResolver struct {
+	own  packageIndex
+	pkgs firstPartyPackages
+}
+
+func (r typeResolver) resolve(expr ast.Expr) (valueType, bool) {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return r.named(r.own, "", e.Name)
+	case *ast.StarExpr:
+		return r.resolve(e.X)
+	case *ast.ParenExpr:
+		return r.resolve(e.X)
+	case *ast.UnaryExpr:
+		if e.Op == token.AND {
+			return r.resolve(e.X)
+		}
+	case *ast.CompositeLit:
+		return r.resolve(e.Type)
+	case *ast.CallExpr:
+		return r.callResult(e)
+	case *ast.SelectorExpr:
+		return r.qualified(e)
+	}
+	return valueType{}, false
+}
+
+// qualified resolves a type another first-party package declares, written as
+// pkg.T: a parameter, a typed var and a composite literal all spell a value's
+// type that way, and the methods called on it are declared in that package's
+// own files. Only an import name resolves, so a selector on a local variable
+// adds nothing.
+func (r typeResolver) qualified(sel *ast.SelectorExpr) (valueType, bool) {
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return valueType{}, false
+	}
+	other := r.pkgs.index(pkg.Name)
+	if other.decls == nil {
+		return valueType{}, false
+	}
+	return r.named(other, "// package "+pkg.Name+"\n", sel.Sel.Name)
+}
+
+// named returns the value type when index declares that type.
+func (r typeResolver) named(index packageIndex, label, name string) (valueType, bool) {
+	if index.typeSpec(name) == nil {
+		return valueType{}, false
+	}
+	return valueType{index: index, name: name, label: label}, true
+}
+
+// callResult resolves a call to the type of its single result, which is how a
+// target gets a value whose type name never appears in its body: on jj the
+// target main got `func parseArgs() args` and not the args struct, invented
+// fields on it, and failed to build. A conversion and new() name their type
+// directly.
+func (r typeResolver) callResult(call *ast.CallExpr) (valueType, bool) {
+	if id, ok := call.Fun.(*ast.Ident); ok {
+		if id.Name == "new" && len(call.Args) == 1 {
+			return r.resolve(call.Args[0])
+		}
+		if vt, isType := r.named(r.own, "", id.Name); isType && len(call.Args) == 1 {
+			return vt, true
+		}
+		return r.result(r.own, "", id.Name)
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return valueType{}, false
+	}
+	return r.selectorResult(sel)
+}
+
+// selectorResult resolves a call on a first-party package's function,
+// pkg.New(), to the type of its first result.
+func (r typeResolver) selectorResult(sel *ast.SelectorExpr) (valueType, bool) {
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return valueType{}, false
+	}
+	other := r.pkgs.index(pkg.Name)
+	if other.decls == nil {
+		return valueType{}, false
+	}
+	return r.result(other, "// package "+pkg.Name+"\n", sel.Sel.Name)
+}
+
+// result returns the declared type of the first result of index's funcs name,
+// when that result names a type. A function with several results still yields
+// one the target uses: `rec, err := types.New()` is the most common way Go
+// code gets a value.
+func (r typeResolver) result(index packageIndex, label, name string) (valueType, bool) {
+	for _, node := range index.decls[name] {
+		fd, ok := node.(*ast.FuncDecl)
+		if !ok || fd.Type.Results == nil || len(fd.Type.Results.List) == 0 {
+			continue
+		}
+		if vt, isType := r.named(index, label, baseTypeName(fd.Type.Results.List[0].Type)); isType {
+			return vt, true
+		}
+	}
+	return valueType{}, false
+}
+
+// localValueTypes maps the names of fd's receiver, its parameters and its
+// local values to the named type each holds.
+func localValueTypes(fd *ast.FuncDecl, r typeResolver) map[string]valueType {
+	types := map[string]valueType{}
+	addFields(types, fd.Recv, r)
+	addFields(types, fd.Type.Params, r)
+	if fd.Body == nil {
+		return types
+	}
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.ValueSpec:
+			addValueSpec(types, s, r)
+		case *ast.AssignStmt:
+			addAssign(types, s, r)
+		}
+		return true
+	})
+	return types
+}
+
+// addFields records the types of a receiver or parameter list, which the
+// target's body never names.
+func addFields(types map[string]valueType, fields *ast.FieldList, r typeResolver) {
+	if fields == nil {
+		return
+	}
+	for _, field := range fields.List {
+		vt, ok := r.resolve(field.Type)
+		if !ok {
+			continue
+		}
+		for _, name := range field.Names {
+			types[name.Name] = vt
+		}
+	}
+}
+
+// addValueSpec records one declared variable, from its explicit type or from
+// the value it is declared with.
+func addValueSpec(types map[string]valueType, spec *ast.ValueSpec, r typeResolver) {
+	if len(spec.Names) != 1 {
+		return
+	}
+	expr := spec.Type
+	if expr == nil && len(spec.Values) == 1 {
+		expr = spec.Values[0]
+	}
+	if expr == nil {
+		return
+	}
+	if vt, ok := r.resolve(expr); ok {
+		types[spec.Names[0].Name] = vt
+	}
+}
+
+// addAssign records the type a call's result reaches a variable with. Only a
+// first result resolves: `rec, err := types.New()` types rec and leaves err
+// alone, and a multi-value assignment of literals resolves nothing.
+func addAssign(types map[string]valueType, stmt *ast.AssignStmt, r typeResolver) {
+	if len(stmt.Lhs) == 0 || len(stmt.Rhs) != 1 {
+		return
+	}
+	id, ok := stmt.Lhs[0].(*ast.Ident)
+	if !ok {
+		return
+	}
+	if vt, ok := r.resolve(stmt.Rhs[0]); ok {
+		types[id.Name] = vt
+	}
+}
+
+// targetValueTypes renders, in the order the target first reads them, the
+// declared type of each first-party value it reads through a selector and the
+// methods it calls on that value. Target context collected by referenced
+// names misses both: a value from a call carries a type its body never spells,
+// and a method call on it is not a package-level declaration at all. On tomlv
+// the patch called .String() on a value that already was a string, which the
+// type's own method set would have shown; on jj the candidate invented fields
+// on an args struct it never saw.
+func targetValueTypes(ctx *contextBuilder, r typeResolver, fd *ast.FuncDecl) {
+	if fd.Body == nil || ctx.full() {
+		return
+	}
+	values := localValueTypes(fd, r)
+	for _, ref := range selectorRefs(fd.Body) {
+		vt, ok := values[ref[0]]
+		if !ok {
+			continue
+		}
+		addValueType(ctx, vt)
+		if method := vt.index.method(vt.name, ref[1]); method != nil {
+			ctx.addDecl(method, vt.label)
+		}
+		if ctx.full() {
+			return
+		}
+	}
+}
+
+// addValueType appends a value's declared type, which carries its fields.
+func addValueType(ctx *contextBuilder, vt valueType) {
+	if spec := vt.index.typeSpec(vt.name); spec != nil {
+		ctx.addDecl(spec, vt.label)
+	}
 }
 
 // firstPartyDeclarations renders the declarations fd reaches through a
@@ -60,24 +384,18 @@ func targetSignatures(repo string, target agents.Target) []string {
 // pkg/types, not in the target's package. Standard-library and third-party
 // packages are left out: their APIs are what the model knows best, and
 // resolving them would mean reading the module cache.
-func firstPartyDeclarations(fset *token.FileSet, dir string, file *ast.File, fd *ast.FuncDecl, budget int) []string {
-	root, module := moduleOf(dir)
-	if budget <= 0 || module == "" {
-		return nil
+func firstPartyDeclarations(ctx *contextBuilder, pkgs firstPartyPackages, fd *ast.FuncDecl) {
+	if ctx.full() || pkgs.module == "" {
+		return
 	}
-	pkgs := firstPartyPackages{fset: fset, root: root, module: module, imports: importsByName(file), cache: map[string]map[string][]ast.Node{}}
-	var out []string
 	for _, ref := range selectorRefs(fd) {
-		for _, node := range pkgs.decls(ref[0])[ref[1]] {
-			if len(out) == budget {
-				return out
-			}
-			if text := renderDecl(fset, node); text != "" {
-				out = append(out, "// package "+ref[0]+"\n"+text)
+		for _, node := range pkgs.index(ref[0]).decls[ref[1]] {
+			ctx.addDecl(node, "// package "+ref[0]+"\n")
+			if ctx.full() {
+				return
 			}
 		}
 	}
-	return out
 }
 
 // firstPartyPackages resolves a file's import names to the declarations of
@@ -86,31 +404,44 @@ type firstPartyPackages struct {
 	fset         *token.FileSet
 	root, module string
 	imports      map[string]string
-	cache        map[string]map[string][]ast.Node
+	cache        map[string]packageIndex
 }
 
-// decls returns the declarations of the package the file imports as name,
-// or nil when it imports no such package or the package is not first-party.
-func (p firstPartyPackages) decls(name string) map[string][]ast.Node {
+func newFirstPartyPackages(fset *token.FileSet, dir string, file *ast.File) firstPartyPackages {
+	root, module := moduleOf(dir)
+	return firstPartyPackages{
+		fset:    fset,
+		root:    root,
+		module:  module,
+		imports: importsByName(file),
+		cache:   map[string]packageIndex{},
+	}
+}
+
+// index returns the declarations of the package the file imports as name, or
+// the zero index when it imports no such package or the package is not
+// first-party.
+func (p firstPartyPackages) index(name string) packageIndex {
 	path, ok := p.imports[name]
-	if !ok || (path != p.module && !strings.HasPrefix(path, p.module+"/")) {
-		return nil
+	if !ok || p.module == "" || (path != p.module && !strings.HasPrefix(path, p.module+"/")) {
+		return packageIndex{}
 	}
-	if decls, cached := p.cache[path]; cached {
-		return decls
+	if index, cached := p.cache[path]; cached {
+		return index
 	}
-	decls := packageDecls(packageFiles(p.fset, filepath.Join(p.root, filepath.FromSlash(strings.TrimPrefix(path, p.module)))), nil)
-	p.cache[path] = decls
-	return decls
+	dir := filepath.Join(p.root, filepath.FromSlash(strings.TrimPrefix(path, p.module)))
+	index := indexPackage(packageFiles(p.fset, dir), nil)
+	p.cache[path] = index
+	return index
 }
 
-// selectorRefs lists the (package, name) pairs of fd's selectors on a bare
-// identifier, first use first. A local variable's field access looks the
+// selectorRefs lists the (name, selector) pairs of a node's selectors on a
+// bare identifier, first use first. A local variable's field access looks the
 // same; it simply matches no import.
-func selectorRefs(fd *ast.FuncDecl) [][2]string {
+func selectorRefs(node ast.Node) [][2]string {
 	var refs [][2]string
 	seen := map[[2]string]bool{}
-	ast.Inspect(fd, func(n ast.Node) bool {
+	ast.Inspect(node, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
 			return true
@@ -191,23 +522,15 @@ func packageFiles(fset *token.FileSet, dir string) []*ast.File {
 
 // declarationsFor renders, in the order the target first refers to them, the
 // package-level declarations named in fd's receiver and body.
-func declarationsFor(fset *token.FileSet, files []*ast.File, fd *ast.FuncDecl) []string {
-	order := referencedNames(fd)
-	decls := packageDecls(files, fd)
-	var out []string
-	seen := map[ast.Node]bool{}
-	for _, name := range order {
-		for _, node := range decls[name] {
-			if seen[node] || len(out) == maxSignatures {
-				continue
-			}
-			seen[node] = true
-			if text := renderDecl(fset, node); text != "" {
-				out = append(out, text)
+func declarationsFor(ctx *contextBuilder, index packageIndex, fd *ast.FuncDecl) {
+	for _, name := range referencedNames(fd) {
+		for _, node := range index.decls[name] {
+			ctx.addDecl(node, "")
+			if ctx.full() {
+				return
 			}
 		}
 	}
-	return out
 }
 
 // referencedNames is every identifier in fd's receiver type and body, first
