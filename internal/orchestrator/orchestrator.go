@@ -632,26 +632,30 @@ func (g *campaignGraph) evaluate(ctx adkagent.Context, raw any) (*session.Event,
 }
 
 // reaskable reports whether this candidate is worth one more ask instead of
-// the rejection it just earned: a code-chosen target whose answer hand-wrote a
-// patch, sent no function_source to fall back on, and had that patch refused
-// by git. Nothing about the change has been judged — the refusal is about
-// diff mechanics — and the deterministic transport the target asked for
-// (function_source, ADR 0022) answers exactly that failure. Issue #72: in the
-// record of 151 campaigns this is four attempts, cue's 2 and 3 and one each on
-// s2c and otto, every one a hand-written patch with no function_source beside
-// it. One ask per cycle, never more: the rejection still ends the attempt when
-// the second answer fails too. ADR 0045.
+// the rejection it just earned: a code-chosen target whose answer was refused
+// before any of its change was judged, for a reason the optimizer can answer
+// by sending the remedy over function_source (ADR 0022). The engine names the
+// refusal in ReaskCause: a hand-written patch git would not apply (issue #72),
+// a function_source that stops partway through, or an answer with no code at
+// all (issue #77). In the record of 151 campaigns the first is four attempts,
+// the others the rest of the attempts lost before build. One ask per cycle,
+// never more: the rejection still ends the attempt when the second answer
+// fails too. ADR 0045.
+//
+// A patch that arrives beside a function_source keeps the precedence ADR 0022
+// gives it, so a refusal of that pair is not a missing transport and is not
+// asked again.
 func reaskable(state CampaignState, evidence CandidateEvidence) bool {
 	if state.Target == nil || state.ReaskCause != "" || evidence.ReaskCause == "" {
 		return false
 	}
-	return state.Proposal.Patch != "" && !proposalHasFunctionSource(state.Proposal)
+	return strings.TrimSpace(state.Proposal.Patch) == "" || !proposalHasFunctionSource(state.Proposal)
 }
 
 // proposalHasFunctionSource reports whether the proposal carries the
 // deterministic transport at all, so a re-ask never replaces an answer that
-// already has one: a patch that won over a function_source keeps its verdict,
-// which is the precedence ADR 0022 sets.
+// already has one next to a patch: a patch that won over a function_source
+// keeps its verdict, which is the precedence ADR 0022 sets.
 func proposalHasFunctionSource(p agents.OptimizerResult) bool {
 	return strings.TrimSpace(p.FunctionSource) != "" || len(p.FunctionSources) > 0
 }

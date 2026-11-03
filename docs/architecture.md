@@ -182,7 +182,11 @@ not recorded.
    same attempt, for `function_source`, with the refusal quoted (ADR 0045,
    `reaskable` in `internal/orchestrator`). The trigger is the
    `candidate.ErrPatchDoesNotApply` sentinel reaching the evidence as
-   `ReaskCause`, the second answer is judged by every gate the first would
+   `ReaskCause`. Two more refusals set the same field (issue #77): a
+   `function_source` whose parse fails at the end of the text
+   (`truncationError`), quoted with the declaration's line count at the base
+   revision, and an answer with no code at all (`errEmptyProposal`). The
+   second answer is judged by every gate the first would
    have faced, and the answer that was refused earns no verdict. The answer
    that survives carries the refusal as `ReaskedFor`, so the record and
    `report.md` say the attempt took two optimizer calls.

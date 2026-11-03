@@ -159,11 +159,11 @@ type CandidateEvidence struct {
 	// ReaskCause is the pre-build failure that makes this attempt worth one
 	// more ask, or empty when there is none: the error `git apply --check` and
 	// its fuzzy fallback gave for a patch git refused to apply. It is quoted
-	// back to the optimizer, which is asked for function_source instead. A
-	// re-ask is a transport question, not a judgment: policy never reads this,
-	// and the second answer is judged by the same gates as the first. #77
-	// widens the same trigger to a function_source that does not parse and an
-	// answer carrying no code at all.
+	// back to the optimizer, which is asked for function_source instead. The
+	// same field carries a function_source that stopped partway through and an
+	// answer carrying no code at all (issue #77). A re-ask is a transport
+	// question, not a judgment: policy never reads this, and the second answer
+	// is judged by the same gates as the first.
 	ReaskCause string `json:"reask_cause,omitempty"`
 	// ReaskedFor names the refusal the previous answer in this attempt earned,
 	// set only on the answer that answered a re-ask: the attempt then took two

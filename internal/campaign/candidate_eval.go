@@ -82,7 +82,7 @@ func (ev *evaluator) evaluate(ctx context.Context, req orchestrator.CandidateReq
 	defer ev.releaseBase(ctx)
 	patchText, transport, err := ev.resolveCandidatePatch(ctx, req)
 	if err != nil {
-		return ev.rejectUnresolvedPatch(req, transport, err), nil
+		return ev.rejectUnresolvedPatch(ctx, req, transport, err), nil
 	}
 	id, patchPath, err := ev.writeCandidatePatch(req, patchText)
 	if err != nil {
@@ -111,7 +111,7 @@ func (ev *evaluator) evaluate(ctx context.Context, req orchestrator.CandidateReq
 // parse, marked unmeasured so the target is offered once more (ADR 0017). It
 // still needs an ID: the orchestrator stops the whole campaign on evidence
 // without one.
-func (ev *evaluator) rejectUnresolvedPatch(req orchestrator.CandidateRequest, transport string, err error) orchestrator.CandidateEvidence {
+func (ev *evaluator) rejectUnresolvedPatch(ctx context.Context, req orchestrator.CandidateRequest, transport string, err error) orchestrator.CandidateEvidence {
 	id := stableID("candidate", ev.campaignID, strconv.Itoa(req.Attempt), transport, err.Error())
 	// Kept like any other answer: held-out dyff lost two attempts here to
 	// "function_source must be a function declaration", and with nothing
@@ -122,7 +122,28 @@ func (ev *evaluator) rejectUnresolvedPatch(req orchestrator.CandidateRequest, tr
 		Summary:       fmt.Sprintf("candidate rejected before build: %v", err),
 		FailureDetail: tail(err.Error(), 400),
 		Unmeasured:    true,
+		ReaskCause:    ev.reaskCauseFor(ctx, req, err),
 	}
+}
+
+// reaskCauseFor is the refusal the optimizer is asked to answer again, or empty
+// when this rejection is not one it can answer by changing how it sends the
+// same remedy (issue #77, ADR 0045). Two refusals qualify: a function_source
+// that ends before its declaration does, and an answer with no code at all.
+// Only a code-chosen target is asked again; without one there is no
+// function_source for the model to be steered to.
+func (ev *evaluator) reaskCauseFor(ctx context.Context, req orchestrator.CandidateRequest, err error) string {
+	if req.Target == nil {
+		return ""
+	}
+	var truncated truncationError
+	switch {
+	case errors.Is(err, errEmptyProposal):
+		return err.Error()
+	case errors.As(err, &truncated):
+		return fmt.Sprintf("%s; %s", err, ev.declarationSize(ctx, req.Target))
+	}
+	return ""
 }
 
 // judgePrepared runs everything after the patch applied: the repeat and shape

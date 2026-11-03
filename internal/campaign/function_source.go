@@ -280,6 +280,61 @@ func formatFunctionDecl(src string) (*ast.FuncDecl, string, error) {
 	return decls[0].fd, decls[0].text, nil
 }
 
+// truncationError is a function_source that stops before its declaration is
+// complete: the parser ran into the end of the text with a brace, string or
+// comment still open. Held-out csvq and yaegi each lost an attempt to one (issue
+// #77). It is the one parse failure the optimizer can be asked to answer again,
+// because it says nothing about the remedy, only that the answer ended early.
+type truncationError struct{ cause error }
+
+func (e truncationError) Error() string {
+	return "function_source does not parse as Go source: " + e.cause.Error()
+}
+
+func (e truncationError) Unwrap() error { return e.cause }
+
+// parseFailure wraps a parser or formatter error, as a truncationError when
+// the text ended inside a construct.
+func parseFailure(err error) error {
+	msg := err.Error()
+	if strings.Contains(msg, "found 'EOF'") || strings.Contains(msg, "not terminated") {
+		return truncationError{cause: err}
+	}
+	return fmt.Errorf("function_source does not parse as Go source: %w", err)
+}
+
+// declarationSize tells the optimizer how much source its answer must hold: the
+// target's line count at the base revision, or just the instruction to send all
+// of it when the declaration cannot be read.
+func (ev *evaluator) declarationSize(ctx context.Context, target *agents.Target) string {
+	whole := "send the whole declaration of " + target.Function + " with every brace closed"
+	lines, ok := ev.declarationLines(ctx, target)
+	if !ok {
+		return whole
+	}
+	return fmt.Sprintf("%s is %d lines long at the base revision, so %s", target.Function, lines, whole)
+}
+
+// declarationLines is the number of lines the target function's declaration
+// spans in the base tree.
+func (ev *evaluator) declarationLines(ctx context.Context, target *agents.Target) (int, bool) {
+	relPath := targetPath(target.Location)
+	root, err := ev.baseRoot(ctx)
+	if relPath == "" || err != nil {
+		return 0, false
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(root, filepath.FromSlash(relPath)), nil, parser.SkipObjectResolution)
+	if err != nil {
+		return 0, false
+	}
+	fd := findFuncDecl(file, target.Function)
+	if fd == nil {
+		return 0, false
+	}
+	return fset.Position(fd.End()).Line - fset.Position(fd.Pos()).Line + 1, true
+}
+
 // formattedDecl is one declaration from a function_source, with its
 // gofmt-formatted text, doc comment included: a function (fd) or a
 // package-level var, const or type (gen).
@@ -303,12 +358,12 @@ func splitFunctionDecls(src string) ([]formattedDecl, error) {
 	}
 	formatted, err := format.Source([]byte("package p\n\n" + trimmed + "\n"))
 	if err != nil {
-		return nil, fmt.Errorf("function_source does not parse as Go source: %w", err)
+		return nil, parseFailure(err)
 	}
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", formatted, parser.ParseComments)
 	if err != nil {
-		return nil, fmt.Errorf("function_source does not parse as Go source: %w", err)
+		return nil, parseFailure(err)
 	}
 	decls := make([]formattedDecl, 0, len(file.Decls))
 	for _, d := range file.Decls {

@@ -225,3 +225,47 @@ func TestReaskSpendsTheCandidatesBudgetOnce(t *testing.T) {
 		t.Errorf("attempt numbers = %v, want [1 1 2]", attempts)
 	}
 }
+
+// TestTheSameTriggerAsksAgainForAnswersWithoutCompleteCode is issue #77: a
+// function_source that stops partway through and an answer with no code at all
+// are refused before build, carry a cause, and go through the one re-ask
+// issue #72 built. The second answer is the one settled, and a second refusal
+// still ends the attempt.
+func TestTheSameTriggerAsksAgainForAnswersWithoutCompleteCode(t *testing.T) {
+	const truncation = "function_source does not parse as Go source: 83:21: expected '}', found 'EOF'; lower is 328 lines long"
+	const empty = "the optimizer returned neither a patch nor a function_source"
+	cases := []struct {
+		name   string
+		first  agents.OptimizerResult
+		refuse string
+	}{
+		{"a function_source that stops partway", agents.OptimizerResult{Hypothesis: "h", FunctionSource: "func (statement) String() string {"}, truncation},
+		{"no code at all", agents.OptimizerResult{Hypothesis: "h"}, empty},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			optimizer, prompts := sequenceAgent(t, "optimizer", tc.first, asFunctionSource)
+			bench := &fakeBench{reaskCauses: []string{tc.refuse}, decisions: []domain.Decision{domain.DecisionRejected}}
+			orch := reaskGraph(t, bench, optimizer)
+			runUntilNode[CampaignResult](t, orch, "optimizer-test", "user-1", "session-reask-77-"+strings.Repeat("x", i+1), causeCampaign, "finalize_campaign")
+
+			if len(*prompts) != 2 || !strings.Contains((*prompts)[1], "reask_cause") {
+				t.Fatalf("optimizer prompts = %v, want a second ask carrying the refusal", *prompts)
+			}
+			if got := bench.settled[0].Assessment.Evidence.ReaskedFor; len(bench.settled) != 1 || got != tc.refuse {
+				t.Errorf("settled = %d, reasked_for = %q, want one verdict recording %q", len(bench.settled), got, tc.refuse)
+			}
+		})
+	}
+}
+
+// TestAnAnswerWithBothFieldsIsStillNotAskedAgain keeps ADR 0022's precedence
+// when function_source is set beside a patch that is not blank.
+func TestAnAnswerWithBothFieldsIsStillNotAskedAgain(t *testing.T) {
+	if reaskable(CampaignState{Target: &targetLoop, Proposal: agents.OptimizerResult{Patch: "@@ -1 +1 @@\n-a\n+b", FunctionSource: "func f() {}"}}, CandidateEvidence{ReaskCause: "x"}) {
+		t.Error("a patch beside a function_source was asked again")
+	}
+	if !reaskable(CampaignState{Target: &targetLoop, Proposal: agents.OptimizerResult{Patch: "\n", FunctionSource: "func f() {"}}, CandidateEvidence{ReaskCause: "x"}) {
+		t.Error("a blank patch hid a truncated function_source from the re-ask")
+	}
+}

@@ -81,6 +81,37 @@ condition to `reaskable`. One ask per attempt stays the rule.
   live measurement on development targets is what would say whether it pays for
   the extra call.
 
+## Amendment: two more refusals use the trigger (issue #77)
+
+`reaskable` now also fires for two refusals the engine sets in
+`rejectUnresolvedPatch`, both with a code-chosen target and both before any
+change was judged:
+
+- A `function_source` that ends before its declaration does. The parser
+  reports the end of the text with a brace, string or comment still open
+  (`truncationError`, from `parseFailure`). The quoted refusal carries that
+  parse error and the target declaration's line count at the base revision.
+  Held-out yaegi (`lower`, a 328-line function, parse stopped at line 83) and
+  csvq (`(*View).group`, 133 lines, stopped at line 93) lost attempts this way
+  after the reasoning-off retry.
+- An answer with no patch and no `function_source`
+  (`errEmptyProposal`), seen on tomlv, chroma, shfmt, yq and csvq. A model
+  call that failed outright ("the optimizer did not answer") is not asked
+  again: the call was already retried by the model layer.
+
+The issue proposed also requiring the source to be much shorter than the
+declaration. The csvq answer was 93 of 133 lines, 70%, so a shortness
+threshold would have excluded a recorded case, and an unexpected end of text
+is conclusive by itself. Other parse failures (`func f( {`) are not asked
+again: they are mistakes in the code, not an answer that stopped.
+
+`reaskable` no longer requires a patch. It refuses only a non-blank patch
+beside a `function_source`, which keeps the precedence ADR 0022 gives the
+patch. The condition that the patch was refused by git moved to where the
+cause is set. One ask per attempt is unchanged. The instruction to the
+optimizer gained one sentence: after such a refusal send the whole
+declaration with every brace closed.
+
 ## Alternatives considered
 
 - **Fall back to `function_source` when the patch fails to apply.** There is
