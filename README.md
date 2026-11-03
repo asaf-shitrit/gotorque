@@ -185,4 +185,5 @@ push the tag, then `make release NOTES=<file>` publishes the GitHub release
 with hand-written notes.
 
 Architecture details are in [docs/architecture.md](docs/architecture.md).
+To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).
 License: MIT ([LICENSE](LICENSE)).
