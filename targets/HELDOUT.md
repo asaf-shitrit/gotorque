@@ -29,6 +29,11 @@ These targets exist to judge whether gotorque generalizes. They are never used t
 - The manifests were written from each CLI's source and help text, before any campaign ran on it.
   Workload sizes were calibrated only by timing the unpatched binary.
 
+## Running a sweep
+
+`docs/heldout-sweep.md` gives the steps, the proposed settings and the bar for a clean sweep, and
+`scripts/heldout-sweep.sh` runs them against a named revision.
+
 ## Onboarding findings (fixed)
 
 Setting these targets up found two general gaps, both fixed on development fixtures rather than by
