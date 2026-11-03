@@ -103,10 +103,13 @@ func (s benchstatSummary) supported() bool {
 }
 
 // compareWallTimeMetric builds the wall_time_ns comparison for one workload.
-// The Welch t-test result always exists; when the installed benchstat binary
-// can compare the raw samples and yields a parseable p-value, that p-value
-// refines the statistical-support signal. Any other outcome — binary absent,
-// invocation failure, unparseable output — leaves the t-test path unchanged.
+// Series measured as interleaved pairs are judged by a signed-rank test on
+// their differences and benchstat's output is only reported (ADR 0048). For
+// two series that cannot be paired the Welch t-test result always exists; when
+// the installed benchstat binary can compare the raw samples and yields a
+// parseable p-value, that p-value refines the statistical-support signal. Any
+// other outcome — binary absent, invocation failure, unparseable output —
+// leaves the t-test path unchanged.
 // The second return value is trimmed raw benchstat output for reporting, or
 // empty when benchstat did not contribute.
 // compareWallTimeMetric builds the wall_time_ns comparison for one workload,
@@ -122,6 +125,12 @@ func (ev *evaluator) compareWallTimeMetric(ctx context.Context, workload string,
 		return comparisons, ""
 	}
 	c := &comparisons[0]
+	if c.Test == testSignedRank {
+		// The pairs were tested on their differences. Benchstat compares the
+		// two columns as independent samples (Mann-Whitney U), so its p-value
+		// stays in the report and does not decide (ADR 0048).
+		return comparisons, output
+	}
 	if summary.HasPValue {
 		c.Significant = summary.supported()
 	}

@@ -10,7 +10,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0001](0001-workload-identity-is-structured.md) | Workload identity is structured, not spelled into a name | accepted |
 | [0002](0002-verdicts-may-rest-on-any-eligible-reading.md) | A verdict may rest on any acceptance-eligible reading | accepted |
 | [0003](0003-manifest-performance-block-is-the-contract.md) | The target manifest's performance block is the acceptance contract | accepted |
-| [0004](0004-measurement-power-and-benchstat-lane.md) | Measurement uses 25 interleaved pairs and a benchstat lane verified against the real binary | accepted |
+| [0004](0004-measurement-power-and-benchstat-lane.md) | Measurement uses 25 interleaved pairs and a benchstat lane verified against the real binary | accepted, amended by 0048 |
 | [0005](0005-behavior-gate-subtracts-preexisting-failures.md) | The behavior gate subtracts pre-existing failures and refuses unattributable baselines | accepted |
 | [0006](0006-model-calls-stream-bounded-by-silence.md) | Model calls stream, and silence — not total duration — is the bound | accepted |
 | [0007](0007-pgo-lane-is-budget-bounded.md) | The informational PGO lane cannot spend a verdict's budget | accepted |
@@ -45,7 +45,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0036](0036-candidate-evaluation-is-its-own-module.md) | Candidate evaluation is its own module, with no Engine and three ports | accepted |
 | [0037](0037-discovery-is-its-own-module.md) | Discovery is its own module behind a sampler seam | accepted |
 | [0038](0038-the-engine-bridge-is-one-port.md) | The engine bridge is one port, `Bench` | accepted |
-| [0039](0039-an-improvement-needs-significance.md) | An improvement is supported only when it is significant | accepted |
+| [0039](0039-an-improvement-needs-significance.md) | An improvement is supported only when it is significant | accepted, amended by 0048 |
 | [0040](0040-a-peak-memory-breach-is-replicated.md) | A peak-memory breach is replicated in a fresh series before it rejects | accepted |
 | [0041](0041-a-selected-workload-reading-is-measured-again.md) | An accept that picks the best workload reading is measured again | accepted |
 | [0042](0042-jev-answers-are-recorded-across-campaigns.md) | Jev answers are recorded across campaigns, keyed by the exact question asked | accepted |
@@ -54,6 +54,7 @@ something already declined. `docs/architecture.md` describes the current state;
 | [0045](0045-a-refused-answer-is-asked-again-once.md) | An answer refused before it could be judged is asked again once, in the same attempt | accepted |
 | [0046](0046-a-campaign-records-the-build-that-judged-it.md) | A campaign records the gotorque build that judged it, in the report and the scorecard | accepted |
 | [0047](0047-ineligible-seeds-can-only-veto.md) | Seeds whose tier cannot accept are measured, and can only veto | accepted |
+| [0048](0048-interleaved-pairs-are-judged-by-a-paired-test.md) | Interleaved pairs are judged by a signed-rank test on their differences | accepted |
 
 Statuses: `accepted` (in force), `deferred` (deliberately not done — revisit with new evidence),
 `superseded by <n>` (the mechanism it decided no longer exists; its evidence and reasoning stay

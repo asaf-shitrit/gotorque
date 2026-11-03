@@ -425,17 +425,26 @@ not recorded.
    selected the workload would still be in a pooled reading. That fresh series
    is as long as the one it replaces, because the pooled reading folds the
    seeds per repetition.
-6. **Statistics.** Each metric gets a two-sample Welch t-test against a
-   conservative critical value (`|t| > 2.2`, roughly p < 0.05 for these
-   sample sizes); support is never reported from fewer than four samples per
-   side. When the optional `benchstat` binary is installed
+6. **Statistics.** The A/B series are paired by index (`RunInterleaved`
+   alternates which side of a pair runs first), so each metric is judged by a
+   two-sided Wilcoxon signed-rank test on the per-pair differences
+   (`internal/campaign/paired.go`, `p < 0.05`, ADR 0048). Drift of the
+   machine between pairs moves both halves of a pair together and cancels in
+   the difference, where a two-sample test counts it as noise. Support is
+   never reported from fewer than four pairs. Two series that cannot be paired
+   (unequal lengths, fewer than four whole pairs) are compared as independent
+   samples with a Welch t-test against a conservative critical value
+   (`|t| > 2.2`, roughly p < 0.05), which is the path ADRs 0004 to 0043
+   describe. When the optional `benchstat` binary is installed
    (`internal/campaign/benchstat.go`), raw wall-time samples are written per
-   workload and benchstat refines the result: a parseable p-value below 0.05
+   workload and its output is kept for the report. For paired series it does
+   not decide, because its rank test compares the two columns as independent
+   samples; for unpaired ones a parseable p-value below 0.05
    grants support, a parseable but insignificant p-value withdraws support
    the coarse t-test may have granted, and delta-only legacy output is
    informational and can never grant support by itself. Each comparison
-   also records `significant`: benchstat's p below 0.05 when it ran,
-   otherwise `|t| > 2.2`. That is not the same as support. Support has a
+   also records `significant`, and `test` (`wilcoxon_signed_rank` or `welch`)
+   with `p_value` for the signed-rank test. That is not the same as support. Support has a
    second route, for a reading that is **not** an improvement: when the 95%
    interval of its delta lies entirely below the metric's regression limit
    (`policy.RegressionLimit`: the guardrail's own
@@ -445,8 +454,9 @@ not recorded.
    change was detected, which is what a jittery flat guardrail needs. An
    improvement gets no such support: ruling out a regression says nothing
    about whether a win is real, so an improved reading is supported only when
-   it is significant (ADR 0039). `significant` is what a regression is
-   judged on. Trimmed benchstat
+   it is significant (ADR 0039). The interval of a paired reading is built from
+   the standard error of the per-pair differences. `significant` is what a
+   regression is judged on. Trimmed benchstat
    output is kept in the candidate record for reports. Representative
    workloads are folded per repetition before the pooled comparison: the
    mean across workloads for wall and CPU time, the maximum for peak memory,

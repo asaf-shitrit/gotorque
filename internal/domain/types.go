@@ -150,12 +150,22 @@ type MetricComparison struct {
 	// acceptance falls back to DeltaPercent.
 	Shift            string `json:"shift,omitempty"`
 	StatisticallyFit bool   `json:"statistically_supported"`
-	// Significant says the two sample sets differ: benchstat's p below 0.05
-	// when it ran, otherwise Welch's |t| above 2.2. StatisticallyFit is not
-	// that, because it is also granted to a reading that is not an improvement
-	// when its interval rules out a regression past the metric's limit, so a
+	// Significant says the two sample sets differ: the Wilcoxon signed-rank
+	// test on the per-pair differences below p 0.05 when the series were
+	// measured as pairs (ADR 0048), otherwise benchstat's p below 0.05 when it
+	// ran, otherwise Welch's |t| above 2.2. StatisticallyFit is not that,
+	// because it is also granted to a reading that is not an improvement when
+	// its interval rules out a regression past the metric's limit, so a
 	// regression is judged on this field instead.
 	Significant bool `json:"significant"`
+	// Test names the test behind Significant: "wilcoxon_signed_rank" over the
+	// per-pair differences, or "welch" over two unpaired columns. Empty means
+	// there were too few samples to test, or a comparison recorded before the
+	// field existed, which was judged unpaired.
+	Test string `json:"test,omitempty"`
+	// PValue is the two-sided p-value of the signed-rank test. It is set only
+	// when Test is "wilcoxon_signed_rank".
+	PValue float64 `json:"p_value,omitempty"`
 }
 
 // ShiftHodgesLehmann names the estimator in MetricComparison.Shift: the
