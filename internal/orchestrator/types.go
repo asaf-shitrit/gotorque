@@ -125,11 +125,16 @@ type CandidateEvidence struct {
 	SafetyChecksPassed     bool                      `json:"safety_checks_passed"`
 	RepresentativeEvidence bool                      `json:"representative_evidence"`
 	Comparisons            []domain.MetricComparison `json:"comparisons,omitempty"`
-	RepSamples             []domain.WorkloadSamples  `json:"rep_samples,omitempty"`
-	ValidationJobs         []string                  `json:"validation_jobs,omitempty"`
-	ArtifactURIs           []string                  `json:"artifact_uris,omitempty"`
-	BenchstatOutput        string                    `json:"benchstat_output,omitempty"`
-	Summary                string                    `json:"summary"`
+	// StressComparisons are the guardrail readings of the workloads the
+	// manifest keeps out of acceptance (its plausible and stress tiers). They
+	// can only veto a candidate: wall time on such a workload is never
+	// compared, so nothing measured there can carry an acceptance.
+	StressComparisons []domain.MetricComparison `json:"stress_comparisons,omitempty"`
+	RepSamples        []domain.WorkloadSamples  `json:"rep_samples,omitempty"`
+	ValidationJobs    []string                  `json:"validation_jobs,omitempty"`
+	ArtifactURIs      []string                  `json:"artifact_uris,omitempty"`
+	BenchstatOutput   string                    `json:"benchstat_output,omitempty"`
+	Summary           string                    `json:"summary"`
 	// FailureDetail carries the structured failure output (patch or compiler
 	// stderr tail) behind a rejection so later cycles can avoid repeating
 	// the same failed approach.
@@ -173,11 +178,13 @@ type CandidateEvidence struct {
 	// it never changes accept/reject decisions.
 	PgoComparisons []domain.MetricComparison `json:"pgo_comparisons,omitempty"`
 	PgoNote        string                    `json:"pgo_note,omitempty"`
-	// FreshGuardrails are the pooled guardrail readings of the confirmation
-	// series, taken after the first one: the series that runs when a breach is
-	// significant (see policy.GuardrailsToReplicate) or when another reading
-	// asks for more samples. Policy decides on them; the comparison list holds
-	// the readings of every series together.
+	// FreshGuardrails are the guardrail readings of a fresh series, taken after
+	// the first one: the series that runs when a breach is significant (see
+	// policy.GuardrailsToReplicate, policy.StressGuardrailsToReplicate) or when
+	// another reading asks for more samples. Policy decides on them; the
+	// comparison list holds the readings of every series together. A pooled
+	// reading carries no workload; a stress seed's carries its id, because the
+	// series that checks one of those breaches runs on that seed alone.
 	FreshGuardrails []domain.MetricComparison `json:"fresh_guardrails,omitempty"`
 	// FirstSeriesGuardrails are the pooled guardrail readings the first series
 	// produced for the guardrails that fresh series re-measures
