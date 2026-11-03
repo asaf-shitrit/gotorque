@@ -495,6 +495,26 @@ func TestTheExtendingConfirmationRunsBeforeTheSelectionOne(t *testing.T) {
 	require.Equal(t, "improvement_confirmed", journal.events[len(journal.events)-1].kind)
 }
 
+// TestTheReplicationNoteQuotesTheMetricsOwnLimit: an --allow memory=5% lands
+// on the guardrail while the shared ceiling stays at 2%. The verdict judges
+// the reading by 5%, so the note must not say it was over 2%.
+func TestTheReplicationNoteQuotesTheMetricsOwnLimit(t *testing.T) {
+	ev, evidence, m, candidate := measuredEvaluator(t)
+	guardrails := ev.manifest.Performance.Guardrails
+	for i := range guardrails {
+		if guardrails[i].Name == "peak_memory_bytes" {
+			guardrails[i].MaximumRegressionPercent = 5
+		}
+	}
+	require.InDelta(t, 5, ev.regressionLimit("peak_memory_bytes"), 0)
+	require.InDelta(t, 2, ev.regressionLimit("cpu_time_ns"), 0)
+	evidence.Comparisons = []domain.MetricComparison{{Metric: "peak_memory_bytes", Baseline: 100, Candidate: 106, StatisticallyFit: true, Significant: true}}
+
+	require.True(t, ev.confirmRegressions(context.Background(), campaignDefaults(), evidence, "candidate", candidate, m))
+	require.Contains(t, evidence.Summary, "peak_memory_bytes +6.00% over the 5.00% limit and significant after 25 pairs")
+	require.NotContains(t, evidence.Summary, "2.00% limit")
+}
+
 func countJob(jobs []string, job string) int {
 	count := 0
 	for _, j := range jobs {

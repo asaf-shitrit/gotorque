@@ -658,7 +658,7 @@ func (ev *evaluator) confirmRegressions(ctx context.Context, s evalSettings, evi
 		notes = append(notes, confirmationNote(unconfirmed, config.MaximumGuardrailRegressionPercent, config.PrimaryMetric, s.pairs))
 	}
 	if len(replicate) > 0 {
-		notes = append(notes, replicationNote(replicate, config.MaximumGuardrailRegressionPercent, s.pairs))
+		notes = append(notes, replicationNote(replicate, ev.regressionLimit, s.pairs))
 	}
 	evidence.Summary += "; " + strings.Join(notes, "; ")
 	evidence.ValidationJobs = append(evidence.ValidationJobs, "interleaved-ab-confirmation")
@@ -744,13 +744,15 @@ func (ev *evaluator) freshGuardrailComparisons(seeds []seedRuns, starts []int) [
 }
 
 // replicationNote says which guardrail breaches a fresh series was measured
-// to check.
-func replicationNote(breaches []domain.MetricComparison, limit float64, pairs int) string {
+// to check. Each breach quotes the limit that selected it (limitFor), which is
+// the guardrail's own when --allow or a trade-off set one, not the shared
+// ceiling.
+func replicationNote(breaches []domain.MetricComparison, limitFor func(metric string) float64, pairs int) string {
 	readings := make([]string, 0, len(breaches))
 	for _, c := range breaches {
-		readings = append(readings, fmt.Sprintf("%s %+.2f%%", c.Metric, c.DeltaPercent))
+		readings = append(readings, fmt.Sprintf("%s %+.2f%% over the %.2f%% limit", c.Metric, c.DeltaPercent, limitFor(c.Metric)))
 	}
-	return fmt.Sprintf("%s over the %.2f%% limit and significant after %d pairs, so a fresh series of %d pairs was measured to check it reproduces", strings.Join(readings, ", "), limit, pairs, pairs)
+	return fmt.Sprintf("%s and significant after %d pairs, so a fresh series of %d pairs was measured to check it reproduces", strings.Join(readings, ", "), pairs, pairs)
 }
 
 // confirmImprovements measures every representative seed again when the
