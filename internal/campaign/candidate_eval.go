@@ -1438,10 +1438,30 @@ func compareMetric(workload, metric, unit string, limit float64, baseline, candi
 	if meanBase > 0 {
 		result.DeltaPercent = percentDelta(meanBase, meanCand)
 	}
-	result.StatisticallyFit = metricSupport(baseVals, candVals, result.Baseline, result.DeltaPercent, limit)
-	result.Significant = statisticallySupported(baseVals, candVals)
+	judgeSamples(&result, baseline, candidateRuns, selector, baseVals, candVals, limit)
 	shiftFromSamples(&result, baseVals, candVals)
 	return []domain.MetricComparison{result}
+}
+
+// judgeSamples decides whether the readings of one comparison are significant
+// and supported. The series come from RunInterleaved, which pairs them by
+// index, so the default is a paired test on the per-pair differences: drift
+// between pairs cancels in a difference and does not widen the noise the test
+// compares the effect against (ADR 0048). Two series that cannot be paired
+// (unequal lengths, or fewer than four whole pairs) fall back to the unpaired
+// Welch-style test the harness used before.
+func judgeSamples(result *domain.MetricComparison, baseline, candidateRuns []domain.RunResult, selector metricSelector, baseVals, candVals []float64, limit float64) {
+	if pairBase, pairCand, ok := pairedValues(baseline, candidateRuns, selector); ok && len(pairBase) >= 4 {
+		result.Test = testSignedRank
+		result.Significant, result.PValue = pairedSignificant(pairBase, pairCand)
+		result.StatisticallyFit = pairedSupport(pairBase, pairCand, result.Baseline, result.DeltaPercent, limit)
+		return
+	}
+	if len(baseVals) >= 4 && len(candVals) >= 4 {
+		result.Test = testWelch
+	}
+	result.StatisticallyFit = metricSupport(baseVals, candVals, result.Baseline, result.DeltaPercent, limit)
+	result.Significant = statisticallySupported(baseVals, candVals)
 }
 
 func collectMetric(runs []domain.RunResult, s metricSelector) []float64 {

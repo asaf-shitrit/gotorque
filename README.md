@@ -27,8 +27,8 @@ harness keeps the guessing and mechanizes the proof.
   judge it.
 - Behavior gating: byte-exact or order-insensitive stdout comparison across
   every A/B repetition, plus each seed's expected exit code.
-- Statistics, not single runs: interleaved A/B pairs, benchstat's rank test,
-  and a confirmation series before any regression or guardrail breach
+- Statistics, not single runs: interleaved A/B pairs judged by a paired
+  signed-rank test, and a confirmation series before any regression or guardrail breach
   rejects. Borderline accepts are measured again before they stand.
 - Deterministic acceptance policy. Agents advise; code decides. Every verdict
   is persisted with its reasons and metric comparisons.
