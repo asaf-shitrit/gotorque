@@ -740,16 +740,43 @@ func TestSignificanceIsNotSupport(t *testing.T) {
 	}
 }
 
-// issue100Series is the wall-time series from issue #100: a shared per-pair
-// jitter of up to ±12 ms rides on both sides, so the 3.50% win has no
-// detectable difference (Welch |t| about 1.3 with 25 pairs, p about 0.16).
+// issue100Series is the wall-time series from issue #100: a per-run jitter of
+// up to ±12 ms on the baseline and ±24 ms on the candidate, so the 3.50% win
+// has no detectable difference (Welch |t| about 0.9 with 25 pairs, signed-rank
+// p about 0.8). The jitter differs from run to run on each side. The original series shared one jitter per pair; a
+// paired test cancels that and finds the win (see sharedJitterSeries and
+// ADR 0048), so it no longer stands for a series with nothing in it.
 func issue100Series(pairs int) (base, cand []domain.RunResult) {
+	for i := range pairs {
+		baseJitter := float64(i%5-2) * 6e6
+		candJitter := float64((i*2+1)%5-2) * 12e6
+		base = append(base, runWithMetric("wall_time_ns", 100e6+baseJitter))
+		cand = append(cand, runWithMetric("wall_time_ns", 96.5e6+candJitter))
+	}
+	return base, cand
+}
+
+// sharedJitterSeries is issue100Series as it was first written: one jitter per
+// pair, riding on both halves. An unpaired test counts that jitter as noise and
+// finds nothing; the pair's difference is the same 3.5 ms every time.
+func sharedJitterSeries(pairs int) (base, cand []domain.RunResult) {
 	for i := range pairs {
 		jitter := float64(i%5-2) * 6e6
 		base = append(base, runWithMetric("wall_time_ns", 100e6+jitter))
 		cand = append(cand, runWithMetric("wall_time_ns", 96.5e6+jitter))
 	}
 	return base, cand
+}
+
+// TestAPairedTestFindsTheWinSharedJitterHid is ADR 0048 on the issue #100
+// series: the unpaired columns carry no detectable difference, the pairs'
+// differences are all the same, and the verdict follows the pairs.
+func TestAPairedTestFindsTheWinSharedJitterHid(t *testing.T) {
+	base, cand := sharedJitterSeries(25)
+	require.False(t, statisticallySupported(collectMetric(base, wallTime), collectMetric(cand, wallTime)), "two columns see only jitter")
+	c := compareMetric("", "wall_time_ns", "ns", defaultLimit, base, cand, wallTime)[0]
+	require.Equal(t, testSignedRank, c.Test)
+	require.True(t, c.Significant && c.StatisticallyFit, "%+v", c)
 }
 
 // TestANonSignificantWinIsNotSupported: issue #100. Support used to be granted
@@ -835,7 +862,7 @@ func TestTheEquivalenceBoundIsTheMetricsOwnLimit(t *testing.T) {
 		return 0, false
 	}
 	base := metricRuns("binary_size_bytes", 98, 98, 98, 101, 101, 102, 102)
-	cand := metricRuns("binary_size_bytes", 99, 99, 99, 102, 102, 103, 103)
+	cand := metricRuns("binary_size_bytes", 101, 96, 101, 102, 99, 103, 105)
 	atDefault := compareMetric("", "binary_size_bytes", "bytes", defaultLimit, base, cand, size)[0]
 	require.InDelta(t, 1.0, atDefault.DeltaPercent, 1e-9)
 	require.False(t, atDefault.Significant, "a 1% move in this spread is no difference: %+v", atDefault)

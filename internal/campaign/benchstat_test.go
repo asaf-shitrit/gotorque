@@ -256,8 +256,10 @@ func TestCompareWallTimeMetricInsignificantPWithdrawsSupport(t *testing.T) {
 	fake := &cannedBenchstatExecutor{stdout: "Work-8  100ns ± 40%  101ns ± 41%  +1.00% (p=0.912 n=7)"}
 	e := benchstatEnabledEngine(t, fake, installFakeBenchstat(t))
 
+	// Six candidate runs against seven baseline runs: these are not pairs, so
+	// the benchstat lane decides (ADR 0048).
 	base := wallRuns(100, 140, 90, 110, 95, 105, 100)
-	cand := wallRuns(101, 141, 91, 111, 96, 106, 101)
+	cand := wallRuns(101, 141, 91, 111, 96, 106)
 	comparisons, _ := e.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand)
 	if comparisons[0].StatisticallyFit {
 		t.Fatalf("insignificant p-value must withdraw support: %+v", comparisons[0])
@@ -368,9 +370,13 @@ func TestReportOmitsEmptyModelUsageTable(t *testing.T) {
 
 // TestBenchstatPValueDecidesSignificance: when benchstat reports a p-value, it
 // decides significance whatever the t-test found.
+//
+// That holds for series that cannot be paired (here six runs against seven).
+// Paired series are decided by the signed-rank test instead, see
+// TestBenchstatDoesNotDecideAPairedSeries.
 func TestBenchstatPValueDecidesSignificance(t *testing.T) {
 	base := wallRuns(100, 101, 99, 100, 100, 101, 99)
-	cand := wallRuns(104, 105, 103, 104, 104, 105, 103)
+	cand := wallRuns(104, 105, 103, 104, 104, 105)
 	insignificant := benchstatEnabledEngine(t, &cannedBenchstatExecutor{stdout: "Work-8  100ns ± 1%  104ns ± 1%  +4.00% (p=0.200 n=7)"}, installFakeBenchstat(t))
 	if c, _ := insignificant.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand); c[0].Significant {
 		t.Fatalf("p=0.200 is not significant: %+v", c[0])
@@ -378,5 +384,22 @@ func TestBenchstatPValueDecidesSignificance(t *testing.T) {
 	significant := benchstatEnabledEngine(t, &cannedBenchstatExecutor{stdout: modernBenchstatOutput}, installFakeBenchstat(t))
 	if c, _ := significant.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand); !c[0].Significant {
 		t.Fatalf("p=0.001 is significant: %+v", c[0])
+	}
+}
+
+// TestBenchstatDoesNotDecideAPairedSeries is ADR 0048: benchstat's rank test
+// compares the columns as independent samples, so for a series measured as
+// pairs its p-value is reported and the signed-rank test decides.
+func TestBenchstatDoesNotDecideAPairedSeries(t *testing.T) {
+	base := wallRuns(100, 140, 90, 110, 95, 105, 100)
+	cand := wallRuns(104, 144, 94, 114, 99, 109, 104) // every pair slower by 4: drift between pairs, none within
+	insignificantToBenchstat := &cannedBenchstatExecutor{stdout: "Work-8  100ns ± 20%  104ns ± 20%  +4.00% (p=0.700 n=7)"}
+	e := benchstatEnabledEngine(t, insignificantToBenchstat, installFakeBenchstat(t))
+	comparisons, output := e.campaignEvaluator().compareWallTimeMetric(context.Background(), "wid", base, cand)
+	if insignificantToBenchstat.calls == 0 || output == "" {
+		t.Fatalf("benchstat still runs and its output is kept for the report: calls %d, output %q", insignificantToBenchstat.calls, output)
+	}
+	if c := comparisons[0]; c.Test != testSignedRank || !c.Significant || !c.StatisticallyFit {
+		t.Fatalf("p=0.700 from benchstat must not withdraw a signed-rank finding: %+v", c)
 	}
 }

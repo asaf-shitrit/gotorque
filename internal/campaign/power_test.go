@@ -86,7 +86,7 @@ func mannWhitneyP(a, b []float64) float64 {
 type powerRow struct{ mannWhitney, welch, signedRank float64 }
 
 func simulatePower(cell powerCell, effect float64, trials int, seed uint64) powerRow {
-	rng := rand.New(rand.NewPCG(seed, 0x9e3779b97f4a7c15))
+	rng := rand.New(rand.NewPCG(seed, 0x9e3779b97f4a7c15)) //nolint:gosec // seeded on purpose so the simulation is reproducible; nothing here is a secret
 	var hits [3]int
 	for range trials {
 		base, cand := simulatedPairs(rng, cell, effect)

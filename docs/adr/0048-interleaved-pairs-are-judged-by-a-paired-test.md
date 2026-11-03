@@ -77,6 +77,11 @@ are the check that remains.
   will accept, and more will reach the borderline re-measurement. Whether any accepted patch is
   not real is what `verify` and the null-candidate false-accept rate measure; this change has not
   been measured on a live target.
+- The false-positive rate of a single reading under drift rises from near 0% (the unpaired tests were
+  conservative) to the nominal 5%, as in the no-drift row. An accept still needs a Hodges-Lehmann
+  shift past the 3% minimum on a reading that is significant, then the borderline re-measurement
+  (ADR 0034) and the selected-workload re-measurement (ADR 0041). Whether the false-accept rate on
+  null candidates stays at zero is the thing to watch when the held-out sweep is next run (#103).
 - The README's claim that benchstat's rank test supports a verdict is replaced by the paired test.
   A machine without benchstat now judges paired series exactly as one with it.
 - The signed-rank test assumes the differences are independent and symmetric about zero under no
