@@ -107,7 +107,7 @@ already runs; no candidate costs a series it did not cost before.
 
 ## Amendment (2026-10-25, #109): a stress seed's peak-memory breach is replicated too
 
-ADR 0046 gave the seeds the manifest keeps out of acceptance a veto, and first gave them the
+ADR 0047 gave the seeds the manifest keeps out of acceptance a veto, and first gave them the
 single-series rule ADR 0016 sets for every other reading. That rule is wrong for peak memory there
 for the reason it is wrong on the pooled readings: one series of a high-water mark can read a
 breach the candidate did not cause, and a stress seed's only power is to veto, so a false veto is

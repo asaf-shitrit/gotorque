@@ -183,7 +183,7 @@ func stressSeedNamed(t *testing.T, ev *evaluator, id string) manifest.SeedWorklo
 
 // TestAStressMemoryBreachIsMeasuredAgainBeforeItVetoes: peak memory is a
 // per-run high-water mark on a seed that can only veto as well, so such a
-// breach needs a fresh series before it may reject (ADR 0040, ADR 0046). The
+// breach needs a fresh series before it may reject (ADR 0040, ADR 0047). The
 // engine measures that series on the breaching seed alone, records its own
 // reading under the seed id, and the verdict lets the candidate through when
 // the fresh series reads the breach away.

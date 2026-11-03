@@ -62,7 +62,7 @@ type Evidence struct {
 	// StressComparisons are the guardrail readings of workloads the manifest
 	// keeps out of acceptance: its plausible and stress tiers. They can only
 	// veto, never carry, which is what the target manifest has always promised
-	// a stress seed does (ADR 0046). An entry naming a metric that is not a
+	// a stress seed does (ADR 0047). An entry naming a metric that is not a
 	// configured guardrail is ignored, so a caller cannot slip a wall-time win
 	// from an ineligible workload into a verdict.
 	StressComparisons []domain.MetricComparison

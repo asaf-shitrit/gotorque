@@ -155,7 +155,7 @@ peak-memory breach. Neither gate can carry an acceptance: `wall_time_ns` on
 such a workload is never compared. Issue #101 found that no loop ran the
 candidate on these seeds at all, so a patch that changed output only on an
 input larger than any representative seed was accepted on representative
-timings (ADR 0046).
+timings (ADR 0047).
 
 `tiers.<tier>.weight` is required by the schema, and it is kept so that a
 manifest written against version one still loads. `acceptance_eligible` decides

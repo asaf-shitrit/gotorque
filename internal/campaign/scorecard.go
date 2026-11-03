@@ -3,10 +3,12 @@ package campaign
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/asaf-shitrit/gotorque/internal/domain"
+	"github.com/asaf-shitrit/gotorque/internal/version"
 )
 
 // Verdict classes a scorecard counts. A candidate lands in exactly one, first
@@ -24,8 +26,18 @@ const (
 
 // ScorecardRow is one campaign's verdicts by class.
 type ScorecardRow struct {
-	Campaign   string
-	Target     string
+	Campaign string
+	Target   string
+	// Builds are the gotorque builds this campaign ran on, the one that
+	// started it first, without repeats. A campaign written before the build
+	// was recorded carries version.Unknown, so it groups with the other
+	// pre-record campaigns instead of posing as a build of its own.
+	Builds []string
+	// DirtyBuild marks a campaign that ran at least one build from a checkout
+	// with uncommitted changes. Such a build names the revision it sat on, not
+	// the code it ran, so two of them read the same name above and can still
+	// reach different verdicts.
+	DirtyBuild bool
 	StopReason string
 	// NullCandidates is the campaign's persisted null-candidate bound. A
 	// positive value marks a campaign that measured code-generated patches
@@ -54,7 +66,7 @@ func Scorecard(dirs []string) ([]ScorecardRow, error) {
 }
 
 func scorecardRow(name string, state State) ScorecardRow {
-	row := ScorecardRow{Campaign: name, Target: state.Manifest.Name, StopReason: state.StopReason, NullCandidates: state.NullCandidates, Counts: map[string]int{}}
+	row := ScorecardRow{Campaign: name, Target: state.Manifest.Name, StopReason: state.StopReason, NullCandidates: state.NullCandidates, Builds: campaignBuilds(state), DirtyBuild: campaignRanDirtyBuild(state), Counts: map[string]int{}}
 	held := map[int]bool{}
 	for _, v := range state.Verifications {
 		held[v.Attempt] = v.Confirmed()
@@ -73,6 +85,78 @@ func scorecardRow(name string, state State) ScorecardRow {
 		}
 	}
 	return row
+}
+
+// campaignBuilds names the gotorque builds a campaign ran on, without repeats:
+// the one that started it, then each resume and verify run. A campaign written
+// before builds were recorded reports version.Unknown.
+func campaignBuilds(state State) []string {
+	names := []string{state.Build.Describe()}
+	for _, run := range state.LaterBuilds {
+		if name := run.Build.Describe(); !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// campaignRanDirtyBuild reports whether a build the campaign ran came from a
+// checkout with uncommitted changes.
+func campaignRanDirtyBuild(state State) bool {
+	if state.Build.Modified {
+		return true
+	}
+	return slices.ContainsFunc(state.LaterBuilds, func(run BuildRun) bool { return run.Build.Modified })
+}
+
+// buildCell is a row's builds as one cell. A row built without the field, as a
+// caller constructing rows directly can, still says Unknown rather than
+// leaving the column blank.
+func buildCell(row ScorecardRow) string {
+	if len(row.Builds) == 0 {
+		return version.Unknown
+	}
+	return strings.Join(row.Builds, ", ")
+}
+
+// writeBuildWarning says when the campaigns being grouped did not all run on
+// the same gotorque build, or when one of those builds came from a checkout
+// with uncommitted changes. It only says so: the rates below are computed from
+// the persisted records whatever build wrote them, because a verdict must not
+// depend on the reader (the build record is data, not policy). Grouping the
+// campaigns by build stays the caller's job, the same way held-out versus
+// development does.
+func writeBuildWarning(b *strings.Builder, rows []ScorecardRow) {
+	writeDifferingBuildWarning(b, buildNames(rows))
+	if slices.ContainsFunc(rows, func(row ScorecardRow) bool { return row.DirtyBuild }) {
+		b.WriteString("> Builds include a dirty checkout: a binary built from uncommitted changes names the revision it sat on, not the code it ran. Two dirty builds of one revision read the same here and can still reach different verdicts, so a rate below can mix verdicts that no build name separates.\n\n")
+	}
+}
+
+// buildNames lists every build the grouped campaigns ran on, without repeats.
+func buildNames(rows []ScorecardRow) []string {
+	names := []string{}
+	for _, row := range rows {
+		for _, name := range row.Builds {
+			if !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+// writeDifferingBuildWarning names the builds a group mixed, when it mixed any.
+func writeDifferingBuildWarning(b *strings.Builder, names []string) {
+	if len(names) < 2 {
+		return
+	}
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = "`" + name + "`"
+	}
+	fmt.Fprintf(b, "> Builds differ: these campaigns ran on %d gotorque builds (%s), so a rate below mixes verdicts from different builds. Group them by build before comparing.\n\n",
+		len(names), strings.Join(quoted, ", "))
 }
 
 // verdictClass puts one candidate's verdict in its scorecard class.
@@ -98,6 +182,12 @@ func verdictClass(r CandidateRecord) string {
 
 var scorecardColumns = []string{classAccepted, classInconclusive, classGuardrail, classTests, classBuild, classHarness, classOther}
 
+// buildColumn names the column holding the gotorque build(s) a campaign ran
+// on. It cannot be just "build": the agent table already has a verdict class
+// column called that, and the two would read the same in a header a person or
+// a tool parses by name.
+const buildColumn = "gotorque build"
+
 // splitScorecardRows separates the agent campaigns from the null-candidate
 // campaigns. Only the latter's counts measure a false accept or a false
 // reject, so the two never share a totals row.
@@ -120,6 +210,7 @@ func splitScorecardRows(rows []ScorecardRow) (agent, null []ScorecardRow) {
 func RenderScorecard(rows []ScorecardRow) string {
 	agent, null := splitScorecardRows(rows)
 	var b strings.Builder
+	writeBuildWarning(&b, rows)
 	if len(null) > 0 {
 		b.WriteString("## Agent campaigns\n\n")
 	}
@@ -132,26 +223,26 @@ func RenderScorecard(rows []ScorecardRow) string {
 }
 
 func writeAgentScorecard(b *strings.Builder, rows []ScorecardRow) {
-	b.WriteString("| Campaign | Target | " + strings.Join(scorecardColumns, " | ") + " | verified/held | stop |\n")
-	b.WriteString("|---|---|" + strings.Repeat("---:|", len(scorecardColumns)) + "---|---|\n")
+	b.WriteString("| Campaign | Target | " + buildColumn + " | " + strings.Join(scorecardColumns, " | ") + " | verified/held | stop |\n")
+	b.WriteString("|---|---|---|" + strings.Repeat("---:|", len(scorecardColumns)) + "---|---|\n")
 	total := ScorecardRow{Counts: map[string]int{}}
 	for _, r := range rows {
-		writeScorecardRow(b, r.Campaign, r.Target, r, r.StopReason)
+		writeScorecardRow(b, r.Campaign, r.Target, buildCell(r), r, r.StopReason)
 		for class, n := range r.Counts {
 			total.Counts[class] += n
 		}
 		total.Verified += r.Verified
 		total.Held += r.Held
 	}
-	writeScorecardRow(b, "**total**", fmt.Sprintf("%d campaigns", len(rows)), total, "")
+	writeScorecardRow(b, "**total**", fmt.Sprintf("%d campaigns", len(rows)), "", total, "")
 }
 
-func writeScorecardRow(b *strings.Builder, campaign, target string, r ScorecardRow, stop string) {
+func writeScorecardRow(b *strings.Builder, campaign, target, build string, r ScorecardRow, stop string) {
 	cells := make([]string, 0, len(scorecardColumns))
 	for _, class := range scorecardColumns {
 		cells = append(cells, strconv.Itoa(r.Counts[class]))
 	}
-	fmt.Fprintf(b, "| %s | %s | %s | %d/%d | %s |\n", campaign, target, strings.Join(cells, " | "), r.Verified, r.Held, stop)
+	fmt.Fprintf(b, "| %s | %s | %s | %s | %d/%d | %s |\n", campaign, target, build, strings.Join(cells, " | "), r.Verified, r.Held, stop)
 }
 
 // nullTableColumns are the null section's rate columns, each printed as a rate
@@ -188,21 +279,21 @@ func (s nullScore) add(o nullScore) nullScore {
 func writeNullScorecard(b *strings.Builder, rows []ScorecardRow) {
 	b.WriteString("## Null candidates\n\n")
 	b.WriteString("Code-generated patches that change nothing. An accept is a false accept of the harness, and a guardrail, test or build rejection is a false reject; inconclusive is the right answer. Harness-class verdicts are left out of the valid runs. The bounds are exact one-sided 95% Clopper-Pearson limits.\n\n")
-	b.WriteString("| Campaign | Target | " + strings.Join(nullTableColumns, " | ") + " | stop |\n")
-	b.WriteString("|---|---|" + strings.Repeat("---:|", len(nullTableColumns)) + "---|\n")
+	b.WriteString("| Campaign | Target | " + buildColumn + " | " + strings.Join(nullTableColumns, " | ") + " | stop |\n")
+	b.WriteString("|---|---|---|" + strings.Repeat("---:|", len(nullTableColumns)) + "---|\n")
 	total := nullScore{}
 	for _, r := range rows {
 		score := r.nullScore()
-		writeNullScorecardRow(b, r.Campaign, r.Target, score, r.StopReason)
+		writeNullScorecardRow(b, r.Campaign, r.Target, buildCell(r), score, r.StopReason)
 		total = total.add(score)
 	}
-	writeNullScorecardRow(b, "**total**", fmt.Sprintf("%d campaigns", len(rows)), total, "")
+	writeNullScorecardRow(b, "**total**", fmt.Sprintf("%d campaigns", len(rows)), "", total, "")
 }
 
-func writeNullScorecardRow(b *strings.Builder, campaign, target string, score nullScore, stop string) {
+func writeNullScorecardRow(b *strings.Builder, campaign, target, build string, score nullScore, stop string) {
 	acceptRate, acceptUpper := rateCell(score.FalseAccepts, score.Valid)
 	rejectRate, rejectUpper := rateCell(score.FalseRejects, score.Valid)
-	fmt.Fprintf(b, "| %s | %s | %d | %d | %d | %s | %s | %s | %s | %s |\n", campaign, target, score.Valid,
+	fmt.Fprintf(b, "| %s | %s | %s | %d | %d | %d | %s | %s | %s | %s | %s |\n", campaign, target, build, score.Valid,
 		score.FalseAccepts, score.FalseRejects, acceptRate, acceptUpper, rejectRate, rejectUpper, stop)
 }
 

@@ -463,7 +463,7 @@ func (ev *evaluator) measureSeedWorkloads(ctx context.Context, s evalSettings, e
 // ever ran the candidate on either: every measurement loop skipped a seed that
 // was not representative-tier. A patch that changed output, or blew up memory,
 // only on an input larger than any representative seed was therefore accepted
-// on representative timings alone (issue #101, ADR 0046).
+// on representative timings alone (issue #101, ADR 0047).
 //
 // These seeds can only veto. Behavior is judged exactly as everywhere else
 // (runSeries, recordBehaviorMatch), so a changed exit code or output rejects
@@ -499,7 +499,7 @@ func (ev *evaluator) measureStressSeeds(ctx context.Context, s evalSettings, evi
 // A peak-memory reading past its limit with support asks for one more series on
 // this seed before it may veto (replicateStressBreach). The readings it returns
 // stay the first series' own: no stress reading is ever folded with another
-// series, because none of them can carry an acceptance (ADR 0046).
+// series, because none of them can carry an acceptance (ADR 0047).
 func (ev *evaluator) measureStressSeed(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence) ([]domain.MetricComparison, bool) {
 	baseReq, _ := ev.abRequests(seed, id, candidateBinary)
 	runs := seedRuns{seed: seed, deterministic: outputIsDeterministic(ctx, ev.runner, baseReq)}
@@ -530,7 +530,7 @@ func (ev *evaluator) stressSeriesReadings(seed manifest.SeedWorkload, ab runner.
 //
 // One breach costs one series on the seed it was read on. A stress workload can
 // only veto, so a second series on every one of them would double the cost of
-// the pass for readings the policy will not act on (ADR 0046).
+// the pass for readings the policy will not act on (ADR 0047).
 func (ev *evaluator) replicateStressBreach(ctx context.Context, s evalSettings, seed manifest.SeedWorkload, id, candidateBinary string, evidence *orchestrator.CandidateEvidence, runs *seedRuns, readings []domain.MetricComparison) bool {
 	breaches := policy.StressGuardrailsToReplicate(policyConfigFromManifest(ev.manifest), readings)
 	if len(breaches) == 0 {

@@ -334,7 +334,7 @@ not recorded.
    pairs is contended the engine discards them, waits again and measures
    every seed once more from scratch (`measureSeedsOnQuietMachine`); only the
    second pass reaches the verdict, and the report names the discarded
-   pass's load. A pass is the eligible seeds plus, per ADR 0046, the seeds
+   pass's load. A pass is the eligible seeds plus, per ADR 0047, the seeds
    that can only veto, so a burst during a stress series is discarded with
    the rest instead of reaching the verdict.
    Tests, which disable local isolation, never wait. `gotorque verify DIR` checks an accepted verdict
@@ -495,7 +495,7 @@ mismatch, compared exactly as an eligible seed's is, and a regression of
 `cpu_time_ns` or `peak_memory_bytes` past its limit with statistical support.
 The candidate's `wall_time_ns` on those seeds is never compared, so nothing
 measured there can carry an acceptance. This is the stress veto the target
-manifest has documented since it described its tiers; before ADR 0046 the
+manifest has documented since it described its tiers; before ADR 0047 the
 candidate was never run on those seeds at all. A `peak_memory_bytes` breach
 there follows the same replication rule as the pooled one (ADR 0040): the
 engine measures one fresh series on that seed, and the veto stands only when
@@ -1624,6 +1624,19 @@ Hodges–Lehmann shift when the samples supply one, statistical support), trimme
 benchstat output when benchstat
 contributed, and a per-role token usage table.
 
+The build is recorded and shown, never judged (ADR 0046). `State.Build` is the
+gotorque binary that created the campaign, from the release build's ldflags
+when it set a commit and from the Go VCS stamp (`vcs.revision`, `vcs.modified`)
+otherwise; `State.LaterBuilds` holds one entry per resume and verify run, saved
+by `recordBuild` as the run starts its first measurement. Opening a campaign
+directory records nothing: `Resume` only arms the entry, so a resume the CLI
+refuses, a `verify` with nothing accepted and a resume of a completed campaign
+add no build that judged no verdict. The report prints `Build:` beside the
+target's `Revision:`, and a `## Builds` table once a later run exists. The
+fields are additive and `ReportSchemaVersion` stays at 1, so a campaign written
+before the record loads, resumes and scores, and reports `unknown`. Nothing in
+`internal/policy`, the evaluator or a bound reads them.
+
 `gotorque scorecard DIR...` classifies every campaign's candidate records
 and prints them as a Markdown table with a totals row. It splits the input by
 the persisted `null_candidates` field: agent campaigns keep the table above
@@ -1632,7 +1645,14 @@ For a null campaign the valid runs are its records minus harness-class
 verdicts, which say nothing about the patch. An accept is a false accept; a
 guardrail, test or build rejection is a false reject, because the patch
 changed no code; an inconclusive verdict is the correct outcome for a null and
-counts in neither. Each rate is printed with its exact one-sided 95%
+counts in neither. Both tables carry a `gotorque build` column naming the
+build(s) the campaign ran on. Above the tables, a set of campaigns that ran on
+more than one build is called out, and so is a set with any build from a
+checkout with uncommitted changes: two dirty builds of one revision read the
+same name and can still run different code. Neither warning changes a count:
+grouping by build stays the caller's job, as splitting held-out from development
+does.
+Each rate is printed with its exact one-sided 95%
 Clopper-Pearson upper bound (`clopper.go`): the p at which the chance of
 seeing at most that many hits is 0.05, which for no hits in n runs is
 1 - 0.05^(1/n), about 3/n. The exact bound rather than a normal

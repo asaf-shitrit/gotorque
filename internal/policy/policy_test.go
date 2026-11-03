@@ -408,7 +408,7 @@ func acceptedOnRepresentative(stress []domain.MetricComparison) Evidence {
 //
 // Peak memory is the one guardrail a single series can misreport on those
 // workloads as well, so such a breach rejects only when a fresh series of the
-// same seed reproduces it (ADR 0040, ADR 0046).
+// same seed reproduces it (ADR 0040, ADR 0047).
 func TestEvaluateRejectsASignificantStressGuardrail(t *testing.T) {
 	stress := func() []domain.MetricComparison {
 		return []domain.MetricComparison{

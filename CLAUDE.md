@@ -192,7 +192,7 @@ Package map:
   bbolt; in-graph `CampaignState` is rebuilt on every entry. A campaign that
   ran model roles (`ADKMode` set, analyst not `jev`) is refused: it ran model
   roles this build no longer has; start a new campaign.
-- Tier eligibility (`manifest.Manifest.AcceptanceEligible`, ADR 0046): whether a
+- Tier eligibility (`manifest.Manifest.AcceptanceEligible`, ADR 0047): whether a
   seed can carry an acceptance is the manifest's `tiers.<tier>.acceptance_eligible`
   and nothing else. `measureSeedWorkloads` measures the eligible seeds for the
   verdict; `measureStressSeeds` measures every other seed and keeps only
@@ -228,7 +228,7 @@ Package map:
   a reading under the limit on the first series can cross it only once the
   fresh series is pooled in, so record it from the step that ran the series,
   not from the reading that asked for it. The same rule covers a stress seed's
-  peak memory (`replicateStressBreach`, ADR 0046): its fresh reading is recorded
+  peak memory (`replicateStressBreach`, ADR 0047): its fresh reading is recorded
   under the seed id, and `recordGuardrailSeries` keeps those workload-keyed
   entries when it replaces the pooled ones — overwriting them puts that breach
   back on the single-series rule. A stress seed's fresh series runs inside
