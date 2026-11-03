@@ -2,6 +2,7 @@ package campaign
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,4 +74,89 @@ func TestEvaluateCandidateTellsAnApplyRefusalApart(t *testing.T) {
 	// not the campaign's own patch artifact path.
 	require.NotContains(t, evidence.ReaskCause, campaignDir)
 	require.Len(t, evidence.ArtifactURIs, 1, "nothing was built")
+}
+
+// unresolvedEvidence is what an evaluation reports for a proposal that could
+// not become a diff, over the fixture repository.
+func unresolvedEvidence(t *testing.T, target *agents.Target, role string, proposal agents.OptimizerResult) orchestrator.CandidateEvidence {
+	t.Helper()
+	engine, err := Create(context.Background(), Options{
+		Repository: refusingRepo(t), ManifestPath: writeManifest(t, t.TempDir()),
+		CampaignDir: filepath.Join(t.TempDir(), "campaign"), TestingUnsafeDisableIsolation: true,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, engine.Close()) }()
+	evidence, err := engine.evaluateCandidate(context.Background(), orchestrator.CandidateRequest{
+		Campaign:    orchestrator.CampaignRequest{BaseRevision: engine.State().Environment.Revision},
+		Attempt:     1,
+		Target:      target,
+		RoleFailure: role,
+		Proposal:    proposal,
+	})
+	require.NoError(t, err)
+	require.True(t, evidence.Unmeasured)
+	return evidence
+}
+
+var printValuesTarget = agents.Target{Location: "main.go:8", Function: "(*cli).printValues", Cause: "unbuffered_io"}
+
+// TestATruncatedFunctionSourceIsAskedAgainWithTheDeclarationsSize: issue #77's
+// yaegi and csvq attempts. The answer ends inside the function, the parser says
+// so at EOF, and the refusal that goes back to the optimizer names the parse
+// error and how long the declaration is.
+func TestATruncatedFunctionSourceIsAskedAgainWithTheDeclarationsSize(t *testing.T) {
+	truncated := "func (c *cli) printValues(vs []string) error {\n\tfor _, v := range vs {\n\t\tc.out.WriteString(v)\n"
+	evidence := unresolvedEvidence(t, &printValuesTarget, "", agents.OptimizerResult{Hypothesis: "h", FunctionSource: truncated})
+
+	require.Contains(t, evidence.Summary, "does not parse as Go source")
+	require.Contains(t, evidence.ReaskCause, "found 'EOF'")
+	require.Contains(t, evidence.ReaskCause, "(*cli).printValues is 7 lines long at the base revision")
+	require.Contains(t, evidence.ReaskCause, "every brace closed")
+}
+
+// TestAnEmptyAnswerIsAskedAgain: tomlv, chroma, shfmt and yq each returned a
+// hypothesis and no code. Nothing was judged, so the attempt may ask once more.
+func TestAnEmptyAnswerIsAskedAgain(t *testing.T) {
+	evidence := unresolvedEvidence(t, &printValuesTarget, "", agents.OptimizerResult{Hypothesis: "compute the indent once"})
+	require.Equal(t, errEmptyProposal.Error(), evidence.ReaskCause)
+}
+
+// TestRefusalsTheOptimizerCannotAnswerAreNotAskedAgain: a function_source that
+// parses but names the wrong function, a source that is not Go, a model call
+// that never answered and a target-less proposal each say something the same
+// transport would repeat or have nothing to re-ask for.
+func TestRefusalsTheOptimizerCannotAnswerAreNotAskedAgain(t *testing.T) {
+	cases := []struct {
+		name     string
+		target   *agents.Target
+		role     string
+		proposal agents.OptimizerResult
+	}{
+		{"another function", &printValuesTarget, "", agents.OptimizerResult{FunctionSource: "func other() int { return 2 }"}},
+		{"not go", &printValuesTarget, "", agents.OptimizerResult{FunctionSource: "this is prose"}},
+		{"the model call failed", &printValuesTarget, "optimizer model call failed after 3 attempts", agents.OptimizerResult{}},
+		{"no target", nil, "", agents.OptimizerResult{Hypothesis: "h"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence := unresolvedEvidence(t, tc.target, tc.role, tc.proposal)
+			require.Empty(t, evidence.ReaskCause)
+		})
+	}
+}
+
+func TestOnlyAnEndedTooEarlySourceIsATruncation(t *testing.T) {
+	for src, want := range map[string]bool{
+		"func f() {":               true,
+		"func f() {\n\ts := \"abc": true,
+		"func f() {\n\t/* open":    true,
+		"func f( {":                false,
+		"func f() { x := }":        false,
+		"func f() {}\nfunc g() {}": false,
+		"this is prose":            false,
+	} {
+		_, err := splitFunctionDecls(src)
+		var truncated truncationError
+		require.Equal(t, want, errors.As(err, &truncated), "%q: %v", src, err)
+	}
 }

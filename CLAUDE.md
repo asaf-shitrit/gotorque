@@ -284,8 +284,10 @@ Package map:
   once more inside the same attempt for `function_source`, quoting the refusal
   (ADR 0045, `reaskable`/`reask` in `internal/orchestrator`). The trigger is
   the `candidate.ErrPatchDoesNotApply` sentinel on the evidence's
-  `ReaskCause`, one ask per cycle, and #77 widens that same trigger rather
-  than adding a second. Do not move the ask into evaluation: it takes no
+  `ReaskCause`, one ask per cycle. A `function_source` that ends inside its
+  declaration (`truncationError`) and an answer with no code at all
+  (`errEmptyProposal`) set the same field (issue #77); there is no second
+  trigger. Do not move the ask into evaluation: it takes no
   model role (ADR 0035) and `DeterministicTimeout` bounds it. The second
   answer's record carries the refusal as `ReaskedFor`, so the report says the
   attempt took two optimizer calls; the refusal quoted to the model leaves out
